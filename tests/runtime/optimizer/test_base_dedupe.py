@@ -3,28 +3,20 @@ from typing import Any
 
 import pytest
 
-from lumilake_server.data_specs import (
-    Column,
-    FormatConfig,
-    GraphTemplate,
-    GraphTemplateData,
-    ListData,
-    TemplateOptions,
-)
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, make_chunk_group_key
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeGraph:
     nodes = {
-        f"{scope}__{op_id}": RuntimeOp(
+        f"{scope}__{op_id}": runtime_op(
             f"{scope}__{op_id}",
             "inference",
             "vllm",
             "model-a",
-            data_specs.empty(),
+            {},
             {},
             {"temperature": 0.7, **inference},
             samples=True,
@@ -63,36 +55,59 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
     root_label = f"input_{scope}_Stock_1001"
     child_label = f"context_{scope}_root_2002"
 
-    root = RuntimeOp(
+    root = runtime_op(
         node_id=root_id,
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec=GraphTemplateData(
-            type="graph_template",
-            template=GraphTemplate(
-                name="format",
-                columns=[Column(label=root_label, data=ListData(items=["NVDA"]))],
-                options=TemplateOptions(format=FormatConfig()),
-            ),
-        ),
+        data_spec={
+            "type": "graph_template",
+            "template": {
+                "name": "format",
+                "columns": [
+                    {
+                        "label": root_label,
+                        "data": {"type": "list", "items": ["NVDA"]},
+                    }
+                ],
+                "options": {
+                    "format": {
+                        "messages": [
+                            {"role": "user", "content": f"Stock={{{root_label}}}"}
+                        ]
+                    }
+                },
+            },
+        },
         model_spec={},
         inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(),
     )
-    child = RuntimeOp(
+    child = runtime_op(
         node_id=child_id,
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec=GraphTemplateData(
-            type="graph_template",
-            template=GraphTemplate(
-                name="format",
-                columns=[Column(label=child_label, node=root_id, path="items.output")],
-                options=TemplateOptions(format=FormatConfig()),
-            ),
-        ),
+        data_spec={
+            "type": "graph_template",
+            "template": {
+                "name": "format",
+                "columns": [
+                    {
+                        "label": child_label,
+                        "node": root_id,
+                        "path": "items.output",
+                    }
+                ],
+                "options": {
+                    "format": {
+                        "messages": [
+                            {"role": "user", "content": f"Ctx={{{child_label}}}"}
+                        ]
+                    }
+                },
+            },
+        },
         model_spec={},
         inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(root_id,),
@@ -125,31 +140,39 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
         infer_id = f"{scope}__infer"
         return RuntimeGraph(
             nodes={
-                seed_id: RuntimeOp(
+                seed_id: runtime_op(
                     node_id=seed_id,
                     task_type="inference",
                     backend="dummy",
                     model="dummy-model",
-                    data_spec=data_specs.list_spec("a", "b"),
+                    data_spec={"type": "list", "items": ["a", "b"]},
                     model_spec={},
                     inference_spec={"temperature": 0.0},
                     dependencies=(),
                 ),
-                infer_id: RuntimeOp(
+                infer_id: runtime_op(
                     node_id=infer_id,
                     task_type="inference",
                     backend="dummy",
                     model="dummy-model",
-                    data_spec=GraphTemplateData(
-                        type="graph_template",
-                        template=GraphTemplate(
-                            name="format",
-                            columns=[
-                                Column(label="x", node=seed_id, path="items.output")
+                    data_spec={
+                        "type": "graph_template",
+                        "template": {
+                            "name": "format",
+                            "columns": [
+                                {
+                                    "label": "x",
+                                    "node": seed_id,
+                                    "path": "items.output",
+                                }
                             ],
-                            options=TemplateOptions(format=FormatConfig()),
-                        ),
-                    ),
+                            "options": {
+                                "format": {
+                                    "messages": [{"role": "user", "content": "{x}"}]
+                                }
+                            },
+                        },
+                    },
                     model_spec={},
                     inference_spec={"temperature": 0.0},
                     dependencies=(seed_id,),
@@ -170,12 +193,12 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
     """When dedupe merges an API predecessor, ``${node.path}`` references to it
     inside a downstream ``api_spec`` body must be remapped to the canonical node,
     or the placeholder would name a node that no longer exists."""
-    api0 = RuntimeOp(
+    api0 = runtime_op(
         node_id="Api0",
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         api_spec={
@@ -186,12 +209,12 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         },
         dependencies=(),
     )
-    api1 = RuntimeOp(
+    api1 = runtime_op(
         node_id="Api1",
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         api_spec={
@@ -202,12 +225,12 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         },
         dependencies=(),
     )
-    downstream = RuntimeOp(
+    downstream = runtime_op(
         node_id="Down",
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         api_spec={
@@ -240,12 +263,12 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
     surviving op must keep its ``condition`` through the rebuild."""
 
     def _op(node_id: str, expr: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -274,12 +297,12 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
     op keeps the condition and its empty-input skip."""
 
     def _op(node_id: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -308,12 +331,12 @@ def test_dedupe_remaps_condition_node_reference() -> None:
     no longer exists."""
 
     def _op(node_id: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -321,12 +344,12 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
     a = _op("A")
     b = _op("B")
-    c = RuntimeOp(
+    c = runtime_op(
         node_id="C",
         task_type="inference",
         backend="vllm",
         model="model-a",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={"temperature": 0.0},
         dependencies=("B",),
@@ -347,9 +370,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    base = RuntimeOp(
-        "A", "inference", "vllm", "m", data_specs.empty(), {}, {"temperature": 0.0}
-    )
+    base = runtime_op("A", "inference", "vllm", "m", {}, {}, {"temperature": 0.0})
     nodes = {
         n: replace(base, node_id=n, output_enforcement={"text_regex": r})
         for n, r in (("A", "a"), ("B", "a"), ("F", "F"))

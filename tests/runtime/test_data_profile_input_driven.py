@@ -16,6 +16,7 @@ from lumilake_server.data_specs import (
 from lumilake_server.runtime.data_profile_utils import _derive_s3_profile_for_graph
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _s3_node(
@@ -24,7 +25,7 @@ def _s3_node(
     template: str,
     params: list[RetrievalParam],
 ) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="data_retrieval",
         backend="data_retrieval",
@@ -36,7 +37,7 @@ def _s3_node(
 
 
 def _sql_node(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="data_retrieval",
         backend="data_retrieval",
@@ -70,7 +71,9 @@ class TestInputDrivenProfile:
         s3_node = _s3_node(
             "retrieve_by_tweet_id",
             template="eventx/impressions/by_tweet_id/{key}.json",
-            params=[RetrievalParam(label="key", node=input_op_id, path="data")],
+            params=[
+                RetrievalParam(label="key", node=input_op_id, path="data"),
+            ],
         )
         graph = RuntimeGraph(
             nodes={s3_node.node_id: s3_node},

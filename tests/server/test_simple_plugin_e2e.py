@@ -20,10 +20,9 @@ from lumilake_server.routes import trace as trace_routes
 from lumilake_server.runtime.optimizer import create_optimizer
 from lumilake_server.runtime.protocol import LumilakeResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 _DEFAULT_TOKENS = {
     token: principal.model_copy(deep=True)
@@ -342,21 +341,21 @@ async def test_sample_plugin_exercises_every_plugin_component(
     optimizer = create_optimizer("simple")
     graph = RuntimeGraph(
         nodes={
-            "node-a": RuntimeOp(
+            "node-a": runtime_op(
                 node_id="node-a",
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec=data_specs.empty(),
+                data_spec={},
                 model_spec={},
                 inference_spec={},
             ),
-            "node-b": RuntimeOp(
+            "node-b": runtime_op(
                 node_id="node-b",
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec=data_specs.empty(),
+                data_spec={},
                 model_spec={},
                 inference_spec={},
                 dependencies=("node-a",),

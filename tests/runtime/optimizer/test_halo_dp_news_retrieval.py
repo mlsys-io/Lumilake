@@ -17,73 +17,93 @@ and a mixed GPU/CPU worker pool.
 
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _news_retrieval_runtime_graph() -> RuntimeGraph:
     nodes = {
-        "sql_param_proposer": RuntimeOp(
+        "sql_param_proposer": runtime_op(
             node_id="sql_param_proposer",
             task_type="inference",
             backend="vllm",
             model="Qwen/Qwen2.5-1.5B-Instruct",
-            data_spec=data_specs.graph_template_spec(),
+            data_spec={
+                "type": "graph_template",
+                "template": {"name": "format", "options": {"format": {"messages": []}}},
+            },
             model_spec={},
             inference_spec={"max_tokens": 256},
         ),
         # Profiling-node wire shape: type is read by the data-profile cost
         # model, not by the DataRetrievalOp dispatcher.
-        "news_sql": RuntimeOp(
+        "news_sql": runtime_op(
             node_id="news_sql",
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=data_specs.retrieval_spec(
-                "sql", "SELECT id, title FROM demo.fact_news_metadata"
-            ),
+            data_spec={
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT id, title FROM demo.fact_news_metadata",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("sql_param_proposer",),
         ),
-        "news_s3": RuntimeOp(
+        "news_s3": runtime_op(
             node_id="news_s3",
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=data_specs.retrieval_spec(
-                "s3", "unstructured/news-html/{id}.html"
-            ),
+            data_spec={
+                "type": "lumid",
+                "mode": "s3",
+                "template": "unstructured/news-html/{id}.html",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("news_sql",),
         ),
-        "news_summary": RuntimeOp(
+        "news_summary": runtime_op(
             node_id="news_summary",
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=data_specs.dataframe_spec("summary"),
+            data_spec={
+                "type": "dataframe",
+                "columns": [],
+                "messages": [{"role": "user", "content": "summary"}],
+            },
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_s3"),
         ),
-        "news_summary_archive": RuntimeOp(
+        "news_summary_archive": runtime_op(
             node_id="news_summary_archive",
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=data_specs.retrieval_spec("s3", "archive/summaries/{id}.json"),
+            data_spec={
+                "type": "lumid",
+                "mode": "s3",
+                "template": "archive/summaries/{id}.json",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("news_summary",),
         ),
-        "analyze_news": RuntimeOp(
+        "analyze_news": runtime_op(
             node_id="analyze_news",
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=data_specs.graph_template_spec(),
+            data_spec={
+                "type": "graph_template",
+                "template": {
+                    "name": "aggregate",
+                    "options": {"format": {"messages": []}},
+                },
+            },
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_summary"),

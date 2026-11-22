@@ -1,29 +1,58 @@
-"""The typed ``data_spec`` a test's runtime op carries."""
+"""A runtime op for tests: its dict ``data_spec`` validates at the boundary."""
 
-from typing import Any, Literal
+from typing import Any
 
 from lumilake_server.data_specs import (
-    DataFrame,
     DataSpecModel,
     EmptyData,
     FormatConfig,
     GraphTemplate,
-    GraphTemplateData,
-    ListData,
-    Message,
-    PythonData,
-    PythonMode,
-    RetrievalData,
-    S3ProfileData,
-    SqlProfileData,
     TemplateOptions,
     parse_data_spec,
 )
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
-    """The model a runtime op of ``task_type`` carries for ``value``."""
-    return parse_data_spec(task_type, value)
+def _model(data_spec: dict[str, Any] | DataSpecModel, task_type: str) -> DataSpecModel:
+    """The model a dict spec validates into, or the model itself."""
+    if isinstance(data_spec, dict):
+        return parse_data_spec(task_type, data_spec)
+    return data_spec
+
+
+def runtime_op(
+    node_id: str,
+    task_type: str,
+    backend: str,
+    model: str,
+    data_spec: dict[str, Any] | DataSpecModel,
+    model_spec: dict[str, Any],
+    inference_spec: dict[str, Any],
+    api_spec: dict[str, Any] | None = None,
+    output_enforcement: dict[str, Any] | None = None,
+    dependencies: tuple[str, ...] = (),
+    output_spec: dict[str, Any] | None = None,
+    condition: dict[str, str] | None = None,
+    skip_when_all_inputs_empty: bool = False,
+    samples: bool = False,
+) -> RuntimeOp:
+    """A runtime op whose dict ``data_spec`` validates through the boundary."""
+    return RuntimeOp(
+        node_id=node_id,
+        task_type=task_type,
+        backend=backend,
+        model=model,
+        data_spec=_model(data_spec, task_type),
+        model_spec=model_spec,
+        inference_spec=inference_spec,
+        api_spec={} if api_spec is None else api_spec,
+        output_enforcement=output_enforcement,
+        dependencies=dependencies,
+        output_spec=output_spec,
+        condition=condition,
+        skip_when_all_inputs_empty=skip_when_all_inputs_empty,
+        samples=samples,
+    )
 
 
 def empty() -> EmptyData:
@@ -31,53 +60,15 @@ def empty() -> EmptyData:
     return EmptyData()
 
 
-def python_spec(mode: PythonMode | None = None) -> PythonData:
-    """A python step with the given mode and no plan."""
-    return PythonData(mode=mode)
-
-
-def retrieval_spec(
-    mode: Literal["sql", "s3", "agent"], template: str | None = None
-) -> RetrievalData:
-    """A lumid-data retrieval in the given mode."""
-    return RetrievalData(type="lumid", mode=mode, template=template)
-
-
-def list_spec(*items: Any) -> ListData:
-    """A list-fed task over literal items."""
-    return ListData(items=list(items))
-
-
-def dataframe_spec(*contents: str) -> DataFrame:
-    """A rowwise table with one user message per content."""
-    return DataFrame(
-        type="dataframe",
-        messages=[Message(role="user", content=c) for c in contents],
-    )
-
-
-def graph_template_spec(
-    template: GraphTemplate | None = None,
-) -> GraphTemplateData:
-    """A message-chain task over a graph template."""
-    return GraphTemplateData(
-        type="graph_template",
-        template=(
-            template
-            if template is not None
-            else GraphTemplate(
+def graph_template_spec():
+    """A message-chain task over an empty format template."""
+    return _model(
+        {
+            "type": "graph_template",
+            "template": GraphTemplate(
                 name="format",
                 options=TemplateOptions(format=FormatConfig()),
-            )
-        ),
+            ),
+        },
+        "inference",
     )
-
-
-def sql_profile_spec(template: str = "SELECT 1") -> SqlProfileData:
-    """A SQL data-profile task."""
-    return SqlProfileData(type="sql", template=template)
-
-
-def s3_profile_spec(template: str = "data.json") -> S3ProfileData:
-    """An S3 data-profile task."""
-    return S3ProfileData(type="s3", template=template)

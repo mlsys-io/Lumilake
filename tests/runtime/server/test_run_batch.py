@@ -24,10 +24,9 @@ from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import RuntimeExecutionError
 from lumilake_server.utils.job_storage import get_job_storage
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 @pytest.mark.asyncio
@@ -1203,21 +1202,21 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         lambda_id = f"{node_prefix}__{suffix}__lambda"
         api_id = f"{node_prefix}__{suffix}__api"
-        lambda_op = RuntimeOp(
+        lambda_op = runtime_op(
             node_id=lambda_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.python_spec("list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
-        api_op = RuntimeOp(
+        api_op = runtime_op(
             node_id=api_id,
             task_type="api",
             backend="api",
             model="",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1264,12 +1263,12 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         node_id = f"{node_prefix}__{suffix}"
-        op = RuntimeOp(
+        op = runtime_op(
             node_id=node_id,
             task_type="api",
             backend="api",
             model="",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
         )
@@ -1312,12 +1311,12 @@ def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> No
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         node_id = f"{node_prefix}__{suffix}"
-        op = RuntimeOp(
+        op = runtime_op(
             node_id=node_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.python_spec("list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1365,21 +1364,21 @@ def _install_list_lambda_downstream_build_and_schedule(
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         lambda_id = f"{node_prefix}__{suffix}__lambda"
         downstream_id = f"{node_prefix}__{suffix}__downstream"
-        lambda_op = RuntimeOp(
+        lambda_op = runtime_op(
             node_id=lambda_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.python_spec("list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
-        downstream_op = RuntimeOp(
+        downstream_op = runtime_op(
             node_id=downstream_id,
             task_type="api",
             backend="api",
             model="",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1431,21 +1430,21 @@ def _install_rowwise_python_downstream_build_and_schedule(
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         lambda_id = f"{node_prefix}__{suffix}__lambda"
         row_id = f"{node_prefix}__{suffix}__row"
-        lambda_op = RuntimeOp(
+        lambda_op = runtime_op(
             node_id=lambda_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.python_spec("list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
-        row_op = RuntimeOp(
+        row_op = runtime_op(
             node_id=row_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1661,12 +1660,12 @@ def _install_aligned_build_and_schedule(server: Any, output_name: str) -> None:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
         node_id = f"{node_prefix}__{suffix}"
-        op = RuntimeOp(
+        op = runtime_op(
             node_id=node_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec=data_specs.python_spec("aligned"),
+            data_spec={"mode": "aligned"},
             model_spec={},
             inference_spec={},
         )

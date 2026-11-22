@@ -2,6 +2,7 @@ import contextlib
 import json
 import struct
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -11,44 +12,40 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import (
-    Column,
-    FormatConfig,
-    GraphTemplate,
-    TemplateOptions,
-)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _simple_graph() -> RuntimeGraph:
     nodes = {
-        "n1": RuntimeOp(
+        "n1": runtime_op(
             node_id="n1",
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=data_specs.list_spec("a"),
+            data_spec={"type": "list", "items": ["a"]},
             model_spec={},
             inference_spec={"max_tokens": 16},
         ),
-        "n2": RuntimeOp(
+        "n2": runtime_op(
             node_id="n2",
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=data_specs.graph_template_spec(
-                GraphTemplate(
-                    name="format",
-                    columns=[Column(label="x", node="n1", path="items.output")],
-                    options=TemplateOptions(format=FormatConfig()),
-                )
-            ),
+            data_spec={
+                "type": "graph_template",
+                "template": {
+                    "name": "format",
+                    "columns": [{"label": "x", "node": "n1", "path": "items.output"}],
+                    "options": {
+                        "format": {"messages": [{"role": "user", "content": "{x}"}]}
+                    },
+                },
+            },
             model_spec={},
             inference_spec={"max_tokens": 16},
             dependencies=("n1",),
@@ -91,14 +88,23 @@ def test_halo_optimizer_requires_workers() -> None:
 
 
 def _retrieval_graph(*, task_type: str, backend: str) -> RuntimeGraph:
+    data_spec: dict[str, Any]
+    if task_type == "data_profiling":
+        data_spec = {"type": "sql", "template": "SELECT 1"}
+    elif task_type == "python":
+        data_spec = {"mode": "row"}
+    elif task_type == "data_retrieval":
+        data_spec = {"type": "lumid", "mode": "sql", "template": "SELECT 1"}
+    else:
+        data_spec = {"type": "list", "items": []}
     return RuntimeGraph(
         nodes={
-            "r1": RuntimeOp(
+            "r1": runtime_op(
                 node_id="r1",
                 task_type=task_type,
                 backend=backend,
                 model="data_retrieval",
-                data_spec=data_specs.sql_profile_spec("SELECT 1"),
+                data_spec=data_spec,
                 model_spec={},
                 inference_spec={},
             )
@@ -117,7 +123,7 @@ def test_halo_optimizer_allows_data_retrieval_cpu_nodes() -> None:
 
 def test_halo_optimizer_rejects_non_retrieval_cpu_nodes() -> None:
     optimizer = HaloOptimizer()
-    graph = _retrieval_graph(task_type="query", backend="data_retrieval")
+    graph = _retrieval_graph(task_type="inference", backend="data_retrieval")
     with pytest.raises(ValueError, match="only supports data_retrieval nodes on CPU"):
         optimizer._validate_supported_runtime_nodes(graph)
 
@@ -132,12 +138,18 @@ def test_halo_optimizer_rejects_data_profiling_nodes() -> None:
 def _api_graph() -> RuntimeGraph:
     return RuntimeGraph(
         nodes={
-            "a1": RuntimeOp(
+            "a1": runtime_op(
                 node_id="a1",
                 task_type="api",
                 backend="api",
                 model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec=data_specs.graph_template_spec(),
+                data_spec={
+                    "type": "graph_template",
+                    "template": {
+                        "name": "format",
+                        "options": {"format": {"messages": []}},
+                    },
+                },
                 model_spec={},
                 inference_spec={},
             )
@@ -168,12 +180,12 @@ def test_halo_optimizer_places_api_node_on_cpu_worker() -> None:
 def _python_graph() -> RuntimeGraph:
     return RuntimeGraph(
         nodes={
-            "p1": RuntimeOp(
+            "p1": runtime_op(
                 node_id="p1",
                 task_type="python",
                 backend="python",
                 model="",
-                data_spec=data_specs.python_spec(),
+                data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
                 model_spec={},
                 inference_spec={},
             )

@@ -8,18 +8,19 @@ edges to preserve ordering, but the returned list must only contain
 real node ids.
 """
 
+from lumilake_server.data_specs import RetrievalData
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _make_op(node_id: str, dependencies: tuple[str, ...] = ()) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="data_retrieval",
         backend="data_retrieval",
         model="data_retrieval",
-        data_spec=data_specs.s3_profile_spec("x"),
+        data_spec=RetrievalData(type="lumid", mode="s3", template="x"),
         model_spec={},
         inference_spec={},
         dependencies=dependencies,

@@ -22,12 +22,11 @@ from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import (
     _install_plugins_sync,
     _optimizer_subprocess_entry,
 )
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------
 # Minimal fake optimizer + provider
@@ -152,12 +151,12 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
     install → register → create_optimizer path rather than the subprocess
     transport layer.
     """
-    op = RuntimeOp(
+    op = runtime_op(
         node_id="n1",
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         dependencies=(),

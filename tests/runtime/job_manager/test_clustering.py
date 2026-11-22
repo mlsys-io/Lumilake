@@ -3,14 +3,14 @@ from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
     select_affinity_batch_ids,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _graph(workflow_id: str, *, model: str, system_prompt: str) -> RuntimeGraph:
     node_id = f"{workflow_id}_node"
     return RuntimeGraph(
         nodes={
-            node_id: RuntimeOp(
+            node_id: runtime_op(
                 node_id=node_id,
                 task_type="inference",
                 backend="vllm",

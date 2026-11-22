@@ -21,50 +21,50 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
     if kind == "gpu":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="inference",
             backend="vllm",
             model="llama-7b",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
         )
     if kind == "python":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="python",
             backend="python",
             model="python",
-            data_spec=data_specs.empty(),
+            data_spec={},
             model_spec={},
             inference_spec={},
         )
     if kind == "agent":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=data_specs.retrieval_spec("agent"),
+            data_spec={"type": "lumid", "mode": "agent"},
             model_spec={},
             inference_spec={},
         )
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         dependencies=dependencies,
         task_type="http",
         backend="http",
         model="http",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
     )

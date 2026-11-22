@@ -10,7 +10,7 @@ import pytest
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, Any]:
@@ -24,24 +24,24 @@ def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, A
 
 
 def _python_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="python",
         backend="python",
         model="",
-        data_spec=data_specs.python_spec(),
+        data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
         model_spec={},
         inference_spec={},
     )
 
 
 def _api_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         api_spec={"method": "POST", "url": "https://lum.id/llm/v1/chat/completions"},
@@ -49,12 +49,12 @@ def _api_op(node_id: str) -> RuntimeOp:
 
 
 def _inference_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec=data_specs.empty(),
+        data_spec={},
         model_spec={},
         inference_spec={},
     )

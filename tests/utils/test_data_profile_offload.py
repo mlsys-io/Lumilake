@@ -3,13 +3,12 @@ from typing import Any, cast
 import pytest
 
 from lumilake_server.data_profile_models import DataProfileCostEstimate
-from lumilake_server.data_specs import ListData, RetrievalParam
+from lumilake_server.data_specs import ListData, SqlProfileData
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import data_profile_offload
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 class _DummyGraph:
@@ -95,14 +94,15 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
         node_id = f"{node_prefix}__db_node"
         return RuntimeGraph(
             nodes={
-                node_id: RuntimeOp(
+                node_id: runtime_op(
                     node_id=node_id,
                     task_type="data_profiling",
                     backend="data_profiling",
                     model="data_profiling",
-                    data_spec=data_specs.sql_profile_spec(
-                        "select * from t where q = '{q}'"
-                    ),
+                    data_spec={
+                        "type": "sql",
+                        "template": "select * from t where q = '{q}'",
+                    },
                     model_spec={},
                     inference_spec={},
                 )
@@ -138,21 +138,21 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
 def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> None:
     target_graph = RuntimeGraph(
         nodes={
-            "target__db_node": RuntimeOp(
+            "target__db_node": runtime_op(
                 node_id="target__db_node",
                 task_type="data_profiling",
                 backend="data_profiling",
                 model="data_profiling",
-                data_spec=data_specs.sql_profile_spec(),
+                data_spec=SqlProfileData(type="sql", template="select 1"),
                 model_spec={},
                 inference_spec={},
             ),
-            "target__non_sql": RuntimeOp(
+            "target__non_sql": runtime_op(
                 node_id="target__non_sql",
                 task_type="inference",
                 backend="vllm",
                 model="m",
-                data_spec=data_specs.list_spec(),
+                data_spec=ListData(items=[]),
                 model_spec={},
                 inference_spec={},
             ),
@@ -195,11 +195,12 @@ def test_build_sample_data_profile_queries_keeps_slice_fixed_values() -> None:
             "and start_date='{start_date}' and end_date='{end_date}'"
         ),
         params=[
-            RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
-            RetrievalParam(label="start_date", data=ListData(items=["2025-01-01"])),
-            RetrievalParam(
-                label="end_date", data=ListData(items=["2025-03-31", "2025-06-30"])
-            ),
+            {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
+            {"label": "start_date", "data": {"type": "list", "items": ["2025-01-01"]}},
+            {
+                "label": "end_date",
+                "data": {"type": "list", "items": ["2025-03-31", "2025-06-30"]},
+            },
         ],
         constraints=[],
         num_samples=6,
@@ -220,7 +221,7 @@ def test_build_sample_data_profile_queries_raises_on_unresolved_placeholder() ->
         data_profile_offload._build_sample_data_profile_queries(
             template="select * from t where symbol='{symbol}' and dt='{date}'",
             params=[
-                RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
+                {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
             ],
             constraints=[],
             num_samples=1,

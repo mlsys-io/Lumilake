@@ -1,16 +1,17 @@
 from dataclasses import replace
 
+from lumilake_server.data_specs import ListData
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
+from tests.support.data_specs import runtime_op
 
 
 def _build_runtime_op(task_type: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id="n1",
         task_type=task_type,
         backend="transformers",
         model="test-model",
-        data_spec=data_specs.list_spec("hello"),
+        data_spec=ListData(items=["hello"]),
         model_spec={"source": {"identifier": "test-model"}},
         inference_spec={"max_tokens": 16},
     )
@@ -62,12 +63,12 @@ def test_empty_input_declaration_is_projected_only_when_set() -> None:
 
 
 def test_condition_node_is_added_to_dependsOn() -> None:
-    op = RuntimeOp(
+    op = runtime_op(
         node_id="map-gated",
         task_type="inference",
         backend="vllm",
         model="Qwen/Qwen3-32B",
-        data_spec=data_specs.list_spec("hello"),
+        data_spec=ListData(items=["hello"]),
         model_spec={"source": {"identifier": "Qwen/Qwen3-32B"}},
         inference_spec={"max_tokens": 1},
         dependencies=("some-upstream",),
@@ -89,12 +90,12 @@ def test_condition_node_is_added_to_dependsOn() -> None:
 
 
 def test_condition_node_already_in_dependencies_is_not_duplicated() -> None:
-    op = RuntimeOp(
+    op = runtime_op(
         node_id="map-gated",
         task_type="inference",
         backend="vllm",
         model="Qwen/Qwen3-32B",
-        data_spec=data_specs.list_spec("x"),
+        data_spec=ListData(items=["x"]),
         model_spec={"source": {"identifier": "Qwen/Qwen3-32B"}},
         inference_spec={"max_tokens": 1},
         dependencies=("classifier-op", "other-upstream"),
