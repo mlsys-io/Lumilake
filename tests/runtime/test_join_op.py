@@ -405,23 +405,42 @@ outputs: [{name: merged, ref: Merge}]
 """
 
 
+def _quoted(rows: list[Any]) -> str:
+    return "[" + ", ".join(f"'{json.dumps(row)}'" for row in rows) + "]"
+
+
+# Attach source rows that are not a join column: a per-unit part value.
+_EXTRA = """  - {id: Extra, op: DataOp, data: __EXTRA__}
+  - {id: Part, op: LambdaOp, mode: row, inputs: [Extra], fn_name: part,
+     code: "def part(row): return row['part']"}
+"""
+
+
 def _broadcast(
     tmp_path: Path,
     rows: list[Any] | None = None,
     sizes: list[Any] | None = None,
-    tags: list[str] | None = None,
+    tags: list[Any] | None = None,
     fields: tuple[str, ...] = ("row_key: [unit, rid]",),
-    attach: bool = True,
+    attach: str = "tag",
+    extra: list[Any] | None = None,
     name: str = "run",
 ) -> list[Any]:
-    """Run the broadcast join over one summary row per unit and one tag per row."""
-    quote = [f"'{json.dumps(row)}'" for row in rows or _UNITS]
-    summary = [f"'{json.dumps(row)}'" for row in sizes or _SIZES]
+    """Run the broadcast join over one summary row per unit, a tag per first-input
+    row, or a part column whose source rows are ``extra``."""
+    if attach == "part":
+        ops = _EXTRA.replace("__EXTRA__", _quoted(extra or []))
+        inputs, line = ", Extra, Part", "    attach: {part: Part}"
+    else:
+        ops = ""
+        inputs = ", Tag" if attach == "tag" else ""
+        line = "    attach: {tag: Tag}" if attach == "tag" else ""
     code = (
-        _BROADCAST_YAML.replace("__ROWS__", f"[{', '.join(quote)}]")
-        .replace("__SIZES__", f"[{', '.join(summary)}]")
-        .replace("__TAG_INPUT__", ", Tag" if attach else "")
-        .replace("__ATTACH__\n", "    attach: {tag: Tag}\n" if attach else "")
+        _BROADCAST_YAML.replace("__ROWS__", _quoted(rows or _UNITS))
+        .replace("__SIZES__", _quoted(sizes or _SIZES))
+        .replace("  - {id: State, op: DataOp", ops + "  - {id: State, op: DataOp")
+        .replace("__TAG_INPUT__", inputs)
+        .replace("__ATTACH__\n", line + "\n" if line else "")
         .replace("__FIELDS__\n", "".join(f"    {line}\n" for line in fields))
     )
     spec = parse_yaml_payload(code)["u"]
@@ -429,7 +448,12 @@ def _broadcast(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
     node = _join_of(runtime)
-    upstream = {2: _cells(*(tags or ["A", "B", "C"]))} if attach else {}
+    upstream: dict[int, list[dict[str, Any]]] = {}
+    if attach == "part":
+        _, value_index, *_ = node.data_spec.join.attach[0]
+        upstream[value_index] = _cells(*(tags or ["A", "B"]))
+    elif attach == "tag":
+        upstream[2] = _cells(*(tags or ["A", "B", "C"]))
     out = _run(tmp_path, node, upstream, name)
     return [item["output"] for item in out["items"]]
 
@@ -464,9 +488,14 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
 
 def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> None:
     """A marked further-input row marks every output row of its key and leaves
-    the other keys' rows as they were."""
+    the other keys' rows as they were, and a marked attach source row does too,
+    even when the value column covers the live rows only."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
+    sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
+    assert _broadcast(
+        tmp_path, attach="part", extra=sources, tags=["C"], name="part"
+    ) == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
 
 
 def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
@@ -477,4 +506,4 @@ def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     rows while the unit still takes the broadcast."""
     rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
     expected = [_MARK, _MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
-    assert _broadcast(tmp_path, rows=rows, attach=False, name="mark") == expected
+    assert _broadcast(tmp_path, rows=rows, attach="", name="mark") == expected
