@@ -491,21 +491,26 @@ def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> N
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
     sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
-    assert _broadcast(
-        tmp_path, attach="part", extra=sources, tags=["C"], name="part"
-    ) == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
+    assert _broadcast(tmp_path, attach="part", extra=sources, tags=["C"]) == [
+        _MARK,
+        _MARK,
+        {**_UNITS[2], "size": 1, "part": "C"},
+    ]
 
 
 def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     tmp_path: Path,
 ) -> None:
-    """A marked first-input row passes through as its marker whether the marker is
-    a field of it or the whole row; an attach over the first input reaches each
-    output row at its position, so such a row marks only itself while the other
-    rows of its unit still take the broadcast."""
+    """A marked first-input row passes through as its marker, whatever its marker
+    is; an attach over the first input reaches each output row at its position,
+    so such a row marks only itself while its unit still takes the broadcast."""
     rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
-    expected = [_MARK, _MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
-    assert _broadcast(tmp_path, rows=rows, attach="", name="mark") == expected
+    assert _broadcast(tmp_path, rows=rows, attach="", name="mark") == [
+        _MARK,
+        _MARK,
+        {**_UNITS[1], "size": 2},
+        {**_UNITS[2], "size": 1},
+    ]
     assert _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"]) == [
         _MARK,
         _MARK,
