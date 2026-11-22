@@ -96,45 +96,14 @@ def _item_index(item: Any, position: int) -> Any:
     return position
 
 
-def _item_rows(item: Any) -> list[Any]:
-    """The rows one retrieval item carries: its ``table``, as a column table
-    either bare or in its ``{"df": <json text>}`` envelope, with a table
-    written as text decoded."""
+def _item_rows(item: Any) -> list[dict[str, Any]]:
+    """The rows one retrieval item's ``table`` carries, in row order."""
+    from lumilake_server.runtime.lambda_task_helpers import (
+        serialized_table,
+        table_rows,
+    )
+
     if not isinstance(item, dict):
         return []
-    table = _decoded(item.get("table"))
-    if isinstance(table, dict) and set(table) == {"df"}:
-        table = _decoded(table["df"])
-    if isinstance(table, dict):
-        return _column_rows(table)
-    if isinstance(table, list):
-        return table
-    return []
-
-
-def _decoded(value: Any) -> Any:
-    """A JSON object or array written as text, as the value it holds; any
-    other value passes through."""
-    if not isinstance(value, str):
-        return value
-    try:
-        decoded = json.loads(value)
-    except ValueError:
-        return value
-    return decoded
-
-
-def _column_rows(table: dict[str, Any]) -> list[Any]:
-    """A column-major table, each column mapping a row index to its cell, as
-    one row per index in index order."""
-    rows: dict[str, dict[str, Any]] = {}
-    for name, column in table.items():
-        if not isinstance(column, dict):
-            return []
-        for index, cell in column.items():
-            rows.setdefault(index, {})[name] = cell
-    try:
-        indexes = sorted(rows, key=int)
-    except ValueError:
-        indexes = sorted(rows)
-    return [rows[index] for index in indexes]
+    table = serialized_table(item.get("table"))
+    return [] if table is None else table_rows(table)

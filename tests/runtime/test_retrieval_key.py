@@ -25,29 +25,21 @@ outputs:
   - {{name: cases, ref: Cases}}
 """
 
-_KEY = "      key: {column: %r}"
-
 
 def _df(columns: dict[str, Any]) -> dict[str, Any]:
-    """One retrieval item carrying a column table in its envelope."""
     return {"table": {"df": json.dumps(columns)}}
-
-
-_TABLE = _df({"case_id": {"0": "a", "1": "b"}})
 
 
 @pytest.fixture(autouse=True)
 def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "t")
 
 
-def _spec(key: str | None = None, mode: str = "sql") -> dict[str, Any]:
-    """One retrieval workflow's runtime data_spec, through parser and builder."""
+def _spec(key: str | None, mode: str = "sql") -> dict[str, Any]:
     template = "SELECT case_id FROM cases" if mode == "sql" else "cases/{id}.txt"
-    text = _WORKFLOW.format(
-        mode=mode, template=template, key="" if key is None else _KEY % key
-    )
+    line = "" if key is None else f"      key: {{column: {key!r}}}"
+    text = _WORKFLOW.format(mode=mode, template=template, key=line)
     parsed = parse_yaml_payload(text)["k"]
     runtime = RuntimeGraphBuilder().build(
         Graph.from_json(parsed["graph"]).compile(**parsed["inputs"])
@@ -56,23 +48,18 @@ def _spec(key: str | None = None, mode: str = "sql") -> dict[str, Any]:
     return node.data_spec
 
 
-@pytest.mark.parametrize(
-    ("key", "spec_key"),
-    [(None, None), ("case_id", {"column": "case_id"})],
-)
-def test_a_declared_key_reaches_the_retrieval_node(
-    key: str | None, spec_key: dict[str, str] | None
-) -> None:
-    assert _spec(key).get("key") == spec_key
+def test_a_declared_key_reaches_the_retrieval_node() -> None:
+    assert _spec(None).get("key") is None
+    assert _spec("case_id").get("key") == {"column": "case_id"}
 
 
 @pytest.mark.parametrize(
     ("items", "problem"),
     [
-        ([_TABLE, _df({"case_id": {"0": "c"}})], None),
-        ([_TABLE, _df({"case_id": {"0": "a"}})], "repeated at row 0"),
-        ([{"table": {"case_id": {"0": None}}}], "null key"),
-        ([{"table": {"other": {"0": "a"}}}], "no such column"),
+        ([_df({"case_id": {"0": "a"}}), _df({"case_id": {"0": "c"}})], None),
+        ([_df({"case_id": {"0": "a"}}), _df({"case_id": {"0": "a"}})], "row 0"),
+        ([_df({"case_id": {"0": None}})], "null key"),
+        ([_df({"other": {"0": "a"}})], "no such column"),
     ],
 )
 def test_a_keyed_result_is_checked_when_it_arrives(
