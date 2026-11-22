@@ -45,6 +45,7 @@ _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
 _BY = _JOIN["by"]
+_ROW_KEY = _JOIN.get("row_key")
 _ON_MISSING = _JOIN["on_missing"]
 
 
@@ -192,6 +193,8 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
 
 
 def main(inputs):
+    if _ROW_KEY is not None:
+        return _broadcast(inputs)
     indexes = _JOIN["inputs"]
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
@@ -251,4 +254,142 @@ def main(inputs):
         output = carried_marker((row,)) if key is None else marked.get(key, keyed[key])
         items.append({{"output": output}})
     return {{"items": items}}
+
+
+def _row_keys(rows, where):
+    """The first input's rows with their record keys. A row's record key is
+    unique in the input, which is how several rows may share one by key: a
+    duplicate fails the job, and a live row whose key cannot be read does too,
+    since a record's identity is never its position."""
+    keyed = []
+    seen = {{}}
+    for row in rows:
+        record = _record_of(row, where)
+        if record is None:
+            raise ValueError(
+                "%s: a row whose key cannot be read cannot be placed" % where
+            )
+        if record in seen:
+            raise ValueError("%s: duplicate row_key %s" % (where, record))
+        seen[record] = True
+        # A marked row whose key cannot be read keeps its own slot as a marker;
+        # a live row without a key fails the job, as it does without a row_key.
+        carried = carried_marker((row,))
+        key = _key_of(row, where) if carried is not None else _key(row, where)
+        keyed.append((record, key, row))
+    return keyed
+
+
+def _record_of(row, where):
+    """A row's record key: its row_key paths as one JSON value, or ``None``
+    when a path is missing, null or reaches a marker."""
+    values = [_value(row, path) for path in _ROW_KEY]
+    if any(value is None for value in values):
+        return None
+    key = values[0] if len(values) == 1 else values
+    return _encoded(key, where)
+
+
+def _first_keys(keyed):
+    """The by keys the first input carries."""
+    return {{key for _, key, _ in keyed}}
+
+
+def _broadcast(inputs):
+    """Join with a row_key: every first-input row keeps its own output row, and
+    every further input's row reaches each of them through its by key."""
+    indexes = _JOIN["inputs"]
+    columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
+    first = _where(_PLAN[indexes[0]])
+    rows = _rows(columns[0], first)
+    keyed = _row_keys(rows, first)
+    marked = {{}}
+    for record, _, row in keyed:
+        # A first-input row that carries a failed record passes through as its
+        # marker, and no further input fills it.
+        carried = carried_marker((row,))
+        if carried is not None:
+            marked[record] = carried
+    for index, column in zip(indexes[1:], columns[1:]):
+        where = _where(_PLAN[index])
+        more, more_marked = _keyed(_rows(column, where), where)
+        _required(_first_keys(keyed), more, where)
+        for position, (record, key, row) in enumerate(keyed):
+            if record in marked:
+                # A marked output row is its marker: no further input fills it.
+                continue
+            if key in more_marked:
+                marked[record] = more_marked[key]
+                continue
+            if key not in more:
+                # Only a row this input lacks a key for becomes a marker; under
+                # null_fill its fields are simply left out.
+                if _ON_MISSING == "fail_row":
+                    marked[record] = _failed("key %s is missing from %r" % (key, where))
+                continue
+            merged = row.copy()
+            _merge(merged, more[key], where)
+            # Every output row keeps its own fields: a further input's row is
+            # written onto that row's copy, never onto a row it shares with
+            # another output.
+            keyed[position] = (record, key, merged)
+    for name, value_index, source_index in _JOIN["attach"]:
+        where = "%s attach field %r" % (_NODE, name)
+        values = [
+            _decoded_cell(value)
+            for value in _column(_PLAN[value_index], inputs, _decoded_cell)
+        ]
+        more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
+        _attach_broadcast(keyed, marked, name, source_index, values, more, where)
+    items = []
+    for record, _, row in keyed:
+        items.append({{"output": marked.get(record, row)}})
+    return {{"items": items}}
+
+
+def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
+    """Merge one attach field's values onto every output row of their by key."""
+    live = []
+    source_marks = {{}}
+    for row in rows:
+        carried = carried_marker((row,))
+        if carried is None:
+            live.append(row)
+            continue
+        key = _key_of(row, where)
+        if key is not None and key not in source_marks:
+            source_marks[key] = carried
+    if len(values) == len(rows):
+        pairs = [
+            (value, key)
+            for value, key in zip(values, (_key_of(row, where) for row in rows))
+            if key is not None
+        ]
+    elif len(values) == len(live):
+        pairs = list(zip(values, (_key(row, where) for row in live)))
+    else:
+        raise ValueError(
+            "%s: %d values attached but %d rows from %r"
+            % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
+        )
+    by_value = {{key: value for value, key in pairs}}
+    _required(_first_keys(keyed), by_value, where)
+    for position, (record, key, row) in enumerate(keyed):
+        if record in marked:
+            continue
+        if key in source_marks:
+            marked[record] = source_marks[key]
+            continue
+        if key not in by_value:
+            if _ON_MISSING == "fail_row":
+                marked[record] = _failed("key %s is missing from %r" % (key, where))
+            continue
+        value = by_value[key]
+        carried = failure_of(value)
+        if carried is not None:
+            marked[record] = carried
+            continue
+        merged = row.copy()
+        _merged(merged, name, value, where)
+        keyed[position] = (record, key, merged)
 '''
