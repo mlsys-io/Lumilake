@@ -420,7 +420,8 @@ A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
 a helper used by several ops is written once; see
 [`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses). An op
 that no LLM op reads can use blocks freely; one an LLM op reads is evaluated
-inline, where a shared block has no scope, so the submit refuses it.
+inline, where the source must be the function alone, so a shared block is
+refused at submit.
 
 Where the function runs depends on what reads it:
 
@@ -449,16 +450,15 @@ Where the function runs depends on what reads it:
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
-  worker's namespace has no `import`, and it calls the first name the code
-  binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit. The
-  namespace also gives a module-level name no scope, so an op read here cannot
-  `uses:` a workflow function: the block is appended to the code but is never
-  visible to the inline function, so the submit refuses it. If a
-  runtime node (such as a data-retrieval op) also reads the same
-  `LambdaOp`, it is additionally compiled to its own standalone `python` task so
-  that node can reference its output; the LLM still inlines it, so the function
-  is evaluated once per reader.
+  worker's namespace has no `import` and gives a module-level name no scope, so
+  here the source must be the function alone, with only a module docstring
+  beside it: `fn_name` must be that one definition and nothing else may follow
+  it. Code that breaks either rule is rejected at submit. That one rule also
+  refuses a shared `uses:` block and a trailing helper or constant, whatever
+  the workflow format. If a runtime node (such as a data-retrieval op) also
+  reads the same `LambdaOp`, it is additionally compiled to its own standalone
+  `python` task so that node can reference its output; the LLM still inlines
+  it, so the function is evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
