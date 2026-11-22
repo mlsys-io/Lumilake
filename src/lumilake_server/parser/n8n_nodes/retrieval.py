@@ -5,7 +5,7 @@ plus the three retrieval translators.
 import re
 from typing import Any
 
-from lumilake_server.utils.retrieval_order import RetrievalSpec
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 from ..common import make_id as _make_id
 from . import references, shared
@@ -240,8 +240,8 @@ def _sql_data_spec(
     template: str,
     params: list[dict[str, Any]],
     notes: dict[str, Any],
+    node_name: str,
     table: str | None = None,
-    node_name: str = "",
 ) -> dict[str, Any]:
     """The retrieval spec for an n8n postgres node, carrying its ``rows``
     declaration when the node's notes set one."""
@@ -255,7 +255,7 @@ def _sql_data_spec(
         raw["table"] = table
     if notes.get("rows") is not None:
         raw["rows"] = notes["rows"]
-    where = f"n8n postgres node {node_name!r}"
+    where = f"n8n postgres node '{node_name}' data_spec"
     return RetrievalSpec.load(raw, where).model_dump(exclude_none=True)
 
 
@@ -296,9 +296,7 @@ def make_postgres(
             "_op": "DataRetrievalOp",
             "_max_iter": None,
             "_inputs": list(dict.fromkeys(extra_inputs + dep_inputs + main_inputs)),
-            "data_spec": _sql_data_spec(
-                sql_template, sql_params, notes, node_name=node_name
-            ),
+            "data_spec": _sql_data_spec(sql_template, sql_params, notes, node_name),
         }
         return [query_op], query_op["_id"]
 
@@ -349,7 +347,7 @@ def make_postgres(
             dict.fromkeys(extra_inputs + limit_inputs + dep_inputs + main_inputs)
         ),
         "data_spec": _sql_data_spec(
-            sql_template, sql_params, notes, full_table, node_name=node_name
+            sql_template, sql_params, notes, node_name, full_table
         ),
     }
     return [op], op["_id"]

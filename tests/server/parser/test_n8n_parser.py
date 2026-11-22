@@ -89,7 +89,7 @@ def test_parse_n8n_templates(template_path: Path, monkeypatch: pytest.MonkeyPatc
             "s3",
             "agent",
         }, f"op {op.id} has unknown mode {retrieval.mode!r}"
-        assert "connection_string" not in op.raw_data_spec
+        assert "connection_string" not in (op.data_spec.model_extra or {})
 
 
 def test_rowwise_agent_reference_uses_table_path() -> None:

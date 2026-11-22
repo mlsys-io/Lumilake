@@ -1,6 +1,7 @@
 """Focused tests for raw string-prompt LLM generation."""
 
 import textwrap
+from typing import Any
 
 import pytest
 
@@ -16,7 +17,13 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
 
 
 def test_completion_op_compiles_to_string_prompt_list_without_chat_template() -> None:
@@ -134,12 +141,14 @@ def test_completion_prompt_from_data_retrieval_is_rejected(
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE symbol = :symbol",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE symbol = :symbol",
+                "params": [{"name": "symbol", "node": stock.id}],
+            }
+        ),
         inputs=[stock],
     )
     completion = LLMCompletionOp(

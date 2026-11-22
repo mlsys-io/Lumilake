@@ -86,7 +86,7 @@ from lumilake_server.runtime.worker_capability import (
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_order import RetrievalParam
+from lumilake_server.utils.retrieval_spec import RetrievalParam
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
@@ -95,12 +95,21 @@ from lumilake_server.utils.utils import (
 )
 
 
-def _owner_input_ref(owner: RetrievalParam | dict[str, Any]) -> dict[str, Any] | None:
+def _owner_input_ref(
+    owner: RetrievalParam | dict[str, Any], label: str, group_context: str
+) -> InputRef | None:
     """The ``input_ref`` a rowwise column or retrieval param declares."""
-    input_ref = (
-        owner.input_ref if isinstance(owner, RetrievalParam) else owner.get("input_ref")
-    )
-    return input_ref if isinstance(input_ref, dict) else None
+    if isinstance(owner, RetrievalParam):
+        ref = owner.input_ref
+        return None if ref is None else {"key": ref.key, "path": ref.path}
+    input_ref = owner.get("input_ref")
+    if input_ref is None:
+        return None
+    key = input_ref.get("key")
+    path = input_ref.get("path")
+    if not isinstance(key, str) or not isinstance(path, (str, type(None))):
+        raise ValueError(f"Invalid input_ref for '{label}' in {group_context}")
+    return {"key": key, "path": path}
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -1850,16 +1859,13 @@ class LumilakeServer:
         def _rewrite_target_key(
             label: str, owner: RetrievalParam | dict[str, Any]
         ) -> str | None:
-            input_ref = _owner_input_ref(owner)
+            input_ref = _owner_input_ref(owner, label, group_context)
             if input_ref is not None:
-                key = input_ref.get("key")
-                if not isinstance(key, str):
-                    raise ValueError(
-                        f"Invalid input_ref key for '{label}' in {group_context}"
-                    )
                 # An explicit input_ref pins the column to that input; a
                 # non-varying key must not fall through to label matching.
-                return key if key in varying_input_keys else None
+                return (
+                    input_ref["key"] if input_ref["key"] in varying_input_keys else None
+                )
             if label in varying_input_keys:
                 return label
             return inferred_aliases.get(label)
@@ -1867,7 +1873,7 @@ class LumilakeServer:
         for label, data, owner in cls._iter_input_bound_list_specs(graph):
             if label in varying_input_keys:
                 continue
-            if _owner_input_ref(owner) is not None:
+            if _owner_input_ref(owner, label, group_context) is not None:
                 continue
             items = data["items"]
             if not isinstance(items, list):
@@ -1889,21 +1895,12 @@ class LumilakeServer:
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            input_ref = _owner_input_ref(owner)
+            input_ref = _owner_input_ref(owner, label, group_context)
             if input_ref is not None:
-                ref_key = input_ref.get("key")
-                ref_path = input_ref.get("path")
-                if not isinstance(ref_key, str) or not isinstance(
-                    ref_path, (str, type(None))
-                ):
-                    raise ValueError(
-                        f"Invalid input_ref for '{label}' in {group_context}"
-                    )
-                ref: InputRef = {"key": ref_key, "path": ref_path}
                 projected = project_input_values(
                     replacement,
-                    ref["path"],
-                    ref["key"],
+                    input_ref["path"],
+                    input_ref["key"],
                 )
                 data["items"] = list(projected)
                 if len(replacement) > 1:

@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from typing import Any
 
-from lumilake_server.utils.retrieval_order import RetrievalSpec
+from lumilake_server.utils.retrieval_spec import RetrievalParam, RetrievalSpec
 
 from .common import EmitContext
 
@@ -30,16 +30,20 @@ def _resolve_param_nodes(
     spec: RetrievalSpec, entry_id: str, user_id_to_internal: Mapping[str, str]
 ) -> dict[str, Any]:
     """Point each param's user-facing node id at its internal op id."""
+    params: list[RetrievalParam] = []
     for i, param in enumerate(spec.params):
         if param.node is None:
+            params.append(param)
             continue
         if param.node not in user_id_to_internal:
             raise ValueError(
                 f"DataRetrievalOp '{entry_id}' data_spec.params[{i}].node "
                 f"references unknown input/op id '{param.node}'"
             )
-        param.node = user_id_to_internal[param.node]
-    return spec.model_dump(exclude_none=True)
+        params.append(
+            param.model_copy(update={"node": user_id_to_internal[param.node]})
+        )
+    return spec.model_copy(update={"params": params}).model_dump(exclude_none=True)
 
 
 def emit_message_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:

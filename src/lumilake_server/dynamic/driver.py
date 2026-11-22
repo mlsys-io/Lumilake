@@ -33,7 +33,7 @@ from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
-from lumilake_server.utils.retrieval_order import RetrievalSpec
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
 

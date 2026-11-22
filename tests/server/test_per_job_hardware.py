@@ -38,6 +38,12 @@ from lumilake_server.runtime.runtime_manager import (
     _resolve_gpu_memory,
     _resolve_memory,
 )
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
+
 
 # ---------------------------------------------------------------------------
 # HardwareRequirements validation
@@ -242,12 +248,14 @@ def _cpu_only_compiled() -> Any:
     """CompiledGraph whose only op is a CPU-only DataRetrievalOp."""
     symbol = input_placeholder("Symbol")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE symbol = :symbol",
-            "params": [{"name": "symbol", "node": symbol.id}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE symbol = :symbol",
+                "params": [{"name": "symbol", "node": symbol.id}],
+            }
+        ),
         inputs=[symbol],
     )
     output = as_output("result", retrieval)

@@ -8,6 +8,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +56,13 @@ def test_the_rule_names_the_library_entry() -> None:
     spec = {"type": "lumid", "mode": "sql", "template": "SELECT 1"}
     with pytest.raises(DriverProtocolError, match="peers.*top-level ORDER BY"):
         validate_library({"peers": {"op": "DataRetrievalOp", "data_spec": spec}})
+
+
+def test_a_problem_names_the_field_and_reads_plainly() -> None:
+    with pytest.raises(ValueError, match="where: must be a mapping"):
+        RetrievalSpec.load(3, "where")
+    with pytest.raises(ValueError, match="where: type: Field required"):
+        RetrievalSpec.load({"mode": "sql"}, "where")
 
 
 def test_rows_one_checks_its_bound() -> None:

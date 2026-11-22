@@ -29,10 +29,10 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 
 `DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or `agent` mode. Item position is item identity downstream, so a retrieval must define the order its rows come back in:
 
-- A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` for a lookup that returns at most one row per parameter row. Submit rejects a query with neither, naming the op; an `ORDER BY` inside a subquery, a CTE or an `;`-separated part before the last does not count.
-- The `ORDER BY` must break ties on a column no two returned rows share, such as the primary key. Submit cannot check that, so it is the author's.
+- A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` when a lookup returns at most one row per parameter row. Submit refuses a query with neither, naming the op; an `ORDER BY` inside a subquery, a CTE or an `;`-separated part before the last does not count.
+- The `ORDER BY` breaks ties on a column no two returned rows share, such as the primary key. Submit cannot check that, so it is the author's.
 - `rows: one` is checked at run time: a parameter row that returns more than one row fails the job. An n8n Postgres node declares it as `"rows": "one"` in its `notes`.
-- An `agent` retrieval replays SQL it writes at run time, so its order is not checked. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
+- An `agent` retrieval replays SQL it writes at run time, so submit does not read its order. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
 
 ```yaml
 ops:

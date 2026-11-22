@@ -34,6 +34,15 @@ _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 _CHECK_ROW_ORDER = "check_row_order"
 
 
+class InputRefSpec(BaseModel):
+    """The input key and ref path a projected literal list came from."""
+
+    model_config = ConfigDict(extra="allow")
+
+    key: StrictStr
+    path: StrictStr | None = None
+
+
 class RetrievalParam(BaseModel):
     """One template slot: a literal ``data`` list or an upstream ``node``."""
 
@@ -43,7 +52,7 @@ class RetrievalParam(BaseModel):
     node: StrictStr | None = None
     path: StrictStr | None = None
     data: dict[StrictStr, Any] | None = None
-    input_ref: dict[StrictStr, Any] | None = None
+    input_ref: InputRefSpec | None = None
 
 
 class RetrievalSpec(BaseModel):
@@ -51,7 +60,7 @@ class RetrievalSpec(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    type: Literal["lumid"] = "lumid"
+    type: Literal["lumid"]
     mode: Literal["sql", "s3", "agent"]
     rows: Literal["one"] | None = None
     template: StrictStr | None = None
@@ -111,7 +120,10 @@ def problem_text(exc: ValidationError) -> str:
     """The first problem of a failed validation, prefixed with its field."""
     problem = exc.errors()[0]
     field = ".".join(str(part) for part in problem["loc"])
-    message = problem["msg"].removeprefix("Value error, ")
+    if problem["type"] in {"model_type", "dict_type"}:
+        message = "must be a mapping"
+    else:
+        message = problem["msg"].removeprefix("Value error, ")
     return f"{field}: {message}" if field else message
 
 

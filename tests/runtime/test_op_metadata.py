@@ -1,5 +1,7 @@
 """The metadata an op declares matches the nodes its lowering emits."""
 
+from typing import Any
+
 import pytest
 
 from lumilake import envs
@@ -15,7 +17,14 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
+
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -67,13 +76,26 @@ def test_chat_shape_decides_how_its_consumer_reads_it(
 @pytest.mark.parametrize(
     ("data_spec", "profilable"),
     [
-        ({"type": "lumid", "mode": "sql", "template": "select a from t"}, True),
-        ({"type": "lumid", "mode": "s3", "template": "s3://b/{k}"}, True),
-        ({"type": "lumid", "mode": "agent", "description": "Find a price."}, False),
+        (
+            _retrieval_spec(
+                {"type": "lumid", "mode": "sql", "template": "select a from t"}
+            ),
+            True,
+        ),
+        (
+            _retrieval_spec({"type": "lumid", "mode": "s3", "template": "s3://b/{k}"}),
+            True,
+        ),
+        (
+            _retrieval_spec(
+                {"type": "lumid", "mode": "agent", "description": "Find a price."}
+            ),
+            False,
+        ),
     ],
 )
 def test_profilable_matches_whether_profile_mode_profiles_the_op(
-    data_spec: dict, profilable: bool
+    data_spec: RetrievalSpec, profilable: bool
 ) -> None:
     op = DataRetrievalOp(data_spec=data_spec)
 

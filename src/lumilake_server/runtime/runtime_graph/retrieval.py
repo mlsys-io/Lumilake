@@ -30,7 +30,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
-from lumilake_server.utils.retrieval_order import (
+from lumilake_server.utils.retrieval_spec import (
     ROWS_KEY,
     ROWS_ONE,
     RetrievalParam,
@@ -177,6 +177,7 @@ class _RetrievalBuilder(_LLMBuilder):
         resolved_params: list[Any] = []
         param_row_counts: dict[str, int] = {}
         for param in params:
+            resolved = param
             if param.node is not None:
                 upstream = self._resolve_param_upstream(
                     param.node, graph_dict, input_ops_by_id
@@ -229,17 +230,21 @@ class _RetrievalBuilder(_LLMBuilder):
                             )
                         param_row_counts[str(param.label)] = row_count
                 if isinstance(upstream, LambdaOp):
-                    param.path = self._op_output(upstream).read(
-                        param.path or "",
-                        (
-                            f"DataRetrievalOp '{op_id}' template param "
-                            f"{param.label!r}"
-                        ),
+                    resolved = param.model_copy(
+                        update={
+                            "path": self._op_output(upstream).read(
+                                param.path or "",
+                                (
+                                    f"DataRetrievalOp '{op_id}' template param "
+                                    f"{param.label!r}"
+                                ),
+                            )
+                        }
                     )
                 if param.node not in seen:
                     seen.add(param.node)
                     dependencies.append(param.node)
-            resolved_params.append(param.model_dump(exclude_none=True))
+            resolved_params.append(resolved.model_dump(exclude_none=True))
 
         if len(set(param_row_counts.values())) > 1:
             raise ValueError(

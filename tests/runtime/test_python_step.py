@@ -27,7 +27,14 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
+
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -179,12 +186,14 @@ def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE q = :q",
-            "params": [{"label": "q", "node": terms.id, "path": "items.output"}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE q = :q",
+                "params": [{"label": "q", "node": terms.id, "path": "items.output"}],
+            }
+        ),
         inputs=[terms],
     )
     llm = LLMChatOp(
@@ -209,11 +218,13 @@ def test_lambda_named_only_by_retrieval_dependency_materializes() -> None:
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT 1",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT 1",
+            }
+        ),
         inputs=[terms],
     )
     llm = LLMChatOp(
@@ -1327,14 +1338,16 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE q = :q",
-            "params": [
-                {"label": "whole", "node": terms.id, "path": "items.output"},
-            ],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE q = :q",
+                "params": [
+                    {"label": "whole", "node": terms.id, "path": "items.output"},
+                ],
+            }
+        ),
         inputs=[terms],
     )
     llm = LLMChatOp(

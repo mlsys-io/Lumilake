@@ -36,7 +36,14 @@ from lumilake_server.runtime.runtime_graph import (
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
+
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -214,12 +221,14 @@ def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
     as a dependency."""
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE symbol = :symbol",
-            "params": [{"name": "symbol", "node": stock.id}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE symbol = :symbol",
+                "params": [{"name": "symbol", "node": stock.id}],
+            }
+        ),
         inputs=[stock],
     )
     llm = LLMChatOp(
@@ -1006,12 +1015,14 @@ def test_retrieval_param_referencing_single_row_node_builds() -> None:
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE x = :p",
-            "params": [{"name": "p", "node": single.id, "path": "items.output"}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE x = :p",
+                "params": [{"name": "p", "node": single.id, "path": "items.output"}],
+            }
+        ),
         inputs=[single],
     )
     output = as_output("result", retrieval)
@@ -1730,12 +1741,14 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
         rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
     )
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE x = :p",
-            "params": [{"name": "p", "node": local_rw.id, "path": "items.output"}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE x = :p",
+                "params": [{"name": "p", "node": local_rw.id, "path": "items.output"}],
+            }
+        ),
         inputs=[local_rw],
     )
     output = as_output("result", retrieval)
@@ -1751,12 +1764,16 @@ def _retrieval_with_params(upstream: LLMChatOp, stock: Any) -> DataRetrievalOp:
         {"label": "start_date", "node": upstream.id, "path": "items.output"},
     ]
     return DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE s = '{symbol}' AND d >= '{start_date}'",
-            "params": params,
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": (
+                    "SELECT * FROM t WHERE s = '{symbol}' AND d >= '{start_date}'"
+                ),
+                "params": params,
+            }
+        ),
         inputs=[stock, upstream],
     )
 
@@ -1829,12 +1846,14 @@ def test_retrieval_param_feeding_multi_row_embedding_fails_closed() -> None:
         config=GenerationConfig(model="bge-m3", api=ApiConfig()),
     )
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT * FROM t WHERE x = :p",
-            "params": [{"name": "p", "node": emb.id, "path": "items.output"}],
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT * FROM t WHERE x = :p",
+                "params": [{"name": "p", "node": emb.id, "path": "items.output"}],
+            }
+        ),
         inputs=[emb],
     )
     output = as_output("result", retrieval)

@@ -57,10 +57,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_order import (
-    ROWS_ONE,
-    multi_row_item_indexes,
-)
+from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]

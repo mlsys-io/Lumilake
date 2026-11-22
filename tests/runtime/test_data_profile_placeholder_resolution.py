@@ -24,8 +24,12 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
-from lumilake_server.utils.retrieval_order import RetrievalParam
+from lumilake_server.utils.retrieval_spec import RetrievalParam, RetrievalSpec
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
 
 
 def _build_profile_node(compiled: Any, op_id: str) -> Any:
@@ -43,21 +47,23 @@ class TestStructuralOutputTypeDefault:
             structural_outputs=[{"name": "code", "type": "string"}],
         )
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": (
-                    "SELECT * FROM t WHERE symbol='{symbol}' " "AND code='{code}'"
-                ),
-                "params": [
-                    {"label": "symbol", "node": stock.id},
-                    {
-                        "label": "code",
-                        "node": planner.id,
-                        "path": "items.output.code",
-                    },
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": (
+                        "SELECT * FROM t WHERE symbol='{symbol}' " "AND code='{code}'"
+                    ),
+                    "params": [
+                        {"label": "symbol", "node": stock.id},
+                        {
+                            "label": "code",
+                            "node": planner.id,
+                            "path": "items.output.code",
+                        },
+                    ],
+                }
+            ),
             inputs=[stock, planner],
         )
         report = LLMChatOp(
@@ -83,18 +89,20 @@ class TestStructuralOutputTypeDefault:
             structural_outputs=[{"name": "n", "type": "int"}],
         )
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE n={n}",
-                "params": [
-                    {
-                        "label": "n",
-                        "node": planner.id,
-                        "path": "items.output.n",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE n={n}",
+                    "params": [
+                        {
+                            "label": "n",
+                            "node": planner.id,
+                            "path": "items.output.n",
+                        }
+                    ],
+                }
+            ),
             inputs=[stock, planner],
         )
         report = LLMChatOp(
@@ -126,18 +134,20 @@ class TestStructuralOutputTypeDefault:
             ],
         )
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE side='{side}'",
-                "params": [
-                    {
-                        "label": "side",
-                        "node": planner.id,
-                        "path": "items.output.side",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE side='{side}'",
+                    "params": [
+                        {
+                            "label": "side",
+                            "node": planner.id,
+                            "path": "items.output.side",
+                        }
+                    ],
+                }
+            ),
             inputs=[stock, planner],
         )
         report = LLMChatOp(
@@ -154,28 +164,32 @@ class TestSampleValueShortCircuit:
     def test_upstream_data_retrieval_sample_value_is_used_directly(self) -> None:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-                "sample_value": "K-123",
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                    "sample_value": "K-123",
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(
@@ -190,28 +204,32 @@ class TestSampleValueShortCircuit:
     def test_sample_value_projects_by_path_when_record_shaped(self) -> None:
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key, label FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-                "sample_value": {"key": "K-7", "label": "alpha"},
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key, label FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                    "sample_value": {"key": "K-7", "label": "alpha"},
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(
@@ -242,27 +260,31 @@ class TestLiveSqlSampler:
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(
@@ -291,27 +313,31 @@ class TestLiveSqlSampler:
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(
@@ -328,27 +354,31 @@ class TestDefaultDenyLiveSampling:
         """Return (stock, upstream, downstream) chain with no sample_value."""
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         return stock, upstream, downstream
@@ -404,28 +434,32 @@ class TestDefaultDenyLiveSampling:
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-                "sample_value": "static-key",
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                    "sample_value": "static-key",
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(
@@ -445,32 +479,42 @@ class TestRecursiveResolverAndCycleGuard:
     def test_two_hop_recursion_resolves_via_chained_sample_values(self) -> None:
         stock = input_placeholder("Stock")
         hop1 = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT a FROM t1 WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-                "sample_value": "hop1-a",
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT a FROM t1 WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                    "sample_value": "hop1-a",
+                }
+            ),
             inputs=[stock],
         )
         hop2 = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT b FROM t2 WHERE a='{a}'",
-                "params": [{"label": "a", "node": hop1.id, "path": "items.table.a"}],
-                "sample_value": "hop2-b",
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT b FROM t2 WHERE a='{a}'",
+                    "params": [
+                        {"label": "a", "node": hop1.id, "path": "items.table.a"}
+                    ],
+                    "sample_value": "hop2-b",
+                }
+            ),
             inputs=[hop1],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t3 WHERE b='{b}'",
-                "params": [{"label": "b", "node": hop2.id, "path": "items.table.b"}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t3 WHERE b='{b}'",
+                    "params": [
+                        {"label": "b", "node": hop2.id, "path": "items.table.b"}
+                    ],
+                }
+            ),
             inputs=[hop2],
         )
         llm = LLMChatOp(
@@ -492,21 +536,27 @@ class TestRecursiveResolverAndCycleGuard:
         # is intentionally blocked at graph compile time.
         stock = input_placeholder("Stock")
         op_a = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT x FROM ta WHERE k='{k}'",
-                "params": [{"label": "k", "node": "OP_B", "path": "items.table.x"}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT x FROM ta WHERE k='{k}'",
+                    "params": [{"label": "k", "node": "OP_B", "path": "items.table.x"}],
+                }
+            ),
             inputs=[stock],
         )
         op_b = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT x FROM tb WHERE k='{k}'",
-                "params": [{"label": "k", "node": op_a.id, "path": "items.table.x"}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT x FROM tb WHERE k='{k}'",
+                    "params": [
+                        {"label": "k", "node": op_a.id, "path": "items.table.x"}
+                    ],
+                }
+            ),
             inputs=[stock],
         )
         graph_dict: dict[str, Any] = {
@@ -537,12 +587,14 @@ class TestUnsupportedUpstreamRejection:
         stock = input_placeholder("Stock")
         fmt = FormatOp("prefix-{s}", s=stock)
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE k='{k}'",
-                "params": [{"label": "k", "node": fmt.id, "path": "items.output"}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE k='{k}'",
+                    "params": [{"label": "k", "node": fmt.id, "path": "items.output"}],
+                }
+            ),
             inputs=[fmt],
         )
         llm = LLMChatOp(
@@ -561,18 +613,20 @@ class TestUnsupportedUpstreamRejection:
 class TestLambdaOpUpstreamSampleValue:
     def _build(self, lambda_op: LambdaOp, path: str | None = None) -> Any:
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE k='{k}'",
-                "params": [
-                    (
-                        {"label": "k", "node": lambda_op.id, "path": path}
-                        if path
-                        else {"label": "k", "node": lambda_op.id}
-                    )
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE k='{k}'",
+                    "params": [
+                        (
+                            {"label": "k", "node": lambda_op.id, "path": path}
+                            if path
+                            else {"label": "k", "node": lambda_op.id}
+                        )
+                    ],
+                }
+            ),
             inputs=[lambda_op],
         )
         llm = LLMChatOp(
@@ -741,18 +795,20 @@ class TestStructuralOutputsMissingOrFieldAbsent:
             config=GenerationConfig(model="x"),
         )
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE code='{code}'",
-                "params": [
-                    {
-                        "label": "code",
-                        "node": planner.id,
-                        "path": "items.output.code",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE code='{code}'",
+                    "params": [
+                        {
+                            "label": "code",
+                            "node": planner.id,
+                            "path": "items.output.code",
+                        }
+                    ],
+                }
+            ),
             inputs=[stock, planner],
         )
         report = LLMChatOp(
@@ -777,18 +833,20 @@ class TestStructuralOutputsMissingOrFieldAbsent:
             structural_outputs=[{"name": "foo", "type": "string"}],
         )
         retrieval = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE code='{code}'",
-                "params": [
-                    {
-                        "label": "code",
-                        "node": planner.id,
-                        "path": "items.output.code",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM t WHERE code='{code}'",
+                    "params": [
+                        {
+                            "label": "code",
+                            "node": planner.id,
+                            "path": "items.output.code",
+                        }
+                    ],
+                }
+            ),
             inputs=[stock, planner],
         )
         report = LLMChatOp(
@@ -837,27 +895,31 @@ class TestSqlSamplerTimeouts:
 
         stock = input_placeholder("Stock")
         upstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT key FROM lookup WHERE s='{s}'",
-                "params": [{"label": "s", "node": stock.id}],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT key FROM lookup WHERE s='{s}'",
+                    "params": [{"label": "s", "node": stock.id}],
+                }
+            ),
             inputs=[stock],
         )
         downstream = DataRetrievalOp(
-            data_spec={
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM facts WHERE key='{key}'",
-                "params": [
-                    {
-                        "label": "key",
-                        "node": upstream.id,
-                        "path": "items.table.key",
-                    }
-                ],
-            },
+            data_spec=_retrieval_spec(
+                {
+                    "type": "lumid",
+                    "mode": "sql",
+                    "template": "SELECT * FROM facts WHERE key='{key}'",
+                    "params": [
+                        {
+                            "label": "key",
+                            "node": upstream.id,
+                            "path": "items.table.key",
+                        }
+                    ],
+                }
+            ),
             inputs=[upstream],
         )
         llm = LLMChatOp(

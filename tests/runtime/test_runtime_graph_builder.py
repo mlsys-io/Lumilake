@@ -29,7 +29,14 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from tests.support.data_specs import wire
+
+
+def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
+    return RetrievalSpec.model_validate(data)
+
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -41,26 +48,20 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
 
 
-def _sql_spec(template: str, params: list) -> dict:
-    return {
-        "type": "lumid",
-        "mode": "sql",
-        "template": template,
-        "params": params,
-    }
+def _sql_spec(template: str, params: list) -> RetrievalSpec:
+    return _retrieval_spec(
+        {"type": "lumid", "mode": "sql", "template": template, "params": params}
+    )
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in items[0]]
 
 
-def _s3_spec(template: str, params: list) -> dict:
-    return {
-        "type": "lumid",
-        "mode": "s3",
-        "template": template,
-        "params": params,
-    }
+def _s3_spec(template: str, params: list) -> RetrievalSpec:
+    return _retrieval_spec(
+        {"type": "lumid", "mode": "s3", "template": template, "params": params}
+    )
 
 
 def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
@@ -96,11 +97,13 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
 def test_agent_retrieval_structural_column_uses_table_path() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "agent",
+                "description": "Find the latest price for the symbol.",
+            }
+        ),
         inputs=[stock],
     )
     llm = LLMChatOp(
@@ -1517,11 +1520,13 @@ def test_image_gen_user_extras_override_defaults() -> None:
 def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "agent",
+                "description": "Find the latest price for the symbol.",
+            }
+        ),
         inputs=[stock],
     )
     emb = EmbeddingOp(content=retrieval, config=GenerationConfig(model="bge-small"))
@@ -1538,11 +1543,13 @@ def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
 def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "agent",
+                "description": "Find the latest price for the symbol.",
+            }
+        ),
         inputs=[stock],
     )
     img = ImageGenerationOp(
@@ -1589,11 +1596,13 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "agent",
+                "description": "Find the latest price for the symbol.",
+            }
+        ),
         inputs=[stock],
     )
     output = as_output("result", retrieval)
@@ -1607,11 +1616,13 @@ def test_agent_retrieval_as_final_output_uses_table_path() -> None:
 def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
     stock = input_placeholder("Stock")
     retrieval = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the latest price for the symbol.",
-        },
+        data_spec=_retrieval_spec(
+            {
+                "type": "lumid",
+                "mode": "agent",
+                "description": "Find the latest price for the symbol.",
+            }
+        ),
         inputs=[stock],
     )
     vision = LLMVisionOp(
