@@ -52,11 +52,13 @@ those rows come back in:
   the `ORDER BY` rule does not apply, and the order inside it is whatever
   the query gives. Nothing fixes a position inside that value, so submit
   refuses a node path that drills a numeric index under the result field,
-  naming the consumer, the op and the path. User code in a `LambdaOp` that
-  indexes the table itself is not checked, and must not treat a position
-  as an identity either. An empty result is one record holding an empty
-  table, not a failure. An n8n Postgres node declares it with
-  `"rows": "table"` in its `notes`.
+  naming the consumer, the op and the path. A column whose name is all
+  digits reads as a row position under that check, so rename it in the
+  query (`AS y2024`). User code in a `LambdaOp` that indexes the table
+  itself is not checked, and must not treat a position as an identity
+  either. An empty result is one record holding an empty table, not a
+  failure. An n8n Postgres node declares it with `"rows": "table"` in its
+  `notes`.
 - An `agent` retrieval replays SQL it writes at run time, so its order is
   not visible at submit and is not checked.
 - A library template entry (`library:` in a dynamic workflow) is checked at
