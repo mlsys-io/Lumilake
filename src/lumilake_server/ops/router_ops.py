@@ -164,7 +164,7 @@ class RouterOp:
             if not (
                 isinstance(branch, str)
                 and isinstance(match, str)
-                and (value is None if match == "empty" else isinstance(value, str))
+                and (match == "empty" or isinstance(value, str))
             ):
                 raise ValueError(
                     f"RouterOp {router_id!r} rules require string branch, match "
