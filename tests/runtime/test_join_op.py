@@ -291,6 +291,7 @@ _ALL = [{"output": list(_ROWS)}]
 _LIVE = [{"output": [_ROWS[0], _ROWS[2]]}]
 _GAPPED = [{"output": [_ROWS[0], _MARK, _ROWS[2]]}]
 _GAPPED_VALUES = [{"output": v, "value": v} for v in ("hi", _MARK, "bye")]
+_COMPOSITE = _merge("State, Route.diagnose", by="[meta.unit, meta.kind]")
 _MERGED = {**_ROWS[1], "part": 1}
 # A row Lambda over the diagnose branch, so its values cover only that branch's
 # key: the plan reads State, Route.diagnose, Reply, Route.diagnose.
@@ -318,6 +319,36 @@ _PART_VALUES = [{"output": 1, "value": 1}]
         ),
         # One whose key cannot be read cannot be placed.
         (_DIAG, {0: _ALL, 1: [{"output": [_MARK]}]}, "cannot be placed"),
+        # A composite dotted key keeps a marked row whose paths read, and marks
+        # that row's slot instead of taking another one.
+        (
+            _COMPOSITE,
+            {
+                0: [{"output": [dict(_ROWS[1], meta={"unit": "u1", "kind": "x"})]}],
+                1: [{"output": [{"meta": {"unit": "u1", "kind": "x"}, "s": _MARK}]}],
+            },
+            [_MARK],
+        ),
+        # A marked further-input row one of whose key paths cannot be read has
+        # no key, so it cannot be placed.
+        (
+            _COMPOSITE,
+            {
+                0: [{"output": [dict(_ROWS[1], meta={"unit": "u1", "kind": "x"})]}],
+                1: [{"output": [{"meta": {"unit": "u1", "kind": _MARK}}]}],
+            },
+            "cannot be placed",
+        ),
+        # A marked row whose composite key leaves out a field the first input
+        # carries has no key either.
+        (
+            _COMPOSITE,
+            {
+                0: [{"output": [dict(_ROWS[1], meta={"unit": "u1", "kind": "x"})]}],
+                1: [{"output": [{"meta": {"unit": "u1", "score": _MARK}}]}],
+            },
+            "cannot be placed",
+        ),
         # A marked attach value marks the key its position pairs with, whether
         # the value column covers the live rows only or every source row.
         (
