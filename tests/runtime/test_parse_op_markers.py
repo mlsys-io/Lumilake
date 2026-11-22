@@ -317,6 +317,18 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
     with pytest.raises(ValueError, match="rule or default"):
         _build([_parse(format="json"), _model_reading("P")], values)
 
+_EXPAND_UNITS: dict[str, Any] = {
+    "id": "E",
+    "op": "LambdaOp",
+    "inputs": ["Answer"],
+    "mode": "expand",
+    "fn_name": "units",
+    "code": "def units(row):\n"
+    "    return [u for u in row[0]['units'].split(',') if u]\n",
+}
+_EMPTY_PARENT = ['{"units": "a,b"}', '{"units": ""}', '{"units": "c"}']
+
+
 def _reduce(on_fail: str) -> dict[str, Any]:
     return _lower(
         mode="reduce",
@@ -326,11 +338,35 @@ def _reduce(on_fail: str) -> dict[str, Any]:
     )
 
 
-_EXPAND = _lower(
-    mode="expand",
-    code="def f(row):\n    return [p for p in row[0]['unit'].split(',') if p]\n",
-)
 _MARKED_KEY = json.dumps({"unit": "u", "score": json.loads(_MARKED)})
+
+
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        ({"on_empty": "fail"}, ["a@0.0", "b@0.1", "marker@1.0", "c@2.0"]),
+        ({}, ["a@0.0", "b@0.1", "c@2.0"]),
+    ],
+    ids=["fail", "drop"],
+)
+def test_an_empty_expansion_records_a_failed_parent_or_nothing(
+    fields: dict[str, Any], expected: list[str], tmp_path: Path
+) -> None:
+    items = _run([{**_EXPAND_UNITS, **fields}], {"Answer": _EMPTY_PARENT}, tmp_path)
+    got = []
+    for item in items:
+        output = item["output"]
+        if isinstance(output, dict) and list(output) == ["_fail"]:
+            output = "marker"
+        got.append(f"{output}@{item['parent']}.{item['child']}")
+    assert got == expected
+
+
+def test_an_expand_that_fails_an_empty_parent_is_a_marker_source() -> None:
+    values = {"Answer": _EMPTY_PARENT}
+    with pytest.raises(ValueError, match="rule or default"):
+        _build([{**_EXPAND_UNITS, "on_empty": "fail"}, _model_reading("E")], values)
+    assert _build([_EXPAND_UNITS, _model_reading("E")], values) is not None
 
 
 @pytest.mark.parametrize(
@@ -350,8 +386,8 @@ _MARKED_KEY = json.dumps({"unit": "u", "score": json.loads(_MARKED)})
         # An expand emits one tombstone for a marked parent at child zero, and
         # every item names its parent and child.
         (
-            _EXPAND,
-            ['{"unit": "a,b"}', "bad"],
+            {**_EXPAND_UNITS, "inputs": ["P"]},
+            ['{"units": "a,b"}', "bad"],
             ["a@0.0", "b@0.1", "no JSON object@1.0"],
         ),
     ],
