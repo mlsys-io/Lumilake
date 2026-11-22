@@ -45,6 +45,16 @@ def as_plan(plan: RawPlan) -> ColumnPlan:
     ]
 
 
+def plan_json(plan: RawPlan) -> str:
+    """A plan as the JSON the generated task code embeds; a mounted literal's
+    ``file`` comes last, as the builder emits it."""
+    dumped = [entry.model_dump(exclude_none=True) for entry in as_plan(plan)]
+    for entry in dumped:
+        if "file" in entry:
+            entry["file"] = entry.pop("file")
+    return json.dumps(dumped)
+
+
 @dataclass(frozen=True)
 class PublishedBlob:
     key: str
@@ -254,12 +264,11 @@ def main(inputs):
 
 def flatten_source(node_id: str, plan: RawPlan, template: str) -> str:
     """The python-task code for a flatten step: one rendered prompt per image."""
-    entries = as_plan(plan)
     return (_RESHAPE_PRELUDE + _FLATTEN_MAIN).format(
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps([entry.model_dump(exclude_none=True) for entry in entries]),
+        plan=plan_json(plan),
         template=template,
     )
 
@@ -276,35 +285,32 @@ def main(inputs):
 def flatten_step_source(node_id: str, plan: RawPlan) -> str:
     """The python-task code for expanding a grouped upstream column to one
     value per row."""
-    entries = as_plan(plan)
     return (_RESHAPE_PRELUDE + _FLATTEN_STEP_MAIN).format(
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps([entry.model_dump(exclude_none=True) for entry in entries]),
+        plan=plan_json(plan),
     )
 
 
 def pairs_source(node_id: str, plan: RawPlan) -> str:
     """The python-task code for reshaping query and candidate columns to pairs."""
-    entries = as_plan(plan)
     return (_RESHAPE_PRELUDE + _PAIRS_MAIN).format(
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps([entry.model_dump(exclude_none=True) for entry in entries]),
+        plan=plan_json(plan),
     )
 
 
 def regroup_source(node_id: str, plan: RawPlan) -> str:
     """The python-task code for a regroup step: outputs back to one item per
     symbol."""
-    entries = as_plan(plan)
     return (_RESHAPE_PRELUDE + _REGROUP_MAIN).format(
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps([entry.model_dump(exclude_none=True) for entry in entries]),
+        plan=plan_json(plan),
     )
 
 
@@ -417,7 +423,6 @@ def wrapper_source(
     mode: str = "row",
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
-    entries = as_plan(plan)
     if mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":
@@ -430,7 +435,7 @@ def wrapper_source(
         mount=TASK_RUNTIME_MOUNT,
         code=user_code,
         fn_name=fn_name,
-        plan=json.dumps([entry.model_dump(exclude_none=True) for entry in entries]),
+        plan=plan_json(plan),
     )
 
 

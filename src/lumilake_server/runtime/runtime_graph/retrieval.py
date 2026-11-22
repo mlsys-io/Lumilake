@@ -312,7 +312,7 @@ class _RetrievalBuilder(_LLMBuilder):
             lumid_data_url=envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             lumid_data_token=envs.LUMID_DATA_TOKEN,
             params=resolved_params,
-            template=template,
+            template=template if mode in {"sql", "s3"} else None,
             table=table,
             output_format=output_format,
             encoding=encoding,

@@ -95,7 +95,7 @@ class DataFrame(DataSpecModel):
 
     type: Literal["dataframe"]
     columns: list[Column] = Field(default_factory=list)
-    messages: list[Message] = Field(default_factory=list)
+    messages: list[Message] | None = None
     seeds: list[int | None] | NodeRead | None = None
 
 
