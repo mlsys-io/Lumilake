@@ -239,7 +239,7 @@ class _RuntimeGraphBuilderBase:
         self, columns: ColumnTable | None, visited_node_ids: set[str]
     ) -> None:
         """Mark every literal column producer visited, so the orphan check
-        accepts a read that reaches no message."""
+        counts a producer that supplies only a column."""
         for column in columns or []:
             if isinstance(column, NodeColumn) and isinstance(
                 self._graph_dict.get(column.node), (InputOp, DataOp)

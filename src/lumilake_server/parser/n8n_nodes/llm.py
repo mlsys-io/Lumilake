@@ -523,7 +523,7 @@ def _build_llm_vision_op(
     image_path: str,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: Any = None,
+    rowwise_columns: list[dict[str, Any]] | None = None,
     system_messages: list[str] | None = None,
 ) -> dict[str, Any]:
     op: dict[str, Any] = {

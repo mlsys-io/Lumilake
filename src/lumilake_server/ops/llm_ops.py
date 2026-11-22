@@ -31,8 +31,7 @@ class RowwiseMessages:
 
 
 class ColumnSpec(BaseModel):
-    """One ``rowwise_columns`` or ``aggregate_table`` entry: a literal ``data``
-    list, or a ``node`` reference with an optional drill ``path``."""
+    """One ``rowwise_columns`` or ``aggregate_table`` entry."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -347,8 +346,8 @@ class LLMChatOp(LLMOp):
         return op
 
     def _add_column_producers(self, other_ops: dict[str, "Op"]) -> None:
-        """Add each column's producer to ``inputs``: a producer read only
-        through a column feeds no message, so the traversal would miss it."""
+        """Add each node column's producer to ``inputs`` so the graph
+        traversal reaches a producer that supplies only a column."""
         for table in (self.aggregate_table, self.rowwise_columns):
             for column in table or []:
                 if not isinstance(column, NodeColumn):

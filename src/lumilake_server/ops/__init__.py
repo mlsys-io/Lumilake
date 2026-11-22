@@ -25,7 +25,6 @@ from lumilake_server.ops.http_fetch_ops import HttpFetchConfig, HttpFetchOp, htt
 from lumilake_server.ops.llm_ops import (
     ColumnSpec,
     ColumnTable,
-    ColumnTableIn,
     ImageGenerationOp,
     LiteralColumn,
     LLMChatOp,
@@ -60,7 +59,6 @@ __all__ = [
     "ClassificationPair",
     "ColumnSpec",
     "ColumnTable",
-    "ColumnTableIn",
     "DataOp",
     "DataRetrievalOp",
     "EmbeddingArtifact",
