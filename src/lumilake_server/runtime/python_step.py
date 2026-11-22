@@ -281,9 +281,7 @@ def main(inputs):
                 % ({op_id!r}, _FN_NAME, type(values).__name__)
             )
         if not values and _ON_EMPTY == "fail":
-            # A parent with no children emits a failed record instead of
-            # leaving no record at all, so a downstream reader can tell an
-            # empty expansion from a lost row.
+            # An empty expansion emits a marker, not nothing at all.
             items.append(
                 {{
                     "output": {{

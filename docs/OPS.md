@@ -481,22 +481,20 @@ back to one value per row before the function sees its whole-list input.
 (same zip and length-1 broadcast as `row` mode) and expects a list back. The
 step emits the concatenation, in input order, one item per element, so each
 output's dependencies are known from the op alone; an empty list drops the row,
-and a non-list return fails with the op named. Each item carries its parent's
-row index under `parent` and its own position under `child`; a marked parent
-emits one item carrying that marker at `child: 0`. A parent that expands to no
-children emits nothing by default; `on_empty` decides what it does, and is
-accepted only in expand mode:
+and a non-list return fails with the op named. Each emitted item also carries
+its parent's input-row index under `parent` and its own position under
+`child`, so a downstream op can tell which parent an item came from and two
+elements of one parent apart. A parent whose input row carries a failed record
+is not passed to the function: it emits one item carrying that marker, at
+`child: 0`, so every failed parent keeps a defined slot. A parent that returns
+an empty list emits nothing; `on_empty` decides what it does instead:
 
-- `drop` (the default) emits nothing, so the `parent` indices of the survivors
-  tell "no children" from a lost row.
+- `drop` (the default) emits nothing.
 - `fail` emits one item carrying the marker `{"_fail": {"op": "<op id>",
-  "reason": "empty expansion"}}` at `child: 0`, so a downstream reader sees an
-  empty expansion as a failed parent rather than as a missing one.
+  "reason": "empty expansion"}}` at `child: 0`.
 
-An expand with `on_empty: fail` is a marker source, so a model op may not read
-one: the job is refused at submit under the same rule as a `ParseOp`, unless a
-router's rule or default branch drops the markers first. See
-[Failed records](#failed-records).
+`on_empty` is accepted only in expand mode; an expand with `on_empty: fail`
+is a [marker source](#failed-records), which no model op may read.
 
 ```yaml
 ops:
@@ -711,14 +709,20 @@ columns stay aligned.
   function on the live columns and merges the marked rows back by position. A
   list `LambdaOp` receives markers as ordinary values, so a whole-list function
   sees every row and passes them on.
-- An expand `LambdaOp` emits one tombstone item for a marked parent, and every
-  item carries `parent` and `child`; a parent that expands to no children
-  emits its own marker under `on_empty: fail` and nothing under the default
-  `drop`. A reduce `LambdaOp` groups by each row's key, and `on_fail` decides
-  a group holding a marker; a row whose key cannot be read emits its marker. A
-  `JoinOp` turns a marked row into a marker, keeping one output row per
-  first-input row in order. Downstream reads see the marker under each item's
-  `output`, so a row Lambda or a parse step treats it as marked.
+- An expand `LambdaOp` emits one tombstone item carrying the marker for a
+  marked parent, and a parent that expands to no children emits its own marker
+  under `on_empty: fail`.
+- A reduce `LambdaOp` reads each row's key first: a marked row whose key reads
+  joins its group, and `on_fail` decides that group. A row whose key cannot be
+  read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
+- A `JoinOp` keeps one output row per first-input row, in order: a marked
+  first-input row is that row's marker, and a marked further input or attach
+  row turns its key's output into the marker. No other row is affected. Its
+  `on_missing: fail_row` marks the rows a further input lacks, and an attach
+  length mismatch fails the job under either policy. See [`JoinOp`](#joinop).
+- Downstream reads of an expand or join output see the marker under each
+  item's `output`, so a row Lambda or a parse step treats such an item as a
+  marked row.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares

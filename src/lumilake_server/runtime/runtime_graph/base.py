@@ -53,8 +53,7 @@ def _carries_markers(
     if isinstance(op, ParseOp) and op.emits_markers:
         carries = True
     elif isinstance(op, LambdaOp) and op.mode == "expand" and op.on_empty == "fail":
-        # A parent with no children emits a marker of its own, so an expand
-        # with this policy is a marker source whatever it reads.
+        # Such an expand is a marker source whatever it reads.
         carries = True
     elif isinstance(op, InputOp):
         carries = any(_holds_marker(value) for value in inputs_dict.get(op.name, []))
