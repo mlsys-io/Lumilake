@@ -502,3 +502,7 @@ def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     assert _broadcast(tmp_path, rows=rows, attach="") == [_MARK, _MARK, *plain]
     got = _broadcast(tmp_path, rows=rows, tags=["A", "B", "C", "D"])
     assert got[2:] == [{**_JOINED[1], "tag": "C"}, {**_JOINED[2], "tag": "D"}]
+    read = [{"unit": "u1", "rid": "a", "text": _MARK}, _UNITS[2]]
+    extra = [{"unit": "u1", "rid": "a", "part": "A"}, {"unit": "u2", "rid": "c"}]
+    part = _broadcast(tmp_path, rows=read, attach="part", extra=extra, tags=["A", "C"])
+    assert part == [_MARK, {**_UNITS[2], "size": 1, "part": "C"}]
