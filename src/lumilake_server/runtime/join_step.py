@@ -348,48 +348,60 @@ def _broadcast(inputs):
 
 
 def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
-    """Merge one attach field's values onto every output row of their by key."""
+    """Merge one attach field's values onto the output rows their source rows
+    belong to. A source row that reads the row_key fields names one record, so
+    its value lands on that output row alone; any other source row carries one
+    value per by key, and it lands on every output row of that key."""
     live = []
-    source_marks = {{}}
     for row in rows:
-        carried = carried_marker((row,))
-        if carried is None:
+        if carried_marker((row,)) is None:
             live.append(row)
-            continue
-        key = _key_of(row, where)
-        if key is not None and key not in source_marks:
-            source_marks[key] = carried
     if len(values) == len(rows):
-        pairs = [
-            (value, key)
-            for value, key in zip(values, (_key_of(row, where) for row in rows))
-            if key is not None
-        ]
+        paired = list(zip(values, rows))
     elif len(values) == len(live):
-        pairs = list(zip(values, (_key(row, where) for row in live)))
+        paired = list(zip(values, live))
     else:
         raise ValueError(
             "%s: %d values attached but %d rows from %r"
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
-    by_value = {{key: value for value, key in pairs}}
-    _required(_first_keys(keyed), by_value, where)
-    for position, (record, key, row) in enumerate(keyed):
-        if record in marked:
-            continue
-        if key in source_marks:
-            marked[record] = source_marks[key]
-            continue
-        if key not in by_value:
-            if _ON_MISSING == "fail_row":
+    positions = {{record: position for position, (record, _, _) in enumerate(keyed)}}
+    first_keys = _first_keys(keyed)
+    covered = set()
+    for value, source_row in paired:
+        targets = _attach_targets(keyed, positions, first_keys, source_row, where)
+        carried = failure_of(value) or carried_marker((source_row,))
+        for position in targets:
+            covered.add(position)
+            record = keyed[position][0]
+            if record in marked:
+                continue
+            if carried is not None:
+                marked[record] = carried
+                continue
+            merged = keyed[position][2].copy()
+            _merged(merged, name, value, where)
+            keyed[position] = (record, keyed[position][1], merged)
+    if _ON_MISSING == "fail_row":
+        # Only a row this source carries no value for becomes a marker; under
+        # null_fill its field is simply left out.
+        for position, (record, key, _) in enumerate(keyed):
+            if position not in covered and record not in marked:
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
-            continue
-        value = by_value[key]
-        carried = failure_of(value)
-        if carried is not None:
-            marked[record] = carried
-            continue
-        merged = row.copy()
-        _merged(merged, name, value, where)
-        keyed[position] = (record, key, merged)
+
+
+def _attach_targets(keyed, positions, first_keys, source_row, where):
+    """The output rows one attach source row's value belongs to."""
+    record = _record_of(source_row, where)
+    if record is not None:
+        if record not in positions:
+            raise ValueError("%s: row_key %s is not in %r" % (_NODE, record, where))
+        return [positions[record]]
+    key = _key_of(source_row, where)
+    if key is None:
+        raise ValueError(
+            "%s: a failed row whose key cannot be read cannot be placed" % where
+        )
+    _required(first_keys, {{key: True}}, where)
+    return [position for position, (_, at, _) in enumerate(keyed) if at == key]
 '''

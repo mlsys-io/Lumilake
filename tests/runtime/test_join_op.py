@@ -372,3 +372,94 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
     # A join's per-row fields sit under the python envelope, as a list
     # Lambda's do, not at the declared path.
     assert column.path == "value.items.output.text"
+
+
+# A broadcast join: two rows of unit u1 and one of u2, a summary row per unit
+# and a tag per first-input row.
+_UNITS = [
+    {"unit": "u1", "rid": "a"},
+    {"unit": "u1", "rid": "b"},
+    {"unit": "u2", "rid": "c"},
+]
+_SIZES = [{"unit": "u1", "size": 2}, {"unit": "u2", "size": 1}]
+_JOINED = [
+    {**_UNITS[0], "size": 2, "tag": "A"},
+    {**_UNITS[1], "size": 2, "tag": "B"},
+    {**_UNITS[2], "size": 1, "tag": "C"},
+]
+_BROADCAST_YAML = """
+name: u
+inputs: {Rows: []}
+ops:
+  - {id: State, op: DataOp, data: __ROWS__}
+  - {id: Summary, op: DataOp, data: __SIZES__}
+  - {id: Tag, op: LambdaOp, mode: row, inputs: [State], fn_name: tag,
+     code: "def tag(row): return row['rid'].upper()"}
+  - id: Merge
+    op: JoinOp
+    inputs: [State, Summary, Tag]
+    by: unit
+__FIELDS__
+    attach: {tag: Tag}
+outputs: [{name: merged, ref: Merge}]
+"""
+
+
+def _broadcast(
+    tmp_path: Path,
+    rows: list[Any] | None = None,
+    sizes: list[Any] | None = None,
+    tags: list[str] | None = None,
+    fields: tuple[str, ...] = ("row_key: [unit, rid]",),
+    name: str = "run",
+) -> list[Any]:
+    """Run the broadcast join over one summary row per unit and one tag per row."""
+    quote = [f"'{json.dumps(row)}'" for row in rows or _UNITS]
+    summary = [f"'{json.dumps(row)}'" for row in sizes or _SIZES]
+    code = (
+        _BROADCAST_YAML.replace("__ROWS__", f"[{', '.join(quote)}]")
+        .replace("__SIZES__", f"[{', '.join(summary)}]")
+        .replace("__FIELDS__\n", "".join(f"    {line}\n" for line in fields))
+    )
+    spec = parse_yaml_payload(code)["u"]
+    runtime = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    node = _join_of(runtime)
+    out = _run(tmp_path, node, {2: _cells(*(tags or ["A", "B", "C"]))}, name)
+    return [item["output"] for item in out["items"]]
+
+
+def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> None:
+    """Several first-input rows may share a by key: each keeps a row of its own,
+    in its order, and a record's fields follow its row_key, not its position."""
+    assert _broadcast(tmp_path) == _JOINED
+    reordered = [_UNITS[1], _UNITS[0], _UNITS[2]]
+    swapped = _broadcast(tmp_path, rows=reordered, tags=["B", "A", "C"], name="swap")
+    assert swapped == [_JOINED[1], _JOINED[0], _JOINED[2]]
+
+
+def test_a_broadcast_join_refuses_a_repeated_or_partial_row_key(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate row_key"):
+        _broadcast(tmp_path, rows=[_UNITS[0], _UNITS[0]])
+    with pytest.raises(ValueError, match="row_key must name every by path"):
+        _broadcast(tmp_path, fields=("row_key: rid",))
+
+
+def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
+    """A further input missing a key leaves that key's rows out under null_fill
+    and marks each of them, and only them, under fail_row."""
+    only_u1 = [_SIZES[0]]
+    missing = {**_UNITS[2], "tag": "C"}
+    assert _broadcast(tmp_path, sizes=only_u1) == [_JOINED[0], _JOINED[1], missing]
+    fail = ("row_key: [unit, rid]", "on_missing: fail_row")
+    rows = _broadcast(tmp_path, sizes=only_u1, fields=fail, name="fail")
+    assert rows[:2] == [_JOINED[0], _JOINED[1]]
+    assert "key" in rows[2]["_fail"]["reason"]
+
+
+def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> None:
+    """A marked further-input row marks every output row of its key and leaves
+    the other keys' rows as they were."""
+    marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
+    assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
