@@ -477,37 +477,42 @@ value per input row: the row-wise LLM groups its per-row outputs back into one
 item internally, and the standalone `python` step flattens that grouped item
 back to one value per row before the function sees its whole-list input.
 
-`mode: expand` calls the function once per input row, as `row` mode does, and
-expects a list back, so each output's dependencies are known from the op alone;
-a non-list return fails with the op named. Each emitted item carries its
-parent's input-row index under `parent` and its own position under `child`, so
-a downstream op can tell which parent an item came from and two elements of one
-parent apart. A parent whose input row carries a failed record is not passed to
-the function: it emits one item carrying that marker at `child: 0`, so every
-failed parent keeps a defined slot. An empty list drops the row, so the
-`parent` indices of the survivors are what tell "no children" from a lost row.
+`mode: expand` calls the function once per input row with that row's tuple
+(same zip and length-1 broadcast as `row` mode) and expects a list back. The
+step emits the concatenation, in input order, one item per element, so each
+output's dependencies are known from the op alone; an empty list drops the row,
+and a non-list return fails with the op named. Each item carries its parent's
+row index under `parent` and its own position under `child`; a marked parent
+emits one item carrying that marker at `child: 0`.
 
-`mode: reduce` groups the row tuples by the value at the required `by` dotted
-path (compared as JSON text, so `1` and `"1"` differ) and calls the function
-once per group with that group's rows in input order, emitting one item per
-group in order of first appearance. A non-list expand return, or a row missing
-its `by` path, fails with the op named, unless the row carries a failed record,
-which holds no key to group by and forms a group of its own; `by` is accepted
-only in reduce mode.
+```yaml
+ops:
+  - id: "SplitKeywords"
+    op: LambdaOp
+    inputs: [Keywords]
+    mode: expand
+    fn_name: split
+    code: |
+      def split(row):
+          return [k for k in row[0].split(",") if k.strip()]
+```
 
-A failed record's key is read first: a row whose key reads joins its group even
-when another of its fields is a marker, and only a row whose key cannot be read
-(one that is itself a marker, or whose key path reaches one) is its own group
-and emits its marker.
+`mode: reduce` zips its inputs into row tuples as `row` mode does, groups them
+by the value at the required `by` dotted path into the first input's value
+(compared as JSON text, so `1` and `"1"` differ), and calls the function once
+per group with that group's row tuples in input order. The step emits one item
+per group, groups ordered by first appearance. A row missing the `by` path
+fails with the op and the row index named. `by` is accepted only in reduce mode.
 
-`on_fail` decides what a group that holds a failed record does; it defaults to
-`fail_group` and is accepted only in reduce mode:
+A row's key is read before its other fields, so a marked row whose key reads
+still joins its group; only a row whose key cannot be read forms its own group.
 
-- `fail_group` emits that group's first marker as the group's item, so the
-  function does not see the failed row.
-- `drop_failed` removes the failed rows before calling the function. A group
-  that loses every row emits the marker `{"_fail": {"op": "<op id>", "reason":
-  "empty group"}}`.
+`on_fail` decides what a group holding a failed record does, defaulting to
+`fail_group` and accepted only in reduce mode:
+
+- `fail_group` emits the group's first marker as its item.
+- `drop_failed` drops the failed rows before the call; a group that loses every
+  row emits the marker `{"_fail": {"op": "<op id>", "reason": "empty group"}}`.
 
 ```yaml
 ops:
@@ -639,36 +644,21 @@ List every attach target in `inputs:` too, so its producer is built before the
 join. Router branches are disjoint, so a case lands in one branch and the other
 branch's fields are left out of the output row.
 
-`by` is one dotted field path; one that is not a dotted field name is refused
-at submit, naming the op. A key field may not be null: a live row whose key
-path is missing or holds JSON `null` fails the job.
+`by` is one dotted field path, or a list of them for a composite key; a live
+row whose key path is missing or null fails the job.
 
-A first-input row that carries a failed record makes that row's output its
-marker: the first input fixes one output row per its row, in its order, and
-every other row keeps its fields. A marked row in a further input or an attach
-source turns the output row of its key into that marker instead of filling the
-field; a marked further-input row whose key cannot be read fails the job,
-naming the input, since it cannot be placed. A marked attach row pairs by
-position with the live source rows when the value column covers only those
-rows. An attach value column that covers every source row pairs each value
-with its own row, so a marked source row keeps its marker and its value there
-is that marker passed through.
+A first-input row carrying a failed record makes its output row that marker,
+and a marked further or attach row turns its key's output row into its marker;
+a marked further-input row whose key cannot be read fails the job.
 
 `on_missing` is the per-row policy and defaults to `null_fill`:
 
-- `null_fill` leaves out the fields a further input or an attach source does
-  not carry for a row, and fails the job when a further input carries a key the
-  first input does not, when an attach column does not pair one value with one
-  row, or when two inputs disagree on a field's value. Each error names the
-  join.
-- `fail_row` marks the rows a further input or an attach source lacks a key
-  for, one marker per such row naming the join and the absent key, instead of
-  failing the job, so a single bad row costs neither its siblings nor the job.
+- `null_fill` leaves out fields a further input or attach source does not carry
+  and fails the job on a further-input key the first input lacks, an unpaired
+  attach column, or a field two inputs disagree on.
+- `fail_row` marks the rows lacking a key instead of failing the job.
 
-A duplicate key still fails the job under either policy, since two rows with
-one key cannot become one output row. An attach column whose length does not
-match its source rows cannot be attributed to one row, so it fails the job
-under either policy.
+A duplicate key and an attach length mismatch fail the job under either policy.
 
 ```yaml
 ops:
@@ -708,19 +698,12 @@ columns stay aligned.
   function on the live columns and merges the marked rows back by position. A
   list `LambdaOp` receives markers as ordinary values, so a whole-list function
   sees every row and passes them on.
-- An expand `LambdaOp` emits one tombstone item carrying the marker for a
-  marked parent, and every item carries `parent` and `child`.
-- A reduce `LambdaOp` reads each row's key first: a marked row whose key reads
-  joins its group, and `on_fail` decides that group. A row whose key cannot be
-  read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
-- A `JoinOp` keeps one output row per first-input row, in order: a marked
-  first-input row is that row's marker, and a marked further input or attach
-  row turns its key's output into the marker. No other row is affected. Its
-  `on_missing: fail_row` marks the rows a further input lacks, and an attach
-  length mismatch fails the job under either policy. See [`JoinOp`](#joinop).
-- Downstream reads of an expand or join output see the marker under each
-  item's `output`, so a row Lambda or a parse step treats such an item as a
-  marked row.
+- An expand `LambdaOp` emits one tombstone item for a marked parent, and every
+  item carries `parent` and `child`. A reduce `LambdaOp` groups by each row's
+  key, and `on_fail` decides a group holding a marker; a row whose key cannot be
+  read emits its marker. A `JoinOp` turns a marked row into a marker, keeping one
+  output row per first-input row in order. Downstream reads see the marker under
+  each item's `output`, so a row Lambda or a parse step treats it as marked.
 - A user function that raises fails the task; only a parse or a pass-through
   produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares

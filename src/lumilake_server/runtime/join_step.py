@@ -126,16 +126,15 @@ def _merge(row, more, where):
 
 
 def _required(keyed, keys, where):
-    """Fail the job when a further input carries a key the first input does
-    not, so a stray or misspelt row never loses its fields unnoticed."""
+    """Fail the job on a further-input key the first input does not carry."""
     for key in keys:
         if key not in keyed:
             raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
 
 
 def _keyed(rows, where):
-    """One further input's rows by key. A marked row keeps its key and marks it;
-    a row whose key cannot be read fails the job, since it cannot be placed."""
+    """One further input's rows by key; a row whose key cannot be read fails
+    the job."""
     keyed = {{}}
     marked = {{}}
     for row in rows:
@@ -154,13 +153,8 @@ def _keyed(rows, where):
 
 
 def _attach(keyed, marked, name, source_index, values, rows, where):
-    """Merge one attach field's values onto the source rows by position. A
-    source row or value that carries a failed record marks that key's output
-    instead of filling its field. The value column pairs with every source row
-    when its length matches, or with the live rows only; any other length
-    cannot be attributed to one row, so it fails the job. A first-input key no
-    pair reaches is marked under ``fail_row`` and keeps its field out under
-    ``null_fill``."""
+    """Merge one attach field's values onto the source rows by position; a
+    length that pairs with neither every row nor the live rows fails the job."""
     live = []
     for row in rows:
         carried = carried_marker((row,))

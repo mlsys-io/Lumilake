@@ -36,8 +36,7 @@ def failure_of(value: Any) -> dict[str, Any] | None:
 
 
 def carried_marker(row: tuple[Any, ...] | list[Any]) -> dict[str, Any] | None:
-    """The first marker a row's tuple carries, either as a cell or nested in
-    one of the row's object fields, or ``None`` when every cell is live."""
+    """The first marker a row's cells or object fields carry, or ``None``."""
     for cell in row:
         marked = failure_of(cell)
         if marked is not None:

@@ -268,8 +268,7 @@ def main(inputs):
     for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
         marked = carried_marker(row)
         if marked is not None:
-            # A marked row keeps one defined slot, so its children are neither
-            # run nor lost.
+            # A marked row keeps one defined slot, so no child is run or lost.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
         values = fn(row)
