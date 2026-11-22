@@ -583,21 +583,15 @@ ops:
 
 ### JoinOp
 
-`JoinOp` merges row columns by `by`, a field path. The first input fixes the
-output rows and their order; every further input adds the fields of the row
-with the same key. An `attach` field maps a new field to a node emitting one
-output per row (a rowwise LLM op, `EmbeddingOp`, `HttpFetchOp`,
-`ClassificationOp`, a row or aligned `LambdaOp`, another `JoinOp`, or a chain
-of these ending in one), also listed in `inputs:`. `missing: error` fails on a
-key absent from the first input; `missing: null` (the default) leaves the
-fields out. Duplicate keys, a field that differs between inputs, and a
-misaligned attach fail naming the join. A join runs as one standalone `python`
-task and its output reads like a list Lambda's.
+`JoinOp` merges row columns by `by`, a field path; the first input fixes the
+output rows and their order. An `attach` field adds a per-row node's values to
+each row (a rowwise LLM, embedding, fetch or classification op, a row or
+aligned `LambdaOp`, another `JoinOp`, or a chain of these), also in `inputs:`.
+`missing: error` fails on a key absent from the first input, else the fields
+are left out. A duplicate key or a misaligned attach fails the job.
 
 ```yaml
-ops:
-  - {id: Merge, op: JoinOp, inputs: [Cases, Route.patient, Reply],
-     by: case_id, attach: {reply: Reply}, missing: null}
+- {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, attach: {reply: Reply}}
 ```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
