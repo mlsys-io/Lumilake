@@ -346,8 +346,7 @@ def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
 
 
 def _seed_input_id(op_id: str, node_ref: str, ctx: EmitContext) -> str:
-    """The internal id of a node a ``rowwise_seed`` reads, after checking the
-    producer is built first."""
+    """The internal id of a node a ``rowwise_seed`` reads."""
     if node_ref not in ctx.user_id_to_internal:
         raise ValueError(
             f"LLMChatOp '{op_id}' rowwise_seed references unknown id '{node_ref}'"
@@ -367,8 +366,7 @@ def _seed_input_id(op_id: str, node_ref: str, ctx: EmitContext) -> str:
 def _emit_keyed_seed(
     op_dict: dict[str, Any], ctx: EmitContext, seed: dict[str, Any]
 ) -> None:
-    """Derive each row's seed from its key: queue a row function over the
-    key column and bind the chat op to its output."""
+    """Derive each row's seed from its key."""
     entry = ctx.entry
     node_ref, path = keyed_seed.key_target(
         entry.id,

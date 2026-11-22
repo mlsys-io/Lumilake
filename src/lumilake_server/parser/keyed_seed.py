@@ -1,10 +1,8 @@
 """Deriving a rowwise chat op's per-row seed from a row key.
 
-``rowwise_seed: {key: {node, path}}`` names a column that holds each row's key;
-the seed is then a pseudo-random function of the job seed, the op's id, the
-round and that key, so it does not depend on batch position or worker. The
-parser turns the key form into a generated row-mode ``LambdaOp`` that reads the
-key column and returns one seed per row, and binds the chat op to its output.
+The parser turns ``rowwise_seed: {key: ...}`` into a generated row-mode
+``LambdaOp`` that returns one seed per row from the job seed, the op id, the
+round and the row's key.
 """
 
 from typing import Any
@@ -50,9 +48,8 @@ def {fn_name}(row):
 
 
 def key_parts(path: str) -> list[str]:
-    """The field names a key path drills below ``items``: the whole output is
-    the value itself, so it drills nothing. A forwarded reference binds to a
-    flat input, whose whole value is the key."""
+    """The field names a key path drills below ``items``; a whole-output path
+    drills nothing."""
     if not path:
         return []
     if not path.startswith("items."):
@@ -64,10 +61,8 @@ def key_parts(path: str) -> list[str]:
 
 
 def seed_op_id(chat_op_id: str, scope: str | None = None) -> str:
-    """The id of the row function generated for one chat op. The parser names
-    it with the ``seed`` prefix, which no op type emits, so no user op can hold
-    that id; a native graph, whose op ids are already internal, names it from
-    the chat op's own id."""
+    """The id of the row function generated for one chat op, which no user op
+    can hold."""
     if scope is None:
         return f"{chat_op_id}{SEED_SUFFIX}"
     return make_id(scope, "seed", chat_op_id)
@@ -80,11 +75,8 @@ def seed_source(
     round_number: int | None,
     parts: list[str],
 ) -> str:
-    """The source of a keyed-seed row function: it reads one row's key out of
-    its input column and returns the seed that row draws with. The job seed,
-    template id, round and key path are constants of the generated code, so the
-    body never runs user code, and the hash is the one ``docs/OPS.md``
-    documents."""
+    """The source of a keyed-seed row function: it reads one row's key and
+    returns the seed that row draws with."""
     return _SEED_FN.format(
         fn_name=fn_name,
         parts=parts,
@@ -104,9 +96,8 @@ def seed_source(
 
 
 def _seed_message(message: str) -> str:
-    """One runtime message, with its value placeholder appended and any ``%``
-    in the baked op id or path escaped, so the function fills in just the
-    value."""
+    """A runtime message with its value placeholder appended, any ``%`` in the
+    baked text escaped."""
     return message.replace("%", "%%") + " %s"
 
 
@@ -157,9 +148,7 @@ def seed_op(
     template_id: str | None = None,
     scope: str | None = None,
 ) -> dict[str, Any]:
-    """The row-mode ``LambdaOp`` that returns each row's seed from its key.
-    ``template_id`` is the op id as the user wrote it; it defaults to the
-    internal id."""
+    """The row-mode ``LambdaOp`` that returns each row's seed from its key."""
     return {
         "_id": seed_op_id(chat_op_id, scope),
         "_op": "LambdaOp",
@@ -180,10 +169,8 @@ def seed_op(
 def rewrite_native_keys(
     graph: dict[str, dict[str, Any]], *, job_seed: int
 ) -> dict[str, dict[str, Any]]:
-    """Rewrite every key-form ``rowwise_seed`` of a serialized native graph,
-    adding each generated seed op and binding the chat op to it. The graph is
-    built in insertion order, so a generated op is placed just ahead of the op
-    that reads it."""
+    """Add each generated seed op to a serialized native graph, just ahead of
+    the chat op that reads it."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
         seed = op.get("rowwise_seed")
