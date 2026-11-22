@@ -377,20 +377,12 @@ A duplicate key and an attach length mismatch fail the job under either policy.
 is the list of their values. An empty list or an entry that is not a dotted
 field name is refused at submit, naming the op.
 
-`row_key` makes the first input a broadcast source: it is one dotted field path
-or a list of them that must name every `by` path, and each of the first input's
-rows must then be unique by its `row_key` value, which is its record identity
-rather than its position. Several first-input rows may share a `by` key, each
-keeps an output row of its own, and every further input's row and attach value
-for that key reach all of them. A duplicate `row_key` fails the job naming the
-join and the key, and a further input missing a key marks or skips every output
-row of that key as `on_missing` says. An attach target that reads the `row_key`
-fields keeps one value per record and fills only that record; any other target
-holds one value per key. A marked first-input row passes through as its marker,
-whether the marker is the whole row or one of its fields: it is never a merge
-target, so it needs no record identity and no readable `row_key` or `by` key,
-and the other rows of its key still take the broadcast. Without `row_key` the
-first input still fixes exactly one output row per key.
+`row_key` (one dotted path or a list, naming every `by` path) lets the first
+input hold several rows per `by` key, each unique by its `row_key` value. Each
+keeps its own output row, and every further input's row and attach value for
+that key reach all of them; an attach source row that reads the `row_key` fields
+fills only its record. A duplicate `row_key` fails the job, and a marked
+first-input row passes through as its marker.
 
 ```yaml
 ops:
@@ -419,7 +411,7 @@ A record that fails becomes a marker instead of an error, so one bad row costs n
 - A row `LambdaOp` does not call the function for a row with a marked cell; it emits the first such marker for that row. An aligned `LambdaOp` calls the function on the live columns and merges the marked rows back by position. A list `LambdaOp` receives markers as ordinary values, so a whole-list function sees every row and passes them on. A seeded row or expand `LambdaOp` draws no seed for a marked row, so a seed step that passes the marker on in that row's seed cell leaves the row marked instead of failing the task.
 - An expand `LambdaOp` emits one tombstone item carrying the marker for a marked parent, and a parent that expands to no children emits its own marker under `on_empty: fail`.
 - A reduce `LambdaOp` reads each row's key first: a marked row whose key reads joins its group, and `on_fail` decides that group. A row whose key cannot be read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
-- A `JoinOp` keeps one output row per first-input row, in order: a marked first-input row is that row's marker, and a marked further input or attach row turns its key's output into the marker. No other row is affected. Its `on_missing: fail_row` marks the rows a further input lacks, and an attach length mismatch fails the job under either policy. Under a `row_key` these rules apply per output row, so one key may cover several rows. See [`JoinOp`](#joinop).
+- A `JoinOp` keeps one output row per first-input row, in order: a marked first-input row is that row's marker, and a marked further input or attach row turns its key's output into the marker. No other row is affected. Its `on_missing: fail_row` marks the rows a further input lacks, and an attach length mismatch fails the job under either policy. See [`JoinOp`](#joinop).
 - Downstream reads of an expand or join output see the marker under each item's `output`, so a row Lambda or a parse step treats such an item as a marked row.
 - A user function that raises fails the task; only a parse or a pass-through produces a marker.
 - `RouterOp` sends failed rows to an `error` branch when the op declares `error_branch: true`; otherwise a failed row goes to no branch. See [`RouterOp`](#routerop).
