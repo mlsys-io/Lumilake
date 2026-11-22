@@ -97,7 +97,6 @@ def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> No
 
 
 def _reader_doc(path: str, mode: str = "sql") -> str:
-    """A `rows: table` retrieval whose consumer reads ``path`` from it."""
     return (
         "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
         '  - id: "Search"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
