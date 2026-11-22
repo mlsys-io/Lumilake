@@ -525,6 +525,9 @@ def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
     ]
     out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
     assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
+    # A seeded expand's tombstone names its slot like the children beside it.
+    if mode == "expand":
+        assert (out["items"][1]["parent"], out["items"][1]["child"]) == (1, 0)
 
 
 @pytest.mark.parametrize("mode", ["row", "expand"])
