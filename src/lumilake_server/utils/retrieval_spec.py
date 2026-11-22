@@ -109,7 +109,7 @@ class RetrievalSpec(BaseModel):
 
     @classmethod
     def parse(cls, data: Any, where: str) -> Self:
-        """Convert a spec built in process, naming ``where`` on a shape error."""
+        """Convert a spec built in process; ``_from_json`` runs the order rule."""
         try:
             return cls.model_validate(data)
         except ValidationError as exc:
