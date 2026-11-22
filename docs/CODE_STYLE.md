@@ -20,6 +20,7 @@ This guide collects rules agents and contributors should apply before editing so
 - Annotate a method that returns an instance of its own class with `typing.Self`, not the quoted class name.
 - Prefer `typing.Any` over `object` unless `Any` would be semantically wrong.
 - Use Pydantic v2 models for API payloads and profile schemas when structured data crosses a boundary.
+- Convert and validate user-supplied workflow fields (YAML blocks, op entries, native graph fields) with Pydantic v2 models, not hand-written `isinstance` chains and manual type errors.
 - Avoid `.get()` and `getattr()` for keys or attributes known to exist. Narrow broad types with `isinstance` instead.
 - Declare object state as fields. Do not dynamically `setattr` a field and later `getattr` it on the same object.
 - Avoid `hasattr()` for normal control flow; it bypasses useful type checking.
