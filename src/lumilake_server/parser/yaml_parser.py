@@ -76,14 +76,16 @@ templating is done by upstream `FormatOp`s.
 Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``DataOp``, ``DataRetrievalOp``, ``MessageOp``, ``LLMChatOp``,
 ``LLMCompletionOp``, ``LLMVisionOp``, ``ImageGenerationOp``, ``EmbeddingOp``,
-``FormatOp``, ``LambdaOp``, ``RouterOp``, ``OutputOp`` (auto-generated from
-``outputs:`` block).
+``FormatOp``, ``LambdaOp``, ``RouterOp``, ``Repeat``, ``OutputOp``
+(auto-generated from ``outputs:`` block). ``RouterOp`` and ``Repeat`` are
+expanded before any graph is built, so neither reaches the runtime graph.
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no
 YAML equivalent of the n8n wire format exists in this parser.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -91,6 +93,7 @@ import yaml
 
 from ..ops.router_ops import expand_routers
 from .common import make_id as _make_id
+from .repeat import unroll_repeats
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
@@ -202,10 +205,11 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    op_entries = [
-        _parse_op_entry(entry, idx)
-        for idx, entry in enumerate(expand_routers(ops_block))
-    ]
+    ops_block, outputs_block, unroll = unroll_repeats(
+        ops_block, outputs_block, set(inputs)
+    )
+    ops_block = expand_routers(ops_block)
+    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(ops_block)]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
@@ -247,13 +251,14 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
     while pending:
         progress = False
         for user_id, entry in list(pending.items()):
-            missing = [ref for ref in entry.inputs if ref not in user_id_to_internal]
+            refs = unroll(user_id_to_internal, f"op '{user_id}'", user_id)
+            missing = [ref for ref in entry.inputs if ref not in refs]
             if missing:
                 raise ValueError(f"op '{user_id}' references unknown id(s): {missing}")
-            unresolved = [ref for ref in entry.inputs if ref in pending]
+            unresolved = [ref for ref in entry.inputs if refs.target(ref) in pending]
             if unresolved:
                 continue
-            op_dict = _build_op_dict(entry, user_id_to_internal, scope, graph_ops)
+            op_dict = _build_op_dict(entry, refs, scope, graph_ops)
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
             graph_ops[op_dict["_id"]] = op_dict
@@ -265,7 +270,8 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
 
     # 3. OutputOps.
     for out in output_entries:
-        if out.ref not in user_id_to_internal:
+        refs = unroll(user_id_to_internal, f"output '{out.name}'", out.ref)
+        if out.ref not in refs:
             raise ValueError(f"output '{out.name}' references unknown id '{out.ref}'")
         op_id = _make_id(scope, "output", out.name)
         if op_id in graph_ops:
@@ -274,7 +280,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
             "_id": op_id,
             "_op": "OutputOp",
             "_max_iter": None,
-            "_inputs": [user_id_to_internal[out.ref]],
+            "_inputs": [refs[out.ref]],
             "name": out.name,
         }
         if out.path is not None:
@@ -351,7 +357,7 @@ def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
 
 def _build_op_dict(
     entry: OpEntry,
-    user_id_to_internal: dict[str, str],
+    user_id_to_internal: Mapping[str, str],
     scope: str,
     graph_ops: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
