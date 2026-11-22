@@ -449,12 +449,11 @@ Where the function runs depends on what reads it:
   worker's namespace has no `import` and gives a module-level name no scope, so
   the `def` named by `fn_name` must be the last statement of its source, with
   only a module docstring before or after it. Submission is refused for any
-  statement after it, a shared `uses:` block and a trailing helper included.
-  If a runtime
-  node (such as a data-retrieval op) also
-  reads the same `LambdaOp`, it is additionally compiled to its own standalone
-  `python` task so that node can reference its output; the LLM still inlines
-  it, so the function is evaluated once per reader.
+  statement after it, a shared `uses:` block and a trailing helper included. If
+  a runtime node (such as a data-retrieval op) also reads the same `LambdaOp`,
+  it is additionally compiled to its own standalone `python` task so that node
+  can reference its output; the LLM still inlines it, so the function is
+  evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
