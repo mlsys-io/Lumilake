@@ -24,7 +24,7 @@ def emit_data_retrieval_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     data_spec = entry.fields.get("data_spec")
     if data_spec is None:
         raise ValueError(f"DataRetrievalOp '{entry.id}' requires 'data_spec'")
-    problem = retrieval_key_problem(data_spec, entry.id)
+    problem = retrieval_key_problem(data_spec)
     if problem is not None:
         raise ValueError(f"DataRetrievalOp '{entry.id}' {problem}")
     # DataRetrievalOp._from_json runs the row-order rule.
