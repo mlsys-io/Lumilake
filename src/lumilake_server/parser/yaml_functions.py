@@ -30,7 +30,10 @@ def _validated[M: BaseModel](model: type[M], payload: Any, where: str) -> M:
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
-        raise ValueError(f"{where}: {exc.errors()[0]['msg']}") from exc
+        error = exc.errors()[0]
+        if error["type"] == "value_error":
+            raise ValueError(f"{where}: {error['ctx']['error']}") from exc
+        raise ValueError(f"{where}: {error['msg']}") from exc
 
 
 def _import_targets(tree: ast.Module) -> dict[str, str]:
