@@ -114,20 +114,15 @@ def _find_sql_symbol_items(compiled_graph: Graph) -> list[str]:
     for op in compiled_graph.as_dict().values():
         if not isinstance(op, DataRetrievalOp):
             continue
-        data_spec = op.data_spec
-        if data_spec.get("type") != "lumid" or data_spec.get("mode") != "sql":
+        spec = op.data_spec
+        if spec.type != "lumid" or spec.mode != "sql":
             continue
-        params = data_spec.get("params")
-        if not isinstance(params, list):
-            continue
-        for param in params:
-            if not isinstance(param, dict):
+        for param in spec.params:
+            label = param.label
+            data = param.data
+            if label is None or "Stock" not in label:
                 continue
-            label = param.get("label")
-            data = param.get("data")
-            if not isinstance(label, str) or "Stock" not in label:
-                continue
-            if not isinstance(data, dict):
+            if data is None:
                 continue
             items = data.get("items")
             if isinstance(items, list):

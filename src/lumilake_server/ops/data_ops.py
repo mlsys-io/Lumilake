@@ -3,7 +3,7 @@ from typing import Any, cast
 
 from lumilake_server.common import Message
 from lumilake_server.ops.ops import FunctionalOp, Op
-from lumilake_server.utils.retrieval_order import row_order_problem
+from lumilake_server.utils.retrieval_order import RetrievalSpec
 from lumilake_server.utils.utils import check_and_cast_list
 
 
@@ -37,31 +37,37 @@ class DataOp(FunctionalOp):
 
 @Op.registry.register("DataRetrievalOp")
 class DataRetrievalOp(FunctionalOp):
-    data_spec: dict[str, Any]
+    data_spec: RetrievalSpec
 
     def __init__(
-        self, data_spec: dict[str, Any], inputs: list[Op] | None = None
+        self, data_spec: RetrievalSpec | dict[str, Any], inputs: list[Op] | None = None
     ) -> None:
         super().__init__(inputs or [])
-        self.data_spec = data_spec
+        self.data_spec = (
+            data_spec
+            if isinstance(data_spec, RetrievalSpec)
+            else RetrievalSpec.parse(data_spec, "DataRetrievalOp data_spec")
+        )
+
+    @property
+    def raw_data_spec(self) -> dict[str, Any]:
+        """The parsed spec as a plain mapping."""
+        return self.data_spec.model_dump(exclude_none=True)
 
     @property
     def profilable(self) -> bool:
-        return self.data_spec.get("mode") in {"sql", "s3"}
+        return self.data_spec.mode in {"sql", "s3"}
 
     def _serialize(self) -> dict[str, Any]:
-        return {"data_spec": self.data_spec}
+        return {"data_spec": self.raw_data_spec}
 
     @classmethod
     def _from_json(
         cls, data: dict[str, Any], other_ops: dict[str, "Op"]
     ) -> "DataRetrievalOp":
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
-        data_spec = data["data_spec"]
-        problem = row_order_problem(data_spec)
-        if problem is not None:
-            raise ValueError(f"DataRetrievalOp '{data['_id']}': {problem}")
-        return cls(data_spec=data_spec, inputs=inputs)
+        spec = RetrievalSpec.load(data["data_spec"], f"DataRetrievalOp '{data['_id']}'")
+        return cls(data_spec=spec, inputs=inputs)
 
 
 @Op.registry.register("MessageOp")

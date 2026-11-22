@@ -86,12 +86,21 @@ from lumilake_server.runtime.worker_capability import (
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_order import RetrievalParam
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
     stop_async_runner,
     unique_id,
 )
+
+
+def _owner_input_ref(owner: RetrievalParam | dict[str, Any]) -> dict[str, Any] | None:
+    """The ``input_ref`` a rowwise column or retrieval param declares."""
+    input_ref = (
+        owner.input_ref if isinstance(owner, RetrievalParam) else owner.get("input_ref")
+    )
+    return input_ref if isinstance(input_ref, dict) else None
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -1729,23 +1738,21 @@ class LumilakeServer:
     @staticmethod
     def _iter_input_bound_list_specs(
         graph: Graph,
-    ) -> Generator[tuple[str, dict[str, Any], dict[str, Any]], None, None]:
+    ) -> Generator[
+        tuple[str, dict[str, Any], RetrievalParam | dict[str, Any]], None, None
+    ]:
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
-                params = op.data_spec.get("params")
-                if isinstance(params, list):
-                    for param in params:
-                        if not isinstance(param, dict):
-                            continue
-                        label = param.get("label")
-                        data = param.get("data")
-                        if not isinstance(label, str) or not isinstance(data, dict):
-                            continue
-                        data_type = data.get("type")
-                        items = data.get("items")
-                        if data_type != "list" or not isinstance(items, list):
-                            continue
-                        yield label, data, param
+                for param in op.data_spec.params:
+                    label = param.label
+                    data = param.data
+                    if label is None or data is None:
+                        continue
+                    data_type = data.get("type")
+                    items = data.get("items")
+                    if data_type != "list" or not isinstance(items, list):
+                        continue
+                    yield label, data, param
             if isinstance(op, LLMChatOp):
                 columns = op.rowwise_columns
                 if not isinstance(columns, list):
@@ -1840,9 +1847,11 @@ class LumilakeServer:
         rewrite_hits: dict[str, int] = {key: 0 for key in varying_input_keys}
         inferred_aliases: dict[str, str] = {}
 
-        def _rewrite_target_key(label: str, owner: dict[str, Any]) -> str | None:
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
+        def _rewrite_target_key(
+            label: str, owner: RetrievalParam | dict[str, Any]
+        ) -> str | None:
+            input_ref = _owner_input_ref(owner)
+            if input_ref is not None:
                 key = input_ref.get("key")
                 if not isinstance(key, str):
                     raise ValueError(
@@ -1858,7 +1867,7 @@ class LumilakeServer:
         for label, data, owner in cls._iter_input_bound_list_specs(graph):
             if label in varying_input_keys:
                 continue
-            if isinstance(owner.get("input_ref"), dict):
+            if _owner_input_ref(owner) is not None:
                 continue
             items = data["items"]
             if not isinstance(items, list):
@@ -1880,8 +1889,8 @@ class LumilakeServer:
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
+            input_ref = _owner_input_ref(owner)
+            if input_ref is not None:
                 ref_key = input_ref.get("key")
                 ref_path = input_ref.get("path")
                 if not isinstance(ref_key, str) or not isinstance(

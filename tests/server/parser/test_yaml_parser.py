@@ -136,8 +136,8 @@ def test_data_retrieval_op_resolves_node_refs() -> None:
             op: DataRetrievalOp
             inputs: [entity]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: "docs/{name}.json"
               params:
                 - label: name
@@ -259,8 +259,8 @@ def test_data_spec_param_node_must_reference_known_id() -> None:
             op: DataRetrievalOp
             inputs: [query]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: docs/{entity}.json
               params:
                 - { label: entity, node: does_not_exist, path: data }
@@ -310,8 +310,8 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
             op: DataRetrievalOp
             inputs: [query]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: docs/{entity}.json
               params:
                 - { label: entity, node: query, path: data }

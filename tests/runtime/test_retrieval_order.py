@@ -47,7 +47,7 @@ def test_only_a_top_level_order_counts(template: str, accepted: bool) -> None:
     if accepted:
         _graph(template)
         return
-    with pytest.raises(ValueError, match="DataRetrievalOp '.*_Retrieve_.*'"):
+    with pytest.raises(ValueError, match="DataRetrievalOp '[^']*Retrieve[^']*'"):
         _graph(template)
 
 

@@ -146,7 +146,7 @@ def op_output(
         kind = OutputKind.DECLARED
     default_path: str | None
     if isinstance(op, DataRetrievalOp):
-        path = default_path = retrieval_items_path(op.data_spec["mode"])
+        path = default_path = retrieval_items_path(op.data_spec.mode)
     elif op.result_path is not None:
         path = default_path = op.result_path
     elif kind is OutputKind.API_ROW:

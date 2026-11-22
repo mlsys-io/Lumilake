@@ -1,4 +1,4 @@
-"""Submit-time checks for a ``DataRetrievalOp``'s row order.
+"""The ``data_spec`` of a ``DataRetrievalOp`` and its row-order rule.
 
 A SQL result has no defined row order without an ``ORDER BY``, so a spec that
 may return several rows from one parameter row must declare one, or declare
@@ -6,9 +6,20 @@ may return several rows from one parameter row must declare one, or declare
 """
 
 import re
-from typing import Any
+from typing import Any, Literal, Self
 
 import sqlparse
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from sqlparse.sql import Parenthesis, Token, TokenList
 from sqlparse.tokens import Comment, Keyword, Punctuation
 
@@ -20,25 +31,88 @@ _ORDER_BY = "ORDER BY"
 
 _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 
+_CHECK_ROW_ORDER = "check_row_order"
 
-def row_order_problem(data_spec: dict[str, Any]) -> str | None:
-    """The first problem a retrieval spec has with its row order, if any."""
-    rows = data_spec.get(ROWS_KEY)
-    if rows is not None and rows != ROWS_ONE:
-        return f"'rows' must be '{ROWS_ONE}' when declared (got {rows!r})"
-    if data_spec.get("mode") != "sql" or rows == ROWS_ONE:
-        return None
-    template = data_spec.get("template")
-    if not isinstance(template, str):
-        return None
-    if sql_has_top_level_order_by(template):
-        return None
-    return (
-        "a mode: sql retrieval returns rows in no defined order without a "
-        "top-level ORDER BY. End the query with an ORDER BY that breaks ties "
-        "(for example on the primary key), or declare 'rows: one' when each "
-        "parameter row returns at most one row"
-    )
+
+class RetrievalParam(BaseModel):
+    """One template slot: a literal ``data`` list or an upstream ``node``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    label: StrictStr | None = None
+    node: StrictStr | None = None
+    path: StrictStr | None = None
+    data: dict[StrictStr, Any] | None = None
+    input_ref: dict[StrictStr, Any] | None = None
+
+
+class RetrievalSpec(BaseModel):
+    """The ``data_spec`` block of a ``DataRetrievalOp``."""
+
+    model_config = ConfigDict(extra="allow")
+
+    type: Literal["lumid"] = "lumid"
+    mode: Literal["sql", "s3", "agent"]
+    rows: Literal["one"] | None = None
+    template: StrictStr | None = None
+    description: StrictStr | None = None
+    params: list[RetrievalParam] = []
+    table: StrictStr | None = None
+    output_format: StrictStr | None = None
+    encoding: StrictStr | None = None
+    schema_scope: StrictStr | None = None
+    max_steps: StrictInt | None = None
+    model: StrictStr | None = None
+    verify: StrictBool | None = None
+    sample_value: Any = None
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _rows_one(cls, value: Any) -> Any:
+        if value is not None and value != ROWS_ONE:
+            raise ValueError(
+                f"'{ROWS_KEY}' must be '{ROWS_ONE}' when declared (got {value!r})"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _row_order(self, info: ValidationInfo) -> Self:
+        if not (info.context or {}).get(_CHECK_ROW_ORDER):
+            return self
+        if self.mode != "sql" or self.rows == ROWS_ONE or self.template is None:
+            return self
+        if sql_has_top_level_order_by(self.template):
+            return self
+        raise ValueError(
+            "a mode: sql retrieval returns rows in no defined order without a "
+            "top-level ORDER BY. End the query with an ORDER BY that breaks ties "
+            "(for example on the primary key), or declare 'rows: one' when each "
+            "parameter row returns at most one row"
+        )
+
+    @classmethod
+    def load(cls, data: Any, where: str) -> Self:
+        """Validate a user-authored ``data_spec``, naming ``where`` on failure."""
+        try:
+            return cls.model_validate(data, context={_CHECK_ROW_ORDER: True})
+        except ValidationError as exc:
+            raise ValueError(f"{where}: {problem_text(exc)}") from None
+
+    @classmethod
+    def parse(cls, data: Any, where: str) -> Self:
+        """Convert a spec built in process, naming ``where`` on a shape error."""
+        try:
+            return cls.model_validate(data)
+        except ValidationError as exc:
+            raise ValueError(f"{where}: {problem_text(exc)}") from None
+
+
+def problem_text(exc: ValidationError) -> str:
+    """The first problem of a failed validation, prefixed with its field."""
+    problem = exc.errors()[0]
+    field = ".".join(str(part) for part in problem["loc"])
+    message = problem["msg"].removeprefix("Value error, ")
+    return f"{field}: {message}" if field else message
 
 
 def _carrying_tokens(tokens: list[Token]) -> list[Token]:

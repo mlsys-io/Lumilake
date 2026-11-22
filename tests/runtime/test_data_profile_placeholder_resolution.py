@@ -24,6 +24,7 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
+from lumilake_server.utils.retrieval_order import RetrievalParam
 from tests.support.data_specs import wire
 
 
@@ -517,11 +518,11 @@ class TestRecursiveResolverAndCycleGuard:
         with pytest.raises(ValueError, match="cycle"):
             builder._resolve_profile_param(
                 owner_node_id=op_a.id,
-                param={
-                    "label": "k",
-                    "node": "OP_B",
-                    "path": "items.table.x",
-                },
+                param=RetrievalParam(
+                    label="k",
+                    node="OP_B",
+                    path="items.table.x",
+                ),
                 graph_dict=graph_dict,
                 inputs_dict={stock.name: ["NVDA"]},
                 input_ops_by_id={},
