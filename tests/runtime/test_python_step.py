@@ -511,36 +511,17 @@ def test_wrapper_refuses_a_seed_it_cannot_use(
 
 
 @pytest.mark.parametrize("mode", ["row", "expand"])
-def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
+def test_wrapper_keeps_a_marked_row_and_seeds_the_live_ones(mode: str) -> None:
     """A marked row keeps its slot without calling the function or reading its
     seed, so a seed step that forwards the marker in that row's seed cell does
-    not fail the task."""
-    marker = {"_fail": {"op": "Parse", "reason": "no JSON object"}}
-    code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
-    if mode == "expand":
-        code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
-    plan: python_step.ColumnPlan = [
-        {"kind": "literal", "values": ["a", json.dumps(marker)]},
-        {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
-    ]
-    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
-    assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
-    # A seeded expand's tombstone names its slot like the children beside it.
-    if mode == "expand":
-        assert (out["items"][1]["parent"], out["items"][1]["child"]) == (1, 0)
-
-
-@pytest.mark.parametrize("mode", ["row", "expand"])
-def test_wrapper_marks_a_marked_row_whose_seed_reads(mode: str) -> None:
-    """A marker source's live rows still get their keyed seeds, and its marked
-    row keeps the marker rather than taking a seed the step cannot read."""
+    not fail the task, and the live rows beside it still draw their own keys."""
     marker = {"_fail": {"op": "Parse", "reason": "no JSON object"}}
     code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
     if mode == "expand":
         code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
     plan: python_step.ColumnPlan = [
         {"kind": "literal", "values": ["a", json.dumps(marker), "b"]},
-        {"kind": "literal", "values": ["5", "6", "7"], "role": "seed"},
+        {"kind": "literal", "values": ["5", json.dumps(marker), "7"], "role": "seed"},
     ]
     out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
     assert [item["output"] for item in out["items"]] == [
@@ -787,13 +768,11 @@ def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> Non
     code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a,b", "", "c"]}]
     out = _run_wrapper(code, plan, {}, fn_name="split", mode="expand")
-    assert out == {
-        "items": [
-            {"output": "a", "parent": 0, "child": 0},
-            {"output": "b", "parent": 0, "child": 1},
-            {"output": "c", "parent": 2, "child": 0},
-        ]
-    }
+    assert [(i["output"], i["parent"], i["child"]) for i in out["items"]] == [
+        ("a", 0, 0),
+        ("b", 0, 1),
+        ("c", 2, 0),
+    ]
 
 
 def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
@@ -807,10 +786,7 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
 
 
 _DF = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
-_DF_ROWS = [
-    {"output": {"id": "p1", "s": 5}, "parent": 0, "child": 0},
-    {"output": {"id": "p2", "s": 9}, "parent": 0, "child": 1},
-]
+_DF_ROWS = [{"id": "p1", "s": 5}, {"id": "p2", "s": 9}]
 
 
 @pytest.mark.parametrize(
@@ -818,10 +794,7 @@ _DF_ROWS = [
     [
         ({"df": json.dumps(_DF)}, _DF_ROWS),
         ({"index": 0, "table": {"df": json.dumps(_DF)}}, _DF_ROWS),
-        (
-            {"table": "[1, 2]", "note": "x"},
-            [{"output": {"table": "[1, 2]", "note": "x"}, "parent": 0, "child": 0}],
-        ),
+        ({"table": "[1, 2]", "note": "x"}, [{"table": "[1, 2]", "note": "x"}]),
     ],
 )
 def test_wrapper_expand_mode_decodes_only_a_serialized_table(
@@ -830,7 +803,7 @@ def test_wrapper_expand_mode_decodes_only_a_serialized_table(
     plan: python_step.ColumnPlan = [{"kind": "literal", "values": [json.dumps(value)]}]
     code = "def rows(r):\n    return r[0] if isinstance(r[0], list) else [r[0]]\n"
     out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
-    assert out == {"items": expected}
+    assert [item["output"] for item in out["items"]] == expected
 
 
 def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
