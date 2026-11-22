@@ -299,15 +299,12 @@ def test_a_user_function_returning_the_reserved_key_fails_the_task(
         _run([_parse(format="json"), writer], {"Answer": ['{"a": 1}']}, tmp_path)
 
 
-_EXPAND_UNITS: dict[str, Any] = {
-    "id": "E",
-    "op": "LambdaOp",
-    "inputs": ["Answer"],
-    "mode": "expand",
-    "fn_name": "units",
-    "code": "def units(row):\n"
-    "    return [u for u in row[0]['units'].split(',') if u]\n",
-}
+_EXPAND_UNITS = _lower(
+    mode="expand",
+    id="E",
+    inputs=["Answer"],
+    code="def f(row):\n    return [u for u in row[0]['units'].split(',') if u]\n",
+)
 _EMPTY_PARENT = ['{"units": "a,b"}', '{"units": ""}', '{"units": "c"}']
 
 
