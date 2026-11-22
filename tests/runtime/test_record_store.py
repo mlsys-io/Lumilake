@@ -465,9 +465,7 @@ def test_two_chat_ops_reading_different_prompts_differ() -> None:
 async def test_signature_changes_with_the_round(graph: Any) -> None:
     first = await _store(graph, _rows(), round_number=1)
     second = await _store(graph, _rows(), round_number=2)
-    assert {entry.digest for entry in first}.isdisjoint(
-        entry.digest for entry in second
-    )
+    assert {e.digest for e in first}.isdisjoint(e.digest for e in second)
 
 
 @pytest.mark.asyncio
@@ -485,11 +483,14 @@ async def test_lineage_walks_a_chain_from_the_archive(graph: Any) -> None:
         record="a",
         round_number=0,
     )
-    assert [entry.address.record for entry in chain] == ["a", "a"]
-    assert chain[0].address.op == _declared_name(graph, "Join")
-    assert chain[1].address.op == _declared_name(graph, "Mark")
-    assert chain[0].source.task_id == "task-Join"
-    assert chain[1].source.worker == "worker-1"
+    assert [(e.address.op, e.address.record) for e in chain] == [
+        (_declared_name(graph, "Join"), "a"),
+        (_declared_name(graph, "Mark"), "a"),
+    ]
+    assert (chain[0].source.task_id, chain[1].source.worker) == (
+        "task-Join",
+        "worker-1",
+    )
 
 
 @pytest.mark.asyncio
