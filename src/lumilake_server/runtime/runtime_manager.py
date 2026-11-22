@@ -40,8 +40,17 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
-from lumilake_server.runtime.record_writer import RecordWriter
+from lumilake_server.runtime.record_writer import (
+    NodeRecords,
+    RecordWriter,
+)
 from lumilake_server.runtime.request import RequestInfo
+from lumilake_server.runtime.reuse_planner import (
+    ReusePlan,
+    ReusePlanner,
+    rebuilt_output,
+    served_records,
+)
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
@@ -1486,6 +1495,10 @@ class FlowmeshRuntimeManager:
 
         self.logger.info(f"Submitting request {request_info.request_id} to Flowmesh.")
 
+        reuse_plan: ReusePlan | None = None
+        if request_info.reuse_records:
+            reuse_plan = await self._plan_reuse(request_info, schedule)
+
         # Build task spec from the runtime graph.
         task_spec, output_node_indices, flowmesh_to_raw = await self._build_task_spec(
             request_info,
@@ -1826,6 +1839,10 @@ class FlowmeshRuntimeManager:
                 prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
+        if reuse_plan is not None:
+            for node_id in reuse_plan.hit_nodes():
+                if node_id in request_info.runtime_graph.output_node_map:
+                    flat_outputs[node_id] = rebuilt_output(reuse_plan, node_id)
         if request_info.store_records and stored_responses:
             await self._write_records(
                 request_info,
@@ -1833,12 +1850,43 @@ class FlowmeshRuntimeManager:
                 node_task_map=node_task_map,
                 workflow_id=workflow_id,
                 results=stored_responses,
+                served=None if reuse_plan is None else served_records(reuse_plan),
             )
         return {
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
         }
+
+    async def _plan_reuse(
+        self, request_info: RequestInfo, schedule: Schedule
+    ) -> ReusePlan | None:
+        """Answer the batch from the store and dispatch only what it missed.
+
+        The plan rewrites ``request_info.runtime_graph`` to the ops that must
+        run and shrinks the schedule to them, so an all-hit batch submits
+        nothing. The plan is returned so the writer and the output step can use
+        the records it served; a failure keeps the job's full run."""
+        try:
+            plan, planned_graph = await ReusePlanner(
+                storage=get_job_storage(), logger=self.logger
+            ).plan(
+                runtime_graph=request_info.runtime_graph,
+                round_number=request_info.round_number,
+                job_id=request_info.request_id,
+            )
+        except ArchiveError as exc:
+            self.logger.warning(
+                "Record reuse plan failed for job %s (%s); running the full job",
+                request_info.request_id,
+                exc,
+            )
+            return None
+        request_info.runtime_graph = planned_graph
+        schedule.worker_assignment = dict(schedule.worker_assignment)
+        for node_id in plan.hit_nodes():
+            schedule.worker_assignment.pop(node_id, None)
+        return plan
 
     async def _write_records(
         self,
@@ -1848,6 +1896,7 @@ class FlowmeshRuntimeManager:
         node_task_map: Mapping[str, str],
         workflow_id: str,
         results: Mapping[str, Any],
+        served: Mapping[str, NodeRecords] | None = None,
     ) -> None:
         """Write this batch's records once, without failing the job: the values
         the job returns are already computed, so neither an archive error nor a
@@ -1872,6 +1921,7 @@ class FlowmeshRuntimeManager:
                 member_store=request_info.member_store,
                 member_rounds=request_info.member_rounds,
                 node_owners=request_info.task_owner_members,
+                served=served,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
