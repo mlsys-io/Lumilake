@@ -640,16 +640,15 @@ def _inherit_marker_keys(
     same position of the node's one keyed input."""
     for node_id in order:
         node_records = records.get(node_id)
-        if node_records is None or node_records.keys is None:
-            continue
         source = _keyed_input(runtime_graph, node_id, plans)
         inherited = None if source is None else records.get(source)
-        if inherited is None or inherited.keys is None:
+        if node_records is None or node_records.keys is None or inherited is None:
             continue
         for position, value in enumerate(node_records.values):
-            if node_records.keys[position] is None and is_marker(value):
-                if position < len(inherited.keys):
-                    node_records.keys[position] = inherited.keys[position]
+            if node_records.keys[position] is not None or not is_marker(value):
+                continue
+            if inherited.keys is not None and position < len(inherited.keys):
+                node_records.keys[position] = inherited.keys[position]
 
 
 def _record_values(response: Any) -> list[Any]:
