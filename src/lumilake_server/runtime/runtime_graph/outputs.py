@@ -39,8 +39,8 @@ _API_ITEM_PATH = "items.json.choices[0].message.content"
 
 
 def _drills_index(declared: str, root: str) -> bool:
-    """Whether a declared path reads a numeric position below the field that
-    holds a whole result, written either as ``.0.`` or ``[0]``."""
+    """Whether a declared path reads a numeric position below the whole-result
+    field, written either as ``.0.`` or ``[0]``."""
     field = root.rsplit(".", 1)[-1]
     segments = declared.replace("[", ".").replace("]", ".").split(".")
     if field not in segments:
@@ -79,8 +79,7 @@ class OpOutput:
     whole_result: bool = False
 
     def refuse_position(self, declared: str, consumer: str) -> None:
-        """Refuse a read of one position inside a value whose whole result is
-        one value, where no position is fixed."""
+        """Refuse a read of one position inside a whole-result value."""
         if not self.whole_result or self.kind is not OutputKind.DECLARED:
             return
         if not _drills_index(declared, self.path):
