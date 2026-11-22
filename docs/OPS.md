@@ -569,8 +569,18 @@ its parent's input-row index under `parent` and its own position under
 elements of one parent apart. A parent whose input row carries a failed record
 is not passed to the function: it emits one item carrying that marker, at
 `child: 0`, so every failed parent keeps a defined slot. A parent that returns
-an empty list emits nothing; the `parent` indices of the survivors are what
-tell "no children" from a lost row.
+an empty list emits nothing by default; `on_empty` decides what it does:
+
+- `drop` (the default) emits nothing, so the `parent` indices of the survivors
+  tell "no children" from a lost row.
+- `fail` emits one item carrying the marker `{"_fail": {"op": "<op id>",
+  "reason": "empty expansion"}}` at `child: 0`, so a downstream reader sees an
+  empty expansion as a failed parent rather than as a missing one.
+
+`on_empty` is accepted only in expand mode. An expand with `on_empty: fail` is a
+marker source, so a model op may not read one: the job is refused at submit
+under the same rule as a `ParseOp`, unless a router's rule or default branch
+drops the markers first. See [Failed records](#failed-records).
 
 ```yaml
 ops:
@@ -879,7 +889,9 @@ columns stay aligned.
   seed for a marked row, so a seed step that passes the marker on in that row's
   seed cell leaves the row marked instead of failing the task.
 - An expand `LambdaOp` emits one tombstone item carrying the marker for a
-  marked parent, and every item carries `parent` and `child`.
+  marked parent, and every item carries `parent` and `child`. A parent that
+  expands to no children emits its own marker under `on_empty: fail`, and
+  nothing under the default `drop`.
 - A reduce `LambdaOp` reads each row's key first: a marked row whose key reads
   joins its group, and `on_fail` decides that group. A row whose key cannot be
   read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
@@ -900,13 +912,14 @@ columns stay aligned.
   why.
 - A source carries markers when a `ParseOp` or an input whose value is a marker
   reaches it through any op except a router's rule or default branch, which
-  drop them. A model op (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`,
-  `LLMCompletionOp`, `EmbeddingOp`, or a rowwise seed or aggregate table) may
-  not read such a source: the job is refused at submit when a rowwise column,
-  aggregate table, rowwise seed or embedding content reads one. Read a router's
-  rule or default branch instead, so failed records never reach the model. An
-  earlier round's output is an input like any other, so a reference that binds
-  a marker follows the same rule.
+  drop them, or when an expand `LambdaOp` declares `on_empty: fail`. A model op
+  (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`, `LLMCompletionOp`,
+  `EmbeddingOp`, or a rowwise seed or aggregate table) may not read such a
+  source: the job is refused at submit when a rowwise column, aggregate table,
+  rowwise seed or embedding content reads one. Read a router's rule or default
+  branch instead, so failed records never reach the model. An earlier round's
+  output is an input like any other, so a reference that binds a marker follows
+  the same rule.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.
