@@ -21,12 +21,17 @@ _SEPARATOR = "\n\n"
 
 
 def _import_targets(tree: ast.Module) -> dict[str, str]:
-    """The module each top-level import binds a name to."""
+    """The module each top-level import binds a name to; a plain dotted import
+    binds its first part, an ``as`` alias and a ``from`` name the full target."""
     targets: dict[str, str] = {}
     for stmt in tree.body:
         if isinstance(stmt, ast.Import):
             for alias in stmt.names:
-                targets[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+                if alias.asname:
+                    targets[alias.asname] = alias.name
+                else:
+                    bound = alias.name.split(".", 1)[0]
+                    targets[bound] = bound
         elif isinstance(stmt, ast.ImportFrom) and stmt.level == 0 and stmt.module:
             for alias in stmt.names:
                 if alias.name != "*":

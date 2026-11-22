@@ -78,6 +78,18 @@ def test_an_inline_lambda_cannot_use_a_block() -> None:
         _build_runtime(spec)
 
 
+def test_a_dotted_import_and_its_package_are_the_same_target() -> None:
+    spec = _workflow()
+    spec["functions"] = {"paths": "import os.path\n"}
+    spec["ops"] = spec["ops"][:1]
+    spec["ops"][0].update(
+        uses=["paths"], code="import os\ndef op1(inputs):\n    return inputs\n"
+    )
+    spec["outputs"] = [{"name": "result", "ref": "op1"}]
+    (op,) = _lambda_ops(spec)
+    assert op.code.endswith("import os.path")
+
+
 @pytest.mark.parametrize(
     "edit, match",
     [
