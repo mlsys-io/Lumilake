@@ -36,7 +36,7 @@ outputs:
 
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
-Unquoted `on`, `yes`, or bare-number keys are read by YAML as non-strings; the server refuses such a workflow with a 400, so quote them.
+A workflow with an unquoted `on`, `yes` or bare-number key is refused with a 400, because YAML reads such a key as a boolean or number and workflow keys must be strings.
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `RouterOp`, and `RepeatOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
