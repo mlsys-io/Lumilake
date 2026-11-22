@@ -63,8 +63,8 @@ def _decoded_cell(value: Any) -> Any:
     return value
 
 
-def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
-    """A column-major table as one dict per row index, in index order."""
+def table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """A column-major table as one row per index, in index order."""
     rows: dict[str, dict[str, Any]] = {}
     for name, column in table.items():
         if not isinstance(column, dict):
@@ -91,7 +91,7 @@ def _decoded_rows(value: Any, where: str) -> list[Any]:
             raise ValueError(f"{where}: table is not JSON")
         if not isinstance(table, dict):
             raise ValueError(f"{where}: table is not a column table")
-        return _table_rows(table)
+        return table_rows(table)
     if isinstance(value, list):
         rows: list[Any] = []
         for item in value:
@@ -107,8 +107,8 @@ def _row_content(row: Any) -> Any:
         return row.get("text", row)
 
 
-def _serialized_table(value: Any) -> dict[str, Any] | None:
-    """The ``column -> row index -> value`` table ``value`` holds, or ``None``."""
+def serialized_table(value: Any) -> dict[str, Any] | None:
+    """A serialized table's column mapping, or ``None`` when ``value`` is not one."""
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -137,11 +137,11 @@ def _decode(value: Any) -> Any:
             return value
         return _decode(decoded) if isinstance(decoded, (dict, list)) else value
     if isinstance(value, dict):
-        table = _serialized_table(value)
+        table = serialized_table(value)
         if table is None and "table" in value:
-            table = _serialized_table(value["table"])
+            table = serialized_table(value["table"])
         if table is not None:
-            return _table_rows(table)
+            return table_rows(table)
     return value
 
 
