@@ -8,7 +8,7 @@ from lumilake import envs
 from lumilake_server.dynamic.driver import DriverProtocolError, validate_library
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
@@ -85,37 +85,28 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
     assert node.data_spec["require_non_empty_rows"] is False
 
 
-@pytest.mark.parametrize(
-    ("path", "refused"),
-    [("items.table.close", False), ("items.table.0.close", True)],
-)
-def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> None:
-    compiled = Graph.from_json(parse_yaml_payload(_reader_doc(path))["order"]["graph"])
-    with (
-        pytest.raises(ValueError, match="no position inside it")
-        if refused
-        else nullcontext()
-    ):
-        RuntimeGraphBuilder().build(compiled.compile(Stock=["NVDA"]))
-
-
-def _reader_doc(path: str, mode: str = "sql") -> str:
-    return (
-        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
-        '  - id: "Search"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
-        "      template: \"SELECT close FROM t WHERE symbol = '{symbol}'\"\n"
-        '      params:\n        - label: symbol\n          node: "Stock"\n'
-        '  - id: "Read"\n    op: LLMChatOp\n    inputs: [Search]\n'
-        '    messages:\n      - role: user\n        content: "close"\n'
-        '    rowwise_template: "Read {close}"\n'
-        "    rowwise_columns:\n"
-        f'      - {{label: close, node: Search, path: "{path}"}}\n'
-        "    config: {model: meta-llama/Llama-3.1-8B-Instruct}\n"
-    )
+@pytest.mark.parametrize("path", ["items.table.close", "items.table.0.close"])
+def test_rows_table_refuses_a_position_inside_it(path: str) -> None:
+    expect = pytest.raises(ValueError, match="no position inside it")
+    with expect if path.startswith("items.table.0") else nullcontext():
+        _reader_graph(path)
 
 
 def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
-    doc = _reader_doc("items.table", mode="s3")
     with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
-        Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
+        _reader_graph("items.table", mode="s3")
+
+
+def _reader_graph(path: str, mode: str = "sql") -> RuntimeGraph:
+    doc = (
+        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
+        '  - id: "Retrieve"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
+        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
+        '      template: "SELECT close FROM t"\n  - id: "Read"\n'
+        "    op: LLMChatOp\n    inputs: [Retrieve]\n    config: {model: m}\n"
+        '    messages: [{role: user, content: "close"}]\n'
+        '    rowwise_template: "Read {close}"\n'
+        f'    rowwise_columns: [{{label: close, node: Retrieve, path: "{path}"}}]\n'
+    )
+    graph = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
+    return RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
