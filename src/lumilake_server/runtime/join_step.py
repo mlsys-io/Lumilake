@@ -361,12 +361,22 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
     belong to. A source row that reads the row_key fields names one record, so
     its value lands on that output row alone; any other source row carries one
     value per by key, and it lands on every output row of that key. Values pair
-    with source rows as in a join without a row_key."""
+    with source rows as in a join without a row_key, and a marked source row
+    marks the output rows it reaches, as it does there."""
     targets = _AttachTargets(keyed)
     live = []
     for row in rows:
-        if carried_marker((row,)) is None:
+        carried = carried_marker((row,))
+        if carried is None:
             live.append(row)
+            continue
+        # A marked source row is the marker of the output rows it reaches even
+        # when no value pairs with it, since a value column may cover the live
+        # rows only.
+        for target in targets.reaches(row, where):
+            held = keyed[target][0]
+            if held not in marked:
+                marked[held] = carried
     pairs = _pairs(values, rows, live, where)
     if pairs is None:
         raise ValueError(
@@ -399,7 +409,8 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
 
 class _AttachTargets:
     """The output rows one attach source row's value reaches: the record its
-    row_key fields name, or else every output row of its by key."""
+    row_key fields name, or else every output row of its by key. A row whose
+    key cannot be read reaches none, since it is already its own marker."""
 
     def __init__(self, keyed):
         self._by_key = {{}}
@@ -410,10 +421,21 @@ class _AttachTargets:
         self._first_keys = _first_keys(keyed)
 
     def of(self, row, key, where):
+        """Fail the job for a row whose key cannot be read, which an attach
+        value still has to reach exactly one row through."""
         if key is None:
             raise ValueError(
                 "%s: a failed row whose key cannot be read cannot be placed" % where
             )
+        return self._reach(row, key, where)
+
+    def reaches(self, row, where):
+        """The same targets for a source row that is itself a marker, which is
+        placed by its own record when it has one."""
+        key = _key_of(row, where)
+        return [] if key is None else self._reach(row, key, where)
+
+    def _reach(self, row, key, where):
         record = _record_of(row, where)
         if record is not None:
             if record not in self._by_record:
