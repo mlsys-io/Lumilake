@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from lumid_hooks import PrincipalContext, ResourceRef
+from lumid_hooks import PrincipalContext
 
 import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
@@ -49,40 +49,15 @@ class _Identity:
         return _PRINCIPAL.model_copy(deep=True) if token == "token" else None
 
 
-class _Permissions:
-    name = "test.permissions"
-
-    async def accessible_ids(
-        self,
-        principal: PrincipalContext,
-        kind: str,
-        action: str,
-        logger: logging.Logger,
-    ) -> frozenset[str] | None:
-        return None
-
-    async def require(
-        self,
-        principal: PrincipalContext,
-        resource: ResourceRef,
-        action: str,
-        logger: logging.Logger,
-    ) -> None:
-        return None
-
-
 @pytest.fixture(autouse=True)
 def _hooks() -> Iterator[None]:
     hooks.IDENTITY_PROVIDERS.clear()
     hooks.SUBMISSION_GUARDS.clear()
     hooks.USAGE_SINKS.clear()
-    hooks.PERMISSION_CHECKERS.clear()
     hooks.RESOURCE_REGISTRARS.clear()
     hooks.IDENTITY_PROVIDERS.append(_Identity())
-    hooks.PERMISSION_CHECKERS.append(_Permissions())
     yield
     hooks.IDENTITY_PROVIDERS.clear()
-    hooks.PERMISSION_CHECKERS.clear()
 
 
 @pytest.fixture

@@ -1,6 +1,5 @@
-"""Per-record store: the writer stores one entry per logical record, keys are
-derived downstream, and the lineage read walks a record's inputs from the
-archive alone."""
+"""Per-record store: one entry per logical record, keys derived downstream, and
+a lineage read that walks a record's inputs from the archive alone."""
 
 import json
 import logging
@@ -486,27 +485,17 @@ def test_two_chat_ops_reading_different_prompts_differ() -> None:
     schema's own ``items`` stays, so two schemas whose arrays hold different
     element types differ too."""
     graph = _runtime_graph(_PATHS_WORKFLOW)
-    names = {
-        "X": _declared_name(graph, "AskX"),
-        "Y": _declared_name(graph, "AskY"),
-    }
-    asked = {
-        field: op_spec_digest(graph.nodes[_node_id(graph, f"Ask{field}")], names)
-        for field in "XY"
-    }
-    assert asked["X"] != asked["Y"]
-    node = graph.nodes[_node_id(graph, "AskX")]
-    schema = {
-        element: {
-            "response_format": {"json_schema": {"schema": {"items": {"type": element}}}}
-        }
-        for element in ("string", "integer")
-    }
-    assert op_spec_digest(
-        replace(node, task_type="api", api_spec={"json": schema["string"]}), names
-    ) != op_spec_digest(
-        replace(node, task_type="api", api_spec={"json": schema["integer"]}), names
-    )
+    names = {"X": _declared_name(graph, "AskX"), "Y": _declared_name(graph, "AskY")}
+
+    def asked(field: str, element: str = "none") -> str:
+        node = graph.nodes[_node_id(graph, f"Ask{field}")]
+        env = {"schema": {"items": {"type": element}}}
+        return op_spec_digest(
+            replace(node, task_type="api", api_spec={"json": env}), names
+        )
+
+    assert asked("X") != asked("Y")
+    assert asked("X", "string") != asked("X", "integer")
 
 
 @pytest.mark.asyncio
