@@ -108,10 +108,16 @@ def unroll_repeats(
     for spec in repeats.values():
         for body_id in spec.body_ids:
             if body_id in owner or body_id in plain:
-                raise ValueError(f"Repeat '{spec.id}' body id '{body_id}' is outside")
+                raise ValueError(
+                    f"Repeat '{spec.id}' body id '{body_id}' collides with an id "
+                    "outside the repeat"
+                )
             owner[body_id] = spec.id
         if spec.output_ref not in spec.body_ids:
-            raise ValueError(f"Repeat '{spec.id}' output is not a body id")
+            raise ValueError(
+                f"Repeat '{spec.id}' output '{spec.output_ref}' is not one of its "
+                f"body ids {sorted(spec.body_ids)}"
+            )
         if spec.input_ref not in known_ids | plain:
             raise ValueError(f"Repeat '{spec.id}' input '{spec.input_ref}' is unknown")
 
@@ -156,7 +162,9 @@ def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
         if op_kind in (REPEAT_OP, ROUTER_OP):
             raise ValueError(f"Repeat '{repeat_id}' body may not hold a '{op_kind}'")
         if not body_id or "." in body_id:
-            raise ValueError(f"Repeat '{repeat_id}' body id {body_id!r} needs no '.'")
+            raise ValueError(
+                f"Repeat '{repeat_id}' body id '{body_id}' may not contain '.'"
+            )
         body.append({**candidate, "id": body_id})
 
     source, carried = (_ref(entry, repeat_id, key) for key in ("input", "output"))

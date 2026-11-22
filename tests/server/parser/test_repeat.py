@@ -70,9 +70,13 @@ def test_a_single_iteration_reads_its_input_once() -> None:
     [
         pytest.param(_repeat(times="0"), "positive integer", id="times-zero"),
         pytest.param(_repeat(times='"3"'), "positive integer", id="times-string"),
-        pytest.param(_repeat(output="Missing"), "is not a body id", id="bad-output"),
         pytest.param(
-            _repeat().replace("id: Second", "id: A.B"), "needs no '.'", id="dotted-id"
+            _repeat(output="Missing"), "is not one of its body ids", id="bad-output"
+        ),
+        pytest.param(
+            _repeat().replace("id: Second", "id: A.B"),
+            "may not contain '.'",
+            id="dotted-id",
         ),
         pytest.param(_repeat(source="Nowhere"), "is unknown", id="unknown-input"),
         pytest.param(
@@ -88,7 +92,7 @@ def test_a_single_iteration_reads_its_input_once() -> None:
         pytest.param(_repeat(source="$in"), r"\$in", id="input-ref-as-source"),
         pytest.param(
             f"  - {_LAMBDA.format(id='First', inputs='[Start]')}\n" + _repeat(),
-            "is outside",
+            "collides with an id outside the repeat",
             id="body-id-collides-outside",
         ),
         pytest.param(
