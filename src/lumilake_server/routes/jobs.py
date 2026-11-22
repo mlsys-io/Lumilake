@@ -1130,8 +1130,9 @@ def _validate_list_lambda_slice_span(
     """Reject at submit time a list-derived output that would span more
     than one slice.
 
-    Neither a list-mode Lambda's whole-list result nor a row step below it can
-    be partitioned per slice.
+    A list-mode Lambda runs once over the whole input lists of one run, so its
+    single whole-list result cannot be partitioned per slice; neither can a
+    row step below it.
     """
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
