@@ -22,7 +22,9 @@ the computation, so two slices of one op store the same records under the same
 keys.
 
 Writing is off unless the job asked for it, and an archive failure never fails a
-job whose values were already computed and returned.
+job whose values were already computed and returned. A stored value is redacted
+the way the per-task artifact is, while its value digest stays over the raw
+value the job computed.
 """
 
 import asyncio
@@ -52,6 +54,7 @@ from lumilake_server.runtime.record_store import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.job_storage import ArchiveNotFound, JobStorage
 
 _LAMBDA_TASK_TYPE = "python"
@@ -301,7 +304,7 @@ class RecordWriter:
                     digest=digest,
                     address=address,
                     status="failed" if failed else "ok",
-                    value=value,
+                    value=redact_sensitive(value),
                     value_digest=value_hash,
                     input_digests=input_digests,
                     input_values=input_values,
