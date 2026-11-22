@@ -227,8 +227,6 @@ def _workflow_template_hash(workflow_payload: Any, workflow_format: str) -> str:
 
 
 def _refuse_non_string_yaml_keys(value: Any, idx: int, path: str) -> None:
-    """JSON object keys are strings, so a key YAML resolved to a bool or
-    number is refused here."""
     if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
