@@ -155,12 +155,14 @@ class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
     clears_markers: bool
     on_fail: str
+    on_empty: str
 
     LAMBDA_MODES = ("row", "list", "aligned", "expand", "reduce")
     # A row or expand Lambda may declare a keyed seed, which its generated step
     # derives per row and passes as the function's second argument.
     SEED_MODES = ("row", "expand")
     REDUCE_ON_FAIL = ("drop_failed", "fail_group")
+    EXPAND_ON_EMPTY = ("drop", "fail")
 
     @overload
     def __init__(
@@ -177,6 +179,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
     ) -> None: ...
 
     @overload
@@ -194,6 +197,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
     ) -> None: ...
 
     @overload
@@ -211,6 +215,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
     ) -> None: ...
 
     @overload
@@ -228,6 +233,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
     ) -> None: ...
 
     @overload
@@ -245,6 +251,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
         by: str | None = None,
         on_fail: str = "fail_group",
     ) -> None: ...
@@ -263,6 +270,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
+        on_empty: str = "drop",
         by: str | None = None,
         on_fail: str = "fail_group",
     ) -> None:
@@ -274,6 +282,15 @@ class LambdaOp(Op):
             raise ValueError(
                 f"LambdaOp seed is available in modes {self.SEED_MODES}, where"
                 f" the function runs once per row (got mode {mode!r})"
+            )
+        if on_empty not in self.EXPAND_ON_EMPTY:
+            raise ValueError(
+                f"LambdaOp 'on_empty' must be one of {self.EXPAND_ON_EMPTY}"
+                f" (got {on_empty!r})"
+            )
+        if on_empty != "drop" and mode != "expand":
+            raise ValueError(
+                f"LambdaOp 'on_empty' is only valid in expand mode (got mode {mode!r})"
             )
         if on_fail not in self.REDUCE_ON_FAIL:
             raise ValueError(
@@ -329,6 +346,9 @@ class LambdaOp(Op):
         # Set by the parser on the router branches it generated; never a
         # workflow field.
         self.clears_markers = clears_markers
+        # What a parent that expands to no children does: leave no record, or
+        # emit a failed-record marker for that parent.
+        self.on_empty = on_empty
         if code:
             self.code: str = code
         else:
@@ -379,6 +399,8 @@ class LambdaOp(Op):
             data["seed"] = self.seed
         if self.on_fail != "fail_group":
             data["on_fail"] = self.on_fail
+        if self.on_empty != "drop":
+            data["on_empty"] = self.on_empty
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
         if self.memory_mb is not None:
@@ -432,6 +454,7 @@ class LambdaOp(Op):
                 clears_markers=data.get(CLEARS_KEY, False),
                 seed=data.get("seed"),
                 on_fail=data.get("on_fail", "fail_group"),
+                on_empty=data.get("on_empty", "drop"),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc

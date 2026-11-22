@@ -86,3 +86,16 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
                 f" {LambdaOp.REDUCE_ON_FAIL} (got {on_fail!r})"
             )
         op_dict["on_fail"] = on_fail
+    on_empty = entry.fields.get("on_empty")
+    if on_empty is not None:
+        if mode != "expand":
+            raise ValueError(
+                f"LambdaOp '{entry.id}' on_empty is only valid in expand mode"
+                f" (got mode {mode!r})"
+            )
+        if on_empty not in LambdaOp.EXPAND_ON_EMPTY:
+            raise ValueError(
+                f"LambdaOp '{entry.id}' on_empty must be one of"
+                f" {LambdaOp.EXPAND_ON_EMPTY} (got {on_empty!r})"
+            )
+        op_dict["on_empty"] = on_empty
