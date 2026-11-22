@@ -296,13 +296,8 @@ def _resolve_table_nodes(
 ) -> ColumnTable | None:
     """Validate one ``aggregate_table``/``rowwise_columns`` table and rewrite
     each ``node`` user-id to the corresponding internal op id."""
-    if table is None:
-        return None
-    if not isinstance(table, list):
-        raise ValueError(f"{field} must be a list")
     columns = build_column_table(table, field)
-    assert columns is not None
-    for column in columns:
+    for column in columns or []:
         if isinstance(column, NodeColumn) and column.node in user_id_to_internal:
             column.node = user_id_to_internal[column.node]
     return columns

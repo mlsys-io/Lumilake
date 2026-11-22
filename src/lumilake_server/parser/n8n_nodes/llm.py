@@ -464,9 +464,9 @@ def _build_llm_chat_op(
     model_config: dict[str, Any],
     return_history: bool = False,
     structural_outputs: Any = None,
-    aggregate_table: Any = None,
+    aggregate_table: list[dict[str, Any]] | None = None,
     rowwise_template: str | None = None,
-    rowwise_columns: Any = None,
+    rowwise_columns: list[dict[str, Any]] | None = None,
     system_messages: list[str] | None = None,
 ) -> dict[str, Any]:
     aggregate_columns = build_column_table(aggregate_table, "aggregate_table")

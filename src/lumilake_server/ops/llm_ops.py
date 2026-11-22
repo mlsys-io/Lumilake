@@ -1,7 +1,8 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, StrictStr, TypeAdapter, ValidationError
 
 from lumilake_server.common import GenerationConfig, InputRef
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
@@ -27,10 +28,6 @@ class RowwiseMessages:
         if self.path is not None:
             payload["path"] = self.path
         return payload
-
-
-ColumnTable = list["LiteralColumn | NodeColumn"]
-ColumnTableIn = list["ColumnSpec | dict[str, Any]"]
 
 
 class ColumnSpec(BaseModel):
@@ -59,27 +56,27 @@ class NodeColumn(ColumnSpec):
     path: StrictStr | None = None
 
 
+ColumnTable = list[LiteralColumn | NodeColumn]
+ColumnTableIn = Sequence[ColumnSpec | dict[str, Any]]
+
+ColumnTableAdapter = TypeAdapter(list[NodeColumn | LiteralColumn])
+
+
 def build_column_table(table: ColumnTableIn | None, field: str) -> ColumnTable | None:
-    """Validate one column table, keeping the entries that are already specs."""
+    """Validate one column table through the column union."""
     if table is None:
         return None
-    columns: ColumnTable = []
-    for entry in table:
-        if isinstance(entry, LiteralColumn):
-            columns.append(entry)
-            continue
-        if isinstance(entry, NodeColumn):
-            columns.append(entry)
-            continue
-        try:
-            columns.append(
-                NodeColumn.model_validate(entry)
-                if "node" in entry
-                else LiteralColumn.model_validate(entry)
-            )
-        except ValidationError as exc:
-            raise ValueError(f"{field} column {entry!r} is invalid: {exc}") from exc
-    return columns
+    try:
+        return ColumnTableAdapter.validate_python(table)
+    except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
+        where = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error["loc"]
+            if part not in ("NodeColumn", "LiteralColumn")
+        )
+        message = str(error["msg"]).removeprefix("Value error, ")
+        raise ValueError(f"{field}{where}: {message}") from exc
 
 
 @dataclass(frozen=True)
@@ -190,9 +187,9 @@ class LLMChatOp(LLMOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         structural_outputs: dict[str, Any] | list[dict[str, Any]] | None = None,
-        aggregate_table: list[ColumnSpec | dict[str, Any]] | None = None,
+        aggregate_table: ColumnTableIn | None = None,
         rowwise_template: str | None = None,
-        rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTableIn | None = None,
         rowwise_messages: RowwiseMessages | None = None,
         rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
@@ -484,7 +481,7 @@ class LLMVisionOp(LLMChatOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         rowwise_template: str | None = None,
-        rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTableIn | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
     ) -> None:
@@ -549,7 +546,7 @@ def llm_vision(
     config: GenerationConfig | None = None,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: list[ColumnSpec | dict[str, Any]] | None = None,
+    rowwise_columns: ColumnTableIn | None = None,
     system_messages: list[str] | None = None,
     cacheable: bool = False,
 ) -> LLMVisionOp:
