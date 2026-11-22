@@ -82,25 +82,24 @@ class _Scoped(Mapping[str, str]):
 References = Callable[[Mapping[str, str], str, str], _Scoped]
 
 
-def unroll_repeats(
-    ops: list[Any], outputs: list[Any], known_ids: set[str]
-) -> tuple[list[Any], list[Any], References]:
+def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], References]:
     """Replace every ``Repeat`` entry with its unrolled iterations.
 
     ``known_ids`` holds the workflow input names, so a repeat's ``input``
     reference is checked at submit time. The returned callable binds a parser
     id map to one referring op, so its lookups resolve that op's names first.
     """
-    plain: set[str] = set()
+    plain = {
+        _entry_id(entry)
+        for entry in ops
+        if isinstance(entry, dict) and entry.get("op") != REPEAT_OP
+    }
     repeats: dict[str, _Repeat] = {}
     for idx, entry in enumerate(ops):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("op") != REPEAT_OP:
-            plain.add(_entry_id(entry))
+        if not isinstance(entry, dict) or entry.get("op") != REPEAT_OP:
             continue
         spec = _parse_repeat(entry, idx)
-        if spec.id in set(repeats) | known_ids or spec.id in plain:
+        if spec.id in repeats or spec.id in known_ids or spec.id in plain:
             raise ValueError(f"duplicate id '{spec.id}'")
         repeats[spec.id] = spec
 
@@ -139,7 +138,7 @@ def unroll_repeats(
     def bind(ids: Mapping[str, str], where: str, referrer: str) -> _Scoped:
         return _Scoped(ids, where, owner, frames.get(referrer, outside))
 
-    return unrolled, outputs, bind
+    return unrolled, bind
 
 
 def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
@@ -157,7 +156,11 @@ def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
     if not isinstance(raw_body, list) or not raw_body:
         raise ValueError(f"Repeat '{repeat_id}' requires a non-empty 'body' list")
     body: list[dict[str, Any]] = []
-    for candidate in raw_body:
+    for body_idx, candidate in enumerate(raw_body):
+        if not isinstance(candidate, dict):
+            raise ValueError(
+                f"Repeat '{repeat_id}' body entry {body_idx} must be a mapping"
+            )
         body_id, op_kind = _entry_id(candidate), candidate.get("op")
         if op_kind in (REPEAT_OP, ROUTER_OP):
             raise ValueError(f"Repeat '{repeat_id}' body may not hold a '{op_kind}'")

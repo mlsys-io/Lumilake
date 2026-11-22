@@ -205,9 +205,7 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
         raise ValueError("'outputs' must be a list")
 
     inputs = _validate_inputs(inputs_block)
-    ops_block, outputs_block, unroll = unroll_repeats(
-        ops_block, outputs_block, set(inputs)
-    )
+    ops_block, unroll = unroll_repeats(ops_block, set(inputs))
     ops_block = expand_routers(ops_block)
     op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(ops_block)]
     output_entries = [
