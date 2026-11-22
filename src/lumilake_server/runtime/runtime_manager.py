@@ -1869,6 +1869,9 @@ class FlowmeshRuntimeManager:
                 node_task_map=node_task_map,
                 task_worker=workers,
                 results=results,
+                member_store=request_info.member_store,
+                member_rounds=request_info.member_rounds,
+                node_owners=request_info.task_owner_members,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(

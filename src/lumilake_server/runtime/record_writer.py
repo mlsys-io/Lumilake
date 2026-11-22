@@ -161,19 +161,29 @@ class RecordWriter:
         node_task_map: Mapping[str, str],
         task_worker: Mapping[str, str | None],
         results: Mapping[str, Any],
+        member_store: Mapping[str, bool] | None = None,
+        member_rounds: Mapping[str, int] | None = None,
+        node_owners: Mapping[str, set[str]] | None = None,
     ) -> int:
         """Write the records of every node this batch produced.
 
         ``results`` maps a task id to its fetched FlowMesh response. Returns the
         number of entries written.
-        """
+
+        A batch may hold several jobs. Each entry is written under the round of
+        the member jobs that own its node, and only a job that asked for the
+        store takes the entry into its index: a batch's first job's flag never
+        speaks for the others."""
         if not self._enabled or not results:
             return 0
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
         records = _collect_node_records(runtime_graph, plans, node_task_map, results)
+        store = {} if member_store is None else member_store
+        rounds_of = {} if member_rounds is None else member_rounds
+        owners_of = {} if node_owners is None else node_owners
         unversioned: set[str] = set()
-        entries: list[RecordEntry] = []
+        written: list[tuple[RecordEntry, list[tuple[str, int]]]] = []
         for node_id in order:
             node_records = records.get(node_id)
             plan = plans[node_id]
@@ -181,6 +191,11 @@ class RecordWriter:
                 continue
             task_id = node_task_map.get(node_id)
             if task_id is None:
+                continue
+            storing = _storing_owners(
+                node_id, member_job_ids, store=store, owners=owners_of
+            )
+            if not storing:
                 continue
             inputs = _record_inputs(plan, records)
             if _reads_unversioned(plan) or any(
@@ -190,13 +205,17 @@ class RecordWriter:
             versions = EffectVersions(unversioned=node_id in unversioned)
             source = RecordSource(
                 job=job_id,
-                round=round_number,
+                round=max(rounds_of.get(member, round_number) for member in storing),
                 task_id=task_id,
                 worker=task_worker.get(task_id),
                 member_jobs=list(member_job_ids),
             )
-            entries.extend(
-                self._node_entries(
+            targets = sorted(
+                (member, rounds_of.get(member, round_number)) for member in storing
+            )
+            written.extend(
+                (entry, targets)
+                for entry in self._node_entries(
                     plan=plan,
                     node_records=node_records,
                     inputs=inputs,
@@ -204,13 +223,16 @@ class RecordWriter:
                     source=source,
                 )
             )
+        entries = [entry for entry, _ in written]
         for entry in entries:
             await asyncio.to_thread(
                 self._save_entry_once,
                 entry,
             )
         if entries:
-            await self._write_indexes(member_job_ids or [job_id], entries)
+            for entry, targets in written:
+                for member, member_round in targets:
+                    await self._write_index(member, entry, member_round)
             self.logger.info(
                 "Record store wrote %d record(s) for job %s round %d",
                 len(entries),
@@ -291,29 +313,23 @@ class RecordWriter:
             )
         return entries
 
-    async def _write_indexes(
-        self, job_ids: Sequence[str], entries: Sequence[RecordEntry]
+    async def _write_index(
+        self, job_id: str, entry: RecordEntry, member_round: int
     ) -> None:
-        """Add this batch's entries to each job that shared the task, so a
-        lineage read from any of them finds its records."""
-        for job_id in dict.fromkeys(job_ids):
-            await self._write_index(job_id, entries)
-
-    async def _write_index(self, job_id: str, entries: Sequence[RecordEntry]) -> None:
-        """Add this batch's entries to one job's index object."""
+        """Add one entry to one job's index object, at the round that job
+        runs the record's op in."""
         known = await asyncio.to_thread(read_index, self._storage, job_id)
         listed: dict[tuple[str, str | None, int], str] = (
             {
-                (entry.op, entry.record, entry.round): entry.digest
-                for entry in known.entries
+                (known_entry.op, known_entry.record, known_entry.round): (
+                    known_entry.digest
+                )
+                for known_entry in known.entries
             }
             if known is not None
             else {}
         )
-        for entry in entries:
-            listed[(entry.address.op, entry.address.record, entry.address.round)] = (
-                entry.digest
-            )
+        listed[(entry.address.op, entry.address.record, member_round)] = entry.digest
         index = RecordIndex(
             job=job_id,
             entries=[
@@ -334,6 +350,28 @@ def record_key_at(keys: list[str | None] | None, position: int) -> str | None:
     if keys is None:
         return None
     return keys[position]
+
+
+def _storing_owners(
+    node_id: str,
+    member_job_ids: Sequence[str],
+    *,
+    store: Mapping[str, bool],
+    owners: Mapping[str, set[str]],
+) -> list[str]:
+    """The members that own ``node_id`` and asked for the store.
+
+    A node whose owning members are unknown belongs to every member, so a caller
+    that names no owners stores for all of them."""
+    owning = owners.get(node_id)
+    candidates = (
+        list(member_job_ids)
+        if owning is None
+        else [member for member in member_job_ids if member in owning]
+    )
+    if not store:
+        return candidates
+    return [member for member in candidates if store.get(member, False)]
 
 
 def _position_inputs(

@@ -3057,7 +3057,13 @@ class LumilakeServer:
                 for worker in selected_workers
                 if worker_profiles[worker]["has_gpu"]
             },
-            store_records=batch.config.store,
+            store_records=any(item.config.store for item in batch.workflows),
+            member_store={
+                item.request_id: item.config.store for item in batch.workflows
+            },
+            member_rounds={
+                item.request_id: item.config.semantic_round for item in batch.workflows
+            },
             round_number=batch.config.semantic_round,
         )
         batch_request_info.batch_id = batch_id
