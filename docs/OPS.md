@@ -49,9 +49,12 @@ those rows come back in:
   result: the table, with its columns and rows in the order the database
   returned them. The result is one value rather than a set of records, so
   the `ORDER BY` rule does not apply, and the order inside it is whatever
-  the query gives. A downstream op must not treat a position inside that
-  value as an identity, because nothing fixes it. An empty result is one
-  record holding an empty table, not a failure.
+  the query gives. Nothing fixes a position inside that value, so submit
+  refuses a node path that drills a numeric index under the result field,
+  naming the consumer, the op and the path. User code in a `LambdaOp` that
+  indexes the table itself is not checked, and must not treat a position
+  as an identity either. An empty result is one record holding an empty
+  table, not a failure.
 - An `agent` retrieval replays SQL it writes at run time, so its order is
   not visible at submit and is not checked.
 - A library template entry (`library:` in a dynamic workflow) is checked at

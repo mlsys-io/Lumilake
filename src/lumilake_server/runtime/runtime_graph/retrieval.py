@@ -256,6 +256,12 @@ class _RetrievalBuilder(_LLMBuilder):
                             ),
                         ),
                     }
+                elif upstream is not None:
+                    self._op_output(upstream).refuse_position(
+                        param.get("path") or "",
+                        f"DataRetrievalOp '{op_id}' template param"
+                        f" {param.get('label')!r}",
+                    )
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
