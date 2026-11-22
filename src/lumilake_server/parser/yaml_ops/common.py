@@ -1,7 +1,7 @@
 """Shared types for the YAML op emitters, which fill in one entry's op-specific
 fields and may queue implicit upstream ops."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -24,7 +24,7 @@ class OpEntry:
 @dataclass
 class EmitContext:
     entry: OpEntry
-    user_id_to_internal: dict[str, str]
+    user_id_to_internal: Mapping[str, str]
     scope: str
     graph_ops: dict[str, dict[str, Any]]
 

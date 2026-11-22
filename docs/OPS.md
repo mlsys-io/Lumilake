@@ -19,6 +19,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Partition one source op's rows into named branches, one ordinary node per branch. |
+| `RepeatOp` | Run an op body a fixed number of times; the parser unrolls it into ordinary nodes. |
 
 ## YAML Use
 
