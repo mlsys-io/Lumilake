@@ -14,6 +14,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.record_store import (
     RecordEntry,
+    digest_of,
     entry_object_name,
     op_spec_digest,
 )
@@ -24,6 +25,7 @@ from lumilake_server.runtime.record_writer import (
     read_index,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.sensitive import REDACTED_TOKEN_PLACEHOLDER
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _CODE_KEYED = (
@@ -487,6 +489,19 @@ async def test_a_batch_indexes_each_member_at_its_own_round(graph: Any) -> None:
     assert mark_index is not None and join_index is not None
     assert mark_index.rounds() == [1]
     assert join_index.rounds() == [2]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_value_is_redacted_but_its_digest_is_the_raw_graph(
+    graph: Any,
+) -> None:
+    """A response that echoes a credential is stored the way the per-task
+    artifact is, redacted, while its value digest stays over the raw value the
+    job computed."""
+    raw = {"id": "a", "body": {"Authorization": "Bearer sk-live"}}
+    (entry,) = await _store(graph, {"Mark": [raw]})
+    assert REDACTED_TOKEN_PLACEHOLDER in json.dumps(entry.value)
+    assert entry.value_digest == digest_of(raw)
 
 
 def test_ops_reading_different_paths_get_different_signatures() -> None:
