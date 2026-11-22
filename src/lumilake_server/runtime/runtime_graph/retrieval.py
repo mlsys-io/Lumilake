@@ -23,7 +23,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
-from lumilake_server.utils.retrieval_order import ROWS_KEY, ROWS_ONE
+from lumilake_server.utils.retrieval_order import ROWS_KEY, ROWS_ONE, ROWS_TABLE
 
 
 def _default_sql_sampler(query: str) -> list[Any]:
@@ -256,6 +256,12 @@ class _RetrievalBuilder(_LLMBuilder):
                             ),
                         ),
                     }
+                elif upstream is not None:
+                    self._op_output(upstream).refuse_position(
+                        param.get("path") or "",
+                        f"DataRetrievalOp '{op_id}' template param"
+                        f" {param.get('label')!r}",
+                    )
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
@@ -306,6 +312,11 @@ class _RetrievalBuilder(_LLMBuilder):
             data_spec["verify"] = spec["verify"]
         if spec.get(ROWS_KEY) == ROWS_ONE:
             data_spec[ROWS_KEY] = ROWS_ONE
+        elif spec.get(ROWS_KEY) == ROWS_TABLE:
+            data_spec[ROWS_KEY] = ROWS_TABLE
+            # The whole result is the value, so an empty one is a record
+            # holding an empty table rather than a failed retrieval.
+            data_spec["require_non_empty_rows"] = False
 
         node = self._create_runtime_op(
             name=op_id,

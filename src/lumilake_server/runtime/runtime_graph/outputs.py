@@ -22,6 +22,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.ops import RowShape
+from lumilake_server.utils.retrieval_order import ROWS_KEY, ROWS_TABLE
 
 
 def item_relative_path(path: str) -> str:
@@ -38,6 +39,16 @@ _VALUE_ROOT = "value.items.output"
 _OUTPUT = "output"
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
+
+
+def _drills_index(declared: str, root: str) -> bool:
+    """Whether a declared path reads a numeric position below the field that
+    holds a whole result, written either as ``.0.`` or ``[0]``."""
+    field = root.rsplit(".", 1)[-1]
+    segments = declared.replace("[", ".").replace("]", ".").split(".")
+    if field not in segments:
+        return False
+    return any(part.isdigit() for part in segments[segments.index(field) + 1 :])
 
 
 class OutputKind(Enum):
@@ -71,9 +82,25 @@ class OpOutput:
     kind: OutputKind
     one_item_per_row: bool
     needs_flatten: bool
+    whole_result: bool = False
+
+    def refuse_position(self, declared: str, consumer: str) -> None:
+        """Refuse a read of one position inside a value whose whole result is
+        one value, where no position is fixed."""
+        if not self.whole_result or self.kind is not OutputKind.DECLARED:
+            return
+        if not _drills_index(declared, self.path):
+            return
+        raise ValueError(
+            f"{consumer} reads '{declared}' from op '{self.node}', which"
+            " declares its whole result as one value; no position inside it"
+            " is fixed, so it is not an identity. Read the whole value or one"
+            " of its columns instead."
+        )
 
     def read(self, declared: str, consumer: str) -> str:
         """Map a declared ``items.output``-rooted read onto this output."""
+        self.refuse_position(declared, consumer)
         if self.kind is OutputKind.DECLARED:
             return declared
         if declared == _WHOLE:
@@ -189,6 +216,9 @@ def op_output(
         kind=kind,
         one_item_per_row=emits_one_item_per_row(op),
         needs_flatten=needs_flatten(op),
+        whole_result=(
+            isinstance(op, DataRetrievalOp) and op.data_spec.get(ROWS_KEY) == ROWS_TABLE
+        ),
     )
 
 
