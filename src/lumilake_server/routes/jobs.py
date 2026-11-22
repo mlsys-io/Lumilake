@@ -412,8 +412,7 @@ def _render_dynamic_round0(
 def _refuse_repeated_seed_keys(
     workflow_format: str, workflow_payload: Any, inputs: dict[str, list[str]]
 ) -> None:
-    """Refuse a repeated seed key over the whole input set, before slicing
-    splits it, so a repeat across two slices cannot pass one slice's check."""
+    """Refuse a repeated seed key before slicing splits the input set."""
     if workflow_format != "yaml" or not isinstance(workflow_payload, dict):
         return
     try:

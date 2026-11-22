@@ -264,7 +264,7 @@ ops:
           return [k for k in row[0].split(",") if k.strip()]
 ```
 
-A `row` or `expand` `LambdaOp` takes an optional keyed `seed`, shaped and checked like a chat op's `rowwise_seed` key form. The seed reaches the function as a second argument, so it can draw from `random.Random(seed)`; a function without `seed` keeps its one-argument signature, and a seeded one must accept exactly two. The key's node must be listed in `inputs:`, and the seed column carries exactly one seed per row, so one seed handed to several rows fails the step naming the op and both counts. Each seed must be an integer or a JSON integer text; a float, a bool or other text fails naming the op and the row. `list`, `aligned` and `reduce` modes take no `seed`.
+A `row` or `expand` `LambdaOp` takes an optional keyed `seed`, shaped and checked like a chat op's `rowwise_seed` key form. The seed reaches the function as a second argument, so it can draw from `random.Random(seed)`; a function without `seed` keeps its one-argument signature, and a seeded one must accept exactly two. The key's node must be listed in `inputs:`. `list`, `aligned` and `reduce` modes take no `seed`.
 
 ```yaml
 ops:

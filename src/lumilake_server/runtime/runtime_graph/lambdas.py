@@ -95,9 +95,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         ctx: LoweringContext,
         dependencies: list[str],
     ) -> python_step.ColumnPlan:
-        """Tag the plan entry a seeded Lambda reads its key column from, so its
-        step passes each row's seed as a second argument. The seed node is one
-        of the op's declared inputs, so its entry is already in the plan."""
+        """Tag the plan entry a seeded Lambda reads its key column from."""
         if op.seed is None:
             return plan
         seed_node = op.seed["node"]

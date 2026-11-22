@@ -227,11 +227,8 @@ def _get_job_seed(spec: dict[str, Any]) -> int:
 def check_keyed_seed_duplicates(
     spec: dict[str, Any], inputs: dict[str, list[str]]
 ) -> None:
-    """Refuse a repeated key in a key form whose column this input set
-    supplies, before the set is split into slices: a key repeated across two
-    slices would otherwise pass each slice's own check and draw one shared
-    seed. A column is the input set's when it is an input or a literal data op;
-    any other producer's rows are not known until it runs."""
+    """Refuse a repeated key over the whole input set, before slicing splits
+    it; only an input column or a literal data op is visible here."""
     ops_block = spec.get("ops")
     if not isinstance(ops_block, list):
         return
