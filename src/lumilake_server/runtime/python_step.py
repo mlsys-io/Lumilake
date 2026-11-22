@@ -315,7 +315,7 @@ def main(inputs):
         if marked is None and seeds is not None and seeds[index] is None:
             marked = failure_of(cells[index])
         if marked is not None:
-            # A marked row keeps its slot and carries the marker onward.
+            # A marked row keeps one defined slot, so no child is run or lost.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
         values = fn(row) if seeds is None else fn(row, seeds[index])
