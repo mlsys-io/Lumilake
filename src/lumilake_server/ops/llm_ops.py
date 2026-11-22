@@ -65,7 +65,10 @@ def build_column_table(table: ColumnTableIn | None, field: str) -> ColumnTable |
         return None
     columns: ColumnTable = []
     for entry in table:
-        if isinstance(entry, (LiteralColumn, NodeColumn)):
+        if isinstance(entry, LiteralColumn):
+            columns.append(entry)
+            continue
+        if isinstance(entry, NodeColumn):
             columns.append(entry)
             continue
         try:

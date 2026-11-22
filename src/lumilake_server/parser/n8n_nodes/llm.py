@@ -523,7 +523,7 @@ def _build_llm_vision_op(
     image_path: str,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: list[dict[str, Any]] | None = None,
+    rowwise_columns: Any = None,
     system_messages: list[str] | None = None,
 ) -> dict[str, Any]:
     op: dict[str, Any] = {
@@ -540,8 +540,9 @@ def _build_llm_vision_op(
     }
     if rowwise_template is not None:
         op["rowwise_template"] = rowwise_template
-    if rowwise_columns is not None:
-        op["rowwise_columns"] = rowwise_columns
+    vision_columns = build_column_table(rowwise_columns, "rowwise_columns")
+    if vision_columns is not None:
+        op["rowwise_columns"] = [column.to_dict() for column in vision_columns]
     if system_messages is not None:
         op["system_messages"] = system_messages
     return op
