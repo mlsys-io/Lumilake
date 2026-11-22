@@ -513,6 +513,35 @@ async def test_lineage_walks_a_chain_from_the_archive(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_keyed_consumer_of_an_unwritten_node_raises_value_error() -> None:
+    """A keyed node owned only by a non-storing member is passed over, so its
+    keyed consumer can reach a position with no signature. The write says so
+    with a ``ValueError``, which the job catches, so the promise that a store
+    write never fails a job holds whatever the ownership invariant does."""
+    storage = InMemoryJobStorage()
+    writer = RecordWriter(
+        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
+    )
+    graph = _runtime_graph(_payload())
+    mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
+    with pytest.raises(ValueError, match="has no signature yet"):
+        await writer.write(
+            job_id="req-one",
+            member_job_ids=["req-one", "req-two"],
+            round_number=0,
+            runtime_graph=graph,
+            node_task_map={mark: "task-Mark", join: "task-Join"},
+            task_worker={},
+            results={
+                task: {"items": [{"output": {"id": "a", "text": "ONE"}}]}
+                for task in ("task-Mark", "task-Join")
+            },
+            member_store={"req-one": True, "req-two": False},
+            node_owners={mark: {"req-two"}, join: {"req-one"}},
+        )
+
+
+@pytest.mark.asyncio
 async def test_a_record_is_written_once(graph: Any) -> None:
     """A second job that computes the same record adds its index entry but
     leaves the record object as the first job wrote it, so the stored source

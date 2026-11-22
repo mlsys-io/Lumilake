@@ -116,7 +116,7 @@ class NodeRecords:
         if key in self.digests:
             digest, value = self.digests[key]
             return digest, value or ""
-        raise KeyError(
+        raise ValueError(
             f"record {key!r} at position {position} has no signature yet: every"
             " keyed node is written before its consumers"
         )
