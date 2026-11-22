@@ -142,6 +142,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             data_spec["by"] = op.by
         if op.mode == "reduce":
             data_spec["on_fail"] = op.on_fail
+        if op.mode == "expand":
+            data_spec["on_empty"] = op.on_empty
         if op.memory_mb is not None:
             data_spec["memory_mb"] = op.memory_mb
         if op.image is not None:

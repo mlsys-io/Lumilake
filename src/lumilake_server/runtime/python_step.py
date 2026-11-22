@@ -280,6 +280,8 @@ def main(inputs):
 
 _EXPAND_MAIN = """\
 
+_ON_EMPTY = {on_empty!r}
+
 def main(inputs):
     (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
     fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
@@ -319,6 +321,20 @@ def main(inputs):
                 "%s: expand lambda %r returned %s; expected a list"
                 % ({op_id!r}, _FN_NAME, type(values).__name__)
             )
+        if not values and _ON_EMPTY == "fail":
+            # A parent with no children emits a failed record instead of
+            # leaving no record at all, so a downstream reader can tell an
+            # empty expansion from a lost row.
+            items.append(
+                {{
+                    "output": {{
+                        "_fail": {{"op": {op_id!r}, "reason": "empty expansion"}}
+                    }},
+                    "parent": index,
+                    "child": 0,
+                }}
+            )
+            continue
         items.extend(
             {{"output": v, "parent": index, "child": child}}
             for child, v in enumerate(values)
@@ -639,6 +655,7 @@ def wrapper_source(
     mode: str = "row",
     by: str | None = None,
     on_fail: str = "fail_group",
+    on_empty: str = "drop",
 ) -> str:
     """The python-task code for one standalone LambdaOp. A seeded step carries
     its derived-seed column in the plan, tagged ``role: seed``, and passes each
@@ -663,6 +680,7 @@ def wrapper_source(
         plan=json.dumps(plan),
         by=by,
         on_fail=on_fail,
+        on_empty=on_empty,
     )
 
 
@@ -697,6 +715,7 @@ def flowmesh_spec(
             mode,
             data_spec.get("by"),
             data_spec.get("on_fail", "fail_group"),
+            data_spec.get("on_empty", "drop"),
         )
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,
