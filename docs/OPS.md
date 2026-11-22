@@ -55,7 +55,8 @@ those rows come back in:
   naming the consumer, the op and the path. User code in a `LambdaOp` that
   indexes the table itself is not checked, and must not treat a position
   as an identity either. An empty result is one record holding an empty
-  table, not a failure.
+  table, not a failure. An n8n Postgres node declares it with
+  `"rows": "table"` in its `notes`.
 - An `agent` retrieval replays SQL it writes at run time, so its order is
   not visible at submit and is not checked.
 - A library template entry (`library:` in a dynamic workflow) is checked at
