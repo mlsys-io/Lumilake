@@ -41,6 +41,7 @@ from lumilake_server.runtime.flowmesh_client import (
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
 from lumilake_server.runtime.request import RequestInfo
+from lumilake_server.runtime.retrieval_key_check import key_problem
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
@@ -50,7 +51,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_key import key_problem, retrieval_key_column
+from lumilake_server.utils.retrieval_key import retrieval_key_column
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
