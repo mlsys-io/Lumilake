@@ -90,9 +90,12 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
     [("items.table.close", False), ("items.table.0.close", True)],
 )
 def test_rows_table_refuses_a_position_inside_it(path: str, refused: bool) -> None:
-    doc = _reader_doc(path)
-    compiled = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
-    with pytest.raises(ValueError) if refused else nullcontext():
+    compiled = Graph.from_json(parse_yaml_payload(_reader_doc(path))["order"]["graph"])
+    with (
+        pytest.raises(ValueError, match="no position inside it")
+        if refused
+        else nullcontext()
+    ):
         RuntimeGraphBuilder().build(compiled.compile(Stock=["NVDA"]))
 
 
@@ -103,11 +106,16 @@ def _reader_doc(path: str, mode: str = "sql") -> str:
         f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
         "      template: \"SELECT close FROM t WHERE symbol = '{symbol}'\"\n"
         '      params:\n        - label: symbol\n          node: "Stock"\n'
-        f'outputs:\n  - name: rows\n    ref: "Search"\n    path: "{path}"\n'
+        '  - id: "Read"\n    op: LLMChatOp\n    inputs: [Search]\n'
+        '    messages:\n      - role: user\n        content: "close"\n'
+        '    rowwise_template: "Read {close}"\n'
+        "    rowwise_columns:\n"
+        f'      - {{label: close, node: Search, path: "{path}"}}\n'
+        "    config: {model: meta-llama/Llama-3.1-8B-Instruct}\n"
     )
 
 
 def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
-    doc = _reader_doc("items.table").replace("mode: sql", "mode: s3")
+    doc = _reader_doc("items.table", mode="s3")
     with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
         Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
