@@ -1474,8 +1474,7 @@ class FlowmeshRuntimeManager:
     ) -> dict[str, Any]:
         """Fetch a task's raw FlowMesh response and archive it as a job
         artifact, redacting the untrusted body before persisting it. Returns
-        the archived response when its body is a JSON object, and ``{}``
-        otherwise."""
+        the response when it is a JSON object, and ``{}`` otherwise."""
         try:
             result = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1502,8 +1501,7 @@ class FlowmeshRuntimeManager:
         node_ids: list[str],
         response_data: dict[str, Any],
     ) -> None:
-        """Fail a keyed retrieval whose result breaks its declared key,
-        naming the op, the key column and both row positions of a repeat."""
+        """Fail a keyed retrieval whose result breaks its declared key."""
         for node_id in node_ids:
             node = runtime_graph.nodes.get(node_id)
             if node is None or not isinstance(node.data_spec, RetrievalData):

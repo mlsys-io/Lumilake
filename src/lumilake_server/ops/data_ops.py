@@ -55,8 +55,7 @@ class DataRetrievalOp(FunctionalOp):
 
     @property
     def key_column(self) -> str | None:
-        """The column that holds each emitted row's record key, when the spec
-        declares ``key: {column: <name>}``."""
+        """The column that holds each emitted row's record key, if declared."""
         return self.data_spec.key.column if self.data_spec.key is not None else None
 
     @classmethod

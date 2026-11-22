@@ -1,9 +1,8 @@
-"""The arrival check of a retrieval's declared record key.
+"""The arrival check of a retrieval's declared record key: a row without the
+key column, a null key or a repeated key fails the job.
 
-A keyed ``DataRetrievalOp``'s result is checked as its task's response
-arrives: a row without the key column, a row whose key is null and a repeated
-key each fail the job, naming the op. A task carries one slice of a
-parametrized run's rows, and the slices are not compared with each other.
+One task's result is checked at a time, so the slices of a parametrized run are
+not compared with each other.
 """
 
 import json
@@ -13,9 +12,8 @@ from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_
 
 
 def key_problem(op_id: str, items: Any, column: str) -> str | None:
-    """Describe the first problem one retrieval task's result has with its
-    declared key, or ``None`` when every row of it carries a distinct,
-    non-null value in ``column``."""
+    """The first problem one task's result has with its declared key, or
+    ``None`` when every row carries a distinct, non-null value in it."""
     if not isinstance(items, list):
         return None
     seen: dict[str, tuple[int, int | None]] = {}
@@ -60,9 +58,8 @@ def _position(row_position: int, item_index: Any) -> str:
 
 
 def _key_text(value: Any) -> str:
-    """A key value as the text a repeat is reported and compared by: a string
-    key is its own text, and any other JSON value is written canonically so
-    ``1`` and ``"1"`` stay distinct keys."""
+    """A key value as compared and reported: a string is its own text, any
+    other JSON value is written canonically, so ``1`` and ``"1"`` differ."""
     if isinstance(value, str):
         return value
     return json.dumps(value, sort_keys=True, ensure_ascii=False)

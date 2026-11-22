@@ -1,12 +1,8 @@
 """A ``DataRetrievalOp``'s declared record key.
 
 ``key: {column: <name>}`` names the column whose value is each emitted row's
-record key. The key is declared once, where the rows are produced, and a
-consumer reads it at ``items.table.<column>``; without the declaration a row
-has no logical key. The declaration is checked where the op is built: a key
-that is not a non-empty column, or that a non-``sql`` mode cannot carry,
-is refused. The keys of each arrived result are checked separately, in
-``retrieval_key_check``.
+key, read at ``items.table.<column>``. The declaration is checked where the op
+is built; the keys of each arrived result in ``retrieval_key_check``.
 """
 
 from typing import Any
@@ -17,8 +13,8 @@ COLUMN_FIELD = "column"
 
 
 def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
-    """Describe the first problem with a declared ``key``, or ``None`` when it
-    is absent or well-formed."""
+    """The first problem with a declared ``key``, or ``None`` if it is
+    well-formed."""
     key = data_spec.get(KEY_FIELD)
     if key is None:
         return None
@@ -39,7 +35,6 @@ def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
 
 
 def retrieval_key_column(data_spec: dict[str, Any]) -> str | None:
-    """The column that holds each emitted row's record key, when the spec
-    declares ``key: {column: <name>}``."""
+    """The column that holds each emitted row's record key, if declared."""
     key = data_spec.get(KEY_FIELD)
     return key[COLUMN_FIELD] if isinstance(key, dict) else None
