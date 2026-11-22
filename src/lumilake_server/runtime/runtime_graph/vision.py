@@ -1,6 +1,6 @@
 from typing import Any
 
-from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, Op
+from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import (
@@ -37,6 +37,7 @@ class _VisionBuilder(_RetrievalBuilder):
         nodes a flattened per-row VLM runs as."""
         ctx.visited.add(op.id)
         ctx.visited.add(op.image_source)
+        self._mark_literal_column_producers_visited(op.rowwise_columns, ctx.visited)
         runtime_ops = self._build_vlm_nodes_from_image_op(
             op.id,
             op,
@@ -77,13 +78,12 @@ class _VisionBuilder(_RetrievalBuilder):
                     columns.append({"label": label, "data": data})
                     continue
                 if isinstance(label, str) and isinstance(node_ref, str):
-                    if path is None and not isinstance(
-                        graph_dict.get(node_ref), InputOp
-                    ):
+                    upstream = graph_dict.get(node_ref)
+                    if path is None and not isinstance(upstream, (InputOp, DataOp)):
                         raise ValueError(
                             f"Column '{label}' of consumer '{llm_op_id}'"
                             f" references node '{node_ref}' without a path;"
-                            " only InputOp refs may omit it."
+                            " only InputOp and DataOp refs may omit it."
                         )
                     self._guard_marked_column(
                         consumer_id=llm_op_id,
@@ -96,7 +96,7 @@ class _VisionBuilder(_RetrievalBuilder):
                             label=label,
                             node_ref=node_ref,
                             path=path if isinstance(path, str) else "",
-                            upstream=graph_dict.get(node_ref),
+                            upstream=upstream,
                             inputs_dict=inputs_dict,
                         )
                     )

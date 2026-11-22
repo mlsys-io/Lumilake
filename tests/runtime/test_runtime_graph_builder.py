@@ -1677,6 +1677,47 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
     assert stock.id not in (node.dependencies or [])
 
 
+_DATAOP_COLUMN_WORKFLOW = """
+name: dataop_column
+inputs: {Topic: []}
+ops:
+  - {id: Const, op: DataOp, data: ["a database index", "a lunar eclipse"]}
+  - id: Ask
+    op: LLMChatOp
+    inputs: [Const]
+    messages: [{role: user, content: ""}]
+COLUMN    config: {model: dummy-model}
+outputs: [{name: answer, ref: Ask}]
+"""
+
+_DATAOP_COLUMN_FORMS = {
+    "rowwise_columns": '    rowwise_template: "Explain {topic}."\n    rowwise_columns: '
+    "[{label: topic, node: Const, path: items.output}]\n",
+    "aggregate_table": '    prompt: {template: "Explain {df}."}\n    aggregate_table: '
+    "[{label: topic, node: Const, path: items.output}]\n",
+}
+
+
+@pytest.mark.parametrize("form", sorted(_DATAOP_COLUMN_FORMS))
+def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
+    """A chat column that reads a DataOp carries its values, the way an InputOp
+    column does, and leaves no dangling node reference behind."""
+    yaml_text = _DATAOP_COLUMN_WORKFLOW.replace("COLUMN", _DATAOP_COLUMN_FORMS[form])
+    spec = next(iter(parse_yaml_payload(yaml_text).values()))
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+
+    (node,) = runtime_graph.nodes.values()
+    columns = node.data_spec.get("columns") or node.data_spec["template"]["columns"]
+    (column,) = columns[0]["data"]["columns"] if form == "aggregate_table" else columns
+    assert column == {
+        "label": "topic",
+        "data": {"type": "list", "items": ["a database index", "a lunar eclipse"]},
+    }
+    assert not node.dependencies
+
+
 def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
     """A non-empty ``path`` on an InputOp aggregate column is rejected."""
     stock = input_placeholder("Stock")

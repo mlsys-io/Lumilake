@@ -26,10 +26,8 @@ _ANSWER: dict[str, Any] = {
     "inputs": ["Cases"],
     "config": {"model": "m"},
     "messages": [{"role": "user", "content": "placeholder"}],
-    "rowwise_template": "{question}",
-    "rowwise_columns": [
-        {"label": "question", "node": "Cases", "path": "items.output.question"}
-    ],
+    "rowwise_template": "{row}",
+    "rowwise_columns": [{"label": "row", "node": "Cases", "path": "items.output"}],
     "rowwise_seed": {
         "key": {"node": "Cases", "path": "items.output.case_id"},
         "pairing": "shared",

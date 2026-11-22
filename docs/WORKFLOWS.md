@@ -144,7 +144,7 @@ that run when each task's result arrives.
 
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
-An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
+An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` with an empty `path` (`path: ""`, or no `path` at all, or, for a `DataOp`, `items.output`), in which case the referenced literal values are inlined as the column's list rather than read from a runtime envelope.
 
 A `sql`-mode retrieval must define its row order: end the query with a top-level `ORDER BY` that breaks ties on a unique column, or declare `rows: one` for a lookup that returns at most one row per parameter row. Submit rejects a query with neither, naming the op. A retrieval whose whole result is one value declares `rows: table` instead: each parameter row emits one record holding the whole table, in whatever order the query returns it, and an empty result is one record holding an empty table. See [`docs/OPS.md`](OPS.md) for the full rule.
 
