@@ -56,7 +56,7 @@ ops:
 
 Iteration `i` (one-based) copies every body entry as an op id `Retry.i.<bodyId>`. Inside the body, `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, and a reference to another body id resolves within the same iteration; any other reference reads an op outside the repeat. Elsewhere in the workflow, `Retry` refers to `Retry.<times>.<output>`. Each unrolled iteration is an ordinary declared op, so seeds, cache keys, the optimizer, and the record store see distinct ids. A `RouterOp` cannot appear in a body.
 
-A `Repeat` is refused at submit, with a 4xx naming it, when `times` is not a positive integer, the entry has an unknown field, `input` names no earlier id, `output` is not a body id, a body id contains `.` or collides with an id outside the repeat, a body contains another `Repeat` or a `RouterOp`, an op outside the repeat reads a body id directly, or `$in` appears outside a body or as `input`/`output`.
+A `Repeat` is refused at submit, with a 4xx naming it, when `times` is not a positive integer, the entry has an unknown field, the repeat id is already taken outside it, `input` names no earlier id, `output` is not a body id, a body entry is not a mapping, a body id contains `.` or collides with an id outside the repeat, a body contains another `Repeat` or a `RouterOp`, an op outside the repeat reads a body id directly, or `$in` appears outside a body or as `input`/`output`.
 
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
