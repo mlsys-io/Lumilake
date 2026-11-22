@@ -297,16 +297,11 @@ async def test_signature_follows_the_inputs(constant: bool) -> None:
             payload["ops"][0].update(fn_name="constant", code=_CODE_CONSTANT)
         graph = _runtime_graph(payload)
         text = "SAME" if constant else round_index.upper()
-        stored.append(
-            {
-                (e.address.op, e.address.record): e
-                for e in await _store(graph, _rows(text))
-            }
-        )
+        stored.append(_keys(await _store(graph, _rows(text))))
         mark, join = _declared_name(graph, "Mark"), _declared_name(graph, "Join")
     first, second = stored
-    assert (first[mark, "a"].digest == second[mark, "a"].digest) is not constant
-    assert first[join, "a"].digest != second[join, "a"].digest
+    assert (first[mark, "a"] == second[mark, "a"]) is not constant
+    assert first[join, "a"] != second[join, "a"]
 
 
 @pytest.mark.asyncio
@@ -322,9 +317,10 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
         ("two", json.dumps({"_fail": {"reason": "boom"}})),
         ("one", {"id": "a"}),
     ):
-        payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
         stored = await _store(
-            _runtime_graph(payload),
+            _runtime_graph(
+                _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
+            ),
             {"Mark": [{"id": "a", "text": "SAME"}], "Join": [value]},
         )
         entries.append(next(e for e in stored if e.address.op == join))
@@ -357,8 +353,7 @@ async def test_whole_op_record_names_every_input_row() -> None:
         graph = _runtime_graph(payload)
         mark = [{"id": "a", "text": "ONE"}, {"id": "b", "text": second}]
         keys.append(_keys(await _store(graph, {"Mark": mark, "Read": [mark]})))
-    mark_name = _declared_name(graph, "Mark")
-    read_name = _declared_name(graph, "Read")
+    mark_name, read_name = _declared_name(graph, "Mark"), _declared_name(graph, "Read")
     assert keys[0][mark_name, "a"] == keys[1][mark_name, "a"]
     assert keys[0][read_name, None] != keys[1][read_name, None]
 
@@ -372,6 +367,16 @@ def _paths_graph(**changes: Any) -> Any:
     return graph
 
 
+def _hosted(seed: int) -> Any:
+    """The paths workflow with its chats made hosted op calls of one seed."""
+    return _paths_graph(
+        task_type="api",
+        model_spec={},
+        inference_spec={},
+        api_spec={"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}},
+    )
+
+
 async def _asked(graph: Any, job_id: str = "req-1") -> RecordEntry:
     """The one whole-op record of the ``AskX`` chat in a stored batch."""
     entries = await _store(
@@ -383,45 +388,29 @@ async def _asked(graph: Any, job_id: str = "req-1") -> RecordEntry:
 @pytest.mark.asyncio
 async def test_a_draw_no_seed_reproduces_gets_its_own_key() -> None:
     """A sampling draw that no seed pins names its own production, so two runs
-    never share its key; a hosted chat's seed lives in its request body, so two
-    seeds are two draws."""
+    never share its key. A hosted chat's seed lives in its request body, so two
+    seeds are two draws - and that source promises no snapshot, so one seed in
+    two jobs still names two productions, the seed kept as information."""
     unseeded = _paths_graph(task_type="inference", inference_spec={"temperature": 0.7})
     runs = [await _asked(unseeded, job_id) for job_id in ("req-one", "req-two")]
     assert [e.realization.production for e in runs] == [
         "req-one/task-AskX",
         "req-two/task-AskX",
     ]
-    digests = set()
+    digests = {}
     for seed in (7, 8):
-        graph = _paths_graph(
-            task_type="api",
-            model_spec={},
-            inference_spec={},
-            api_spec={"json": {"model": "m", "messages": "{{prompt}}", "seed": seed}},
-        )
-        entry = await _asked(graph)
+        entry = await _asked(_hosted(seed))
         assert entry.realization.seed == seed
-        digests.add(entry.digest)
-    assert len(digests) == 2 and digests.isdisjoint(e.digest for e in runs)
-
-
-@pytest.mark.asyncio
-async def test_a_seeded_unversioned_record_names_its_production() -> None:
-    """A hosted chat reads a source that promises no snapshot, so one seed in
-    two jobs names two productions: the seed stays as information only, and
-    neither job answers from the other's draw."""
-    graph = _paths_graph(
-        task_type="api",
-        model_spec={},
-        inference_spec={},
-        api_spec={"json": {"model": "m", "messages": "{{prompt}}", "seed": 7}},
+        digests[seed] = entry.digest
+    assert len(set(digests.values())) == 2 and set(digests.values()).isdisjoint(
+        e.digest for e in runs
     )
-    runs = [await _asked(graph, job_id) for job_id in ("req-one", "req-two")]
-    assert [(e.realization.production, e.realization.seed) for e in runs] == [
+    same_seed = [await _asked(_hosted(7), job_id) for job_id in ("req-one", "req-two")]
+    assert [(e.realization.production, e.realization.seed) for e in same_seed] == [
         ("req-one/task-AskX", 7),
         ("req-two/task-AskX", 7),
     ]
-    assert runs[0].digest != runs[1].digest
+    assert len({e.digest for e in same_seed}) == 2
 
 
 @pytest.mark.asyncio
@@ -498,28 +487,26 @@ def test_two_chat_ops_reading_different_prompts_differ() -> None:
     element types differ too."""
     graph = _runtime_graph(_PATHS_WORKFLOW)
     names = {
-        node_id: graph.op_names.get(node_id, op)
-        for op, ids in graph.dsl_to_runtime.items()
-        for node_id in ids
+        "X": _declared_name(graph, "AskX"),
+        "Y": _declared_name(graph, "AskY"),
     }
     asked = {
-        field: op_spec_digest(graph.nodes[_node_id(graph, field)], names)
-        for field in ("AskX", "AskY")
+        field: op_spec_digest(graph.nodes[_node_id(graph, f"Ask{field}")], names)
+        for field in "XY"
     }
-    assert asked["AskX"] != asked["AskY"]
-
+    assert asked["X"] != asked["Y"]
     node = graph.nodes[_node_id(graph, "AskX")]
-    names = {node.node_id: "AskX"}
-
-    def schema(element: str) -> str:
-        env = {
+    schema = {
+        element: {
             "response_format": {"json_schema": {"schema": {"items": {"type": element}}}}
         }
-        return op_spec_digest(
-            replace(node, task_type="api", api_spec={"json": env}), names
-        )
-
-    assert schema("string") != schema("integer")
+        for element in ("string", "integer")
+    }
+    assert op_spec_digest(
+        replace(node, task_type="api", api_spec={"json": schema["string"]}), names
+    ) != op_spec_digest(
+        replace(node, task_type="api", api_spec={"json": schema["integer"]}), names
+    )
 
 
 @pytest.mark.asyncio
