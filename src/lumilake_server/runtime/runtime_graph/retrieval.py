@@ -225,6 +225,11 @@ class _RetrievalBuilder(_LLMBuilder):
                         f"DataRetrievalOp '{op_id}' template param {param.label!r}",
                     )
                     resolved = param.model_copy(update={"path": path})
+                elif upstream is not None:
+                    self._op_output(upstream).refuse_position(
+                        param.path or "",
+                        f"DataRetrievalOp '{op_id}' template param {param.label!r}",
+                    )
                 if param.node not in seen:
                     seen.add(param.node)
                     dependencies.append(param.node)
