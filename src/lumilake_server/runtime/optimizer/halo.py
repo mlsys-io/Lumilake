@@ -17,6 +17,13 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.data_specs import (
+    DataSpecModel,
+    RetrievalData,
+    S3ProfileData,
+    SqlProfileData,
+    dump_data_spec,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -43,15 +50,21 @@ _HF_SAFETENSORS_FILE = "model.safetensors"
 _HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 
 
-def _retrieval_is_data_profile_eligible(data_spec: Mapping[str, Any]) -> bool:
-    """True when the retrieval is sql or s3 — accepts both the runtime
-    ``type=lumid, mode=sql|s3`` shape and the bare ``type=sql|s3`` shape
-    that profile-graph nodes carry."""
-    spec_type = data_spec.get("type")
-    if spec_type in {"sql", "s3"}:
+def _retrieval_is_data_profile_eligible(
+    data_spec: DataSpecModel | Mapping[str, Any],
+) -> bool:
+    """True when the retrieval is sql or s3 — the runtime ``type=lumid,
+    mode=sql|s3`` shape, or the bare ``type=sql|s3`` shape a profile-graph
+    node carries."""
+    if isinstance(data_spec, (SqlProfileData, S3ProfileData)):
         return True
-    if spec_type == "lumid":
-        return data_spec.get("mode") in {"sql", "s3"}
+    if isinstance(data_spec, RetrievalData):
+        return data_spec.mode in {"sql", "s3"} or data_spec.type in {"sql", "s3"}
+    if isinstance(data_spec, Mapping):
+        spec_type = data_spec.get("type")
+        if spec_type in {"sql", "s3"}:
+            return True
+        return spec_type == "lumid" and data_spec.get("mode") in {"sql", "s3"}
     return False
 
 
@@ -214,10 +227,8 @@ class HaloOptimizer(BaseOptimizer):
                 db_queries: tuple[DBQuery, ...] = ()
                 if engine == "db":
                     sql_template = ""
-                    if isinstance(op.data_spec, dict):
-                        template = op.data_spec.get("template")
-                        if isinstance(template, str):
-                            sql_template = template
+                    if isinstance(op.data_spec, RetrievalData):
+                        sql_template = op.data_spec.template or ""
                     db_queries = (
                         DBQuery(
                             name=f"{node_id}_query",
@@ -633,7 +644,7 @@ class HaloOptimizer(BaseOptimizer):
 
     @staticmethod
     def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:
-        raw = dict(op.data_spec) if isinstance(op.data_spec, dict) else {}
+        raw = dump_data_spec(op.data_spec)
         if isinstance(op.inference_spec, dict) and op.inference_spec:
             raw["_inference_spec"] = dict(op.inference_spec)
         if deps and "parent" not in raw:
@@ -872,7 +883,9 @@ class HaloOptimizer(BaseOptimizer):
     def _resolve_input_query_count(self, graph: RuntimeGraph) -> int:
         inferred_lengths: list[int] = []
         for op in graph.nodes.values():
-            inferred_lengths.extend(self._collect_input_lengths(op.data_spec))
+            inferred_lengths.extend(
+                self._collect_input_lengths(dump_data_spec(op.data_spec))
+            )
         inferred = max(inferred_lengths) if inferred_lengths else 0
         resolved = inferred if inferred > 0 else self._input_query_count_default
         self.logger.debug(

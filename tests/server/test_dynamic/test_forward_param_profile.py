@@ -6,6 +6,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import forward_refs
 from lumilake_server.graphs import Graph
@@ -215,8 +216,8 @@ def test_forwarded_sql_param_is_literal_in_execution_graph() -> None:
         ]
         # The forwarded start_date is inlined as a literal value into the
         # template, with no node reference to a node missing from the graph.
-        assert "node" not in str(retrieval.data_spec["params"])
+        assert "node" not in str(dump_data_spec(retrieval.data_spec)["params"])
         assert any(
-            value in retrieval.data_spec["template"]
+            value in dump_data_spec(retrieval.data_spec)["template"]
             for value in ("2023-01-01T00:00:00Z", "2020-01-01T00:00:00Z")
         )

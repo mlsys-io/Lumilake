@@ -67,7 +67,11 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={"type": "dataframe", "template": {"name": "summary"}},
+            data_spec={
+                "type": "dataframe",
+                "columns": [],
+                "messages": [{"role": "user", "content": "summary"}],
+            },
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_s3"),

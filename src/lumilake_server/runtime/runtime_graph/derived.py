@@ -3,6 +3,12 @@ from dataclasses import replace
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import (
+    ColumnPlanEntry,
+    DataSpecModel,
+    ListData,
+    PythonData,
+)
 from lumilake_server.ops import DataOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.classification_ops import (
     ClassificationOp,
@@ -67,16 +73,18 @@ class _DerivedBuilder(_VisionBuilder):
         return replace(self._op_output(op_ref), node=runtime_ids[-1])
 
     @staticmethod
-    def _stage_plan(values: list[str] | OpOutput) -> dict[str, Any]:
+    def _stage_plan(values: list[str] | OpOutput) -> ColumnPlanEntry:
         if not isinstance(values, OpOutput):
-            return {"kind": "literal", "values": values or []}
-        entry: dict[str, Any] = {"kind": "stage", "node": values.node}
-        if values.needs_flatten:
-            entry["flatten"] = True
-        elif values.path:
-            path = item_relative_path(values.path)
-            entry["path"] = re.sub(r"\[(\d+)\]", r".\1", path)
-        return entry
+            return ColumnPlanEntry(kind="literal", values=values or [])
+        path = None
+        if not values.needs_flatten and values.path:
+            path = re.sub(r"\[(\d+)\]", r".\1", item_relative_path(values.path))
+        return ColumnPlanEntry(
+            kind="stage",
+            node=values.node,
+            flatten=True if values.needs_flatten else None,
+            path=path,
+        )
 
     def _flatten_step(self, op_id: str, upstream: OpOutput) -> RuntimeOp:
         """A python step that flattens an upstream's grouped output to one value
@@ -85,13 +93,13 @@ class _DerivedBuilder(_VisionBuilder):
         return self._create_runtime_op(
             name=node_id,
             task_type=python_step.TASK_TYPE,
-            data_spec={
-                "mode": "flatten_step",
+            data_spec=PythonData(
+                mode="flatten_step",
                 # No path: the worker's flatten branch expands both shapes —
                 # a local group's ``output`` list and API ``rows``.
-                "plan": [{"kind": "stage", "node": upstream.node, "flatten": True}],
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            },
+                plan=[ColumnPlanEntry(kind="stage", node=upstream.node, flatten=True)],
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+            ),
             model_spec={},
             inference_spec={},
             backend=python_step.BACKEND,
@@ -101,7 +109,7 @@ class _DerivedBuilder(_VisionBuilder):
 
     def _fetch_data_spec(
         self, op_id: str, query_op: Op, ctx: LoweringContext
-    ) -> tuple[dict[str, Any], list[str], list[RuntimeOp]]:
+    ) -> tuple[DataSpecModel, list[str], list[RuntimeOp]]:
         """The list data spec a fetch reads: literal queries, one upstream row
         per request, or a flatten step's items when the upstream groups rows."""
         consumer = f"HttpFetchOp '{op_id}'"
@@ -109,18 +117,18 @@ class _DerivedBuilder(_VisionBuilder):
         if isinstance(values, list):
             if not values:
                 raise ValueError(f"{consumer} requires at least one query")
-            return {"type": "list", "items": values}, [], []
+            return ListData(type="list", items=list(values)), [], []
         if values.needs_flatten:
             # A grouped upstream yields one item per table, so only a python
             # step can expand it to one value per row.
             step = self._flatten_step(op_id, values)
             return (
-                {"type": "list", "items": f"${{{step.node_id}.value.items}}"},
+                ListData(type="list", items=[f"${{{step.node_id}.value.items}}"]),
                 [step.node_id],
                 [step],
             )
         return (
-            {"type": "list", "node": values.node, "path": values.path},
+            ListData(type="list", node=values.node, path=values.path),
             [values.node],
             [],
         )
@@ -181,23 +189,23 @@ class _DerivedBuilder(_VisionBuilder):
             raise ValueError(f"ClassificationOp '{op_id}' has empty candidate list")
         if isinstance(query_values, list) and isinstance(candidate_values, list):
             pairs = literal_pairs(query_values, candidate_values, op_id=op_id)
-            data_spec: dict[str, Any] = {
-                "type": "list",
-                "items": [
+            data_spec = ListData(
+                type="list",
+                items=[
                     {"text": pair.query, "text_pair": pair.candidate} for pair in pairs
                 ],
-            }
+            )
             dependencies: list[str] = []
         else:
             pairs_node_id = f"{op_id}__pairs"
-            pairs_data_spec = {
-                "mode": "pairs",
-                "plan": [
+            pairs_data_spec = PythonData(
+                mode="pairs",
+                plan=[
                     self._stage_plan(query_values),
                     self._stage_plan(candidate_values),
                 ],
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            }
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+            )
             pairs_dependencies: list[str] = []
             for values in (query_values, candidate_values):
                 if (
@@ -217,10 +225,9 @@ class _DerivedBuilder(_VisionBuilder):
                     dependencies=pairs_dependencies or None,
                 )
             )
-            data_spec = {
-                "type": "list",
-                "items": f"${{{pairs_node_id}.value.items}}",
-            }
+            data_spec = ListData(
+                type="list", items=[f"${{{pairs_node_id}.value.items}}"]
+            )
             dependencies = [pairs_node_id]
 
         backend = op.config.backend

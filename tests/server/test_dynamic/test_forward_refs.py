@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -794,7 +795,7 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
-    assert node.data_spec["seeds"] == [7, 9]
+    assert dump_data_spec(node.data_spec)["seeds"] == [7, 9]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
@@ -850,7 +851,8 @@ def test_forward_aligned_materializers_are_row_cardinality():
     aligned = [
         node
         for node in graph.nodes.values()
-        if node.task_type == "python" and node.data_spec.get("mode") == "aligned"
+        if node.task_type == "python"
+        and dump_data_spec(node.data_spec).get("mode") == "aligned"
     ]
     assert len(aligned) == 2
     # Neither the materializers nor News Report are whole-list-per-run.
@@ -863,7 +865,9 @@ def test_forward_aligned_materializers_are_row_cardinality():
     )
     assert report.node_id not in cardinality
     # News Report's columns still read the materializers at value.items.output.
-    df_columns = report.data_spec["template"]["columns"][0]["data"]["columns"]
+    df_columns = dump_data_spec(report.data_spec)["template"]["columns"][0]["data"][
+        "columns"
+    ]
     assert [c["label"] for c in df_columns] == ["title", "summary"]
     for column in df_columns:
         assert column["path"] == "value.items.output"

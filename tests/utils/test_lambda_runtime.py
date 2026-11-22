@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
@@ -363,7 +364,9 @@ def test_yaml_limits_reach_the_op() -> None:
 
 def test_submitted_literal_lambda_is_not_folded_by_the_server() -> None:
     runtime = _build(_CHAIN)
-    rendered = json.dumps([node.data_spec for node in runtime.nodes.values()])
+    rendered = json.dumps(
+        [dump_data_spec(node.data_spec) for node in runtime.nodes.values()]
+    )
     assert "HELLO, WORLD!" not in rendered
     assert "def shout" in rendered
 
@@ -528,7 +531,7 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     graph = Graph.from_json(spec["graph"])
     runtime = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
     (node,) = [n for n in runtime.nodes.values() if n.task_type == "python"]
-    assert "import math" in node.data_spec["code"]
+    assert "import math" in dump_data_spec(node.data_spec)["code"]
 
 
 def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:

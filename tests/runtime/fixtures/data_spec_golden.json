@@ -1,0 +1,302 @@
+{
+  "completion_vision_image": {
+    "AFFLPE7XSyVYdzjeRuJ7wV": {
+      "data_spec": {
+        "items": [
+          "hi"
+        ],
+        "type": "list"
+      },
+      "task_type": "omni_text2image"
+    },
+    "FQUFmwGfNTTvjkWczBFoBE": {
+      "data_spec": {
+        "encoding": "utf-8",
+        "lumid_data_token": "test-token",
+        "lumid_data_url": "http://lumid-data",
+        "mode": "s3",
+        "params": [],
+        "template": "example-data/news/images/NVDA.png",
+        "type": "lumid"
+      },
+      "task_type": "data_retrieval"
+    },
+    "PNh4JwoEAxUZoresuwdVUe": {
+      "data_spec": {
+        "mode": "regroup",
+        "plan": [
+          {
+            "kind": "stage",
+            "label": "outputs",
+            "node": "PNh4JwoEAxUZoresuwdVUe_infer"
+          },
+          {
+            "kind": "stage",
+            "label": "rows",
+            "node": "PNh4JwoEAxUZoresuwdVUe_flatten",
+            "path": "row"
+          },
+          {
+            "grouped": true,
+            "kind": "stage",
+            "label": "groups",
+            "node": "FQUFmwGfNTTvjkWczBFoBE",
+            "path": "content"
+          }
+        ],
+        "timeout_s": 600
+      },
+      "task_type": "python"
+    },
+    "PNh4JwoEAxUZoresuwdVUe_embedding": {
+      "data_spec": {
+        "node": "FQUFmwGfNTTvjkWczBFoBE",
+        "path": "items.content",
+        "type": "list"
+      },
+      "task_type": "embedding"
+    },
+    "PNh4JwoEAxUZoresuwdVUe_flatten": {
+      "data_spec": {
+        "mode": "flatten",
+        "plan": [
+          {
+            "grouped": true,
+            "kind": "stage",
+            "label": "FQUFmwGfNTTvjkWczBFoBE_batch",
+            "node": "FQUFmwGfNTTvjkWczBFoBE",
+            "path": "content"
+          },
+          {
+            "grouped": false,
+            "kind": "literal",
+            "label": "Stock",
+            "values": [
+              "NVDA"
+            ]
+          }
+        ],
+        "template": "Summarize {Stock}.",
+        "timeout_s": 600
+      },
+      "task_type": "python"
+    },
+    "PNh4JwoEAxUZoresuwdVUe_infer": {
+      "data_spec": {
+        "image_embedding": {
+          "node": "PNh4JwoEAxUZoresuwdVUe_embedding",
+          "path": "embedding_file"
+        },
+        "template": {
+          "columns": [
+            {
+              "label": "prompt",
+              "node": "PNh4JwoEAxUZoresuwdVUe_flatten",
+              "path": "value.items.output"
+            },
+            {
+              "label": "FQUFmwGfNTTvjkWczBFoBE_batch",
+              "node": "PNh4JwoEAxUZoresuwdVUe_flatten",
+              "path": "value.items.output"
+            }
+          ],
+          "name": "format",
+          "options": {
+            "format": {
+              "messages": [
+                {
+                  "content": "Summarize {Stock}.",
+                  "role": "user"
+                },
+                {
+                  "content": "{prompt}",
+                  "role": "user"
+                }
+              ]
+            }
+          }
+        },
+        "type": "graph_template"
+      },
+      "task_type": "inference"
+    },
+    "oWdqEyKiGqNKsS7GMpsTTq": {
+      "data_spec": {
+        "items": [
+          "hi"
+        ],
+        "type": "list"
+      },
+      "task_type": "inference"
+    }
+  },
+  "python_rowwise": {
+    "PP3hHQRkvUbAvaPxjD3Txd": {
+      "data_spec": {
+        "columns": [
+          {
+            "label": "value",
+            "node": "UbsJuH8wQCvtVLn5wPrR3q",
+            "path": "value.items.output.value"
+          },
+          {
+            "data": {
+              "items": [
+                "a",
+                "b"
+              ],
+              "type": "list"
+            },
+            "label": "tone"
+          }
+        ],
+        "messages": [
+          {
+            "content": "Summarize {value}",
+            "role": "user"
+          }
+        ],
+        "seeds": {
+          "node": "UbsJuH8wQCvtVLn5wPrR3q",
+          "path": "value.items.output.value"
+        },
+        "type": "dataframe"
+      },
+      "task_type": "inference"
+    },
+    "TGeaGNwmrotrr39f6kgb55": {
+      "data_spec": {
+        "lumid_data_token": "test-token",
+        "lumid_data_url": "http://lumid-data",
+        "mode": "sql",
+        "output_format": "jsonl",
+        "params": [
+          {
+            "data": {
+              "items": [
+                "NVDA",
+                "AAPL"
+              ],
+              "type": "list"
+            },
+            "label": "label"
+          }
+        ],
+        "table": "t",
+        "template": "SELECT * FROM t WHERE s = '{label}'",
+        "type": "lumid"
+      },
+      "task_type": "data_retrieval"
+    },
+    "UbsJuH8wQCvtVLn5wPrR3q": {
+      "data_spec": {
+        "code": "def explode_rows(items):\n    return [{\"value\": v} for v in items[0]]\n",
+        "fn_name": "explode_rows",
+        "mode": "list",
+        "plan": [
+          {
+            "kind": "literal",
+            "values": [
+              "NVDA",
+              "AAPL"
+            ]
+          }
+        ],
+        "timeout_s": 600
+      },
+      "task_type": "python"
+    },
+    "ZiY8xJp2Mgggkp3oowFCHU": {
+      "data_spec": {
+        "items": [
+          {
+            "text": "NVDA",
+            "text_pair": "x"
+          },
+          {
+            "text": "AAPL",
+            "text_pair": "y"
+          }
+        ],
+        "type": "list"
+      },
+      "task_type": "classification"
+    },
+    "e4UdAYTze86SHmzYW6kkwN": {
+      "data_spec": {
+        "code": "def shout_rows(items):\n    return [{\"output\": str(v)} for v in items[0]]\n",
+        "fn_name": "shout_rows",
+        "plan": [
+          {
+            "kind": "stage",
+            "node": "jq7SX3sC8QgtEHrWjrYFe9"
+          }
+        ],
+        "timeout_s": 600
+      },
+      "task_type": "python"
+    },
+    "h6gFoj2DYfRYRfRASrvYNi": {
+      "data_spec": {
+        "items": [
+          "NVDA",
+          "AAPL"
+        ],
+        "type": "list"
+      },
+      "task_type": "api"
+    },
+    "j32QxLtAFFvqsGUm2yj9Z5": {
+      "data_spec": {
+        "template": {
+          "columns": [],
+          "name": "format",
+          "options": {
+            "format": {
+              "messages": [
+                {
+                  "content": "api",
+                  "role": "user"
+                }
+              ],
+              "steps": []
+            }
+          }
+        },
+        "type": "graph_template"
+      },
+      "task_type": "api"
+    },
+    "jq7SX3sC8QgtEHrWjrYFe9": {
+      "data_spec": {
+        "template": {
+          "columns": [],
+          "name": "format",
+          "options": {
+            "format": {
+              "messages": [
+                {
+                  "content": "plain",
+                  "role": "user"
+                }
+              ],
+              "steps": []
+            }
+          }
+        },
+        "type": "graph_template"
+      },
+      "task_type": "inference"
+    },
+    "keHZHbFVa5j45BPNdwSP2W": {
+      "data_spec": {
+        "items": [
+          "one",
+          "two"
+        ],
+        "type": "list"
+      },
+      "task_type": "embedding"
+    }
+  }
+}

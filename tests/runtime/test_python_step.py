@@ -8,6 +8,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -48,7 +49,7 @@ def _python_nodes(graph: Any) -> dict[str, Any]:
 
 
 def _published_blobs(
-    plan: python_step.ColumnPlan,
+    plan: python_step.RawPlan,
 ) -> dict[str, python_step.PublishedBlob]:
     blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
     return {blob.key: blob for blob in blobs}
@@ -56,7 +57,9 @@ def _published_blobs(
 
 def _spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
-        node.node_id, node.data_spec, _published_blobs(node.data_spec["plan"])
+        node.node_id,
+        node.data_spec,
+        _published_blobs(dump_data_spec(node.data_spec)["plan"]),
     )
 
 
@@ -113,7 +116,7 @@ def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
     graph = RuntimeGraphBuilder().build(compiled)
 
     node = _python_nodes(graph)[tally.id]
-    (reply_plan,) = node.data_spec["plan"]
+    (reply_plan,) = dump_data_spec(node.data_spec)["plan"]
     assert reply_plan == {"kind": "stage", "node": reply.id, "flatten": True}
 
 
@@ -325,9 +328,9 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     ).compile(A=["a1", "a2", "a3"], B=["b"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    assert graph.nodes[row.id].data_spec["row_count"] == 3
-    assert graph.nodes[whole.id].data_spec["row_count"] == 3
-    assert "row_count" not in graph.nodes[plain.id].data_spec
+    assert dump_data_spec(graph.nodes[row.id].data_spec)["row_count"] == 3
+    assert dump_data_spec(graph.nodes[whole.id].data_spec)["row_count"] == 3
+    assert "row_count" not in dump_data_spec(graph.nodes[plain.id].data_spec)
     assert "row_count" not in _spec(graph.nodes[row.id])
 
 
@@ -343,7 +346,7 @@ def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
     compiled = Graph.from_ops([as_output("out", outer)]).compile(A=["a1", "a2"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    assert "row_count" not in graph.nodes[outer.id].data_spec
+    assert "row_count" not in dump_data_spec(graph.nodes[outer.id].data_spec)
 
 
 # ------------------------------------------------------------------ #
@@ -353,7 +356,7 @@ def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
 
 def _run_wrapper(
     code: str,
-    plan: python_step.ColumnPlan,
+    plan: python_step.RawPlan,
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
@@ -373,7 +376,7 @@ def _run_wrapper(
 
 def _run_reshape(
     mode: str,
-    plan: python_step.ColumnPlan,
+    plan: python_step.RawPlan,
     inputs: dict[str, str],
     template: str = "{symbol}: {title}",
 ):
@@ -620,7 +623,7 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
 
 def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     code = "def a(inputs):\n    return 'a'\n"
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+    plan: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
     assert _run_wrapper(code, plan, {}, fn_name="a") == {
         "items": [{"output": "a", "value": "a"}]
     }
@@ -635,7 +638,7 @@ def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
     code = (
         "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
     )
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
     ]
     out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="list")
@@ -648,7 +651,7 @@ def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
     code = (
         "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
     )
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
     ]
     out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="aligned")
@@ -659,7 +662,7 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
     # An aligned lambda that returns a different number of values than there are
     # rows is rejected by the wrapper.
     code = "def bad(columns):\n    return [columns[0][0]]\n"
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a", "b", "c"]}]
+    plan: python_step.RawPlan = [{"kind": "literal", "values": ["a", "b", "c"]}]
     with pytest.raises(
         ValueError, match="aligned lambda 'op-1' returned 1 values for 3 rows"
     ):
@@ -668,7 +671,7 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
 
 def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
     code = "def f(columns):\n    return columns[0]\n"
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "literal", "values": ["a", "b", "c"]},
         {"kind": "literal", "values": ["x", "y"]},
     ]
@@ -677,7 +680,7 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+    plan: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
     assert out == {"items": [{"output": "x", "value": "x"}]}
 
@@ -687,7 +690,7 @@ def test_wrapper_requires_a_function() -> None:
         _run_wrapper("X = 1\n", [], {}, fn_name="a")
 
 
-_PLAN_X: python_step.ColumnPlan = [{"kind": "literal", "values": ["x"]}]
+_PLAN_X: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
 
 
 @pytest.mark.parametrize(
@@ -789,7 +792,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     compiled = Graph.from_ops([as_output("shouted", op)]).compile(Stock=["NVDA"])
     node = RuntimeGraphBuilder().build(compiled).nodes[op.id]
 
-    assert node.data_spec["fn_name"] == "shout"
+    assert dump_data_spec(node.data_spec)["fn_name"] == "shout"
     code = _spec(node)["code"]
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
@@ -809,7 +812,10 @@ def test_python_step_timeout_and_memory_reach_the_task() -> None:
 def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
     node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
-    assert node.data_spec["timeout_s"] == python_step.DEFAULT_TIMEOUT_SECONDS
+    assert (
+        dump_data_spec(node.data_spec)["timeout_s"]
+        == python_step.DEFAULT_TIMEOUT_SECONDS
+    )
     spec = _spec(node)
     assert spec["timeoutSeconds"] == python_step.DEFAULT_TIMEOUT_SECONDS
     assert "resources" not in spec
@@ -901,13 +907,13 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
     _, shout, compiled = _llm_then_lambda(expected_runtime_s=5)
     graph = RuntimeGraphBuilder().build(compiled)
     node = graph.nodes[shout.id]
-    assert node.data_spec["expected_runtime_s"] == 5
+    assert dump_data_spec(node.data_spec)["expected_runtime_s"] == 5
     # The hint is planning-only and never reaches the FlowMesh task spec.
     assert "expected_runtime_s" not in _spec(node)
 
     _, plain, compiled_plain = _llm_then_lambda()
     plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
-    assert "expected_runtime_s" not in plain_node.data_spec
+    assert "expected_runtime_s" not in dump_data_spec(plain_node.data_spec)
 
 
 def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
@@ -956,7 +962,7 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
     assert "def materialize(" not in specs[0]["code"]
 
-    too_many: python_step.ColumnPlan = [
+    too_many: python_step.RawPlan = [
         {"kind": "literal", "values": [f"literal-{i}"] * 200}
         for i in range(python_step.MAX_BLOBS_PER_TASK)
     ]
@@ -1058,7 +1064,7 @@ def _s3_stage(tmp_path: Path, name: str, keys: list[list[str]]) -> str:
     )
 
 
-def _flatten_plan() -> python_step.ColumnPlan:
+def _flatten_plan() -> python_step.RawPlan:
     return [
         {
             "kind": "stage",
@@ -1158,7 +1164,7 @@ def test_flatten_checks_grouped_columns_against_image_counts(tmp_path: Path) -> 
         ],
     )
     art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {
             "kind": "stage",
             "node": "art",
@@ -1185,7 +1191,7 @@ def test_flatten_with_only_literal_symbol_emits_prompts_without_image_text(
     # Images [2, 1] and only a literal symbol column: 3 prompts, rows [0,0,1],
     # and no image content is rendered into the prompt.
     art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {
             "kind": "stage",
             "node": "art",
@@ -1247,7 +1253,7 @@ def test_regroup_groups_outputs_back_per_symbol(tmp_path: Path) -> None:
             {"title": {"0": "t2", "1": "t3", "2": "t4"}},
         ],
     )
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "stage", "node": "infer"},
         {"kind": "stage", "node": "flatten", "path": "row"},
         {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
@@ -1272,7 +1278,7 @@ def test_regroup_rejects_row_out_of_range(tmp_path: Path) -> None:
         "news",
         [{"title": {"0": "t0"}}, {"title": {"0": "t1"}}, {"title": {"0": "t2"}}],
     )
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "stage", "node": "infer"},
         {"kind": "stage", "node": "flatten", "path": "row"},
         {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
@@ -1291,7 +1297,7 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
         {"items": [{"output": "p", "row": 0}, {"output": "p", "row": 0}]},
     )
     news = _sql_stage(tmp_path, "news", [{"title": {"0": "t0", "1": "t1", "2": "t2"}}])
-    plan: python_step.ColumnPlan = [
+    plan: python_step.RawPlan = [
         {"kind": "stage", "node": "infer"},
         {"kind": "stage", "node": "flatten", "path": "row"},
         {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
@@ -1341,7 +1347,7 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    params = graph.nodes[retrieval.id].data_spec["params"]
+    params = dump_data_spec(graph.nodes[retrieval.id].data_spec)["params"]
     (whole,) = [p for p in params if p.get("label") == "whole"]
 
     # The whole-item read maps to the python step's textified output.

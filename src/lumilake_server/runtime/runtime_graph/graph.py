@@ -7,6 +7,12 @@ from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake_server.data_specs import (
+    ListData,
+    PythonData,
+    dump_data_spec,
+    parse_data_spec,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
@@ -173,7 +179,8 @@ class RuntimeGraph:
             node_id
             for node_id, node in self.nodes.items()
             if node.task_type == python_step.TASK_TYPE
-            and node.data_spec.get("mode") == "list"
+            and isinstance(node.data_spec, PythonData)
+            and node.data_spec.mode == "list"
         }
         list_lambda_dependent: set[str] = set()
         for node_id in self.node_order:
@@ -181,9 +188,8 @@ class RuntimeGraph:
             if node_id in list_lambda_nodes:
                 list_lambda_dependent.add(node_id)
                 continue
-            if (
-                node.task_type == python_step.TASK_TYPE
-                and node.data_spec.get("mode") != "list"
+            if node.task_type == python_step.TASK_TYPE and not (
+                isinstance(node.data_spec, PythonData) and node.data_spec.mode == "list"
             ):
                 continue
             if any(dep in list_lambda_dependent for dep in node.dependencies):
@@ -194,13 +200,19 @@ class RuntimeGraph:
         """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
         away. FlowMesh runs such a task once per element, so the task's items
         are the whole list and the aggregator folds them into one value."""
+        reads: dict[str, str | None] = {}
+        for node_id, node in self.nodes.items():
+            data_spec = node.data_spec
+            if isinstance(data_spec, ListData):
+                reads[node_id] = data_spec.node
         return {
             node_id
-            for node_id, node in self.nodes.items()
-            if node.data_spec.get("type") == "list"
-            and (upstream := self.nodes.get(node.data_spec.get("node", ""))) is not None
+            for node_id, node_ref in reads.items()
+            if node_ref is not None
+            and (upstream := self.nodes.get(node_ref)) is not None
             and upstream.task_type == python_step.TASK_TYPE
-            and upstream.data_spec.get("mode") == "list"
+            and isinstance(upstream.data_spec, PythonData)
+            and upstream.data_spec.mode == "list"
         }
 
     def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:
@@ -247,7 +259,9 @@ class RuntimeGraph:
                 task_type=op.task_type,
                 backend=op.backend,
                 model=op.model,
-                data_spec=remap(op.data_spec, rewritable),
+                data_spec=parse_data_spec(
+                    op.task_type, remap(dump_data_spec(op.data_spec), rewritable)
+                ),
                 model_spec=remap(op.model_spec, rewritable),
                 inference_spec=remap(op.inference_spec, rewritable),
                 api_spec=remap(op.api_spec, rewritable),

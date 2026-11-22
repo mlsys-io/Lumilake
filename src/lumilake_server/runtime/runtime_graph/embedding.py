@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import Any
 
+from lumilake_server.data_specs import ListData
 from lumilake_server.ops import DataOp, InputOp, Op
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.runtime.runtime_graph.base import _default_output_destination
@@ -38,13 +39,13 @@ class _EmbeddingBuilder(_LambdaBuilder):
                     f"{content_op.name!r} with no values supplied."
                 )
             self._validate_embedding_texts(llm_op_id, items)
-            data_spec: dict[str, Any] = {"type": "list", "items": list(items)}
+            data_spec = ListData(type="list", items=list(items))
             dependencies: list[str] = []
         elif isinstance(content_op, DataOp):
             if not content_op.data:
                 raise ValueError(f"EmbeddingOp '{llm_op_id}' has empty text input")
             self._validate_embedding_texts(llm_op_id, content_op.data)
-            data_spec = {"type": "list", "items": list(content_op.data)}
+            data_spec = ListData(type="list", items=list(content_op.data))
             dependencies = []
         else:
             if graph_dict is not None:
@@ -55,11 +56,7 @@ class _EmbeddingBuilder(_LambdaBuilder):
                     kind="content",
                 )
             content_path = self._op_output(content_op).path
-            data_spec = {
-                "type": "list",
-                "node": content_op.id,
-                "path": content_path,
-            }
+            data_spec = ListData(type="list", node=content_op.id, path=content_path)
             dependencies = [content_op.id]
 
         # ``model.vllm`` presence routes to the vLLM embedding executor; the

@@ -4,12 +4,22 @@ The expected dicts are what the graph builders wrote before the models existed,
 so the serialized wire shape stays byte-identical.
 """
 
+import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.data_specs import (
+    DataFrame,
+    S3ProfileData,
+    SqlProfileData,
+    dump_data_spec,
+    parse_data_spec,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -30,8 +40,8 @@ from lumilake_server.ops.classification_ops import (
     ClassificationOp,
 )
 from lumilake_server.ops.http_fetch_ops import HttpFetchOp
-from lumilake_server.runtime.data_specs import dump_data_spec, parse_data_spec
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support import data_spec_golden
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -66,7 +76,8 @@ def _by_task(graph, task_type: str):
 
 
 def _assert_round_trips(op) -> None:
-    assert dump_data_spec(parse_data_spec(op.task_type, op.data_spec)) == op.data_spec
+    wire = dump_data_spec(op.data_spec)
+    assert dump_data_spec(parse_data_spec(op.task_type, wire)) == wire
 
 
 def test_python_step_shapes_round_trip() -> None:
@@ -119,7 +130,7 @@ def test_rowwise_dataframe_round_trips() -> None:
     )
     graph = _build([as_output("a", rowwise)], Stock=["NVDA", "AAPL"])
     (op,) = _by_task(graph, "inference")
-    assert op.data_spec["type"] == "dataframe"
+    assert isinstance(op.data_spec, DataFrame)
     _assert_round_trips(op)
 
 
@@ -173,7 +184,7 @@ def test_retrieval_and_profile_shapes_round_trip() -> None:
         task_type_override="data_profile",
     )
     profiles = _by_task(graph, "data_profiling")
-    assert {op.data_spec["type"] for op in profiles} == {"sql", "s3"}
+    assert {type(op.data_spec) for op in profiles} == {SqlProfileData, S3ProfileData}
     for op in profiles:
         _assert_round_trips(op)
 
@@ -229,3 +240,61 @@ def test_unknown_data_spec_key_is_refused() -> None:
 
     with pytest.raises(ValueError, match="invalid data_spec"):
         parse_data_spec("inference", {"type": "list", "items": [], "bogus": 1})
+
+
+_GOLDEN = Path(__file__).resolve().parent / "fixtures" / "data_spec_golden.json"
+# A builder-assigned node id, including its derived step suffix.
+_NODE_ID = re.compile(r"[A-Za-z0-9_]{20,}")
+
+
+def _normalized(spec: dict[str, Any]) -> Any:
+    """The spec with random node ids replaced by one placeholder, so ids that
+    differ between runs do not affect the comparison."""
+    if isinstance(spec, dict):
+        return {key: _normalized(value) for key, value in spec.items()}
+    if isinstance(spec, list):
+        return [_normalized(value) for value in spec]
+    if isinstance(spec, str):
+        return _NODE_ID.sub("<node>", spec)
+    return spec
+
+
+def _shapes(specs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    """Task type -> its sorted serialized specs, node ids normalized."""
+    shapes: dict[str, list[str]] = {}
+    for entry in specs.values():
+        wire = _normalized(entry["data_spec"])
+        shapes.setdefault(entry["task_type"], []).append(
+            json.dumps(wire, sort_keys=True)
+        )
+    return {task: sorted(group) for task, group in shapes.items()}
+
+
+@pytest.mark.parametrize("graph_name", ["python_rowwise", "completion_vision_image"])
+def test_built_data_specs_match_the_golden_wire_shape(graph_name: str) -> None:
+    """The serialized ``data_spec`` of every task type is byte-identical to what
+    the builders wrote before the models, node ids aside."""
+    golden = json.loads(_GOLDEN.read_text())[graph_name]
+    built = _GRAPHS[graph_name]()
+    built_specs = {
+        node_id: {
+            "task_type": op.task_type,
+            "data_spec": dump_data_spec(op.data_spec),
+        }
+        for node_id, op in built.nodes.items()
+    }
+    assert _shapes(built_specs) == _shapes(golden)
+
+
+def _python_rowwise_graph():
+    return data_spec_golden.python_rowwise()
+
+
+def _completion_vision_image_graph():
+    return data_spec_golden.completion_vision_image()
+
+
+_GRAPHS = {
+    "python_rowwise": _python_rowwise_graph,
+    "completion_vision_image": _completion_vision_image_graph,
+}

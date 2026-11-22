@@ -1,5 +1,16 @@
-from typing import Any
-
+from lumilake_server.data_specs import (
+    Column,
+    ColumnPlanEntry,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    ImageEmbedding,
+    ListData,
+    Message,
+    PythonData,
+    TemplateOptions,
+    dump_data_spec,
+)
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
 from lumilake_server.runtime import python_step
@@ -67,14 +78,16 @@ class _VisionBuilder(_RetrievalBuilder):
                 dsl_to_runtime=dsl_to_runtime,
                 runtime_nodes=runtime_nodes,
             )
-            columns: list[dict[str, Any]] = []
+            columns: list[Column] = []
             for col in llm_op.rowwise_columns or []:
                 label = col.get("label")
                 data = col.get("data")
                 node_ref = col.get("node")
                 path = col.get("path")
                 if isinstance(label, str) and isinstance(data, dict):
-                    columns.append({"label": label, "data": data})
+                    columns.append(
+                        Column(label=label, data=ListData.model_validate(data))
+                    )
                     continue
                 if isinstance(label, str) and isinstance(node_ref, str):
                     if path is None and not isinstance(
@@ -103,15 +116,19 @@ class _VisionBuilder(_RetrievalBuilder):
             if not columns:
                 raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")
 
-            messages: list[dict[str, str]] = []
-            for system_msg in llm_op.system_messages or []:
-                messages.append({"role": "system", "content": system_msg})
-            messages.append({"role": "user", "content": llm_op.rowwise_template})
-            template_spec: dict[str, Any] = {
-                "name": "format",
-                "columns": columns,
-                "options": {"format": {"messages": messages}},
-            }
+            template_spec = GraphTemplate(
+                name="format",
+                columns=columns,
+                options=TemplateOptions(
+                    format=FormatConfig(
+                        messages=[
+                            Message(role="system", content=system_msg)
+                            for system_msg in llm_op.system_messages or []
+                        ]
+                        + [Message(role="user", content=llm_op.rowwise_template)]
+                    )
+                ),
+            )
         else:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 llm_op_id,
@@ -155,11 +172,9 @@ class _VisionBuilder(_RetrievalBuilder):
         backend_config = self._build_default_vllm_backend_config(enable_mm_embeds=True)
 
         if llm_op_id not in self._flattened_vlm_ids:
-            template_spec["columns"] = list(template_spec.get("columns") or []) + [
-                batch_column
-            ]
+            template_spec.columns = [*template_spec.columns, batch_column]
             template_dependencies = self._collect_graph_template_dependencies(
-                template_spec
+                dump_data_spec(template_spec)
             )
             dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
             dependencies.extend(template_dependencies)
@@ -175,14 +190,13 @@ class _VisionBuilder(_RetrievalBuilder):
             vlm_node = self._create_runtime_op(
                 name=llm_op_id,
                 task_type="inference",
-                data_spec={
-                    "type": "graph_template",
-                    "template": template_spec,
-                    "image_embedding": {
-                        "node": embedding_node_id,
-                        "path": "embedding_file",
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=template_spec,
+                    image_embedding=ImageEmbedding(
+                        node=embedding_node_id, path="embedding_file"
+                    ),
+                ),
                 model_spec=self._build_model_spec(
                     llm_op.config, "vllm", backend_config
                 ),
@@ -199,72 +213,78 @@ class _VisionBuilder(_RetrievalBuilder):
         # and a regroup python step (back to one item per symbol). The image
         # source is the group boundary: it defines the per-symbol image counts,
         # and every other grouped column must match them.
-        image_path = embedding_data_spec["path"]
+        image_path = embedding_data_spec.path or ""
         if not image_path.startswith("items."):
             raise ValueError(
                 f"Per-row VLM '{llm_op_id}' image path '{image_path}' must"
                 " start with 'items.'"
             )
-        image_entry = {
-            "kind": "stage",
-            "node": embedding_data_spec["node"],
-            "path": image_path[len("items.") :],
-            "label": batch_column["label"],
-            "grouped": True,
-        }
-        plan: list[dict[str, Any]] = [image_entry]
+        image_entry = ColumnPlanEntry(
+            kind="stage",
+            node=embedding_data_spec.node,
+            path=image_path[len("items.") :],
+            label=batch_column.label,
+            grouped=True,
+        )
+        plan: list[ColumnPlanEntry] = [image_entry]
         for c in columns:
-            if "data" in c:
+            if isinstance(c.data, ListData):
                 plan.append(
-                    {
-                        "kind": "literal",
-                        "values": c["data"]["items"],
-                        "label": c["label"],
-                        "grouped": False,
-                    }
+                    ColumnPlanEntry(
+                        kind="literal",
+                        values=c.data.items,
+                        label=c.label,
+                        grouped=False,
+                    )
                 )
                 continue
-            up = graph_dict.get(c["node"])
+            if c.node is None:
+                raise ValueError(
+                    f"Per-row VLM '{llm_op_id}' column '{c.label}' reads no node"
+                )
+            up = graph_dict.get(c.node)
             if up is None:
                 raise ValueError(
-                    f"Per-row VLM '{llm_op_id}' column '{c['label']}' reads node"
-                    f" '{c['node']}', which is not reachable in the graph."
+                    f"Per-row VLM '{llm_op_id}' column '{c.label}' reads node"
+                    f" '{c.node}', which is not reachable in the graph."
                 )
             if isinstance(up, LambdaOp) and up.takes_whole_columns:
                 raise ValueError(
-                    f"Column '{c['label']}' of consumer '{llm_op_id}' references"
-                    f" list-mode Lambda '{c['node']}'; a flattened per-row VLM"
+                    f"Column '{c.label}' of consumer '{llm_op_id}' references"
+                    f" list-mode Lambda '{c.node}'; a flattened per-row VLM"
                     " cannot read a whole-column Lambda."
                 )
-            if not c["path"].startswith("items."):
+            if not (c.path or "").startswith("items."):
                 raise ValueError(
-                    f"Column '{c['label']}' of consumer '{llm_op_id}' reads"
-                    f" '{c['path']}' from '{c['node']}'; only 'items.*' paths"
+                    f"Column '{c.label}' of consumer '{llm_op_id}' reads"
+                    f" '{c.path}' from '{c.node}'; only 'items.*' paths"
                     " are supported in a flattened per-row VLM."
                 )
             plan.append(
-                {
-                    "kind": "stage",
-                    "node": c["node"],
-                    "path": c["path"][len("items.") :],
-                    "label": c["label"],
-                    "grouped": isinstance(up, DataRetrievalOp),
-                }
+                ColumnPlanEntry(
+                    kind="stage",
+                    node=c.node or "",
+                    path=(c.path or "")[len("items.") :],
+                    label=c.label,
+                    grouped=isinstance(up, DataRetrievalOp),
+                )
             )
 
         flatten_id = f"{llm_op_id}_flatten"
         flatten_deps = list(
-            dict.fromkeys(e["node"] for e in plan if e["kind"] == "stage")
+            dict.fromkeys(
+                e.node for e in plan if e.kind == "stage" and e.node is not None
+            )
         )
         flatten = self._create_runtime_op(
             name=flatten_id,
             task_type=python_step.TASK_TYPE,
-            data_spec={
-                "mode": "flatten",
-                "plan": plan,
-                "template": llm_op.rowwise_template,
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            },
+            data_spec=PythonData(
+                mode="flatten",
+                plan=plan,
+                template=llm_op.rowwise_template,
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+            ),
             model_spec={},
             inference_spec={},
             backend=python_step.BACKEND,
@@ -273,33 +293,32 @@ class _VisionBuilder(_RetrievalBuilder):
         )
 
         infer_id = f"{llm_op_id}_infer"
-        infer_template: dict[str, Any] = {
-            "name": "format",
-            "columns": [
-                {"label": "prompt", "node": flatten_id, "path": "value.items.output"},
-                {
-                    "label": batch_column["label"],
-                    "node": flatten_id,
-                    "path": "value.items.output",
-                },
+        infer_messages = [
+            *template_spec.options.format.messages,
+            Message(role="user", content="{prompt}"),
+        ]
+        infer_template = GraphTemplate(
+            name="format",
+            columns=[
+                Column(label="prompt", node=flatten_id, path="value.items.output"),
+                Column(
+                    label=batch_column.label,
+                    node=flatten_id,
+                    path="value.items.output",
+                ),
             ],
-            "options": {
-                "format": {
-                    "messages": messages + [{"role": "user", "content": "{prompt}"}]
-                }
-            },
-        }
+            options=TemplateOptions(format=FormatConfig(messages=infer_messages)),
+        )
         infer = self._create_runtime_op(
             name=infer_id,
             task_type="inference",
-            data_spec={
-                "type": "graph_template",
-                "template": infer_template,
-                "image_embedding": {
-                    "node": embedding_node_id,
-                    "path": "embedding_file",
-                },
-            },
+            data_spec=GraphTemplateData(
+                type="graph_template",
+                template=infer_template,
+                image_embedding=ImageEmbedding(
+                    node=embedding_node_id, path="embedding_file"
+                ),
+            ),
             model_spec=self._build_model_spec(llm_op.config, "vllm", backend_config),
             inference_spec=inference_spec,
             backend="vllm",
@@ -308,24 +327,27 @@ class _VisionBuilder(_RetrievalBuilder):
             source_op=llm_op,
         )
 
-        regroup_deps = list(dict.fromkeys([infer_id, flatten_id, image_entry["node"]]))
+        regroup_deps = list(
+            dict.fromkeys(
+                dep
+                for dep in (infer_id, flatten_id, image_entry.node)
+                if dep is not None
+            )
+        )
         regroup = self._create_runtime_op(
             name=llm_op_id,
             task_type=python_step.TASK_TYPE,
-            data_spec={
-                "mode": "regroup",
-                "plan": [
-                    {"kind": "stage", "node": infer_id, "label": "outputs"},
-                    {
-                        "kind": "stage",
-                        "node": flatten_id,
-                        "path": "row",
-                        "label": "rows",
-                    },
-                    {**image_entry, "label": "groups"},
+            data_spec=PythonData(
+                mode="regroup",
+                plan=[
+                    ColumnPlanEntry(kind="stage", node=infer_id, label="outputs"),
+                    ColumnPlanEntry(
+                        kind="stage", node=flatten_id, path="row", label="rows"
+                    ),
+                    image_entry.model_copy(update={"label": "groups"}),
                 ],
-                "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-            },
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+            ),
             model_spec={},
             inference_spec={},
             backend=python_step.BACKEND,
@@ -340,7 +362,7 @@ class _VisionBuilder(_RetrievalBuilder):
         llm_op: LLMVisionOp,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
-    ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    ) -> tuple[ListData, Column, list[str]]:
         image_source_id = llm_op.image_source
         if image_source_id not in graph_dict:
             raise ValueError(
@@ -358,33 +380,25 @@ class _VisionBuilder(_RetrievalBuilder):
                 raise ValueError(
                     f"Image inputs for '{image_source_op.name}' must be a list."
                 )
-            embedding_data_spec: dict[str, Any] = {
-                "type": "list",
-                "items": image_items,
-            }
-            batch_column: dict[str, Any] = {
-                "label": f"{image_source_op.id}_batch",
-                "data": {
-                    "type": "list",
-                    "items": ["" for _ in range(len(image_items))],
-                },
-            }
+            embedding_data_spec = ListData(type="list", items=image_items)
+            batch_column = Column(
+                label=f"{image_source_op.id}_batch",
+                data=ListData(items=["" for _ in range(len(image_items))]),
+            )
             return embedding_data_spec, batch_column, []
 
         if isinstance(image_source_op, ImageGenerationOp):
             resolved_path = (
                 "items.image" if llm_op.image_path == "images" else llm_op.image_path
             )
-            embedding_data_spec = {
-                "type": "list",
-                "node": image_source_id,
-                "path": resolved_path,
-            }
-            batch_column = {
-                "label": f"{image_source_id}_batch",
-                "node": image_source_id,
-                "path": resolved_path,
-            }
+            embedding_data_spec = ListData(
+                type="list", node=image_source_id, path=resolved_path
+            )
+            batch_column = Column(
+                label=f"{image_source_id}_batch",
+                node=image_source_id,
+                path=resolved_path,
+            )
             return embedding_data_spec, batch_column, [image_source_id]
 
         if isinstance(image_source_op, DataRetrievalOp):
@@ -393,16 +407,14 @@ class _VisionBuilder(_RetrievalBuilder):
                 if llm_op.image_path != "images"
                 else self._op_output(image_source_op).path
             )
-            embedding_data_spec = {
-                "type": "list",
-                "node": image_source_id,
-                "path": image_path,
-            }
-            batch_column = {
-                "label": f"{image_source_id}_batch",
-                "node": image_source_id,
-                "path": image_path,
-            }
+            embedding_data_spec = ListData(
+                type="list", node=image_source_id, path=image_path
+            )
+            batch_column = Column(
+                label=f"{image_source_id}_batch",
+                node=image_source_id,
+                path=image_path,
+            )
             return embedding_data_spec, batch_column, [image_source_id]
 
         raise ValueError(

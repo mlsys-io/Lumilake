@@ -1,6 +1,6 @@
 from collections.abc import Sequence
-from typing import Any
 
+from lumilake_server.data_specs import ColumnPlanEntry, PythonData
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -20,6 +20,10 @@ from lumilake_server.runtime.runtime_graph.lowering import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
+_PYTHON_MODES = frozenset(
+    {"row", "list", "aligned", "flatten", "regroup", "pairs", "flatten_step"}
+)
+
 
 class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _build_python_step(self, op: LambdaOp, ctx: LoweringContext) -> list[RuntimeOp]:
@@ -30,7 +34,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         ctx.visited.add(op.id)
         nodes: list[RuntimeOp] = []
         dependencies: list[str] = []
-        plan: python_step.ColumnPlan = []
+        plan: list[ColumnPlanEntry] = []
         row_counts: list[tuple[str, int | None]] = []
         inputs_dict = ctx.inputs_dict
         for inp in op.inputs:
@@ -48,12 +52,14 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dep = runtime_ids[0]
             elif isinstance(inp, InputOp):
                 ctx.visited.add(inp.id)
-                plan.append({"kind": "literal", "values": inputs_dict[inp.name]})
+                plan.append(
+                    ColumnPlanEntry(kind="literal", values=inputs_dict[inp.name])
+                )
                 row_counts.append((inp.id, len(inputs_dict[inp.name])))
                 continue
             elif isinstance(inp, DataOp):
                 ctx.visited.add(inp.id)
-                plan.append({"kind": "literal", "values": list(inp.data)})
+                plan.append(ColumnPlanEntry(kind="literal", values=list(inp.data)))
                 row_counts.append((inp.id, len(inp.data)))
                 continue
             else:
@@ -64,12 +70,15 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 )
             output = self._op_output(inp)
             row_counts.append((inp.id, output.row_count))
-            entry: dict[str, Any] = {"kind": "stage", "node": dep}
-            if output.needs_flatten:
-                # A rowwise LLM groups its per-row outputs back into one item;
-                # flatten it to one value per row for the python step.
-                entry["flatten"] = True
-            plan.append(entry)
+            plan.append(
+                ColumnPlanEntry(
+                    kind="stage",
+                    node=dep,
+                    # A rowwise LLM groups its per-row outputs back into one
+                    # item; flatten it to one value per row for the python step.
+                    flatten=True if output.needs_flatten else None,
+                )
+            )
             if dep not in dependencies:
                 dependencies.append(dep)
 
@@ -80,31 +89,26 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _python_step(
         self,
         op: LambdaOp,
-        plan: python_step.ColumnPlan,
+        plan: list[ColumnPlanEntry],
         row_count: int | None,
         dependencies: list[str],
     ) -> RuntimeOp:
         """Build the python task for one LambdaOp from its resolved plan."""
-        data_spec: dict[str, Any] = {
-            "code": op.code,
-            "fn_name": op.fn.__name__,
-            "plan": plan,
-            "timeout_s": (
+        data_spec = PythonData(
+            code=op.code,
+            fn_name=op.fn.__name__,
+            plan=plan,
+            timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None
                 else op.timeout_s
             ),
-        }
-        if op.memory_mb is not None:
-            data_spec["memory_mb"] = op.memory_mb
-        if op.image is not None:
-            data_spec["image"] = op.image
-        if op.expected_runtime_s is not None:
-            data_spec["expected_runtime_s"] = op.expected_runtime_s
-            if row_count is not None:
-                data_spec["row_count"] = row_count
-        if op.cache is not None:
-            data_spec["cache"] = op.cache
+            memory_mb=op.memory_mb,
+            image=op.image,
+            expected_runtime_s=op.expected_runtime_s,
+            row_count=row_count if op.expected_runtime_s is not None else None,
+            cache=op.cache,
+        )
         return self._create_runtime_op(
             name=op.id,
             task_type=python_step.TASK_TYPE,
@@ -126,24 +130,27 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             return None
         op_id = op.id
         inputs_dict = ctx.inputs_dict
-        plan: python_step.ColumnPlan = []
+        plan: list[ColumnPlanEntry] = []
         dependencies: list[str] = []
         row_counts: list[tuple[str, int | None]] = []
         for inp in op.inputs:
             if isinstance(inp, LambdaOp) and inp.takes_whole_columns:
-                plan.append({"kind": "stage", "node": inp.id})
+                plan.append(ColumnPlanEntry(kind="stage", node=inp.id))
                 dependencies.append(inp.id)
             elif isinstance(inp, LLMOp):
-                entry: dict[str, Any] = {"kind": "stage", "node": inp.id}
-                if self._op_output(inp).needs_flatten:
-                    # A rowwise LLM groups its per-row outputs back into one
-                    # item; the python step must flatten it to one value per
-                    # row before the list-mode Lambda sees it.
-                    entry["flatten"] = True
-                plan.append(entry)
+                plan.append(
+                    ColumnPlanEntry(
+                        kind="stage",
+                        node=inp.id,
+                        # A rowwise LLM groups its per-row outputs back into one
+                        # item; the python step must flatten it to one value per
+                        # row before the list-mode Lambda sees it.
+                        flatten=True if self._op_output(inp).needs_flatten else None,
+                    )
+                )
                 dependencies.append(inp.id)
             elif isinstance(inp, DataRetrievalOp) or has_lowering(inp):
-                plan.append({"kind": "stage", "node": inp.id})
+                plan.append(ColumnPlanEntry(kind="stage", node=inp.id))
                 dependencies.append(inp.id)
             elif isinstance(inp, InputOp):
                 values = inputs_dict.get(inp.name)
@@ -151,10 +158,10 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     raise ValueError(
                         f"LambdaOp '{op_id}' input '{inp.id}' has no values supplied."
                     )
-                plan.append({"kind": "literal", "values": list(values)})
+                plan.append(ColumnPlanEntry(kind="literal", values=list(values)))
                 row_counts.append((inp.id, len(values)))
             elif isinstance(inp, DataOp):
-                plan.append({"kind": "literal", "values": list(inp.data)})
+                plan.append(ColumnPlanEntry(kind="literal", values=list(inp.data)))
                 row_counts.append((inp.id, len(inp.data)))
             else:
                 raise ValueError(
@@ -172,27 +179,22 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         row_count = self._python_step_row_count(
             op_id, row_counts, combines_rows=op.mode == "aligned"
         )
-        data_spec: dict[str, Any] = {
-            "code": op.code,
-            "fn_name": op.fn.__name__,
-            "plan": plan,
-            "mode": op.mode,
-            "timeout_s": (
+        data_spec = PythonData(
+            code=op.code,
+            fn_name=op.fn.__name__,
+            plan=plan,
+            mode=op.mode if op.mode in _PYTHON_MODES else None,
+            timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None
                 else op.timeout_s
             ),
-        }
-        if op.memory_mb is not None:
-            data_spec["memory_mb"] = op.memory_mb
-        if op.image is not None:
-            data_spec["image"] = op.image
-        if op.expected_runtime_s is not None:
-            data_spec["expected_runtime_s"] = op.expected_runtime_s
-            if row_count is not None:
-                data_spec["row_count"] = row_count
-        if op.cache is not None:
-            data_spec["cache"] = op.cache
+            memory_mb=op.memory_mb,
+            image=op.image,
+            expected_runtime_s=op.expected_runtime_s,
+            row_count=row_count if op.expected_runtime_s is not None else None,
+            cache=op.cache,
+        )
         node = self._create_runtime_op(
             name=op_id,
             task_type=python_step.TASK_TYPE,

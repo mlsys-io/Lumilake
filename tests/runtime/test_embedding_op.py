@@ -9,6 +9,7 @@ import pytest
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     EmbeddingArtifact,
@@ -48,7 +49,7 @@ def test_embedding_op_emits_embedding_task_spec() -> None:
     # The executor sets runner="pooling" internally; the op must not emit it.
     assert "runner" not in node.model_spec
     assert "runner" not in node.model_spec["vllm"]
-    assert node.data_spec == {
+    assert dump_data_spec(node.data_spec) == {
         "type": "list",
         "items": ["hello world", "second doc"],
     }
@@ -94,7 +95,7 @@ def test_embedding_op_from_input_placeholder() -> None:
     compiled = Graph.from_ops([output]).compile(Docs=["a", "b", "c"])
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
     assert node.task_type == "embedding"
-    assert node.data_spec == {"type": "list", "items": ["a", "b", "c"]}
+    assert dump_data_spec(node.data_spec) == {"type": "list", "items": ["a", "b", "c"]}
 
 
 def test_embedding_op_rejects_empty_input() -> None:
@@ -124,7 +125,7 @@ def test_embedding_op_builds_from_valid_input_values() -> None:
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
     assert node.task_type == "embedding"
     assert node.model_spec["vllm"]["convert"] == "embed"
-    assert node.data_spec == {"type": "list", "items": ["ok", "second"]}
+    assert dump_data_spec(node.data_spec) == {"type": "list", "items": ["ok", "second"]}
 
 
 def _worker_response() -> dict:
@@ -216,7 +217,10 @@ def test_embedding_op_yaml_end_to_end() -> None:
     node = embedding_nodes[0]
     assert node.model_spec["source"]["identifier"] == "BAAI/bge-small-en-v1.5"
     assert node.model_spec["vllm"]["convert"] == "embed"
-    assert node.data_spec == {"type": "list", "items": ["hello", "world"]}
+    assert dump_data_spec(node.data_spec) == {
+        "type": "list",
+        "items": ["hello", "world"],
+    }
 
 
 def test_embedding_op_yaml_requires_model() -> None:

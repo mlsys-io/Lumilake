@@ -31,6 +31,12 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_server.data_specs import (
+    DataFrame,
+    ListData,
+    PythonData,
+    parse_data_spec,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
     flowmesh_for_context,
@@ -1243,9 +1249,9 @@ class FlowmeshRuntimeManager:
         node = runtime_graph.nodes.get(output_op_id)
         if node is None or node.task_type != "embedding":
             return None
-        items = node.data_spec.get("items")
-        if isinstance(items, list):
-            return len(items)
+        data_spec = node.data_spec
+        if isinstance(data_spec, ListData) and data_spec.items is not None:
+            return len(data_spec.items)
         return None
 
     def _expand_embedding_rows(
@@ -1764,13 +1770,13 @@ class FlowmeshRuntimeManager:
             list_lambda = (
                 output_node is not None
                 and output_node.task_type == python_step.TASK_TYPE
-                and output_node.data_spec.get("mode") == "list"
+                and isinstance(output_node.data_spec, PythonData)
+                and output_node.data_spec.mode == "list"
             )
             list_lambda_cardinality = output_op_id in list_lambda_cardinality_nodes
             list_lambda_direct_read = output_op_id in list_lambda_direct_read_nodes
-            rowwise_llm = (
-                output_node is not None
-                and output_node.data_spec.get("type") == "dataframe"
+            rowwise_llm = output_node is not None and isinstance(
+                output_node.data_spec, DataFrame
             )
             outputs = await self._aggregate_output_node(
                 output_op_id=output_op_id,
@@ -1877,18 +1883,17 @@ class FlowmeshRuntimeManager:
             active_worker_assignment = rewrite.worker_assignment
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
-        python_nodes: list[
-            tuple[dict[str, Any], dict[str, Any], str, dict[str, Any]]
-        ] = []
-        final_plans: list[python_step.ColumnPlan] = []
+        python_nodes: list[tuple[dict[str, Any], dict[str, Any], str, PythonData]] = []
+        final_plans: list[list[python_step.ColumnPlanEntry]] = []
         for node in nodes:
             node_name = node["name"]
             view_spec = node["spec"]
             if view_spec["taskType"] != python_step.TASK_TYPE:
                 continue
-            data_spec: dict[str, Any] = view_spec["data"]
+            data_spec = parse_data_spec(python_step.TASK_TYPE, view_spec["data"])
+            assert isinstance(data_spec, PythonData)
             python_nodes.append((node, view_spec, node_name, data_spec))
-            final_plans.append(data_spec["plan"])
+            final_plans.append(data_spec.plan)
 
         published_blobs = await self._publish_python_task_blobs(final_plans)
 

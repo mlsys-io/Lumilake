@@ -7,6 +7,7 @@ import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
@@ -397,8 +398,8 @@ def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():
-        data_spec = node.data_spec
-        if isinstance(data_spec, dict) and data_spec.get("type") == "dataframe":
+        data_spec = dump_data_spec(node.data_spec)
+        if data_spec.get("type") == "dataframe":
             return data_spec["columns"]
     raise AssertionError("No dataframe node found")
 

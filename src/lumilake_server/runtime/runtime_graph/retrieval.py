@@ -7,6 +7,13 @@ from sqlparse.sql import TokenList
 from sqlparse.tokens import Keyword
 
 from lumilake import envs
+from lumilake_server.data_specs import (
+    DataSpecModel,
+    RetrievalData,
+    RetrievalParam,
+    S3ProfileData,
+    SqlProfileData,
+)
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, LLMChatOp, LLMOp, Op
 from lumilake_server.runtime.runtime_graph.llm import _LLMBuilder
 from lumilake_server.runtime.runtime_graph.lowering import (
@@ -105,7 +112,7 @@ class _RetrievalBuilder(_LLMBuilder):
         # runtime dependencies. Mark those upstream op ids as visited so strict
         # traversal validation does not flag legitimate input-only branches.
         ctx.visited.update(input_op.id for input_op in op.inputs)
-        spec = op.data_spec or {}
+        spec = dict(op.data_spec or {})
         params = spec.get("params")
         if isinstance(params, list):
             for param in params:
@@ -272,37 +279,49 @@ class _RetrievalBuilder(_LLMBuilder):
                 template, resolved_params
             )
 
-        data_spec: dict[str, Any] = {
-            "type": "lumid",
-            "mode": mode,
-            "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
-            "lumid_data_token": envs.LUMID_DATA_TOKEN,
-            "params": resolved_params,
-        }
+        table = None
+        output_format = None
+        encoding = None
+        description = None
+        schema_scope = None
+        max_steps = None
+        agent_model = None
         if mode in {"sql", "s3"}:
-            data_spec["template"] = template
-        if mode == "sql":
-            table = spec.get("table")
-            if isinstance(table, str) and table.strip():
-                data_spec["table"] = table.strip()
+            if mode == "sql":
+                raw_table = spec.get("table")
+                if isinstance(raw_table, str) and raw_table.strip():
+                    table = raw_table.strip()
+                else:
+                    try:
+                        table = self._extract_table_from_sql_template(template)
+                    except ValueError:
+                        pass
+                output_format = spec.get("output_format", "jsonl")
             else:
-                try:
-                    data_spec["table"] = self._extract_table_from_sql_template(template)
-                except ValueError:
-                    pass
-            output_format = spec.get("output_format", "jsonl")
-            data_spec["output_format"] = output_format
-        if mode == "s3":
-            data_spec["encoding"] = spec.get("encoding", "utf-8")
+                encoding = spec.get("encoding", "utf-8")
         if mode == "agent":
-            data_spec["description"] = template
+            description = template
             if spec.get("schema_scope"):
-                data_spec["schema_scope"] = spec["schema_scope"]
-            for optional in ("output_format", "max_steps", "model"):
-                if optional in spec:
-                    data_spec[optional] = spec[optional]
-        if "verify" in spec:
-            data_spec["verify"] = spec["verify"]
+                schema_scope = spec["schema_scope"]
+            output_format = spec.get("output_format")
+            max_steps = spec.get("max_steps")
+            agent_model = spec.get("model")
+        data_spec = RetrievalData(
+            type="lumid",
+            mode=mode,
+            lumid_data_url=envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
+            lumid_data_token=envs.LUMID_DATA_TOKEN,
+            params=resolved_params,
+            template=template,
+            table=table,
+            output_format=output_format,
+            encoding=encoding,
+            description=description,
+            schema_scope=schema_scope,
+            max_steps=max_steps,
+            model=agent_model,
+            verify=spec.get("verify"),
+        )
 
         node = self._create_runtime_op(
             name=op_id,
@@ -409,7 +428,7 @@ class _RetrievalBuilder(_LLMBuilder):
         inputs_dict = ctx.inputs_dict
         input_ops_by_id = ctx.input_ops_by_id
         visited: set[str] | None = None
-        spec = op.data_spec or {}
+        spec = dict(op.data_spec or {})
         mode = spec["mode"]
         if not op.profilable:
             return None
@@ -442,14 +461,16 @@ class _RetrievalBuilder(_LLMBuilder):
             table = spec.get("table")
             if not isinstance(table, str):
                 table = self._extract_table_from_sql_template(template)
-            data_spec: dict[str, Any] = {
-                "type": "sql",
-                "template": template,
-                "params": resolved_params,
-                "constraints": constraints,
-                "num_test_queries": envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
-                "table": table,
-            }
+            data_spec: DataSpecModel = SqlProfileData(
+                type="sql",
+                template=template,
+                params=[
+                    RetrievalParam.model_validate(param) for param in resolved_params
+                ],
+                constraints=constraints,
+                num_test_queries=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
+                table=table,
+            )
         else:
             resolved_params = [
                 resolved
@@ -466,12 +487,14 @@ class _RetrievalBuilder(_LLMBuilder):
                 )
                 is not None
             ]
-            data_spec = {
-                "type": "s3",
-                "template": template,
-                "params": resolved_params,
-                "encoding": spec.get("encoding", "utf-8"),
-            }
+            data_spec = S3ProfileData(
+                type="s3",
+                template=template,
+                params=[
+                    RetrievalParam.model_validate(param) for param in resolved_params
+                ],
+                encoding=spec.get("encoding", "utf-8"),
+            )
         return self._create_runtime_op(
             name=op_id,
             task_type="data_profiling",
@@ -579,7 +602,7 @@ class _RetrievalBuilder(_LLMBuilder):
                 f"placeholder '{label}' at node '{owner_node_id}': upstream "
                 f"'{upstream_id}' was already in the resolution stack."
             )
-        upstream_spec = upstream.data_spec or {}
+        upstream_spec = dict(upstream.data_spec or {})
         if not isinstance(upstream_spec, dict):
             raise ValueError(
                 f"DataRetrievalOp '{upstream_id}' has a non-dict data_spec"
@@ -667,7 +690,7 @@ class _RetrievalBuilder(_LLMBuilder):
         input_ops_by_id: dict[str, InputOp],
         visited: set[str],
     ) -> str:
-        upstream_spec = upstream.data_spec or {}
+        upstream_spec = dict(upstream.data_spec or {})
         template = upstream_spec.get("template")
         if not isinstance(template, str):
             raise ValueError(

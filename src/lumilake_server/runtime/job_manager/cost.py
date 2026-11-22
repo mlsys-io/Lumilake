@@ -8,6 +8,7 @@ nothing here fits, learns, or requires historical data.
 from dataclasses import dataclass, field
 
 from lumilake import envs
+from lumilake_server.data_specs import RetrievalData, dump_data_spec
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
@@ -84,7 +85,7 @@ def _classify(op: RuntimeOp) -> str:
 
 def _to_halo_node(op: RuntimeOp) -> Node:
     """Build the minimal ``Node`` view ``compute_gpu_exec_cost`` needs."""
-    raw = dict(op.data_spec) if isinstance(op.data_spec, dict) else {}
+    raw = dump_data_spec(op.data_spec)
     if isinstance(op.inference_spec, dict) and op.inference_spec:
         raw["_inference_spec"] = dict(op.inference_spec)
     return Node(
@@ -126,8 +127,8 @@ def estimate_area(item: WorkflowItem, params: CostParams | None = None) -> float
     durations: dict[str, float] = {}
     for node_id, op in graph.nodes.items():
         if _classify(op) == "db":
-            data_spec = op.data_spec if isinstance(op.data_spec, dict) else {}
-            if data_spec.get("mode") == "agent":
+            data_spec = op.data_spec
+            if isinstance(data_spec, RetrievalData) and data_spec.mode == "agent":
                 return None
         durations[node_id] = _node_duration(op, params)
 

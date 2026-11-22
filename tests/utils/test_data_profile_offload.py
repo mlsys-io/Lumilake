@@ -3,6 +3,7 @@ from typing import Any, cast
 import pytest
 
 from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_server.data_specs import ListData, RetrievalParam
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -194,12 +195,11 @@ def test_build_sample_data_profile_queries_keeps_slice_fixed_values() -> None:
             "and start_date='{start_date}' and end_date='{end_date}'"
         ),
         params=[
-            {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
-            {"label": "start_date", "data": {"type": "list", "items": ["2025-01-01"]}},
-            {
-                "label": "end_date",
-                "data": {"type": "list", "items": ["2025-03-31", "2025-06-30"]},
-            },
+            RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
+            RetrievalParam(label="start_date", data=ListData(items=["2025-01-01"])),
+            RetrievalParam(
+                label="end_date", data=ListData(items=["2025-03-31", "2025-06-30"])
+            ),
         ],
         constraints=[],
         num_samples=6,
@@ -220,7 +220,7 @@ def test_build_sample_data_profile_queries_raises_on_unresolved_placeholder() ->
         data_profile_offload._build_sample_data_profile_queries(
             template="select * from t where symbol='{symbol}' and dt='{date}'",
             params=[
-                {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
+                RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
             ],
             constraints=[],
             num_samples=1,

@@ -10,6 +10,7 @@ import yaml
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -85,7 +86,10 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
     )
     [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
 
-    assert node.data_spec == {"type": "list", "items": ["graph retrieval"]}
+    assert dump_data_spec(node.data_spec) == {
+        "type": "list",
+        "items": ["graph retrieval"],
+    }
     assert node.api_spec == {
         "method": "POST",
         "url": "http://fixture.test/paper/search/{{prompt}}?q={{prompt}}",
@@ -123,7 +127,7 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[fetch.id]
 
-    assert node.data_spec == {
+    assert dump_data_spec(node.data_spec) == {
         "type": "list",
         "node": retrieval.id,
         "path": "items.table",
@@ -165,7 +169,7 @@ def test_fetch_flattens_a_grouped_upstream_to_one_query_per_row(
     runtime = tmp_path / "runtime.py"
     runtime.write_bytes(python_step.runtime_blob().body)
     code = python_step.flatten_step_source(
-        step.node_id, step.data_spec["plan"]
+        step.node_id, dump_data_spec(step.data_spec)["plan"]
     ).replace(python_step.TASK_RUNTIME_MOUNT, str(runtime))
     namespace: dict[str, Any] = {}
     exec(code, namespace)

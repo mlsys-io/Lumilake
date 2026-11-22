@@ -28,6 +28,7 @@ from lumilake.log import (
     log_on_exception_async,
 )
 from lumilake_server.common import InputRef, project_input_values
+from lumilake_server.data_specs import PythonData
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -1492,15 +1493,14 @@ class LumilakeServer:
             share = max(
                 (
                     (
-                        node.data_spec["expected_runtime_s"]
-                        * node.data_spec["row_count"]
-                        / node.data_spec["timeout_s"]
-                        if "row_count" in node.data_spec
+                        step.expected_runtime_s * step.row_count / step.timeout_s
+                        if step.row_count is not None
                         else math.inf
                     )
                     for node in item.runtime_graph.nodes.values()
                     if node.task_type == python_step.TASK_TYPE
-                    and "expected_runtime_s" in node.data_spec
+                    and isinstance(step := node.data_spec, PythonData)
+                    and step.expected_runtime_s is not None
                 ),
                 default=0.0,
             )

@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 import yaml
 
+from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -36,7 +37,7 @@ def _build(mutate: Callable[[dict[str, Any]], None]) -> Any:
 
 def test_rowwise_seed_lowers_to_task_seeds() -> None:
     node = _build(lambda payload: None)
-    assert node.data_spec["seeds"] == {
+    assert dump_data_spec(node.data_spec)["seeds"] == {
         "node": next(dep for dep in node.dependencies if "Seeds" in dep),
         "path": "value.items.output",
     }
@@ -49,7 +50,7 @@ def test_rowwise_seed_from_a_literal_input_is_inlined() -> None:
         payload["ops"][1]["rowwise_seed"] = {"node": "S"}
 
     node = _build(seed_from_input)
-    assert node.data_spec["seeds"] == [7, None]
+    assert dump_data_spec(node.data_spec)["seeds"] == [7, None]
 
 
 def _seed_from_a_format(payload: dict[str, Any]) -> None:

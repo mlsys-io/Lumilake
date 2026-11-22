@@ -5,6 +5,7 @@ from typing import Any
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
+from lumilake_server.data_specs import Column, DataSpecModel, ListData
 from lumilake_server.ops import (
     InputOp,
     LLMOp,
@@ -45,7 +46,7 @@ class _RuntimeGraphBuilderBase:
         self,
         name: str,
         task_type: str,
-        data_spec: dict[str, Any],
+        data_spec: DataSpecModel,
         model_spec: dict[str, Any],
         inference_spec: dict[str, Any],
         backend: str,
@@ -148,11 +149,12 @@ class _RuntimeGraphBuilderBase:
             "artifacts": artifacts or ["results.json", "logs"],
         }
 
-    def _attach_lumid_cfg(self, data_spec: dict[str, Any]) -> dict[str, Any]:
-        if data_spec.get("type") != "list" or "lumid_cfg" in data_spec:
+    def _attach_lumid_cfg(self, data_spec: DataSpecModel) -> DataSpecModel:
+        """Give an s3-backed list spec the lumid-data endpoint it reads through."""
+        if not isinstance(data_spec, ListData) or data_spec.lumid_cfg is not None:
             return data_spec
-        items = data_spec.get("items")
-        if not isinstance(items, list):
+        items = data_spec.items
+        if items is None:
             return data_spec
         has_s3 = any(
             isinstance(item, str) and item.startswith("s3://") for item in items
@@ -167,12 +169,14 @@ class _RuntimeGraphBuilderBase:
             raise ValueError(
                 "LUMID_DATA_TOKEN is required for s3:// list inputs (see .env.example)"
             )
-        updated = dict(data_spec)
-        updated["lumid_cfg"] = {
-            "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
-            "lumid_data_token": envs.LUMID_DATA_TOKEN,
-        }
-        return updated
+        return data_spec.model_copy(
+            update={
+                "lumid_cfg": {
+                    "lumid_data_url": envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
+                    "lumid_data_token": envs.LUMID_DATA_TOKEN,
+                }
+            }
+        )
 
     def _node_ref_column(
         self,
@@ -183,7 +187,7 @@ class _RuntimeGraphBuilderBase:
         path: str,
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
-    ) -> dict[str, Any]:
+    ) -> Column:
         """Bind a ``node:`` reference into a spec column, mapping the declared
         path to the upstream's read path."""
         if isinstance(upstream, InputOp):
@@ -206,15 +210,12 @@ class _RuntimeGraphBuilderBase:
                     "record-shaped inputs in an upstream op that exposes the "
                     "target field, or drop the ``path`` for scalar inputs."
                 )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": list(values)},
-            }
+            return Column(label=label, data=ListData(items=list(values)))
         if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
-        return {"label": label, "node": node_ref, "path": path}
+        return Column(label=label, node=node_ref, path=path)
 
     def _project_input_field(
         self, values: list[str], path: str, input_name: str
@@ -270,11 +271,12 @@ class _RuntimeGraphBuilderBase:
     @staticmethod
     def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
         """Yield every runtime node reference in a RuntimeOp: data_spec
-        column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path``, or ``expr`` outside literal list items), python plan stage
-        entries, and the condition node. Literal payloads (``node`` without
-        ``path``/``expr``) are data, not references."""
-        yield from _RuntimeGraphBuilderBase._iter_spec_refs(node.data_spec)
+        column/data-source/list-item refs (a node read), python plan stage
+        entries, and the condition node. Literal payloads are data, not
+        references."""
+        yield from _RuntimeGraphBuilderBase._iter_spec_refs(
+            node.data_spec.model_dump(exclude_none=True)
+        )
         condition = node.condition
         if condition is not None:
             cond_node = condition.get("node")
