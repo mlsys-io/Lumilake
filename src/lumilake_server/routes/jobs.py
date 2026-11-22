@@ -620,8 +620,7 @@ def _dispatch_workflow_to_graph_specs(
 
 
 def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
-    """A native workflow's ops. A bare graph carries its job ``seed`` beside its
-    ops, so that field is taken out first; a wrapped payload keeps it there."""
+    """A native workflow's ops, with a bare graph's ``seed`` taken out."""
     if "graph" in workflow_payload:
         return workflow_payload["graph"]
     if "seed" not in workflow_payload:
@@ -632,7 +631,7 @@ def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
-    """A native payload's job seed, which a keyed row seed derives from."""
+    """A native payload's job seed."""
     value = workflow_payload.get("seed", 0)
     if isinstance(value, bool) or not isinstance(value, int):
         raise HTTPException(
@@ -645,8 +644,7 @@ def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
 def _submitted_job_seed(
     graph_specs: dict[str, dict[str, Any]], dynamic_spec: DynamicSpec | None
 ) -> int:
-    """The job seed to record for a submission: the dynamic spec's, else the
-    seed of the one workflow it submits."""
+    """The job seed to record: the dynamic spec's, else the workflow's."""
     if dynamic_spec is not None:
         return dynamic_spec.seed
     seeds = {spec.get("seed", 0) for spec in graph_specs.values()}

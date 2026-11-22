@@ -296,8 +296,7 @@ def check_rowwise_seed(
     config: GenerationConfig,
     op_id: str,
 ) -> None:
-    """Refuse a per-row seed column ref that does not fit this rowwise chat op,
-    naming the op."""
+    """Refuse a per-row seed column ref that does not fit this chat op."""
     if rowwise_seed is None:
         return
     named = f"LLMChatOp '{op_id}' "

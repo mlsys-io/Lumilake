@@ -118,8 +118,7 @@ class SubgraphPlan(BaseModel):
     ops: list[dict[str, Any]]
     export: list[str] = []
     template_ids: dict[str, str] = {}
-    """Rendered op id -> the id as the template body wrote it, for an op whose
-    id carried a round placeholder."""
+    """Rendered op id -> its id as the template body wrote it."""
 
 
 class _RawPlan(BaseModel):
@@ -613,10 +612,7 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place. A
-    forwarded ref binds as a flat input, so its ``path`` usually comes back
-    empty; a non-empty one is a grouped reference's and reads a materializer,
-    which the chat op must list in its inputs."""
+    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:

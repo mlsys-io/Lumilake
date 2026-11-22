@@ -216,7 +216,7 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
 
 
 def _get_job_seed(spec: dict[str, Any]) -> int:
-    """The workflow's job seed, which every keyed row seed derives from."""
+    """The workflow's job seed."""
     value = spec.get("seed", 0)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"workflow 'seed' must be an integer, got {value!r}")
