@@ -397,10 +397,10 @@ ops:
      code: "def tag(row): return row['rid'].upper()"}
   - id: Merge
     op: JoinOp
-    inputs: [State, Summary, Tag]
+    inputs: [State, Summary__TAG_INPUT__]
     by: unit
 __FIELDS__
-    attach: {tag: Tag}
+__ATTACH__
 outputs: [{name: merged, ref: Merge}]
 """
 
@@ -411,6 +411,7 @@ def _broadcast(
     sizes: list[Any] | None = None,
     tags: list[str] | None = None,
     fields: tuple[str, ...] = ("row_key: [unit, rid]",),
+    attach: bool = True,
     name: str = "run",
 ) -> list[Any]:
     """Run the broadcast join over one summary row per unit and one tag per row."""
@@ -419,6 +420,8 @@ def _broadcast(
     code = (
         _BROADCAST_YAML.replace("__ROWS__", f"[{', '.join(quote)}]")
         .replace("__SIZES__", f"[{', '.join(summary)}]")
+        .replace("__TAG_INPUT__", ", Tag" if attach else "")
+        .replace("__ATTACH__\n", "    attach: {tag: Tag}\n" if attach else "")
         .replace("__FIELDS__\n", "".join(f"    {line}\n" for line in fields))
     )
     spec = parse_yaml_payload(code)["u"]
@@ -426,7 +429,8 @@ def _broadcast(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
     node = _join_of(runtime)
-    out = _run(tmp_path, node, {2: _cells(*(tags or ["A", "B", "C"]))}, name)
+    upstream = {2: _cells(*(tags or ["A", "B", "C"]))} if attach else {}
+    out = _run(tmp_path, node, upstream, name)
     return [item["output"] for item in out["items"]]
 
 
@@ -463,3 +467,14 @@ def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> N
     the other keys' rows as they were."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
+
+
+def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
+    tmp_path: Path,
+) -> None:
+    """A marked first-input row whose row_key is gone passes through as its
+    marker under its by key, while the other rows of that key still take the
+    broadcast."""
+    rows = [{"unit": "u1", "rid": _MARK}, _UNITS[1], _UNITS[2]]
+    expected = [_MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
+    assert _broadcast(tmp_path, rows=rows, attach=False, name="mark") == expected
