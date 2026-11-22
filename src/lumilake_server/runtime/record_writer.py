@@ -28,6 +28,7 @@ value the job computed.
 """
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -284,7 +285,9 @@ class RecordWriter:
                 continue
             address = RecordAddress(op=plan.op_name, record=record, round=source.round)
             value = node_records.value_at(position)
-            failed = is_marker(value)
+            failed = is_marker(value) or is_marker(_decoded(value))
+            if failed and not is_marker(value):
+                value = _decoded(value)
             value_hash = None if failed else digest_of(value)
             input_digests, input_values = _position_inputs(
                 inputs, position, keyed=plan.keyed
@@ -353,6 +356,17 @@ class RecordWriter:
             index.body(),
             "application/json",
         )
+
+
+def _decoded(value: Any) -> Any:
+    """A task's output can reach the writer as its JSON text; a marker written
+    that way is still a marker."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return value
 
 
 def record_key_at(keys: list[str | None] | None, position: int) -> str | None:
@@ -646,7 +660,9 @@ def _inherit_marker_keys(
         if node_records is None or node_records.keys is None or inherited is None:
             continue
         for position, value in enumerate(node_records.values):
-            if node_records.keys[position] is not None or not is_marker(value):
+            if node_records.keys[position] is not None:
+                continue
+            if not (is_marker(value) or is_marker(_decoded(value))):
                 continue
             if inherited.keys is not None and position < len(inherited.keys):
                 node_records.keys[position] = inherited.keys[position]
