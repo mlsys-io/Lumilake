@@ -18,6 +18,7 @@ def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeG
             {},
             {},
             {"temperature": 0.7, **inference},
+            samples=True,
         )
         for op_id in op_ids
     }

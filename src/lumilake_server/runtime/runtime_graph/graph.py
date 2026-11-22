@@ -264,6 +264,7 @@ class RuntimeGraph:
                     else None
                 ),
                 skip_when_all_inputs_empty=op.skip_when_all_inputs_empty,
+                samples=op.samples,
             )
 
         node_order = [mapping[node_id] for node_id in self.node_order]

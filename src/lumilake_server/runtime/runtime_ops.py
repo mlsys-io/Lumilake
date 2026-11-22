@@ -8,11 +8,6 @@ from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
 
-# Task types that carry an ``inference`` spec drawn by a model sampler.
-SAMPLING_TASK_TYPES: frozenset[str] = frozenset(
-    {"inference", "diffusion", "omni_text2image"}
-)
-
 
 class RuntimeOpSchema(BaseModel):
     """Pydantic schema for a serialized ``RuntimeOp``.
@@ -36,6 +31,7 @@ class RuntimeOpSchema(BaseModel):
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
     skip_when_all_inputs_empty: bool = False
+    samples: bool = False
 
 
 @dataclass(frozen=True)
@@ -53,6 +49,7 @@ class RuntimeOp:
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
     skip_when_all_inputs_empty: bool = False
+    samples: bool = False
 
     @property
     def model_key(self) -> tuple[str, str, str]:
@@ -77,6 +74,7 @@ class RuntimeOp:
             output_spec=self.output_spec,
             condition=self.condition,
             skip_when_all_inputs_empty=self.skip_when_all_inputs_empty,
+            samples=self.samples,
         ).model_dump(exclude_none=True)
 
     @classmethod
@@ -95,6 +93,7 @@ class RuntimeOp:
             output_spec=schema.output_spec,
             condition=schema.condition,
             skip_when_all_inputs_empty=schema.skip_when_all_inputs_empty,
+            samples=schema.samples,
         )
 
     @classmethod
@@ -116,7 +115,7 @@ class RuntimeOp:
             "omni_text2image",
         }:
             spec_payload["model"] = self.model_spec
-        if self.task_type in SAMPLING_TASK_TYPES:
+        if self.task_type in {"inference", "diffusion", "omni_text2image"}:
             spec_payload["inference"] = self.inference_spec
         if self.output_enforcement is not None:
             spec_payload["output_enforcement"] = self.output_enforcement

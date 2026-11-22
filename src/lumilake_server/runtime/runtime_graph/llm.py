@@ -225,6 +225,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     _default_output_destination(),
                     ["results.json", "images/"],
                 ),
+                source_op=llm_op,
             )
 
         if isinstance(llm_op, LLMCompletionOp):
@@ -301,6 +302,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 output_spec=output_spec,
                 condition=None,
                 skip_when_all_inputs_empty=bool(row_dependencies),
+                source_op=llm_op,
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
@@ -340,6 +342,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     dsl_to_runtime,
                 ),
                 skip_when_all_inputs_empty=True,
+                source_op=llm_op,
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
@@ -370,6 +373,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     inputs_dict,
                     dsl_to_runtime,
                 ),
+                source_op=llm_op,
             )
 
         default_dependencies: list[str] | None = None
@@ -406,6 +410,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 inputs_dict,
                 dsl_to_runtime,
             ),
+            source_op=llm_op,
         )
 
     def _api_request_headers(
@@ -575,6 +580,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     dsl_to_runtime,
                 ),
                 skip_when_all_inputs_empty=skip_when_all_inputs_empty,
+                source_op=llm_op,
             )
         ]
 

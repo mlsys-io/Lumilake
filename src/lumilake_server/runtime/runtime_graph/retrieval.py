@@ -313,6 +313,7 @@ class _RetrievalBuilder(_LLMBuilder):
             backend="data_retrieval",
             model="data_retrieval",
             dependencies=dependencies if dependencies else None,
+            source_op=op,
         )
         return LoweringResult(nodes=[node])
 
@@ -480,6 +481,7 @@ class _RetrievalBuilder(_LLMBuilder):
             backend="data_profiling",
             model="data_profiling",
             dependencies=None,
+            source_op=op,
         )
 
     def _extract_table_from_sql_template(self, template: str) -> str:

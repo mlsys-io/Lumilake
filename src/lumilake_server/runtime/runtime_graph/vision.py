@@ -190,6 +190,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 backend="vllm",
                 model=llm_op.config.model,
                 dependencies=deduped_deps,
+                source_op=llm_op,
             )
             return [embedding_node, vlm_node]
 
@@ -304,6 +305,7 @@ class _VisionBuilder(_RetrievalBuilder):
             backend="vllm",
             model=llm_op.config.model,
             dependencies=[flatten_id, embedding_node_id],
+            source_op=llm_op,
         )
 
         regroup_deps = list(dict.fromkeys([infer_id, flatten_id, image_entry["node"]]))

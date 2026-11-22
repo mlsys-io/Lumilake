@@ -161,6 +161,7 @@ class _DerivedBuilder(_VisionBuilder):
             backend="api",
             model="http-fetch",
             dependencies=dependencies or None,
+            source_op=op,
         )
         return LoweringResult(nodes=[*extra_ops, node])
 
@@ -238,5 +239,6 @@ class _DerivedBuilder(_VisionBuilder):
             backend=backend,
             model=op.config.model,
             dependencies=dependencies or None,
+            source_op=op,
         )
         return LoweringResult(nodes=[*extra_ops, node])

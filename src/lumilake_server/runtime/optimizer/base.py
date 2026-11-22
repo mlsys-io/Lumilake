@@ -13,7 +13,7 @@ from lumilake_server.runtime.runtime_graph import (
     chunk_group_parent,
     merge_runtime_graphs,
 )
-from lumilake_server.runtime.runtime_ops import SAMPLING_TASK_TYPES, RuntimeOp
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 __all__ = ["BaseOptimizer", "Schedule"]
 
@@ -116,47 +116,13 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
     )
 
 
-_TEXT_TASK_TYPES: frozenset[str] = frozenset({"inference", "api"})
-
-
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value)
-
-
-def _sampling_spec(op: RuntimeOp) -> dict[str, Any] | None:
-    """The sampler settings of a node that generates text or images, or
-    ``None`` when the node's output is a function of its inputs."""
-    if op.task_type in SAMPLING_TASK_TYPES:
-        return op.inference_spec
-    if op.task_type == "api":
-        body = op.api_spec.get("json")
-        if isinstance(body, dict) and "messages" in body:
-            return body
-    return None
-
-
-def _decodes_deterministically(op: RuntimeOp, sampler: dict[str, Any]) -> bool:
-    """Whether the node's text decoder is greedy or beam search. An absent
-    temperature is not greedy: the engine samples at its own default, so only
-    an explicit ``temperature: 0`` or a beam width above 1 counts."""
-    if op.task_type not in _TEXT_TASK_TYPES:
-        return False
-    num_beams = _number(sampler.get("num_beams"))
-    if num_beams is not None and num_beams > 1:
-        return True
-    return _number(sampler.get("temperature")) == 0.0
-
-
 def _dedupe_scope(
     op: RuntimeOp, owners: tuple[tuple[str, str], ...] | None
 ) -> tuple[Any, ...] | None:
     """The per-node part of the dedupe key, or ``None`` when the node must not
     be merged. A node that samples merges only with the copies of its own
     logical op, ``owners``: one ``(workflow, op id)`` pair per copy."""
-    sampler = _sampling_spec(op)
-    if sampler is None or _decodes_deterministically(op, sampler):
+    if not op.samples:
         return ("pure",)
     if not owners:
         return None
