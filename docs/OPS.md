@@ -350,11 +350,12 @@ too.
 The key is checked when each retrieval task's result arrives. A row whose
 column is missing, a row whose key is null, and two rows carrying the same key
 each fail the job, naming the op, the key column and, for a repeat, both row
-positions within that task's batch. One retrieval emits one record per key, so
-a query that repeats a key must first group by it or declare a column that is
-unique. The check covers one task's result: a parametrized retrieval whose
-parameter rows are split across tasks is not checked across the tasks, so a
-key repeated in two slices of one run is not seen.
+positions within that task's batch; a table the check cannot read as a column
+table fails it too, since nothing can be checked on it. One retrieval emits one
+record per key, so a query that repeats a key must first group by it or declare
+a column that is unique. The check covers one task's result: a parametrized
+retrieval whose parameter rows are split across tasks is not checked across the
+tasks, so a key repeated in two slices of one run is not seen.
 
 ### RouterOp
 

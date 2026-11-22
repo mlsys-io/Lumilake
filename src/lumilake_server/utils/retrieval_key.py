@@ -3,13 +3,12 @@
 ``key: {column: <name>}`` names the column whose value is each emitted row's
 record key. The key is declared once, where the rows are produced, and a
 consumer reads it at ``items.table.<column>``; without the declaration a row
-has no logical key. The declaration is checked when each retrieval task's
-result arrives: a null key, a duplicate key and a missing key column each fail
-the job, naming the op. A task carries one slice of a parametrized run's rows,
-and the slices are not compared with each other.
+has no logical key. The declaration is checked where the op is built: a key
+that is not a non-empty column, or that a non-``sql`` mode cannot carry,
+is refused. The keys of each arrived result are checked separately, in
+``retrieval_key_check``.
 """
 
-import json
 from typing import Any
 
 KEY_FIELD = "key"
@@ -44,69 +43,3 @@ def retrieval_key_column(data_spec: dict[str, Any]) -> str | None:
     declares ``key: {column: <name>}``."""
     key = data_spec.get(KEY_FIELD)
     return key[COLUMN_FIELD] if isinstance(key, dict) else None
-
-
-def key_problem(op_id: str, items: Any, column: str) -> str | None:
-    """Describe the first problem one retrieval task's result has with its
-    declared key, or ``None`` when every row of it carries a distinct,
-    non-null value in ``column``. A task carries one slice of a parametrized
-    run's rows, and the slices are not compared with each other."""
-    if not isinstance(items, list):
-        return None
-    seen: dict[str, tuple[int, int | None]] = {}
-    for item_position, item in enumerate(items):
-        rows = _item_rows(item)
-        item_index = _item_index(item, item_position)
-        for row_position, row in enumerate(rows):
-            where = f"row {row_position} of item {item_index} of this batch"
-            if column not in row:
-                return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
-                    f" {where} has no such column"
-                )
-            value = row[column]
-            if value is None:
-                return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
-                    f" {where} has a null key; a record key is never null"
-                )
-            key = _key_text(value)
-            if key in seen:
-                first_row, first_item = seen[key]
-                return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but the"
-                    f" key {key!r} is repeated at row {first_row} of item"
-                    f" {first_item} and at {where}; one retrieval emits one"
-                    " record per key"
-                )
-            seen[key] = (row_position, item_index)
-    return None
-
-
-def _key_text(value: Any) -> str:
-    """A key value as the text a repeat is reported and compared by: a string
-    key is its own text, and any other JSON value is written canonically so
-    ``1`` and ``"1"`` stay distinct keys."""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, sort_keys=True, ensure_ascii=False)
-
-
-def _item_index(item: Any, position: int) -> Any:
-    """The index a retrieval item reports for itself, else its position."""
-    if isinstance(item, dict) and "index" in item:
-        return item["index"]
-    return position
-
-
-def _item_rows(item: Any) -> list[dict[str, Any]]:
-    """The rows one retrieval item's ``table`` carries, in row order."""
-    from lumilake_server.runtime.lambda_task_helpers import (
-        serialized_table,
-        table_rows,
-    )
-
-    if not isinstance(item, dict):
-        return []
-    table = serialized_table(item.get("table"))
-    return [] if table is None else table_rows(table)
