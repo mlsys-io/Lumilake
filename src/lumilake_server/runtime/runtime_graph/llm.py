@@ -629,8 +629,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         inputs_dict=inputs_dict,
                     )
                 )
-                # A literal-backed column binds its values inline and has no
-                # runtime node, so it must not become a dependency.
+                # A literal-backed column has no runtime node to depend on.
                 if node_ref not in dependencies and not isinstance(
                     upstream, (InputOp, DataOp)
                 ):
@@ -766,8 +765,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     inputs_dict=inputs_dict,
                 )
             )
-            # A literal-backed column binds its values inline and has no
-            # runtime node, so it must not become a dependency.
+            # A literal-backed column has no runtime node to depend on.
             if node_ref not in dependencies and not isinstance(
                 graph_dict.get(node_ref), (InputOp, DataOp)
             ):
@@ -906,8 +904,6 @@ class _LLMBuilder(_EmbeddingBuilder):
         """Lower an LLM op, through the API task when it targets an external
         endpoint and through the local inference task otherwise."""
         if isinstance(op, LLMChatOp):
-            # A literal column producer feeds no chat message, so the message
-            # traversal never reaches it; mark it visited here.
             self._mark_literal_column_producers_visited(op.rowwise_columns, ctx.visited)
             self._mark_literal_column_producers_visited(op.aggregate_table, ctx.visited)
         if op.config.api is not None:

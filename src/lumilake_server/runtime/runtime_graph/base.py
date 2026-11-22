@@ -217,9 +217,7 @@ class _RuntimeGraphBuilderBase:
                 )
             return Column(label=label, data=ListData(items=list(values)))
         if isinstance(upstream, DataOp):
-            # A DataOp never materializes a runtime envelope, so its values bind
-            # as a literal column. ``items.output`` names that whole value; any
-            # deeper path would drill an envelope that does not exist.
+            # A DataOp has no runtime envelope; ``items.output`` names it whole.
             if path not in (None, "", "items.output"):
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' references"
@@ -237,9 +235,8 @@ class _RuntimeGraphBuilderBase:
     def _mark_literal_column_producers_visited(
         self, columns: list[dict[str, Any]] | None, visited_node_ids: set[str]
     ) -> None:
-        """Mark every literal column producer visited. It feeds no chat message
-        on its own, so the message traversal never reaches it and the orphan
-        check would otherwise reject a legitimate column-only read."""
+        """Mark every literal column producer visited, so the orphan check
+        accepts a read that reaches no message."""
         for col in columns or []:
             if not isinstance(col, dict):
                 continue

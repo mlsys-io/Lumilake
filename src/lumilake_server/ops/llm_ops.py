@@ -297,9 +297,8 @@ class LLMChatOp(LLMOp):
         rowwise_columns: list[dict[str, Any]] | None,
         other_ops: dict[str, "Op"],
     ) -> None:
-        """Keep every column's producer in the graph traversal, the way a
-        message or seed producer is kept: a producer read only through a column
-        feeds no message, so nothing else would reach it."""
+        """Add each column's producer to ``inputs``: a producer read only
+        through a column feeds no message, so the traversal would miss it."""
         for table in (aggregate_table, rowwise_columns):
             for col in table or []:
                 if not isinstance(col, dict):
