@@ -1,4 +1,4 @@
-"""The ``Repeat`` YAML construct: a fixed-count repeat of an op body.
+"""The ``RepeatOp`` YAML construct: a fixed-count repeat of an op body.
 
 :func:`unroll_repeats` rewrites each repeat entry into ordinary op entries
 before any id is registered, so one declared op exists per iteration.
@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 
 from lumilake_server.ops.router_ops import ROUTER_OP
 
-REPEAT_OP = "Repeat"
+REPEAT_OP = "RepeatOp"
 INPUT_REF = "$in"
 _MAX_UNROLLED = 1000
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
@@ -58,7 +58,7 @@ class _Scoped(Mapping[str, str]):
         if not isinstance(ref, str):
             return ref
         if ref == self._own:
-            raise ValueError(f"Repeat '{self._own}' body reads its own id")
+            raise ValueError(f"RepeatOp '{self._own}' body reads its own id")
         if ref in self._names:
             return self._names[ref]
         if ref == INPUT_REF:
@@ -82,7 +82,7 @@ References = Callable[[Mapping[str, str], str, str], _Scoped]
 
 
 def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], References]:
-    """Replace every ``Repeat`` entry with its unrolled iterations.
+    """Replace every ``RepeatOp`` entry with its unrolled iterations.
 
     ``known_ids`` holds the workflow input names, which a repeat's ``input``
     may name. Repeats are unrolled in dependency order. The returned callable
@@ -107,17 +107,19 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         for body_id in spec.body_ids:
             if body_id in owner or body_id in plain:
                 raise ValueError(
-                    f"Repeat '{spec.id}' body id '{body_id}' collides with an id "
+                    f"RepeatOp '{spec.id}' body id '{body_id}' collides with an id "
                     "outside the repeat"
                 )
             owner[body_id] = spec.id
         if spec.output_ref not in spec.body_ids:
             raise ValueError(
-                f"Repeat '{spec.id}' output '{spec.output_ref}' is not one of its "
+                f"RepeatOp '{spec.id}' output '{spec.output_ref}' is not one of its "
                 f"body ids {sorted(spec.body_ids)}"
             )
         if spec.input_ref not in known_ids | plain | (set(repeats) - {spec.id}):
-            raise ValueError(f"Repeat '{spec.id}' input '{spec.input_ref}' is unknown")
+            raise ValueError(
+                f"RepeatOp '{spec.id}' input '{spec.input_ref}' is unknown"
+            )
 
     ordered = _in_dependency_order(repeats)
     outside: dict[str, str] = {}
@@ -129,7 +131,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         total += spec.times * len(spec.body)
         if total > _MAX_UNROLLED:
             raise ValueError(
-                f"Repeat '{spec.id}' would unroll {total} entries, "
+                f"RepeatOp '{spec.id}' would unroll {total} entries, "
                 f"over the limit of {_MAX_UNROLLED}"
             )
 
@@ -187,29 +189,29 @@ def _in_dependency_order(repeats: dict[str, _Repeat]) -> list[_Repeat]:
 def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
     repeat_id = _entry_id(entry)
     if not repeat_id:
-        raise ValueError(f"Repeat at index {idx} missing 'id'")
+        raise ValueError(f"RepeatOp at index {idx} missing 'id'")
     if unknown := sorted(set(entry) - _FIELDS):
-        raise ValueError(f"Repeat '{repeat_id}' has unknown fields: {unknown}")
+        raise ValueError(f"RepeatOp '{repeat_id}' has unknown fields: {unknown}")
 
     times = entry.get("times")
     if isinstance(times, bool) or not isinstance(times, int) or times < 1:
-        raise ValueError(f"Repeat '{repeat_id}' 'times' must be a positive integer")
+        raise ValueError(f"RepeatOp '{repeat_id}' 'times' must be a positive integer")
 
     raw_body = entry.get("body")
     if not isinstance(raw_body, list) or not raw_body:
-        raise ValueError(f"Repeat '{repeat_id}' requires a non-empty 'body' list")
+        raise ValueError(f"RepeatOp '{repeat_id}' requires a non-empty 'body' list")
     body: list[dict[str, Any]] = []
     for body_idx, candidate in enumerate(raw_body):
         if not isinstance(candidate, dict):
             raise ValueError(
-                f"Repeat '{repeat_id}' body entry {body_idx} must be a mapping"
+                f"RepeatOp '{repeat_id}' body entry {body_idx} must be a mapping"
             )
         body_id, op_kind = _entry_id(candidate), candidate.get("op")
         if op_kind in (REPEAT_OP, ROUTER_OP):
-            raise ValueError(f"Repeat '{repeat_id}' body may not hold a '{op_kind}'")
+            raise ValueError(f"RepeatOp '{repeat_id}' body may not hold a '{op_kind}'")
         if not body_id or "." in body_id:
             raise ValueError(
-                f"Repeat '{repeat_id}' body id '{body_id}' may not contain '.'"
+                f"RepeatOp '{repeat_id}' body id '{body_id}' may not contain '.'"
             )
         body.append({**candidate, "id": body_id})
 
@@ -220,9 +222,9 @@ def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
 def _ref(entry: dict[str, Any], repeat_id: str, key: str) -> str:
     value = entry.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Repeat '{repeat_id}' requires a non-empty '{key}'")
+        raise ValueError(f"RepeatOp '{repeat_id}' requires a non-empty '{key}'")
     if INPUT_REF in value:
-        raise ValueError(f"Repeat '{repeat_id}' may not use '{INPUT_REF}' in '{key}'")
+        raise ValueError(f"RepeatOp '{repeat_id}' may not use '{INPUT_REF}' in '{key}'")
     return value.strip()
 
 

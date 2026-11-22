@@ -1,4 +1,4 @@
-"""``Repeat`` unrolling through the YAML parser and the graph build."""
+"""``RepeatOp`` unrolling through the YAML parser and the graph build."""
 
 import pytest
 
@@ -32,7 +32,7 @@ def _repeat(
     if body is None:
         body = _op("First", "[$in]", "      ") + _op("Second", "[First]", "      ")
     return (
-        f"  - id: {repeat_id}\n    op: Repeat\n    times: {times}\n"
+        f"  - id: {repeat_id}\n    op: RepeatOp\n    times: {times}\n"
         f"    input: {source}\n    output: {output}\n    body:\n{body}"
     )
 
@@ -97,7 +97,7 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
         ),
         pytest.param(_repeat(body="      - [First]\n"), "must be a mapping"),
         pytest.param(
-            _repeat().replace("  - id: R\n", "  - op: Repeat\n"), "missing 'id'"
+            _repeat().replace("  - id: R\n", "  - op: RepeatOp\n"), "missing 'id'"
         ),
         pytest.param(_repeat(body=""), "requires a non-empty 'body' list"),
         pytest.param(_repeat(body=_ROUTER), "may not hold a 'RouterOp'"),
