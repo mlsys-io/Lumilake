@@ -284,12 +284,13 @@ async def test_signature_follows_the_inputs(constant: bool) -> None:
 async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
     """A failed record keeps its address and never answers a request for a
     success, and two failures on different inputs get different keys, so each
-    failure's lineage names the inputs it read."""
+    failure's lineage names the inputs it read. A marker a task returns as JSON
+    text is still the marker."""
     join = _declared_name(graph, "Join")
     entries = []
     for literal, value in (
         ("one", {"_fail": {"reason": "boom"}}),
-        ("two", {"_fail": {"reason": "boom"}}),
+        ("two", json.dumps({"_fail": {"reason": "boom"}})),
         ("one", {"id": "a"}),
     ):
         payload = _payload({"Rows": [json.dumps({"id": "a", "text": literal})]})
