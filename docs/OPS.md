@@ -386,8 +386,11 @@ for that key reach all of them. A duplicate `row_key` fails the job naming the
 join and the key, and a further input missing a key marks or skips every output
 row of that key as `on_missing` says. An attach target that reads the `row_key`
 fields keeps one value per record and fills only that record; any other target
-holds one value per key. Without `row_key` the first input still fixes exactly
-one output row per key.
+holds one value per key. A marked first-input row passes through as its marker,
+whether the marker is the whole row or one of its fields: it is never a merge
+target, so it needs no record identity and no readable `row_key` or `by` key,
+and the other rows of its key still take the broadcast. Without `row_key` the
+first input still fixes exactly one output row per key.
 
 ```yaml
 ops:
