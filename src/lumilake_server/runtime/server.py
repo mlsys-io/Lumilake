@@ -133,6 +133,7 @@ class RequestState:
     completed_input_items_success: int = 0
     successful_workflow_ids: set[str] = field(default_factory=set)
     list_lambda_outputs: dict[str, set[str]] = field(default_factory=dict)
+    list_fanout_outputs: dict[str, set[str]] = field(default_factory=dict)
     ready: bool = False
 
 
@@ -2601,6 +2602,9 @@ class LumilakeServer:
             list_lambda_names = state.list_lambda_outputs.get(
                 workflow.workflow_id, set()
             )
+            list_fanout_names = state.list_fanout_outputs.get(
+                workflow.workflow_id, set()
+            )
             buffers = (
                 state.chat_history_buffers if is_history else state.output_buffers
             ).setdefault(public_name, {})
@@ -2642,6 +2646,26 @@ class LumilakeServer:
                         )
                         merged_without_errors = False
                     target[0] = values[0]
+                    continue
+                if output_name in list_fanout_names:
+                    # A row step below a list Lambda emits one value per list
+                    # element, so its length follows the fan-out, not the
+                    # slice's declared input rows. The fan-out covers the whole
+                    # run, so only one slice may carry it.
+                    if output_name in buffers:
+                        append_error(
+                            state,
+                            {
+                                "graph": public_name,
+                                "slice_index": workflow.slice_index,
+                                "workflow_id": workflow.workflow_id,
+                                "output": output_name,
+                                "error": "overlapping slice assignment",
+                            },
+                        )
+                        merged_without_errors = False
+                        continue
+                    buffers[output_name] = values
                     continue
                 if len(values) != workflow.slice_length:
                     append_error(
@@ -3272,21 +3296,36 @@ class LumilakeServer:
 
         runtime_graph = batch_request_info.runtime_graph
         list_lambda_dependent_nodes = runtime_graph.list_lambda_cardinality_nodes()
+        list_lambda_fanout_nodes = runtime_graph.list_lambda_fanout_nodes()
         list_lambda_outputs = {
             (group_key, output_name)
             for node_id, (group_key, output_name) in output_mapping.items()
             if node_id in list_lambda_dependent_nodes
         }
-        for group_key, output_name in list_lambda_outputs:
-            group_slices = grouped_workflows.get(group_key, [])
-            if len(group_slices) != 1:
-                continue
-            (single_workflow,) = group_slices
-            state = self._requests.get(single_workflow.request_id)
-            if state is not None:
-                state.list_lambda_outputs.setdefault(
-                    single_workflow.workflow_id, set()
-                ).add(output_name)
+        list_lambda_fanout_outputs = {
+            (group_key, output_name)
+            for node_id, (group_key, output_name) in output_mapping.items()
+            if node_id in list_lambda_fanout_nodes
+        }
+        whole_run_outputs = list_lambda_outputs | list_lambda_fanout_outputs
+        for outputs, fanout in (
+            (list_lambda_outputs, False),
+            (list_lambda_fanout_outputs, True),
+        ):
+            for group_key, output_name in outputs:
+                group_slices = grouped_workflows.get(group_key, [])
+                if len(group_slices) != 1:
+                    continue
+                (single_workflow,) = group_slices
+                state = self._requests.get(single_workflow.request_id)
+                if state is not None:
+                    if fanout:
+                        registered = state.list_fanout_outputs
+                    else:
+                        registered = state.list_lambda_outputs
+                    registered.setdefault(single_workflow.workflow_id, set()).add(
+                        output_name
+                    )
 
         for node_id, outputs in flat_outputs.items():
             mapping = output_mapping.get(node_id)
@@ -3299,15 +3338,15 @@ class LumilakeServer:
                     f" {type(outputs).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
-            if (group_key, output_name) in list_lambda_outputs:
+            if (group_key, output_name) in whole_run_outputs:
                 group_slices = grouped_workflows.get(group_key, [])
                 if len(group_slices) != 1:
                     raise ValueError(
-                        "List-Lambda output cannot be split across slices: "
+                        "Whole-run output cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda runs once per "
-                        "run and its single whole-list result cannot be "
-                        "partitioned per slice."
+                        f"group {group_key}. A list-mode Lambda, and a row step "
+                        "whose row count it sets, each produce one value per "
+                        "run and cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_outputs.setdefault(single_workflow.workflow_id, {})[
@@ -3339,15 +3378,15 @@ class LumilakeServer:
                     f" {type(history).__name__}"
                 )
             matched_workflow = match_workflow_for_group_node(group_key, node_id)
-            if (group_key, output_name) in list_lambda_outputs:
+            if (group_key, output_name) in whole_run_outputs:
                 group_slices = grouped_workflows.get(group_key, [])
                 if len(group_slices) != 1:
                     raise ValueError(
-                        "List-Lambda history cannot be split across slices: "
+                        "Whole-run history cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda runs once per "
-                        "run and its single whole-list result cannot be "
-                        "partitioned per slice."
+                        f"group {group_key}. A list-mode Lambda, and a row step "
+                        "whose row count it sets, each produce one value per "
+                        "run and cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_histories[single_workflow.workflow_id][output_name] = history

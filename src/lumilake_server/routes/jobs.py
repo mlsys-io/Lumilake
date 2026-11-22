@@ -1216,30 +1216,41 @@ def _validate_list_lambda_slice_span(
     runtime_graphs: dict[str, RuntimeGraph],
     workflow_slices: dict[str, list[WorkflowSliceMeta]],
 ) -> None:
-    """Reject at submit time a list-mode Lambda output that would span more
+    """Reject at submit time a list-derived output that would span more
     than one slice.
 
     A list-mode Lambda runs once over the whole input lists of one run, so its
-    single whole-list result cannot be partitioned per slice. Today that only
-    surfaces at demux time, after the run has been dispatched; reject it here
-    so the job fails fast with a message naming the op and the fix.
+    single whole-list result cannot be partitioned per slice; neither can a
+    row step below it, whose row count the Lambda's fan-out sets. Today that
+    only surfaces at demux time, after the run has been dispatched; reject it
+    here so the job fails fast with a message naming the op and the fix.
     """
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
-        if not list_lambda_dependent:
+        list_lambda_fanout = graph.list_lambda_fanout_nodes()
+        if not list_lambda_dependent and not list_lambda_fanout:
             continue
         slices = workflow_slices.get(graph_name, [])
         if len(slices) <= 1:
             continue
         for node_id, output_name in graph.output_node_map.items():
-            if node_id not in list_lambda_dependent:
+            if node_id in list_lambda_dependent:
+                produced = (
+                    "by a list-mode Lambda, which runs once over the whole "
+                    "input lists of one run"
+                )
+            elif node_id in list_lambda_fanout:
+                produced = (
+                    "below a list-mode Lambda, whose fan-out sets its row "
+                    "count to one value per list element"
+                )
+            else:
                 continue
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     f"Workflow '{graph_name}' output '{output_name}' is produced "
-                    f"by a list-mode Lambda, which runs once over the whole "
-                    f"input lists of one run and cannot be split across "
+                    f"{produced} and cannot be split across "
                     f"{len(slices)} slice(s). Submit one input value per job, "
                     "or raise input_batch_size so the whole input set runs in "
                     "a single slice."

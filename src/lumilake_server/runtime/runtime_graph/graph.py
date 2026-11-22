@@ -190,6 +190,46 @@ class RuntimeGraph:
                 list_lambda_dependent.add(node_id)
         return list_lambda_dependent
 
+    def list_lambda_fanout_nodes(self) -> set[str]:
+        """Node ids whose output count a list-mode Lambda's fan-out sets, not
+        the job's input rows: every node below a list-mode Lambda that reads
+        nothing but nodes of that fan-out. A row step keeps its input's
+        cardinality: below a fan-out alone it emits one value per list element,
+        and beside a read of the job's input rows it keeps the input's row
+        count and is merged against the slice like any row step."""
+        seeds = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if node.task_type == python_step.TASK_TYPE
+            and node.data_spec.get("mode") == "list"
+        }
+        reached: set[str] = set()
+        for node_id in self.node_order:
+            node = self.nodes[node_id]
+            if node_id in seeds:
+                reached.add(node_id)
+                continue
+            reads = self._fanout_graph_reads(node)
+            if reads and all(read in reached for read in reads):
+                reached.add(node_id)
+        return reached - self.list_lambda_cardinality_nodes()
+
+    @staticmethod
+    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
+        """The node ids a node reads, or ``None`` when it also reads a literal
+        value such as the job's input rows or a data op's own values."""
+        plan = node.data_spec.get("plan")
+        if not isinstance(plan, list):
+            if node.data_spec.get("type") == "dataframe" and any(
+                isinstance(column, dict) and "data" in column
+                for column in node.data_spec.get("columns") or ()
+            ):
+                return None
+            return set(node.dependencies)
+        if any(entry["kind"] != "stage" for entry in plan):
+            return None
+        return {entry["node"] for entry in plan}
+
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a whole-result ``LambdaOp`` one hop
         away. FlowMesh runs such a task once per element, so the task's items
