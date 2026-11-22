@@ -472,9 +472,9 @@ def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> N
 def test_a_broadcast_join_passes_a_marked_first_row_through_as_its_marker(
     tmp_path: Path,
 ) -> None:
-    """A marked first-input row whose row_key is gone passes through as its
-    marker under its by key, while the other rows of that key still take the
-    broadcast."""
-    rows = [{"unit": "u1", "rid": _MARK}, _UNITS[1], _UNITS[2]]
-    expected = [_MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
+    """A marked first-input row passes through as its marker whether the marker is
+    a field of it or the whole row, and two such rows in one unit keep their own
+    rows while the unit still takes the broadcast."""
+    rows = [{"unit": "u1", "rid": _MARK}, _MARK, _UNITS[1], _UNITS[2]]
+    expected = [_MARK, _MARK, {**_UNITS[1], "size": 2}, {**_UNITS[2], "size": 1}]
     assert _broadcast(tmp_path, rows=rows, attach=False, name="mark") == expected
