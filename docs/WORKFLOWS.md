@@ -84,9 +84,11 @@ read (a keyed record reads the one at its own position; a whole-op record reads
 every record of every input, in order) and their values, the per-row seed it drew
 with when it declares one, and the effect versions. Per-row data enters as the
 record's inputs and a per-row seed as its realization, never through the op's own
-spec, so two slices of one op at any `input_batch_size` store the same records
-under the same keys. The address names the op the workflow declares. Physical
-node ids, batch positions, job ids and workers never enter the digest.
+spec: that covers a python step's plan entries, every literal rows list a model,
+retrieval, join or format op carries in its data spec, and a rowwise seed column.
+So two slices of one op at any `input_batch_size` store the same records under
+the same keys. The address names the op the workflow declares. Physical node
+ids, batch positions, job ids and workers never enter the digest.
 
 The round is the semantic one: one-based for a round of a dynamic job, `0` for a
 standalone job. A reader trusts an object only when the digest recorded inside it
@@ -99,7 +101,12 @@ An op that reads a retrieval or fetch that records no snapshot is marked
 call counts as one, since no recorded revision fixes its model. A record whose
 value no seed or snapshot fixes, an unversioned one or a sampling op with no
 seed, carries a realization unique to its production (the job and task that made
-it), so it never shares a key with another run's draw.
+it), so it never shares a key with another run's draw. An unversioned record
+always names its production, even when its op declares a seed: the seed stays
+beside it as information, since one seed does not promise the same value twice.
+A sampling op decodes deterministically only under beam search wider than one, a
+zero temperature or `do_sample: false`; an absent temperature samples at the
+engine's own default.
 
 Read a record's chain back with `GET /api/v1/jobs/{job_id}/lineage`; see
 [`docs/API.md`](API.md).

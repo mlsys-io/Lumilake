@@ -49,6 +49,7 @@ from lumilake_server.runtime.record_store import (
     failed_record_digest,
     index_object_name,
     is_marker,
+    literal_lists,
     op_spec_digest,
     row_key,
     samples,
@@ -467,10 +468,11 @@ def _record_inputs(
     """The inputs a node reads, in its declared order, at ``round_number``.
 
     An input this batch did not store (a node outside the stored graph) is
-    named by the spec side it declares. A literal input is one dependency the
-    op never declares, because it reaches the task through the column plan
-    instead, and it is named by its own value at this row's position, so a
-    changed literal moves that record's signature."""
+    named by the spec side it declares. A literal list is one dependency the op
+    never declares: a python step's plan entry and every other op's literal rows
+    list reach the task through the column plan instead, so each is named by its
+    own value at this row's position, and a changed literal moves that record's
+    signature."""
     inputs: list[RecordInput] = []
     for node in _input_nodes(plan):
         produced = records.get(node)
@@ -495,17 +497,24 @@ def _record_inputs(
                 ],
             )
         )
-    for entry in _literal_entries(plan):
+    for rows in _literal_rows(plan):
         inputs.append(
             RecordInput(
                 keyed=True,
                 records=[
-                    (digest_of({"values": value}), digest_of(value))
-                    for value in entry.get("values", [])
+                    (digest_of({"values": value}), digest_of(value)) for value in rows
                 ],
             )
         )
     return inputs
+
+
+def _literal_rows(plan: RecordPlan) -> list[list[Any]]:
+    """Every literal rows list the op carries: its python plan's literal
+    entries, then the lists its data spec holds outside a plan."""
+    return [entry["values"] for entry in _literal_entries(plan)] + literal_lists(
+        plan.op
+    )
 
 
 def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
@@ -516,7 +525,9 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
     return [
         entry
         for entry in entries
-        if isinstance(entry, Mapping) and entry.get("kind") == "literal"
+        if isinstance(entry, Mapping)
+        and entry.get("kind") == "literal"
+        and isinstance(entry.get("values"), list)
     ]
 
 

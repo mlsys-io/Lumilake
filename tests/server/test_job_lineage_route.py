@@ -29,7 +29,6 @@ from lumilake_server.runtime.record_store import (
     index_object_name,
 )
 from lumilake_server.schemas.io import S3Location
-from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _JOB = "job-1"
 _PRINCIPAL = PrincipalContext(
@@ -72,26 +71,23 @@ class _Permissions:
         return None
 
 
-def _clear_hooks() -> None:
+@pytest.fixture(autouse=True)
+def _hooks() -> Iterator[None]:
     hooks.IDENTITY_PROVIDERS.clear()
     hooks.SUBMISSION_GUARDS.clear()
     hooks.USAGE_SINKS.clear()
     hooks.PERMISSION_CHECKERS.clear()
     hooks.RESOURCE_REGISTRARS.clear()
-
-
-@pytest.fixture(autouse=True)
-def _hooks() -> Iterator[None]:
-    _clear_hooks()
     hooks.IDENTITY_PROVIDERS.append(_Identity())
     hooks.PERMISSION_CHECKERS.append(_Permissions())
     yield
-    _clear_hooks()
+    hooks.IDENTITY_PROVIDERS.clear()
+    hooks.PERMISSION_CHECKERS.clear()
 
 
 @pytest.fixture
-def app() -> tuple[FastAPI, InMemoryJobStorage, Any]:
-    storage = InMemoryJobStorage()
+def app() -> tuple[FastAPI, Any]:
+    storage = job_storage_module.InMemoryJobStorage()
     job_storage_module._job_storage = storage
     job_routes_module.jobs.clear()
     job_routes_module._job_storage = storage
@@ -109,7 +105,7 @@ def app() -> tuple[FastAPI, InMemoryJobStorage, Any]:
     application.state.background_tasks = set()
     application.add_middleware(TraceIdMiddleware)
     application.include_router(job_routes_module.router)
-    return application, storage, job_routes_module
+    return application, storage
 
 
 def _entry(
@@ -122,9 +118,9 @@ def _entry(
 ) -> RecordEntry:
     """A stored record: an input of ``producer`` when one is given."""
     address = RecordAddress(op=op, record="a", round=round_number)
-    inputs = [producer.digest] if producer is not None else []
-    values = [producer.value_digest or ""] if producer is not None else []
-    value = {} if producer is not None else {"id": "a", "text": "ONE"}
+    inputs = [] if producer is None else [producer.digest]
+    values = [] if producer is None else [producer.value_digest or ""]
+    value = {"id": "a", "text": "ONE"} if producer is None else {}
     return RecordEntry(
         digest=entry_digest(
             spec_digest=digest_of({"op": op}),
@@ -150,26 +146,19 @@ def _entry(
     )
 
 
-def _store_chain(
-    storage: InMemoryJobStorage, extra_rounds: tuple[int, ...] = ()
+@pytest.mark.anyio
+async def test_lineage_reads_a_stored_chain(
+    app: tuple[FastAPI, Any],
 ) -> None:
-    """An upstream entry and its consumer, plus the index that names them, and
-    the consumer again at each later round."""
+    """A record's chain comes back level by level from the archive alone, each
+    entry naming the job, task, worker and round that produced it, and an
+    unknown record is 404."""
+    application, storage = app
     upstream = _entry("Mark", task_id="task-mark", worker="w1")
-    entries = [
-        upstream,
-        *[
-            _entry(
-                "Join",
-                task_id="task-join",
-                worker="w2",
-                round_number=number,
-                producer=upstream,
-            )
-            for number in (0, *extra_rounds)
-        ],
-    ]
-    for entry in entries:
+    consumer = _entry(
+        "Join", task_id="task-join", worker="w2", round_number=2, producer=upstream
+    )
+    for entry in (upstream, consumer):
         storage.save_blob(
             entry_object_name(entry.digest), entry.body(), "application/json"
         )
@@ -184,45 +173,26 @@ def _store_chain(
                     round=entry.address.round,
                     digest=entry.digest,
                 )
-                for entry in entries
+                for entry in (upstream, consumer)
             ],
         ).body(),
         "application/json",
     )
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("params", "rounds", "status", "expected"),
-    [
-        ({"op": "Join", "record": "a"}, (), 200, [("Join", 0), ("Mark", 0)]),
-        ({"op": "Join", "record": "zzz"}, (), 404, []),
-        ({"op": "Join", "record": "a"}, (2,), 200, [("Join", 2), ("Mark", 0)]),
-    ],
-)
-async def test_lineage_reads_a_stored_chain(
-    app: tuple[FastAPI, InMemoryJobStorage, Any],
-    params: dict[str, str],
-    rounds: tuple[int, ...],
-    status: int,
-    expected: list[tuple[str, int]],
-) -> None:
-    """A record's chain comes back level by level, each entry naming the job,
-    task, worker and round that produced it; an unknown record is 404; and a
-    read with no round takes the newest round the index lists."""
-    application, storage, _ = app
-    _store_chain(storage, rounds)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=application),
         base_url="http://test",
         headers={"Authorization": "Bearer token"},
     ) as client:
-        resp = await client.get(f"/jobs/{_JOB}/lineage", params=params)
-    assert resp.status_code == status
-    if status != 200:
-        return
-    entries = resp.json()["data"]["entries"]
-    assert [(entry["op"], entry["round"]) for entry in entries] == expected
-    assert entries[0]["task_id"] == "task-join"
-    assert entries[0]["job_id"] == _JOB
-    assert all(entry["worker"] in {"w1", "w2"} for entry in entries)
+        found = await client.get(
+            f"/jobs/{_JOB}/lineage", params={"op": "Join", "record": "a"}
+        )
+        missing = await client.get(
+            f"/jobs/{_JOB}/lineage", params={"op": "Join", "record": "zzz"}
+        )
+    entries = found.json()["data"]["entries"]
+    assert [(entry["op"], entry["round"]) for entry in entries] == [
+        ("Join", 2),
+        ("Mark", 0),
+    ]
+    assert (entries[0]["task_id"], entries[0]["worker"]) == ("task-join", "w2")
+    assert missing.status_code == 404

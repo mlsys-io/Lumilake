@@ -65,18 +65,81 @@ _DATA_KEYS = frozenset({"items", "values"})
 _SECRET_KEYS = frozenset({"seed", "lumid_cfg"})
 """Fields that hold a seed or a credential wherever they sit."""
 
+_LIST_TYPE = "list"
+"""The data spec payload whose ``items`` are literal rows one per position."""
+
+_PYTHON_TASK_TYPE = "python"
+"""The task type that reads its rows through a plan instead of a list payload."""
+
 _SAMPLING_TASKS = frozenset({"inference", "api"})
 """Task types whose decoding may draw tokens; classification takes an argmax
 and every other task computes without a model."""
 
 
+def literal_lists(op: RuntimeOp) -> list[list[Any]]:
+    """Every literal rows list the op's data spec carries outside a python plan.
+
+    A model, retrieval, join or format op reads its literal rows from a
+    ``type: list`` payload's ``items``, one row per position, and a rowwise op's
+    seeds from a top-level ``seeds`` list. Each list belongs to the records that
+    read it, not to the op's computation.
+
+    A python step reads its rows through its plan instead, and a ``type: list``
+    payload whose ``items`` is an expression rather than a list names a node, so
+    that node is an ordinary input and the payload stays in the spec."""
+    if op.task_type == _PYTHON_TASK_TYPE:
+        return []
+    found: list[list[Any]] = []
+    _collect_literal_rows(op.data_spec, found)
+    seeds = op.data_spec.get("seeds")
+    if isinstance(seeds, list):
+        found.append(list(seeds))
+    return found
+
+
+def _collect_literal_rows(value: Any, found: list[list[Any]]) -> None:
+    """Collect every literal rows list in a data spec side, in spec order."""
+    if isinstance(value, Mapping):
+        items = value.get("items")
+        if value.get("type") == _LIST_TYPE and isinstance(items, list):
+            found.append(list(items))
+            return
+        for item in value.values():
+            _collect_literal_rows(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_literal_rows(item, found)
+
+
+def _drop_literal_rows(value: Any) -> Any:
+    """A data spec side without the literal rows it carries, in the same walk
+    ``literal_lists`` collects them by."""
+    if isinstance(value, Mapping):
+        kept: dict[str, Any] = {}
+        for key, item in value.items():
+            if (
+                key == "items"
+                and value.get("type") == _LIST_TYPE
+                and isinstance(item, list)
+            ):
+                continue
+            kept[key] = _drop_literal_rows(item)
+        return kept
+    if isinstance(value, list):
+        return [_drop_literal_rows(item) for item in value]
+    return value
+
+
 def _without_data_data_spec(
     data_spec: Mapping[str, Any], logical_names: Mapping[str, str]
 ) -> Any:
-    """A python step's data spec without the rows it reads.
+    """A data spec without the rows the task reads.
 
-    ``items`` is the list of rows the task is given and each plan entry's
-    ``values`` are the rows it reads; both belong to the record's inputs. A
+    A python step's ``items`` are the rows the task is given and each plan
+    entry's ``values`` are the rows it reads; any ``type: list`` payload's
+    ``items`` are the literal rows another op reads, and a top-level ``seeds``
+    list is one seed per row. All of them belong to the record's inputs. A
     schema that happens to name ``items`` elsewhere stays, because it changes
     the value."""
     dropped = frozenset({*_DATA_KEYS, "seeds"})
@@ -94,7 +157,7 @@ def _without_data_data_spec(
                 for entry in item
             ]
             continue
-        kept[key] = _without_data(item, logical_names)
+        kept[key] = _drop_literal_rows(_without_data(item, logical_names))
     return kept
 
 
