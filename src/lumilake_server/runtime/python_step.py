@@ -517,8 +517,7 @@ def main(inputs):
             parsed = parse_row(_PARSER, value)
         except ValueError as exc:
             if _PARSER["on_fail"] == "raw":
-                # The row keeps its text as an ordinary value, so a downstream
-                # op reads it like any other row.
+                # The row keeps its text as an ordinary value.
                 items.append({{"output": value, "value": value}})
                 continue
             reason = exc.args[0] if exc.args else str(exc)
@@ -539,8 +538,7 @@ def main(inputs):
 
 
 def parse_source(op_id: str, plan: ColumnPlan, parse_spec: dict[str, Any]) -> str:
-    """The python-task code for a ParseOp: one parsed record per row, or a
-    failed-record marker naming the op, or with ``on_fail: raw`` its text."""
+    """The python-task code for a ParseOp: one parsed record per row."""
     return (_PARSE_PRELUDE + _PARSE_MAIN).format(
         op_id=op_id,
         module=TASK_RUNTIME_MODULE,

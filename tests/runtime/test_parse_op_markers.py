@@ -304,9 +304,7 @@ def test_a_user_function_returning_the_reserved_key_fails_the_task(
 def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
     answer: str, kept: str, tmp_path: Path
 ) -> None:
-    """With `on_fail: raw` a row reaches the next op as the record it parsed
-    to, or as its own text when it does not parse; the op is no marker source,
-    so a model op may read it while the default ParseOp is still refused."""
+    """`on_fail: raw` is no marker source, so a model op may read it."""
     ops = [
         _parse(format="json", on_fail="raw"),
         _lower(code="def f(row):\n    return row[0]\n"),
