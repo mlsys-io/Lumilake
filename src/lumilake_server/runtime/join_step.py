@@ -244,7 +244,7 @@ def main(inputs):
                 marked[key] = more_marked[key]
                 continue
             _merge(keyed[key], more[key], where)
-    for name, value_index, source_index, first_source in _JOIN["attach"]:
+    for name, value_index, source_index, _ in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
             _decoded_cell(value)
@@ -395,7 +395,7 @@ def _attach_broadcast(
             _merged(merged, name, value, where)
             keyed[target] = (record, held_key, merged)
     if _ON_MISSING == "fail_row":
-        for position, (record, _, key) in enumerate(keyed):
+        for position, (record, key, _) in enumerate(keyed):
             if position not in covered and record not in marked:
                 marked[record] = _failed("key %s is missing from %r" % (key, where))
 

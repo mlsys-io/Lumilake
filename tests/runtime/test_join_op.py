@@ -436,11 +436,10 @@ def _broadcast(
     graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     node = _join_of(RuntimeGraphBuilder().build(graph))
     upstream: dict[int, list[dict[str, Any]]] = {}
-    if attach == "part":
+    if attach:
         _, value_index, *_ = node.data_spec.join.attach[0]
-        upstream[value_index] = _cells(*(tags or ["A", "B"]))
-    elif attach == "tag":
-        upstream[2] = _cells(*(tags or ["A", "B", "C"]))
+        default = ["A", "B"] if attach == "part" else ["A", "B", "C"]
+        upstream[value_index] = _cells(*(tags or default))
     return [item["output"] for item in _run(tmp_path, node, upstream, name)["items"]]
 
 
