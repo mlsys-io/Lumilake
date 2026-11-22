@@ -41,6 +41,16 @@ def _graph(ops: str, outputs: str = "") -> dict:
     return parse_yaml_payload(f"{_HEADER}ops:\n{ops}{outputs}")["repeat"]["graph"]
 
 
+def test_a_literal_whose_first_part_is_a_body_id_is_read_as_text() -> None:
+    fmt = (
+        "  - {id: Fmt, op: FormatOp, inputs: [Start], template: '{doc}', "
+        "format_kwargs: {doc: 'Step.json'}}\n"
+    )
+    graph = _graph(_repeat() + fmt, _OUTPUT)
+    op = next(op for op in graph.values() if op["_op"] == "FormatOp")
+    assert op["format_kwargs"] == {"doc": "Step.json"}
+
+
 def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -> None:
     graph = _graph(_repeat(), _OUTPUT)
     lambdas = sorted(

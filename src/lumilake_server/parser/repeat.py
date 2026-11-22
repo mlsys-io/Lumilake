@@ -64,7 +64,7 @@ class _Scoped(Mapping[str, str]):
             return self._names.get(ref, ref)
         if ref == INPUT_REF:
             raise ValueError(f"{self._where} may not read '{INPUT_REF}'")
-        owner = self._body_owner.get(ref.partition(".")[0])
+        owner = self._body_owner.get(ref)
         if owner is not None:
             raise ValueError(f"{self._where} reads '{ref}', a body id of '{owner}'")
         return ref
