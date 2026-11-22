@@ -3,8 +3,10 @@
 ``key: {column: <name>}`` names the column whose value is each emitted row's
 record key. The key is declared once, where the rows are produced, and a
 consumer reads it at ``items.table.<column>``; without the declaration a row
-has no logical key. The declaration is checked when the result arrives: a null
-key, a duplicate key and a missing key column each fail the job, naming the op.
+has no logical key. The declaration is checked when each retrieval task's
+result arrives: a null key, a duplicate key and a missing key column each fail
+the job, naming the op. A task carries one slice of a parametrized run's rows,
+and the slices are not compared with each other.
 """
 
 import json
@@ -45,9 +47,10 @@ def retrieval_key_column(data_spec: dict[str, Any]) -> str | None:
 
 
 def key_problem(op_id: str, items: Any, column: str) -> str | None:
-    """Describe the first problem a keyed retrieval's result has with its
-    declared key, or ``None`` when every row carries a distinct, non-null
-    value in ``column``."""
+    """Describe the first problem one retrieval task's result has with its
+    declared key, or ``None`` when every row of it carries a distinct,
+    non-null value in ``column``. A task carries one slice of a parametrized
+    run's rows, and the slices are not compared with each other."""
     if not isinstance(items, list):
         return None
     seen: dict[str, tuple[int, int | None]] = {}
@@ -55,8 +58,8 @@ def key_problem(op_id: str, items: Any, column: str) -> str | None:
         rows = _item_rows(item)
         item_index = _item_index(item, item_position)
         for row_position, row in enumerate(rows):
-            where = f"row {row_position} of item {item_index}"
-            if not isinstance(row, dict) or column not in row:
+            where = f"row {row_position} of item {item_index} of this batch"
+            if column not in row:
                 return (
                     f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
                     f" {where} has no such column"
