@@ -163,7 +163,6 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-        uses: tuple[str, ...] = (),
     ) -> None: ...
 
     @overload
@@ -179,7 +178,6 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-        uses: tuple[str, ...] = (),
     ) -> None: ...
 
     @overload
@@ -195,7 +193,6 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-        uses: tuple[str, ...] = (),
     ) -> None: ...
 
     def __init__(
@@ -210,7 +207,6 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-        uses: tuple[str, ...] = (),
     ) -> None:
         if mode not in self.LAMBDA_MODES:
             raise ValueError(
@@ -241,9 +237,6 @@ class LambdaOp(Op):
         # A representative value for data-profile preflight placeholders; never
         # executed at runtime.
         self.sample_value = sample_value
-        # The workflow functions this op's code included; an LLM op reading it
-        # inlines the code, where a module-level helper has no scope.
-        self.uses = uses
         if code:
             self.code: str = code
         else:
@@ -300,8 +293,6 @@ class LambdaOp(Op):
             data["cache"] = self.cache
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
-        if self.uses:
-            data["uses"] = list(self.uses)
         return data
 
     @classmethod
@@ -317,7 +308,6 @@ class LambdaOp(Op):
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
         sample_value = data.get("sample_value")
-        uses = data.get("uses") or []
         try:
             fn = SubmittedFunction(code, fn_name)
         except ValueError as exc:
@@ -335,7 +325,6 @@ class LambdaOp(Op):
             expected_runtime_s=expected_runtime_s,
             cache=cache,
             sample_value=sample_value,
-            uses=tuple(uses),
         )
 
 

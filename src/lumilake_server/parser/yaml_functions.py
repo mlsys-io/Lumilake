@@ -7,8 +7,8 @@ resolved while the entry is still raw: the named blocks are appended after the
 op's ``code`` in the listed order, so the dispatched source and every digest
 see the full program exactly as if it had been written in the op.
 
-An op that an LLM op reads runs inline in the FlowMesh worker, whose namespace
-gives a module-level name no scope, so such an op cannot use a block; the build
+An op that an LLM op reads runs inline in the FlowMesh worker, where the
+source must be the function alone, so such an op cannot use a block; the build
 refuses it where the inline source is checked.
 """
 
@@ -103,11 +103,8 @@ class WorkflowFunctions:
             sources[name] = source
         return cls(sources=sources)
 
-    def include(
-        self, uses: Any, op_id: str, code: str | None
-    ) -> tuple[str, tuple[str, ...]]:
-        """The op's source with the blocks it ``uses`` appended, in order, and
-        the names it included."""
+    def include(self, uses: Any, op_id: str, code: str | None) -> str:
+        """The op's source with the blocks it ``uses`` appended, in order."""
         names = self._checked_uses(uses, op_id)
         own = None
         if code is not None:
@@ -133,7 +130,7 @@ class WorkflowFunctions:
                     )
             included.append((name, current))
             blocks.append(source.strip())
-        return _SEPARATOR.join(blocks), tuple(names)
+        return _SEPARATOR.join(blocks)
 
     def _checked_uses(self, uses: Any, op_id: str) -> list[str]:
         if not isinstance(uses, list) or not all(

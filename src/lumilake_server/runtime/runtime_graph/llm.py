@@ -1280,17 +1280,6 @@ class _LLMBuilder(_EmbeddingBuilder):
                     if isinstance(op.fn, SubmittedFunction):
                         # Inlined steps run in the FlowMesh worker's safe_eval
                         # namespace, stricter than a standalone python task.
-                        if op.uses:
-                            raise ValueError(
-                                f"Invalid LambdaOp '{op.id}': it uses the"
-                                f" workflow function {op.uses[0]!r}, but a"
-                                " LambdaOp that feeds an LLM is evaluated inline"
-                                " by the FlowMesh worker, which gives its"
-                                " module-level names no scope, so a shared block"
-                                " cannot reach it. Move the code it needs into"
-                                " its own function, or make the LambdaOp a"
-                                " workflow output or read only by other LambdaOps"
-                            )
                         try:
                             lambda_runtime.validate_inline_source(
                                 op.code, op.fn.__name__

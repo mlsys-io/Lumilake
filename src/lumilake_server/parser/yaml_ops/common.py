@@ -19,7 +19,6 @@ class OpEntry:
     inputs: list[str] = field(default_factory=list)
     fields: dict[str, Any] = field(default_factory=dict)
     max_iter: int | None = None
-    uses: tuple[str, ...] = ()
 
 
 @dataclass

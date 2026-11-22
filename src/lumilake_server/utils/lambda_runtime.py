@@ -267,16 +267,31 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     return _check_def(target)
 
 
+def _inline_extra_binding(stmts: list[ast.stmt]) -> str | None:
+    """The first module-level name the statements after the inline ``def``
+    bind, or ``None`` when they bind none."""
+    source = "\n".join(ast.unparse(stmt) for stmt in stmts)
+    if not source.strip():
+        return None
+    table = symtable.symtable(source, _SOURCE_NAME, "exec")
+    names = [
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    ]
+    return min(names, key=source.find) if names else None
+
+
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     """Check source for a LambdaOp the FlowMesh worker evaluates inline.
 
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
     which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and it calls the first name the code binds at top level.
-    So the ``def`` named ``fn_name`` must be the first top-level statement,
-    with only a module docstring allowed before it. Code that a standalone
-    LambdaOp accepts but that namespace cannot run is rejected here, at
-    submit, with the reason.
+    ``__import__``, and it gives its module-level names no scope. So the
+    source must be the ``def`` named ``fn_name`` alone, with only a module
+    docstring allowed before or after it. Code that a standalone LambdaOp
+    accepts but that namespace cannot run is rejected here, at submit, with
+    the reason.
     """
     name = validate_source(code, fn_name)
     tree = _parse(code)
@@ -304,10 +319,16 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    for stmt in tree.body:
+    for index, stmt in enumerate(tree.body):
         if _is_docstring(stmt):
             continue
         if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
+            extra = _inline_extra_binding(tree.body[index + 1 :])
+            if extra is not None:
+                raise ValueError(
+                    f"it binds {extra!r} at module level, which the inline"
+                    " function cannot see; move it inside the function"
+                )
             return name
         break
     raise ValueError(
