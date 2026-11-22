@@ -1130,11 +1130,8 @@ def _validate_list_lambda_slice_span(
     """Reject at submit time a list-derived output that would span more
     than one slice.
 
-    A list-mode Lambda runs once over the whole input lists of one run, so its
-    single whole-list result cannot be partitioned per slice; neither can a
-    row step below it, whose row count the Lambda's fan-out sets. Today that
-    only surfaces at demux time, after the run has been dispatched; reject it
-    here so the job fails fast with a message naming the op and the fix.
+    Neither a list-mode Lambda's whole-list result nor a row step below it can
+    be partitioned per slice.
     """
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()

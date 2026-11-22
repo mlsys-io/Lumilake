@@ -198,10 +198,7 @@ class RuntimeGraph:
     def list_lambda_fanout_nodes(self) -> set[str]:
         """Node ids whose output count a list-mode Lambda's fan-out sets, not
         the job's input rows: every node below a list-mode Lambda that reads
-        nothing but nodes of that fan-out. A row step keeps its input's
-        cardinality: below a fan-out alone it emits one value per list element,
-        and beside a read of the job's input rows it keeps the input's row
-        count and is merged against the slice like any row step."""
+        nothing but nodes of that fan-out."""
         seeds = {
             node_id
             for node_id, node in self.nodes.items()
@@ -222,7 +219,7 @@ class RuntimeGraph:
     @staticmethod
     def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
         """The node ids a node reads, or ``None`` when it also reads a literal
-        value such as the job's input rows or a data op's own values."""
+        value such as the job's input rows."""
         plan = node.data_spec.get("plan")
         if not isinstance(plan, list):
             if node.data_spec.get("type") == "dataframe" and any(

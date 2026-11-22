@@ -2647,10 +2647,8 @@ class LumilakeServer:
                     target[0] = values[0]
                     continue
                 if output_name in list_fanout_names:
-                    # A row step below a list Lambda emits one value per list
-                    # element, so its length follows the fan-out, not the
-                    # slice's declared input rows. The fan-out covers the whole
-                    # run, so only one slice may carry it.
+                    # The fan-out covers the whole run, so only one slice may
+                    # carry it.
                     if output_name in buffers:
                         append_error(
                             state,
