@@ -477,18 +477,12 @@ async def test_lineage_walks_a_chain_from_the_archive(graph: Any) -> None:
     earlier one wrote, and a chain walks to each record's producer."""
     storage, _ = await _write(graph, _rows())
     index = read_index(storage, "req-1")
-    assert index is not None
-    assert index.rounds() == [0]
-    chain = lineage(
-        storage,
-        index=index,
-        op=_declared_name(graph, "Join"),
-        record="a",
-        round_number=0,
-    )
+    assert index is not None and index.rounds() == [0]
+    join, mark = _declared_name(graph, "Join"), _declared_name(graph, "Mark")
+    chain = lineage(storage, index=index, op=join, record="a", round_number=0)
     assert [(e.address.op, e.address.record) for e in chain] == [
-        (_declared_name(graph, "Join"), "a"),
-        (_declared_name(graph, "Mark"), "a"),
+        (join, "a"),
+        (mark, "a"),
     ]
     assert (chain[0].source.task_id, chain[1].source.worker) == (
         "task-Join",
