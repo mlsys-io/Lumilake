@@ -245,7 +245,7 @@ def main(inputs):
                 marked[key] = more_marked[key]
                 continue
             _merge(keyed[key], more[key], where)
-    for name, value_index, source_index in _JOIN["attach"]:
+    for name, value_index, source_index, first_source in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
             _decoded_cell(value)
@@ -342,28 +342,34 @@ def _broadcast(inputs):
             # written onto that row's copy, never onto a row it shares with
             # another output.
             keyed[position] = (record, key, merged)
-    for name, value_index, source_index in _JOIN["attach"]:
+    for name, value_index, source_index, first_source in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
             _decoded_cell(value)
             for value in _column(_PLAN[value_index], inputs, _decoded_cell)
         ]
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
-        _attach_broadcast(keyed, marked, name, source_index, values, more, where)
+        _attach_broadcast(
+            keyed, marked, name, source_index, first_source, values, more, where
+        )
     items = []
     for record, _, row in keyed:
         items.append({{"output": marked.get(record, row)}})
     return {{"items": items}}
 
 
-def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
+def _attach_broadcast(
+    keyed, marked, name, source_index, first_source, values, rows, where
+):
     """Merge one attach field's values onto the output rows their source rows
     belong to. A source row that reads the row_key fields names one record, so
     its value lands on that output row alone; any other source row carries one
     value per by key, and it lands on every output row of that key. Values pair
     with source rows as in a join without a row_key, and a marked source row
-    marks the output rows it reaches, as it does there."""
+    marks the output rows it reaches, as it does there. A source row of the
+    first input is the output row at its position, never its whole key's."""
     targets = _AttachTargets(keyed)
+    positions = {{id(row): index for index, row in enumerate(rows)}}
     live = []
     for row in rows:
         carried = carried_marker((row,))
@@ -373,7 +379,8 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
         # A marked source row is the marker of the output rows it reaches even
         # when no value pairs with it, since a value column may cover the live
         # rows only.
-        for target in targets.reaches(row, where):
+        reached = [positions[id(row)]] if first_source else targets.reaches(row, where)
+        for target in reached:
             held = keyed[target][0]
             if held not in marked:
                 marked[held] = carried
@@ -388,7 +395,11 @@ def _attach_broadcast(keyed, marked, name, source_index, values, rows, where):
         carried = failure_of(value)
         if carried is None:
             carried = carried_marker((source_row,))
-        for target in targets.of(source_row, key, where):
+        reached = (
+            [positions[id(source_row)]] if first_source
+            else targets.of(source_row, key, where)
+        )
+        for target in reached:
             covered.add(target)
             record, held_key, held_row = keyed[target]
             if record in marked:

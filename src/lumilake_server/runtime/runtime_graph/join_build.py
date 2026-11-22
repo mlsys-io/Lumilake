@@ -118,7 +118,7 @@ def build_join_step(
     columns: list[int] = []
     for column in op.columns:
         columns.append(_planned(builder, op, column, ctx, plan, dependencies))
-    attach: list[tuple[str, int, int]] = []
+    attach: list[tuple[str, int, int, bool]] = []
     for field, target in op.attach_ops.items():
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
         if isinstance(target, FormatOp):
@@ -132,6 +132,7 @@ def build_join_step(
                 field,
                 _planned(builder, op, target, ctx, plan, dependencies),
                 _planned(builder, op, source, ctx, plan, dependencies),
+                source.id == op.columns[0].id,
             )
         )
     node = builder._create_runtime_op(
