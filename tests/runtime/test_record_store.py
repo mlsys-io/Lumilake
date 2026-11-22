@@ -207,8 +207,6 @@ _BROADCAST_WORKFLOW: dict[str, Any] = {
     ],
 }
 
-_SAMPLING_TASK_TYPES = {"inference", "api"}
-
 
 @pytest.fixture
 def graph() -> Any:
@@ -335,22 +333,19 @@ async def test_whole_op_record_names_every_input_row() -> None:
         }
     )
     payload["outputs"].append({"name": "read", "ref": "Read"})
-    keys = []
+    stored = []
     for second in ("TWO", "CHANGED"):
         graph = _runtime_graph(payload)
         mark = [{"id": "a", "text": "ONE"}, {"id": "b", "text": second}]
-        entries = {
-            (entry.address.op, entry.address.record): entry.digest
-            for entry in await _store(graph, {"Mark": mark, "Read": [mark]})
-        }
-        keys.append(
+        keys = _keys(await _store(graph, {"Mark": mark, "Read": [mark]}))
+        stored.append(
             [
-                entries[(_declared_name(graph, "Mark"), "a")],
-                entries[(_declared_name(graph, "Read"), None)],
+                keys[(_declared_name(graph, op), record)]
+                for op, record in (("Mark", "a"), ("Read", None))
             ]
         )
-    assert keys[0][0] == keys[1][0]
-    assert keys[0][1] != keys[1][1]
+    assert stored[0][0] == stored[1][0]
+    assert stored[0][1] != stored[1][1]
 
 
 def _paths_graph(**changes: Any) -> Any:
@@ -447,9 +442,7 @@ async def test_a_batch_writes_and_indexes_per_member_job(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stored_value_is_redacted_but_its_digest_is_the_raw_graph(
-    graph: Any,
-) -> None:
+async def test_a_stored_value_is_redacted_but_digested_raw(graph: Any) -> None:
     """A response that echoes a credential is stored the way the per-task
     artifact is, redacted, while its value digest stays over the raw value the
     job computed."""
