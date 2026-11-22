@@ -14,7 +14,7 @@ from lumilake_server.dynamic.template import (
     stop_export,
     validate_template,
 )
-from lumilake_server.ops.router_ops import RouterOp, expand_routers
+from lumilake_server.ops.router_ops import RouterOp, RouterRule, expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.utils.lambda_runtime import materialize
 
@@ -98,6 +98,53 @@ def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> Non
     twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
     with pytest.raises(ValueError, match="branches must be unique"):
         RouterOp.from_entry(_router(rules=twin))
+
+
+def test_an_empty_rule_takes_no_value_and_refuses_one() -> None:
+    rule = [{"branch": "no_ret", "match": "empty"}]
+    RouterOp.from_entry(_router(rules=rule))
+    with pytest.raises(ValueError, match="branch 'no_ret'.*takes no value"):
+        RouterOp.from_entry(_router(rules=[{**rule[0], "value": "x"}]))
+    with pytest.raises(ValueError, match="takes no value"):
+        RouterRule("no_ret", "empty", "")
+
+
+def test_an_empty_rule_routes_null_blank_and_empty_containers_only(
+    tmp_path: Path,
+) -> None:
+    router = _router(
+        rules=[{"branch": "no_ret", "match": "empty"}],
+        default_branch="ret",
+    )
+    column = [
+        {"case_id": "null", "text": None},
+        {"case_id": "blank", "text": ""},
+        {"case_id": "list", "text": []},
+        {"case_id": "map", "text": {}},
+        {"case_id": "null-text", "text": "null"},
+        {"case_id": "empty-list-text", "text": "[]"},
+        {"case_id": "full", "text": "q"},
+    ]
+    got = _branch_rows(tmp_path, router, "route.no_ret", column)
+    assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
+    rest = _branch_rows(tmp_path, router, "route.ret", column)
+    assert [row["case_id"] for row in rest] == [
+        "null-text",
+        "empty-list-text",
+        "full",
+    ]
+
+
+def test_a_row_missing_an_empty_rule_path_fails_naming_the_part(
+    tmp_path: Path,
+) -> None:
+    router = _router(
+        path="ctx.question",
+        rules=[{"branch": "no_ret", "match": "empty"}],
+        default_branch="ret",
+    )
+    with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
+        _branch_rows(tmp_path, router, "route.no_ret", [{"ctx": {}}])
 
 
 def test_router_expands_before_the_graph_is_built() -> None:

@@ -17,7 +17,7 @@ from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
 ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
 
-_MATCHES = ("contains", "equals")
+_MATCHES = ("contains", "equals", "empty")
 _NAME_RE = re.compile(r"^\w+$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 
@@ -55,7 +55,7 @@ class RouterRule:
 
     branch: str
     match: str
-    value: str
+    value: str | None = None
 
     def __post_init__(self) -> None:
         if not _NAME_RE.match(self.branch):
@@ -67,11 +67,20 @@ class RouterRule:
             raise ValueError(
                 f"RouterRule match must be one of {_MATCHES}, got {self.match!r}"
             )
+        if self.match == "empty":
+            if self.value is not None:
+                raise ValueError(
+                    f"RouterRule branch {self.branch!r} matches 'empty' and takes no"
+                    f" value, got {self.value!r}"
+                )
+            return
         if not self.value:
             raise ValueError("RouterRule requires a non-empty string value")
 
     def matches(self) -> str:
         """The Python expression this rule's match test renders to."""
+        if self.match == "empty":
+            return "value is None or value == '' or value == [] or value == {}"
         return (
             f"{self.value!r} in text"
             if self.match == "contains"
@@ -154,6 +163,19 @@ class RouterOp:
             branch = raw_rule.get("branch")
             match = raw_rule.get("match")
             value = raw_rule.get("value")
+            if match == "empty":
+                if value is not None:
+                    raise ValueError(
+                        f"RouterOp {router_id!r} branch {branch!r} matches 'empty'"
+                        f" and takes no value, got {value!r}"
+                    )
+                if not isinstance(branch, str):
+                    raise ValueError(
+                        f"RouterOp {router_id!r} rules require a string branch, got"
+                        f" {raw_rule!r}"
+                    )
+                rules.append(RouterRule(branch, match))
+                continue
             if not (
                 isinstance(branch, str)
                 and isinstance(match, str)
@@ -216,6 +238,7 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         )
     own = names.index(branch) if branch in names else None
     tests = [rule.matches() for rule in rules]
+    needs_text = any(rule.match != "empty" for rule in rules)
     if own is None:
         # The default branch keeps the rows no rule matched.
         skip, keep = tests, None
@@ -236,12 +259,13 @@ def branch_lambda_code(router: RouterOp, branch: str) -> str:
         lines.append("            if not isinstance(value, dict) or part not in value:")
         lines.append('                raise ValueError(f"{LABEL} row has no {part!r}")')
         lines.append("            value = value[part]")
+    else:
+        lines.append("        value = row")
+    if needs_text:
         lines.append(
             "        text = value if isinstance(value, str) else "
             "json.dumps(value, ensure_ascii=False)"
         )
-    else:
-        lines.append("        text = json.dumps(row, ensure_ascii=False)")
     if skip:
         lines.append(f"        if {' or '.join(skip)}:")
         lines.append("            continue")
