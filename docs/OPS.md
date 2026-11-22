@@ -629,9 +629,7 @@ rows. `error_branch: true` adds an `error` branch that receives the [failed
 records](#failed-records); every other branch skips them. Each branch is a
 list-mode `LambdaOp`, so a `path` walks its decoded row.
 
-`match: empty` takes no `value` and matches a field holding `null`, `""`, `[]`
-or `{}`; it tests the value itself, so a string `"null"` or `"[]"` is not
-empty. A row missing a `path` part fails the job naming that part.
+`match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
 
 ```yaml
 ops:
