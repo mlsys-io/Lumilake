@@ -153,6 +153,25 @@ def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
         lambda_runtime.validate_inline_source(code, "main")
 
 
+@pytest.mark.parametrize(
+    "code, match",
+    [
+        ("def main(x):\n    return x\n\nassert True", "module-level assert statement"),
+        (
+            "def main(x):\n    return x\n\nfor i in range(2):\n    pass\nK = 1",
+            "binds 'i'",
+        ),
+    ],
+)
+def test_inline_source_refuses_any_statement_after_the_def(
+    code: str, match: str
+) -> None:
+    """The ``def`` must be the last statement: a trailing statement is
+    refused, naming the binding it makes or its kind when it makes none."""
+    with pytest.raises(ValueError, match=match):
+        lambda_runtime.validate_inline_source(code, "main")
+
+
 def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
     """A module docstring before ``def main`` is fine; any other statement
     before it is not."""

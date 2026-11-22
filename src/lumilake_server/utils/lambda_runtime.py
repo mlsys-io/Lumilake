@@ -267,19 +267,37 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     return _check_def(target)
 
 
-def _inline_extra_binding(stmts: list[ast.stmt]) -> str | None:
-    """The first module-level name the statements after the inline ``def``
-    bind, or ``None`` when they bind none."""
-    source = "\n".join(ast.unparse(stmt) for stmt in stmts)
-    if not source.strip():
-        return None
-    table = symtable.symtable(source, _SOURCE_NAME, "exec")
-    names = [
+def _inline_statement_binding(stmt: ast.stmt) -> str | None:
+    """The name ``stmt`` first binds at module level, or ``None`` when it
+    binds none."""
+    table = symtable.symtable(ast.unparse(stmt), _SOURCE_NAME, "exec")
+    bound = {
         symbol.get_name()
         for symbol in table.get_symbols()
         if symbol.is_assigned() or symbol.is_imported()
-    ]
-    return min(names, key=source.find) if names else None
+    }
+    bound_names: list[tuple[int, int, str]] = []
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        else:
+            continue
+        if name in bound:
+            bound_names.append((node.lineno, node.col_offset, name))
+    return min(bound_names)[2] if bound_names else None
+
+
+def _inline_statement_kind(stmt: ast.stmt) -> str:
+    """A short name for the kind of statement ``stmt`` is, for messages."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return "function definition"
+    if isinstance(stmt, ast.ClassDef):
+        return "class definition"
+    if isinstance(stmt, ast.Expr):
+        return "expression"
+    return type(stmt).__name__.lower()
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
@@ -288,10 +306,10 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
     which the FlowMesh worker materializes in its own restricted namespace: no
     ``__import__``, and it gives its module-level names no scope. So the
-    source must be the ``def`` named ``fn_name`` alone, with only a module
-    docstring allowed before or after it. Code that a standalone LambdaOp
-    accepts but that namespace cannot run is rejected here, at submit, with
-    the reason.
+    ``def`` named ``fn_name`` must be the last statement of the source, with
+    only a module docstring allowed before it and after it. Code that a
+    standalone LambdaOp accepts but that namespace cannot run is rejected
+    here, at submit, with the reason.
     """
     name = validate_source(code, fn_name)
     tree = _parse(code)
@@ -323,11 +341,19 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
         if _is_docstring(stmt):
             continue
         if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
-            extra = _inline_extra_binding(tree.body[index + 1 :])
-            if extra is not None:
+            for extra in tree.body[index + 1 :]:
+                if _is_docstring(extra):
+                    continue
+                binding = _inline_statement_binding(extra)
+                said = (
+                    f"binds {binding!r} at module level"
+                    if binding is not None
+                    else f"has a module-level {_inline_statement_kind(extra)}"
+                    " statement"
+                )
                 raise ValueError(
-                    f"it binds {extra!r} at module level, which the inline"
-                    " function cannot see; move it inside the function"
+                    f"it {said}, but the inline function must be the last"
+                    " statement of its source; move it inside the function"
                 )
             return name
         break

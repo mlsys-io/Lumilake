@@ -77,12 +77,13 @@ program: dispatch and every digest treat it exactly as if the source had been
 written in the op. A block is included once per op that uses it.
 
 A `LambdaOp` that an `LLMChatOp` reads is evaluated inline in the FlowMesh
-worker, whose namespace gives a module-level name no scope. Its source must be
-the `def` alone, with only a module docstring beside it, so a shared block
-cannot reach it: submission is refused, naming the binding, and the code must
-move what it needs inside the function. The same rule refuses a trailing
-helper or constant written into the op's own `code`, whatever the workflow
-format. A `LambdaOp` that is a workflow output, or that only other
+worker, whose namespace gives a module-level name no scope. Its `def` must be
+the last statement of its source, with only a module docstring before or after
+it, so a shared block cannot reach it: the block's statement follows the
+`def`, submission is refused naming the binding, and the code must move what
+it needs inside the function. The same rule refuses a trailing helper,
+constant or other statement written into the op's own `code`, whatever the
+workflow format. A `LambdaOp` that is a workflow output, or that only other
 `LambdaOp`s read, runs as its own `python` task and can use blocks freely.
 
 `code` is optional beside `uses`. Without it the op's code is the joined
