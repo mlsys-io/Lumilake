@@ -95,6 +95,15 @@ class LLMOp(Op):
                 " use it only on LLMChatOp."
             )
 
+    @property
+    def samples(self) -> bool:
+        """Whether the op's output is a random draw: an absent temperature
+        draws, while ``temperature: 0`` or ``num_beams > 1`` decodes
+        deterministically."""
+        if self.config.num_beams is not None and self.config.num_beams > 1:
+            return False
+        return self.config.temperature != 0
+
     def _serialize(self) -> dict[str, Any]:
         raise NotImplementedError()
 
@@ -481,6 +490,11 @@ def llm_vision(
 @Op.registry.register("ImageGenerationOp")
 class ImageGenerationOp(LLMOp):
     """Op for generating images from text content."""
+
+    @property
+    def samples(self) -> bool:
+        """Every generation is a fresh draw of the diffusion sampler."""
+        return True
 
     def __init__(
         self,
