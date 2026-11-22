@@ -9,6 +9,7 @@ from pydantic import (
     Field,
     StrictStr,
     field_validator,
+    model_validator,
 )
 
 from lumilake_server.ops.ops import Op
@@ -26,14 +27,17 @@ class JoinSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     by: list[StrictStr] = Field(min_length=1)
+    row_key: list[StrictStr] | None = Field(default=None, min_length=1)
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
-    @field_validator("by", mode="before")
+    @field_validator("by", "row_key", mode="before")
     @classmethod
     def _dotted_paths(cls, value: Any) -> Any:
         """Take the key as its paths: one dotted field name, or a list of them
         for a composite key."""
+        if value is None:
+            return None
         paths = [value] if isinstance(value, str) else value
         if not isinstance(paths, list) or not all(
             isinstance(path, str) and _PATH_RE.match(path) for path in paths
@@ -49,30 +53,28 @@ class JoinSpec(BaseModel):
                 raise ValueError(f"key {field!r} must be a field name")
         return value
 
+    @model_validator(mode="after")
+    def _row_key_names_every_by_path(self) -> Self:
+        """The first-input record key, refused unless it names every ``by``
+        path."""
+        if self.row_key is not None:
+            missing = [path for path in self.by if path not in self.row_key]
+            if missing:
+                raise ValueError(
+                    f"row_key must name every by path, got {self.row_key!r}"
+                    f" without {missing!r}"
+                )
+        return self
+
 
 def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
     """Validate one `JoinOp` entry, naming the op and field in the error."""
     return validate_fields(JoinSpec, fields, where)
 
 
-def join_key_paths(by: Any, op_id: str) -> list[str]:
-    """The join key paths: one for a string, several for a composite key."""
-    paths = [by] if isinstance(by, str) else by
-    if not isinstance(paths, list) or not paths:
-        raise ValueError(
-            f"JoinOp '{op_id}' requires 'by', a dotted field name or a list of them"
-        )
-    for path in paths:
-        if not isinstance(path, str) or not _PATH_RE.match(path):
-            raise ValueError(
-                f"JoinOp '{op_id}' by must be dotted field names, got {path!r}"
-            )
-    return paths.copy()
-
-
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
-    """A keyed join: first-input rows, others merged by ``by``, attaches joined back."""
+    """A keyed join by ``by``, attaches joined back, an optional ``row_key`` per row."""
 
     column_indices: list[int]
     attach_indices: dict[str, int]
@@ -92,7 +94,6 @@ class JoinOp(Op):
             if op not in joined:
                 joined.append(op)
         super().__init__(joined)
-        self.by = join_key_paths(by, self.id)
         self.attach_indices = {}
         target_indices = set()
         for field, target in attach.items():
@@ -113,6 +114,12 @@ class JoinOp(Op):
     @property
     def by(self) -> list[str]:
         return self.spec.by
+
+    @property
+    def row_key(self) -> list[str] | None:
+        """The record key of the first input's rows, when it holds several per
+        key."""
+        return self.spec.row_key
 
     @property
     def on_missing(self) -> Literal["null_fill", "fail_row"]:
@@ -141,7 +148,7 @@ class JoinOp(Op):
         return self.columns[0]
 
     def _serialize(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "by": self.by,
             "attach": {
                 field: self.inputs[index].id
@@ -149,6 +156,9 @@ class JoinOp(Op):
             },
             "on_missing": self.on_missing,
         }
+        if self.row_key is not None:
+            data["row_key"] = self.row_key
+        return data
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:

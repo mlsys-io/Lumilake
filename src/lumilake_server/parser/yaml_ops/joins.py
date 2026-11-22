@@ -16,6 +16,7 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     spec = build_join_spec(
         {
             "by": entry.fields.get("by"),
+            "row_key": entry.fields.get("row_key"),
             "attach": entry.fields.get("attach") or {},
             # ``on_missing: null_fill`` spells the default in YAML.
             "on_missing": entry.fields.get("on_missing") or "null_fill",
@@ -37,5 +38,7 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             )
         resolved[field] = user_id_to_internal[target]
     op_dict["by"] = spec.by
+    if spec.row_key is not None:
+        op_dict["row_key"] = spec.row_key
     op_dict["attach"] = resolved
     op_dict["on_missing"] = spec.on_missing

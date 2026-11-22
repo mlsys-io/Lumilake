@@ -143,6 +143,7 @@ def build_join_step(
             join=JoinDescription(
                 node=op.id,
                 by=op.by,
+                row_key=op.row_key,
                 inputs=columns,
                 attach=attach,
                 on_missing=op.on_missing,
