@@ -640,7 +640,8 @@ join. Router branches are disjoint, so a case lands in one branch and the other
 branch's fields are left out of the output row.
 
 `by` is one dotted field path; one that is not a dotted field name is refused
-at submit, naming the op.
+at submit, naming the op. A key field may not be null: a live row whose key
+path is missing or holds JSON `null` fails the job.
 
 A first-input row that carries a failed record makes that row's output its
 marker: the first input fixes one output row per its row, in its order, and

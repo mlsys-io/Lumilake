@@ -208,15 +208,16 @@ def main(inputs):
     keyed = {{}}
     marked = {{}}
     for row in rows:
-        key = _key_of(row, first)
+        carried = carried_marker((row,))
+        # The first input still emits one row per its row: a marked row whose
+        # key cannot be read emits its marker at its own position, and a live
+        # row without a key fails the job.
+        key = _key_of(row, first) if carried is not None else _key(row, first)
         if key is None:
-            # The first input still emits one row per its row: a row whose key
-            # cannot be read emits its marker at its own position.
             continue
         if key in keyed:
             raise ValueError("%s: duplicate key %s" % (first, key))
         keyed[key] = row
-        carried = carried_marker((row,))
         if carried is not None:
             marked[key] = carried
     for index, column in zip(indexes[1:], columns[1:]):

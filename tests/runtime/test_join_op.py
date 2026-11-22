@@ -330,8 +330,17 @@ _PART_VALUES = [{"output": 1, "value": 1}]
             {0: _ALL, 1: _PART_UPSTREAM, 2: _PART_VALUES, 3: _PART_UPSTREAM},
             [_KEY_MARK, _MERGED, _KEY_MARK],
         ),
-        # An attach length mismatch is a job failure under both policies.
+        # An attach length mismatch is a job failure under both policies, and
+        # so is a live first-input row whose key field is null.
         (_ATTACH, {0: _LIVE, 1: _GAPPED_VALUES[:1]}, "values attached but"),
+        (
+            _DIAG,
+            {
+                0: [{"output": [{"case_id": None, "text": "no key"}]}],
+                1: [{"output": []}],
+            },
+            "row has no key field",
+        ),
     ],
 )
 def test_a_marked_join_row_keeps_its_key_and_every_other_row(
