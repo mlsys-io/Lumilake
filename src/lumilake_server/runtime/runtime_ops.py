@@ -31,6 +31,7 @@ class RuntimeOpSchema(BaseModel):
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
     skip_when_all_inputs_empty: bool = False
+    samples: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class RuntimeOp:
     output_spec: dict[str, Any] | None = None
     condition: dict[str, str] | None = None
     skip_when_all_inputs_empty: bool = False
+    samples: bool = False
 
     @property
     def model_key(self) -> tuple[str, str, str]:
@@ -72,6 +74,7 @@ class RuntimeOp:
             output_spec=self.output_spec,
             condition=self.condition,
             skip_when_all_inputs_empty=self.skip_when_all_inputs_empty,
+            samples=self.samples,
         ).model_dump(exclude_none=True)
 
     @classmethod
@@ -90,6 +93,7 @@ class RuntimeOp:
             output_spec=schema.output_spec,
             condition=schema.condition,
             skip_when_all_inputs_empty=schema.skip_when_all_inputs_empty,
+            samples=schema.samples,
         )
 
     @classmethod

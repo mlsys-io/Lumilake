@@ -57,6 +57,11 @@ class Op(ABC):
         """Whether a preflight may profile the op with the data profiler."""
         return False
 
+    @property
+    def samples(self) -> bool:
+        """Whether the op's output is a random draw."""
+        return False
+
     result_path: str | None = None
     """The result-envelope path an output archives this op's payload at, or
     ``None`` when the op's own item shape is the payload."""
