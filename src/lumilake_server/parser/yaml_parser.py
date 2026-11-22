@@ -120,20 +120,20 @@ class _OutputEntry:
 def parse_yaml_payload(
     payload: dict | str,
     *,
-    cleared_ids: Collection[str] = (),
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    cleared_ids: Collection[str] = (),
 ) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
-        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round
-            that re-parses its own expansion keeps the flag on those branches.
         round_number: The dynamic round the ops run in, when they run inside
             one; a keyed row seed derives its draw from it.
         template_ids: Rendered op id -> the id a template body wrote, so a
             keyed row seed keeps a draw across rounds.
+        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round
+            that re-parses its own expansion keeps the flag on those branches.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict,
@@ -154,9 +154,9 @@ def parse_yaml_payload(
         spec_dict,
         graph_name,
         job_seed,
-        cleared_ids=cleared_ids,
         round_number=round_number,
         template_ids=template_ids,
+        cleared_ids=cleared_ids,
     )
     return {
         graph_name: {
@@ -266,9 +266,9 @@ def _compile_workflow(
     scope: str,
     job_seed: int,
     *,
-    cleared_ids: Collection[str] = (),
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    cleared_ids: Collection[str] = (),
 ) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
