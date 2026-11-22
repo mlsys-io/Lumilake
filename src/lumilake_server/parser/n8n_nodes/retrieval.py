@@ -234,6 +234,27 @@ def _build_sql_template_and_params(
     return query, query_params
 
 
+def _sql_data_spec(
+    template: str,
+    params: list[dict[str, Any]],
+    notes: dict[str, Any],
+    table: str | None = None,
+) -> dict[str, Any]:
+    """The retrieval spec for an n8n postgres node, carrying its ``rows``
+    declaration when the node's notes set one."""
+    data_spec: dict[str, Any] = {
+        "type": "lumid",
+        "mode": "sql",
+        "template": template,
+        "params": params,
+    }
+    if table is not None:
+        data_spec["table"] = table
+    if notes.get("rows") is not None:
+        data_spec["rows"] = notes["rows"]
+    return data_spec
+
+
 def make_postgres(
     node: NodeDict, ctx: OpContext, node_name: str
 ) -> tuple[list[NodeDict], str]:
@@ -249,6 +270,7 @@ def make_postgres(
         for dep in references.main_incoming(node_name, ctx.incoming, ctx.node_map)
         if dep in ctx.op_ids
     ]
+    notes = shared.parse_notes(node.get("notes", ""))
 
     if operation == "executeQuery":
         query = _get_param_value(params.get("query"), "query", node_name)
@@ -270,12 +292,7 @@ def make_postgres(
             "_op": "DataRetrievalOp",
             "_max_iter": None,
             "_inputs": list(dict.fromkeys(extra_inputs + dep_inputs + main_inputs)),
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": sql_template,
-                "params": sql_params,
-            },
+            "data_spec": _sql_data_spec(sql_template, sql_params, notes),
         }
         return [query_op], query_op["_id"]
 
@@ -325,13 +342,7 @@ def make_postgres(
         "_inputs": list(
             dict.fromkeys(extra_inputs + limit_inputs + dep_inputs + main_inputs)
         ),
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": sql_template,
-            "params": sql_params,
-            "table": full_table,
-        },
+        "data_spec": _sql_data_spec(sql_template, sql_params, notes, full_table),
     }
     return [op], op["_id"]
 

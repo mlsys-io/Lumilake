@@ -50,6 +50,11 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_order import (
+    ROWS_KEY,
+    ROWS_ONE,
+    multi_row_item_indexes,
+)
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
@@ -1385,9 +1390,10 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> str:
+    ) -> dict[str, Any]:
         """Fetch a task's raw FlowMesh response and archive it as a job
-        artifact, redacting the untrusted body before persisting it."""
+        artifact, redacting the untrusted body before persisting it. Returns
+        the archived response when it is a JSON object, and ``{}`` otherwise."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1396,6 +1402,8 @@ class FlowmeshRuntimeManager:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
+        if not isinstance(response_data, dict):
+            response_data = {}
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1407,7 +1415,31 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return response_uri
+        return response_data
+
+    def _assert_rows_one(
+        self,
+        runtime_graph: RuntimeGraph,
+        node_id: str,
+        response_data: dict[str, Any],
+    ) -> None:
+        """Fail a ``rows: one`` retrieval whose query returned more than one
+        row for a parameter row, naming the op and that parameter row of this
+        task's batch."""
+        node = runtime_graph.nodes.get(node_id)
+        if node is None or node.task_type != "data_retrieval":
+            return
+        if node.data_spec.get(ROWS_KEY) != ROWS_ONE:
+            return
+        multi = multi_row_item_indexes(response_data.get("items"))
+        if not multi:
+            return
+        raise RuntimeError(
+            f"DataRetrievalOp '{node_id}': declares rows: one but returned more "
+            f"than one row for parameter row(s) {multi} of this batch; the step "
+            "needs at most one row per parameter row. Make the query select one "
+            "row, or drop the rows: one declaration and order the query instead."
+        )
 
     async def process_request(
         self,
@@ -1644,7 +1676,12 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        await self._archive_task_response(request_info, tid, node_id)
+                        response_data = await self._archive_task_response(
+                            request_info, tid, node_id
+                        )
+                        self._assert_rows_one(
+                            request_info.runtime_graph, node_id, response_data
+                        )
                         downloaded_tasks.add(tid)
 
                 # Count statuses for all nodes and output nodes

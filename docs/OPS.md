@@ -7,7 +7,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `InputOp` | Generated from workflow-level inputs. |
 | `OutputOp` | Generated from workflow-level outputs. |
 | `DataOp` | Inline static data. |
-| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
+| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). A `sql` retrieval declares its row order with a top-level `ORDER BY` or `rows: one` (see below). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
@@ -24,6 +24,72 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 ## YAML Use
 
 YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` are generated from the top-level `inputs:` and `outputs:` blocks; do not declare them manually in YAML.
+
+### DataRetrievalOp
+
+`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or
+`agent` mode. Every item's position downstream is its identity, so a
+retrieval that returns several rows per parameter row must define the order
+those rows come back in:
+
+- A `sql` retrieval must end its query with a top-level `ORDER BY`. The
+  submit rejects it otherwise, naming the op. An `ORDER BY` inside a
+  subquery, a CTE or an aggregate argument does not count. A statement with
+  several `;`-separated parts is checked on its last.
+- The `ORDER BY` must be **total**: it must end with a column no two
+  returned rows share, such as the primary key or a timestamp that is unique
+  within one symbol. The parser cannot check totality and does not claim to;
+  breaking ties is the author's responsibility.
+- A lookup that returns at most one row per parameter row declares
+  `rows: one` instead. The declaration is checked at run time: if any
+  parameter row returns more than one row, the job fails naming the op and
+  the parameter rows that broke the bound. An n8n Postgres node declares it
+  with `"rows": "one"` in its `notes`.
+- An `agent` retrieval replays SQL it writes at run time, so its order is
+  not visible at submit and is not checked.
+- A library template entry (`library:` in a dynamic workflow) is checked at
+  submit, like a submitted YAML op.
+- A retrieval the planner writes inline in a round is checked when that
+  round compiles, so an unordered one fails the round and the job.
+- An `s3` retrieval reads one key per parameter row; nothing expands a
+  prefix there and rows come back in parameter-row order. A workflow
+  *input* whose `S3Location` names a prefix is expanded to its keys in
+  lexicographic order, so that order is fixed. (A `template` that renders a
+  key per parameter row is the retrieval's own order, not an expansion.)
+
+```yaml
+ops:
+  - id: "OHLC via SQL"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      template: |-
+        SELECT symbol, close, timestamp
+        FROM demo.fact_ohlc_10m
+        WHERE symbol = '{symbol}'
+        ORDER BY timestamp DESC
+        LIMIT 5
+      params:
+        - label: symbol
+          node: "Stock"
+
+  - id: "Instrument lookup"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      rows: one
+      template: |-
+        SELECT symbol, sector, industry
+        FROM reference.profile
+        WHERE symbol = '{symbol}'
+      params:
+        - label: symbol
+          node: "Stock"
+```
 
 ### FormatOp
 

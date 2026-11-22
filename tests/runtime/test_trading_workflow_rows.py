@@ -28,7 +28,7 @@ ops:
     verify: false
     template: >-
       SELECT news_id, title, publisheddate, category, synopsis FROM news WHERE
-      symbol = '{symbol}' LIMIT 10;
+      symbol = '{symbol}' ORDER BY publisheddate DESC, news_id LIMIT 10;
     params:
     - label: symbol
       node: Symbols

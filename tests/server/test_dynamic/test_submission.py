@@ -67,7 +67,7 @@ _SUBGRAPH_PLAN: dict[str, Any] = {
                 "mode": "sql",
                 "output_format": "jsonl",
                 "verify": False,
-                "template": "SELECT * FROM x",
+                "template": "SELECT * FROM x ORDER BY 1",
                 "params": [{"label": "s", "node": "Symbols"}],
             },
         }
@@ -630,6 +630,7 @@ library:
       output_format: jsonl
       verify: false
       template: SELECT sector, AVG(market_cap) FROM reference.profile GROUP BY sector
+        ORDER BY sector
 """
 
 
@@ -668,7 +669,7 @@ async def test_dynamic_multi_round_registry_handoff(
                         "mode": "sql",
                         "output_format": "jsonl",
                         "verify": False,
-                        "template": "SELECT * FROM t WHERE id = {p}",
+                        "template": "SELECT * FROM t WHERE id = {p} ORDER BY 1",
                         "params": [{"label": "p", "node": "s0"}],
                     },
                 }
@@ -799,7 +800,7 @@ ops:
     data_spec:
       type: lumid
       mode: sql
-      template: "SELECT * FROM t WHERE symbol = :symbol"
+      template: "SELECT * FROM t WHERE symbol = :symbol ORDER BY 1"
       params:
         - label: symbol
           node: Symbols

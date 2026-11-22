@@ -23,6 +23,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
+from lumilake_server.utils.retrieval_order import ROWS_KEY, ROWS_ONE
 
 
 def _default_sql_sampler(query: str) -> list[Any]:
@@ -303,6 +304,8 @@ class _RetrievalBuilder(_LLMBuilder):
                     data_spec[optional] = spec[optional]
         if "verify" in spec:
             data_spec["verify"] = spec["verify"]
+        if spec.get(ROWS_KEY) == ROWS_ONE:
+            data_spec[ROWS_KEY] = ROWS_ONE
 
         node = self._create_runtime_op(
             name=op_id,
