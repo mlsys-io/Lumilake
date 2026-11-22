@@ -150,7 +150,10 @@ class PythonData(DataSpecModel):
 
 
 class RetrievalParam(DataSpecModel):
-    """One retrieval placeholder bound to a literal list or an upstream read."""
+    """One retrieval placeholder bound to a literal list or an upstream read,
+    carrying any other key the user wrote for the worker."""
+
+    model_config = ConfigDict(extra="allow")
 
     label: str | None = None
     data: ListData | None = None

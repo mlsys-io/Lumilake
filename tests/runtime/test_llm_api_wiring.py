@@ -212,7 +212,7 @@ def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
             "type": "lumid",
             "mode": "sql",
             "template": "SELECT * FROM t WHERE symbol = :symbol",
-            "params": [{"label": "symbol", "name": "symbol", "node": stock.id}],
+            "params": [{"name": "symbol", "node": stock.id}],
         },
         inputs=[stock],
     )
