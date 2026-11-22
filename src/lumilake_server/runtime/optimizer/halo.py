@@ -20,9 +20,9 @@ from lumilake_server.data_profile_models import (
 from lumilake_server.data_specs import (
     DataSpecModel,
     RetrievalData,
-    S3ProfileData,
-    SqlProfileData,
     dump_data_spec,
+    is_s3_data,
+    is_sql_data,
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
@@ -50,22 +50,9 @@ _HF_SAFETENSORS_FILE = "model.safetensors"
 _HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
 
 
-def _retrieval_is_data_profile_eligible(
-    data_spec: DataSpecModel | Mapping[str, Any],
-) -> bool:
-    """True when the retrieval is sql or s3 — the runtime ``type=lumid,
-    mode=sql|s3`` shape, or the bare ``type=sql|s3`` shape a profile-graph
-    node carries."""
-    if isinstance(data_spec, (SqlProfileData, S3ProfileData)):
-        return True
-    if isinstance(data_spec, RetrievalData):
-        return data_spec.mode in {"sql", "s3"} or data_spec.type in {"sql", "s3"}
-    if isinstance(data_spec, Mapping):
-        spec_type = data_spec.get("type")
-        if spec_type in {"sql", "s3"}:
-            return True
-        return spec_type == "lumid" and data_spec.get("mode") in {"sql", "s3"}
-    return False
+def _retrieval_is_data_profile_eligible(data_spec: DataSpecModel) -> bool:
+    """Whether the spec reads a SQL or S3 source."""
+    return is_sql_data(data_spec) or is_s3_data(data_spec)
 
 
 def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:

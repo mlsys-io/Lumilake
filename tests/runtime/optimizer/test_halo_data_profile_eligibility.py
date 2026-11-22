@@ -1,53 +1,43 @@
-"""Eligibility check accepts both retrieval shapes: bare ``type=sql|s3``
-(profile-graph nodes) and ``type=lumid, mode=sql|s3`` (runtime ops). If it
-misses either, /profile rows never reach scheduling."""
+"""Eligibility covers both retrieval shapes: a SQL or S3 profile node, and a
+lumid retrieval in sql or s3 mode. A missed shape starves /profile rows."""
 
+from lumilake_server.data_specs import (
+    EmptyData,
+    ListData,
+    RetrievalData,
+    S3ProfileData,
+    SqlProfileData,
+)
 from lumilake_server.runtime.optimizer.halo import _retrieval_is_data_profile_eligible
 
 
-def test_eligible_bare_sql() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "sql", "template": "x"}) is True
+def test_eligible_sql_profile() -> None:
+    assert _retrieval_is_data_profile_eligible(SqlProfileData(type="sql", template="x"))
 
 
-def test_eligible_bare_s3() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "s3", "template": "x"}) is True
+def test_eligible_s3_profile() -> None:
+    assert _retrieval_is_data_profile_eligible(S3ProfileData(type="s3", template="x"))
 
 
 def test_eligible_lumid_sql() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible(
-            {"type": "lumid", "mode": "sql", "template": "..."}
-        )
-        is True
+    assert _retrieval_is_data_profile_eligible(
+        RetrievalData(type="lumid", mode="sql", template="...")
     )
 
 
 def test_eligible_lumid_s3() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible(
-            {"type": "lumid", "mode": "s3", "template": "..."}
-        )
-        is True
+    assert _retrieval_is_data_profile_eligible(
+        RetrievalData(type="lumid", mode="s3", template="...")
     )
 
 
 def test_ineligible_lumid_agent() -> None:
-    """Agent mode doesn't go through HALO's plan-choice path."""
-    assert (
-        _retrieval_is_data_profile_eligible({"type": "lumid", "mode": "agent"}) is False
+    """Agent mode skips HALO's plan-choice path."""
+    assert not _retrieval_is_data_profile_eligible(
+        RetrievalData(type="lumid", mode="agent")
     )
-
-
-def test_ineligible_lumid_unknown_mode() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible({"type": "lumid", "mode": "something"})
-        is False
-    )
-
-
-def test_ineligible_lumid_missing_mode() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "lumid"}) is False
 
 
 def test_ineligible_unrelated_type() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "list"}) is False
+    assert not _retrieval_is_data_profile_eligible(ListData(items=[]))
+    assert not _retrieval_is_data_profile_eligible(EmptyData())

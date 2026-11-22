@@ -184,8 +184,7 @@ def _shapes(specs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
 
 @pytest.mark.parametrize("graph_name", sorted(_GRAPHS))
 def test_every_task_spec_round_trips(graph_name: str) -> None:
-    """Each task's serialized spec validates back into a model that serializes
-    identically."""
+    """Each task's serialized spec validates back into an identical model."""
     for op in _GRAPHS[graph_name]().nodes.values():
         wire = dump_data_spec(op.data_spec)
         assert dump_data_spec(parse_data_spec(op.task_type, wire)) == wire
