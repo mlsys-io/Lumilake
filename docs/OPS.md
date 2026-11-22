@@ -490,11 +490,9 @@ single whole-list result cannot be partitioned per slice. A submission whose
 `input_batch_size` would split a list-mode `LambdaOp` output across more than
 one slice is rejected at submit with a message naming the output and the fix
 (submit one input value per job, or raise `input_batch_size` so the whole input
-set runs in a single slice).
-
-A row-mode step below a list-mode `LambdaOp` keeps its input's cardinality:
-one value per element the Lambda returned, not per job input row, so submit
-refuses to split it across slices too.
+set runs in a single slice). A row-mode step below a list-mode `LambdaOp`
+keeps its input's cardinality, one value per element the Lambda returned, and
+submit refuses to split it across slices too.
 
 The server never executes submitted `LambdaOp` code in its own process or in a
 child of it. Submitted source is only parsed (it must be a lambda, or source

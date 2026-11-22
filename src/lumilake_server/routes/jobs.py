@@ -1145,24 +1145,25 @@ def _validate_list_lambda_slice_span(
         for node_id, output_name in graph.output_node_map.items():
             if node_id in list_lambda_dependent:
                 produced = (
-                    "by a list-mode Lambda, which runs once over the whole "
-                    "input lists of one run"
+                    "by a list-mode Lambda,"
+                    " which runs once over the whole input lists of one run"
                 )
             elif node_id in list_lambda_fanout:
                 produced = (
-                    "below a list-mode Lambda, whose fan-out sets its row "
-                    "count to one value per list element"
+                    "below a list-mode Lambda,"
+                    " whose fan-out sets its row count to one value per list element"
                 )
             else:
                 continue
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Workflow '{graph_name}' output '{output_name}' is produced "
-                    f"{produced} and cannot be split across "
-                    f"{len(slices)} slice(s). Submit one input value per job, "
-                    "or raise input_batch_size so the whole input set runs in "
-                    "a single slice."
+                    f"Workflow '{graph_name}' output '{output_name}'"
+                    f" is produced {produced}"
+                    f" and cannot be split across {len(slices)} slice(s)."
+                    " Submit one input value per job,"
+                    " or raise input_batch_size"
+                    " so the whole input set runs in a single slice."
                 ),
             )
 
