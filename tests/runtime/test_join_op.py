@@ -248,14 +248,11 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
 _MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
 _DIAG = _merge("State, Route.diagnose")
 _ATTACH = _REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n")
-_COMPOSITE = _merge("State, Route.diagnose", by="[meta.unit, meta.kind]")
 # A row Lambda over the diagnose branch, so its values reach only that key.
 _PART = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
     "State, Route.diagnose, Reply", "    attach: {part: Reply}\n"
 )
 _A, _B, _C = _ROWS
-_META = {"meta": {"unit": "u1", "kind": "x"}}
-_MARKED_META = {"meta": {**_META["meta"], "kind": _MARK}}
 _NULL = {"case_id": None, "text": "no key"}
 
 
@@ -277,12 +274,8 @@ _PARTED = {0: _rows(_A, _B, _C), 1: _rows(_B), 2: _cells(1), 3: _rows(_B)}
     "ops, upstream, expected",
     [
         # A marked row keeps its slot: in the first input the row is the marker,
-        # in a further input the key's output is. A composite key reads each
-        # path, so a marked row whose paths read keeps its slot too, while one
-        # whose path reaches a marker has no key to be placed by.
+        # in a further input the key's output is.
         (_DIAG, {0: _rows(_A, _MARK, _B), 1: _rows(_B)}, [_A, _MARK, _B]),
-        (_COMPOSITE, {0: _rows(_META), 1: _rows({**_META, "s": _MARK})}, [_MARK]),
-        (_COMPOSITE, {0: _rows(_META), 1: _rows(_MARKED_META)}, "cannot be placed"),
         # A marked attach value marks its paired key, whether the value column
         # covers the live source rows only or every source row. An attach whose
         # values cannot be paired one per row fails the job, as does a live

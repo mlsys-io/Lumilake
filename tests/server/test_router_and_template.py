@@ -26,17 +26,6 @@ _ROWS = [
 ]
 
 
-_EMPTY_RULE: list[dict[str, Any]] = [{"branch": "no_ret", "match": "empty"}]
-_EMPTY_ROWS: list[tuple[str, Any]] = [
-    ("null", None),
-    ("blank", ""),
-    ("list", []),
-    ("map", {}),
-    ("null-text", "null"),
-    ("full", "q"),
-]
-
-
 def _router(**extra: Any) -> dict[str, Any]:
     return {
         "id": "route",
@@ -101,14 +90,15 @@ def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
         RouterOp.from_entry(_router(rules=rule, error_branch=True))
 
 
-def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
-    with pytest.raises(ValueError, match="default branch"):
-        RouterOp.from_entry(_router(default_branch="diagnose"))
-    with pytest.raises(ValueError, match="exactly one input"):
-        RouterOp.from_entry(_router(inputs=[]))
-    twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
-    with pytest.raises(ValueError, match="branches must be unique"):
-        RouterOp.from_entry(_router(rules=twin))
+_EMPTY_RULE: list[dict[str, Any]] = [{"branch": "no_ret", "match": "empty"}]
+_EMPTY_ROWS: list[tuple[str, Any]] = [
+    ("null", None),
+    ("blank", ""),
+    ("list", []),
+    ("map", {}),
+    ("null-text", "null"),
+    ("full", "q"),
+]
 
 
 def test_an_empty_rule_refuses_a_value() -> None:
@@ -117,23 +107,29 @@ def test_an_empty_rule_refuses_a_value() -> None:
         RouterOp.from_entry(_router(rules=[rule]))
 
 
-def test_an_empty_rule_routes_null_blank_and_empty_containers_only(
-    tmp_path: Path,
-) -> None:
+def test_an_empty_rule_routes_null_blank_and_empty_containers_only() -> None:
     router = _router(rules=_EMPTY_RULE, default_branch="ret")
-    column = [{"case_id": name, "text": text} for name, text in _EMPTY_ROWS]
-    got = _branch_rows(tmp_path, router, "route.no_ret", column)
+    column = [json.dumps({"case_id": n, "text": t}) for n, t in _EMPTY_ROWS]
+    got = _branch_rows(router, "route.no_ret", column)
     assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
-    rest = _branch_rows(tmp_path, router, "route.ret", column)
+    rest = _branch_rows(router, "route.ret", column)
     assert [row["case_id"] for row in rest] == ["null-text", "full"]
 
 
-def test_a_row_missing_an_empty_rule_path_fails_naming_the_part(
-    tmp_path: Path,
-) -> None:
+def test_a_row_missing_an_empty_rule_path_fails_naming_the_part() -> None:
     router = _router(path="ctx.question", rules=_EMPTY_RULE, default_branch="ret")
     with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
-        _branch_rows(tmp_path, router, "route.no_ret", [{"ctx": {}}])
+        _branch_rows(router, "route.no_ret", [json.dumps({"ctx": {}})])
+
+
+def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
+    with pytest.raises(ValueError, match="default branch"):
+        RouterOp.from_entry(_router(default_branch="diagnose"))
+    with pytest.raises(ValueError, match="exactly one input"):
+        RouterOp.from_entry(_router(inputs=[]))
+    twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
+    with pytest.raises(ValueError, match="branches must be unique"):
+        RouterOp.from_entry(_router(rules=twin))
 
 
 def test_router_expands_before_the_graph_is_built() -> None:

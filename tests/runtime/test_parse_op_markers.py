@@ -317,6 +317,7 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
     with pytest.raises(ValueError, match="rule or default"):
         _build([_parse(format="json"), _model_reading("P")], values)
 
+
 _EXPAND_UNITS: dict[str, Any] = {
     "id": "E",
     "op": "LambdaOp",
