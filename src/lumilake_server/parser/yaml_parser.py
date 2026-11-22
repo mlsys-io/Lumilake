@@ -78,7 +78,7 @@ Supported op types: ``InputOp`` (auto-generated from ``inputs:`` block),
 ``LLMCompletionOp``, ``LLMVisionOp``, ``ImageGenerationOp``, ``EmbeddingOp``,
 ``FormatOp``, ``LambdaOp``, ``RouterOp``, ``Repeat``, ``OutputOp``
 (auto-generated from ``outputs:`` block). ``RouterOp`` and ``Repeat`` are
-expanded before any graph is built, so neither reaches the runtime graph.
+expanded before any graph is built.
 
 Users with an existing n8n workflow should submit it as
 ``Workflow-Format: n8n`` rather than transliterating it into YAML — no

@@ -569,11 +569,5 @@ For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see
 
 ### Repeat
 
-`Repeat` runs an op body a fixed number of times. Because a fixed loop is
-static, the parser unrolls it at submit into ordinary nodes named
-`<id>.<n>.<bodyId>` — one declared node per iteration — so no driver round is
-involved and each iteration gets its own cache key, seed and record. Inside
-the body `$in` reads the repeat's `input` on the first iteration and
-`<id>.<n-1>.<output>` afterwards; outside the repeat the id refers to the last
-iteration. A body may not contain a `Repeat` or a `RouterOp`. See
-`docs/WORKFLOWS.md` for the entry shape and the submit-time refusals.
+`Repeat` is a YAML construct, not a runtime op: the parser unrolls it at submit
+into ordinary op nodes. See `docs/WORKFLOWS.md` for its fields and refusals.

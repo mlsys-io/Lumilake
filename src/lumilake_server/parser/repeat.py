@@ -1,13 +1,7 @@
 """The ``Repeat`` YAML construct: a fixed-count repeat of an op body.
 
-``Repeat`` is a YAML construct, not a runtime op: :func:`unroll_repeats`
-rewrites each repeat entry into ordinary op entries before any id is
-registered, so the graph, the optimizer and the record store see one declared
-op per iteration. Iteration ``i`` copies each body entry to ``R.i.<bodyId>``;
-``$in`` reads ``input`` on the first iteration and ``R.(i-1).<output>``
-afterwards, another body id resolves within the same iteration, and any other
-name resolves outside the repeat. Elsewhere ``R`` refers to
-``R.<times>.<output>``, and a body may not name its own ``R``.
+:func:`unroll_repeats` rewrites each repeat entry into ordinary op entries
+before any id is registered, so one declared op exists per iteration.
 """
 
 from collections.abc import Callable, Iterator, Mapping
@@ -42,11 +36,8 @@ class _Repeat(NamedTuple):
 
 
 class _Scoped(Mapping[str, str]):
-    """A parser id map with one op's scoped names in front of it.
-
-    Every parser and emitter lookup goes through this, so a name that is out
-    of place at the referring op is refused by the lookup itself.
-    """
+    """A parser id map with one op's scoped names in front of it: a lookup
+    that is out of place at the referring op raises."""
 
     def __init__(
         self,
@@ -93,11 +84,9 @@ References = Callable[[Mapping[str, str], str, str], _Scoped]
 def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], References]:
     """Replace every ``Repeat`` entry with its unrolled iterations.
 
-    ``known_ids`` holds the workflow input names, so a repeat's ``input``
-    reference is checked at submit time. A repeat may also name another
-    repeat as its ``input``; repeats are then unrolled in dependency order.
-    The returned callable binds a parser id map to one referring op, so its
-    lookups resolve that op's names first.
+    ``known_ids`` holds the workflow input names, which a repeat's ``input``
+    may name. Repeats are unrolled in dependency order. The returned callable
+    binds a parser id map to one referring op.
     """
     plain = {
         _entry_id(entry)
