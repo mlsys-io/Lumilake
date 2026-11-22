@@ -163,6 +163,7 @@ class LambdaOp(Op):
     SEED_MODES = ("row", "expand")
     REDUCE_ON_FAIL = ("drop_failed", "fail_group")
     EXPAND_ON_EMPTY = ("drop", "fail")
+    ON_EMPTY_DROP = EXPAND_ON_EMPTY[0]
 
     @overload
     def __init__(
@@ -179,7 +180,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
     ) -> None: ...
 
     @overload
@@ -197,7 +198,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
     ) -> None: ...
 
     @overload
@@ -215,7 +216,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
     ) -> None: ...
 
     @overload
@@ -233,7 +234,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
     ) -> None: ...
 
     @overload
@@ -251,7 +252,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
         by: str | None = None,
         on_fail: str = "fail_group",
     ) -> None: ...
@@ -270,7 +271,7 @@ class LambdaOp(Op):
         sample_value: Any | None = None,
         clears_markers: bool = False,
         seed: dict[str, Any] | None = None,
-        on_empty: str = "drop",
+        on_empty: str = ON_EMPTY_DROP,
         by: str | None = None,
         on_fail: str = "fail_group",
     ) -> None:
@@ -288,7 +289,7 @@ class LambdaOp(Op):
                 f"LambdaOp 'on_empty' must be one of {self.EXPAND_ON_EMPTY}"
                 f" (got {on_empty!r})"
             )
-        if on_empty != "drop" and mode != "expand":
+        if on_empty != self.ON_EMPTY_DROP and mode != "expand":
             raise ValueError(
                 f"LambdaOp 'on_empty' is only valid in expand mode (got mode {mode!r})"
             )
@@ -399,7 +400,7 @@ class LambdaOp(Op):
             data["seed"] = self.seed
         if self.on_fail != "fail_group":
             data["on_fail"] = self.on_fail
-        if self.on_empty != "drop":
+        if self.on_empty != self.ON_EMPTY_DROP:
             data["on_empty"] = self.on_empty
         if self.timeout_s is not None:
             data["timeout_s"] = self.timeout_s
@@ -454,7 +455,7 @@ class LambdaOp(Op):
                 clears_markers=data.get(CLEARS_KEY, False),
                 seed=data.get("seed"),
                 on_fail=data.get("on_fail", "fail_group"),
-                on_empty=data.get("on_empty", "drop"),
+                on_empty=data.get("on_empty", cls.ON_EMPTY_DROP),
             )
         except ValueError as exc:
             raise ValueError(f"LambdaOp '{data['_id']}': {exc}") from exc

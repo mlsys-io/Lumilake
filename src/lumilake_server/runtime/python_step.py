@@ -14,6 +14,7 @@ from functools import cache
 from typing import Any
 
 from lumilake import envs
+from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
@@ -655,7 +656,7 @@ def wrapper_source(
     mode: str = "row",
     by: str | None = None,
     on_fail: str = "fail_group",
-    on_empty: str = "drop",
+    on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
     """The python-task code for one standalone LambdaOp. A seeded step carries
     its derived-seed column in the plan, tagged ``role: seed``, and passes each
@@ -715,7 +716,7 @@ def flowmesh_spec(
             mode,
             data_spec.get("by"),
             data_spec.get("on_fail", "fail_group"),
-            data_spec.get("on_empty", "drop"),
+            data_spec.get("on_empty", LambdaOp.ON_EMPTY_DROP),
         )
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,
