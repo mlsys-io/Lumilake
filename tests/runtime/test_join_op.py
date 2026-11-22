@@ -375,9 +375,9 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
 
 
 _UNITS = [{"unit": "u1", "rid": r} for r in "ab"] + [{"unit": "u2", "rid": "c"}]
-_SIZES = [{"unit": "u1", "size": 2}, {"unit": "u2", "size": 1}]
-_JOINED = [{**u, "size": 2, "tag": u["rid"].upper()} for u in _UNITS]
-_JOINED[2] = {**_UNITS[2], "size": 1, "tag": "C"}
+_SIZE = {"u1": 2, "u2": 1}
+_SIZES = [{"unit": unit, "size": size} for unit, size in _SIZE.items()]
+_JOINED = [{**u, "size": _SIZE[u["unit"]], "tag": u["rid"].upper()} for u in _UNITS]
 _BROADCAST_YAML = """
 name: u
 inputs: {Rows: []}
@@ -470,11 +470,9 @@ def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> N
     sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
     out = _broadcast(tmp_path, attach="part", extra=sources, tags=["C"], name="p")
     assert out == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
-    rows: list[Any] = [{"unit": "u1", "rid": _MARK}, {"unit": "u1", "rid": "b"}]
-    rows[1]["text"] = _MARK
-    rows.append(_UNITS[2])
+    rows = [{**_UNITS[0], "rid": _MARK}, {**_UNITS[1], "text": _MARK}, _UNITS[2]]
     u2 = {**_UNITS[2], "size": 1}
     assert _broadcast(tmp_path, rows=rows, attach="", name="m") == [_MARK, _MARK, u2]
-    source = [{"unit": "u1", "rid": "x"}, {"unit": "u2", "rid": _UNITS[2]["rid"]}]
+    source = [{"unit": "u1", "rid": "x"}, {"unit": "u2", "rid": "c"}]
     part = _broadcast(tmp_path, rows=rows, attach="part", extra=source, tags=["A", "b"])
     assert part == [_MARK, _MARK, {**u2, "part": "b"}]
