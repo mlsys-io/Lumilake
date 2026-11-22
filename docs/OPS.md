@@ -844,6 +844,7 @@ ops:
     inputs: [Answer]
     format: json              # json | regex
     require: [eligibility]    # optional top-level keys, json only
+    on_fail: marker           # marker | raw
 ```
 
 `format: json` strips one surrounding fenced code block (```` ```json … ``` ````,
@@ -868,7 +869,13 @@ ops:
 ```
 
 A row the parse cannot handle becomes a failed record rather than failing the
-task: see [Failed records](#failed-records).
+task: see [Failed records](#failed-records). `on_fail: raw` keeps that row's
+input text as its value instead, unparsed, so a downstream op reads an ordinary
+value and must accept both shapes: the parsed record and the reply text. A
+reply whose own top-level key is `_fail` is kept as its text under `raw`, never
+as that object. A `raw` `ParseOp` emits no marker of its own, so a source that
+only passes through it carries none and a model op may read it; a marker that
+reaches the op from upstream still passes through.
 
 ### Failed records
 
@@ -880,7 +887,8 @@ columns stay aligned.
 
 - `ParseOp` emits the marker for a row it cannot parse; the reason names what
   went wrong, such as `no JSON object`, `missing key 'eligibility'` or
-  `pattern did not match`.
+  `pattern did not match`. With `on_fail: raw` it emits none: an unparsable row
+  keeps its text as an ordinary value.
 - A row `LambdaOp` does not call the function for a row with a marked cell; it
   emits the first such marker for that row. An aligned `LambdaOp` calls the
   function on the live columns and merges the marked rows back by position. A
@@ -910,16 +918,16 @@ columns stay aligned.
   [`RouterOp`](#routerop).
 - Outputs archive the marker, so a job result shows which records failed and
   why.
-- A source carries markers when a `ParseOp` or an input whose value is a marker
-  reaches it through any op except a router's rule or default branch, which
-  drop them, or when an expand `LambdaOp` declares `on_empty: fail`. A model op
-  (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`, `LLMCompletionOp`,
-  `EmbeddingOp`, or a rowwise seed or aggregate table) may not read such a
-  source: the job is refused at submit when a rowwise column, aggregate table,
-  rowwise seed or embedding content reads one. Read a router's rule or default
-  branch instead, so failed records never reach the model. An earlier round's
-  output is an input like any other, so a reference that binds a marker follows
-  the same rule.
+- A source carries markers when a `ParseOp` that emits them or an input whose
+  value is a marker reaches it through any op except a router's rule or default
+  branch, which drop them, or when an expand `LambdaOp` declares `on_empty:
+  fail`. A model op (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`,
+  `LLMCompletionOp`, `EmbeddingOp`, or a rowwise seed or aggregate table) may
+  not read such a source: the job is refused at submit when a rowwise column,
+  aggregate table, rowwise seed or embedding content reads one. Read a router's
+  rule or default branch instead, so failed records never reach the model. An
+  earlier round's output is an input like any other, so a reference that binds
+  a marker follows the same rule.
 
 `_fail` is reserved: a user function that returns an object carrying it fails
 the task, so a user value is never mistaken for a marker.

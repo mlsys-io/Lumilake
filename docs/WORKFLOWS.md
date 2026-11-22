@@ -46,6 +46,9 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
+`ParseOp` takes `format`, `pattern`, `require`, `flags` and `on_fail`; see
+[`docs/OPS.md`](OPS.md#parseop).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
