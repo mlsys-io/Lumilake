@@ -193,14 +193,7 @@ def _rows(text: str = "ONE") -> dict[str, list[Any]]:
 
 _BROADCAST_WORKFLOW: dict[str, Any] = {
     **_WORKFLOW,
-    "name": "broadcast",
-    "inputs": {
-        "Rows": [
-            json.dumps({"id": "a", "text": "one"}),
-            json.dumps({"id": "b", "text": "two"}),
-        ],
-        "Cfg": ["shared"],
-    },
+    "inputs": {"Rows": list(_ROWS), "Cfg": ["shared"]},
     "ops": [
         _WORKFLOW["ops"][0],
         {**_WORKFLOW["ops"][1], "inputs": ["Mark", "Cfg"]},
