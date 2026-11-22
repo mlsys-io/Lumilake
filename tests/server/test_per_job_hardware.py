@@ -15,12 +15,12 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -38,12 +38,6 @@ from lumilake_server.runtime.runtime_manager import (
     _resolve_gpu_memory,
     _resolve_memory,
 )
-from lumilake_server.utils.retrieval_spec import RetrievalSpec
-
-
-def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
-    return RetrievalSpec.model_validate(data)
-
 
 # ---------------------------------------------------------------------------
 # HardwareRequirements validation
@@ -247,15 +241,13 @@ def test_hardware_signature_gpu_model_distinct_partitions_distinct() -> None:
 def _cpu_only_compiled() -> Any:
     """CompiledGraph whose only op is a CPU-only DataRetrievalOp."""
     symbol = input_placeholder("Symbol")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM t WHERE symbol = :symbol",
-                "params": [{"name": "symbol", "node": symbol.id}],
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM t WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": symbol.id}],
+        },
         inputs=[symbol],
     )
     output = as_output("result", retrieval)

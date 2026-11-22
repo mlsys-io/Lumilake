@@ -3,13 +3,13 @@ import textwrap
 from typing import Any, Literal
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
-    DataRetrievalOp,
     EmbeddingOp,
     FormatOp,
     ImageGenerationOp,
@@ -29,14 +29,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.utils.retrieval_spec import RetrievalSpec
-
 from tests.support.data_specs import wire
-
-
-def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
-    return RetrievalSpec.model_validate(data)
-
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -48,25 +41,31 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
 
 
-def _sql_spec(template: str, params: list) -> RetrievalSpec:
-    return _retrieval_spec(
-        {"type": "lumid", "mode": "sql", "template": template, "params": params}
-    )
+def _sql_spec(template: str, params: list) -> dict:
+    return {
+        "type": "lumid",
+        "mode": "sql",
+        "template": template,
+        "params": params,
+    }
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
     return [{"value": v} for v in items[0]]
 
 
-def _s3_spec(template: str, params: list) -> RetrievalSpec:
-    return _retrieval_spec(
-        {"type": "lumid", "mode": "s3", "template": template, "params": params}
-    )
+def _s3_spec(template: str, params: list) -> dict:
+    return {
+        "type": "lumid",
+        "mode": "s3",
+        "template": template,
+        "params": params,
+    }
 
 
 def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
@@ -96,14 +95,12 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
 
 def test_agent_retrieval_structural_column_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "agent",
-                "description": "Find the latest price for the symbol.",
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
         inputs=[stock],
     )
     llm = LLMChatOp(
@@ -128,7 +125,7 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE query = :query",
             [{"label": "query", "node": planner.id, "path": "items.output"}],
@@ -152,7 +149,7 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
 
 def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -181,14 +178,14 @@ def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> No
 
 def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -294,14 +291,14 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
     """A rowwise column with no path on an InputOp ref is bound as a literal."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -351,14 +348,14 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
 def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
     """A rowwise column node not reachable from the output is an error."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -391,7 +388,7 @@ def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
 def test_rowwise_vlm_image_source_is_group_boundary() -> None:
     """A flattened VLM whose only rowwise column is an InputOp still builds."""
     stock = input_placeholder("Stock")
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -451,14 +448,14 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
 def test_rowwise_column_without_data_or_node_path_raises() -> None:
     """A rowwise column with neither data nor node+path is an error."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -1519,14 +1516,12 @@ def test_image_gen_user_extras_override_defaults() -> None:
 
 def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "agent",
-                "description": "Find the latest price for the symbol.",
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
         inputs=[stock],
     )
     emb = EmbeddingOp(content=retrieval, config=GenerationConfig(model="bge-small"))
@@ -1542,14 +1537,12 @@ def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
 
 def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "agent",
-                "description": "Find the latest price for the symbol.",
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
         inputs=[stock],
     )
     img = ImageGenerationOp(
@@ -1595,14 +1588,12 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "agent",
-                "description": "Find the latest price for the symbol.",
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
         inputs=[stock],
     )
     output = as_output("result", retrieval)
@@ -1615,14 +1606,12 @@ def test_agent_retrieval_as_final_output_uses_table_path() -> None:
 
 def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "agent",
-                "description": "Find the latest price for the symbol.",
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "agent",
+            "description": "Find the latest price for the symbol.",
+        },
         inputs=[stock],
     )
     vision = LLMVisionOp(
@@ -2028,7 +2017,7 @@ def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None
     _node_ref_column applies to a row LambdaOp."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=_row_lambda_fn)
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE q = :q",
             [{"label": "q", "node": terms.id, "path": "items.output"}],
@@ -2062,7 +2051,7 @@ def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
     must resolve against a PythonResult-shaped result."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=_row_lambda_fn)
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE q = :q",
             [{"label": "q", "node": terms.id, "path": "items.output.field"}],

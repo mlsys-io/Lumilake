@@ -52,13 +52,10 @@ def test_only_a_top_level_order_counts(template: str, accepted: bool) -> None:
         _graph(template)
 
 
-def test_the_rule_names_the_library_entry() -> None:
+def test_the_refusals_name_the_library_entry_and_the_field() -> None:
     spec = {"type": "lumid", "mode": "sql", "template": "SELECT 1"}
     with pytest.raises(DriverProtocolError, match="peers.*top-level ORDER BY"):
         validate_library({"peers": {"op": "DataRetrievalOp", "data_spec": spec}})
-
-
-def test_a_problem_names_the_field_and_reads_plainly() -> None:
     with pytest.raises(ValueError, match="where: must be a mapping"):
         RetrievalSpec.load(3, "where")
     with pytest.raises(ValueError, match="where: type: Field required"):

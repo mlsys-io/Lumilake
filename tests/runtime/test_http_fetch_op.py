@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 import yaml
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.data_specs import PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     HttpFetchOp,
     LLMChatOp,
     OpMessage,
@@ -23,12 +23,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.utils.retrieval_spec import RetrievalSpec
 from tests.support.data_specs import wire
-
-
-def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
-    return RetrievalSpec.model_validate(data)
 
 
 @pytest.fixture(autouse=True)
@@ -119,15 +114,13 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
 def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     """A fetch over a retrieval reads its table rows, not its ``output``."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT q FROM t WHERE symbol = :symbol",
-                "params": [{"name": "symbol", "node": stock.id}],
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT q FROM t WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
         inputs=[stock],
     )
     fetch = HttpFetchOp(url="http://fixture.test/search?q={query}", query=retrieval)

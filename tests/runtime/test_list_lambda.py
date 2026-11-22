@@ -2,12 +2,12 @@ import textwrap
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LambdaOp,
     LLMChatOp,
     LLMVisionOp,
@@ -18,14 +18,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from lumilake_server.utils.retrieval_spec import RetrievalSpec
-
 from tests.support.data_specs import wire
-
-
-def _retrieval_spec(data: dict[str, Any]) -> RetrievalSpec:
-    return RetrievalSpec.model_validate(data)
-
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -363,15 +356,13 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     ``flatten``: the VLM's regroup step already emits one output list per source
     symbol, and flattening would expand image-level values into per-image rows."""
     stock = input_placeholder("Stock")
-    news_s3 = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "s3",
-                "template": "example-data/news/images/{symbol}.png",
-                "params": [{"name": "symbol", "node": stock.id}],
-            }
-        ),
+    news_s3 = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "s3",
+            "template": "example-data/news/images/{symbol}.png",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
         inputs=[stock],
     )
     vision = LLMVisionOp(
@@ -420,15 +411,13 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     LLM must compile, with a stage entry for the retrieval (one element per
     retrieval item) alongside the LLM entry, matching the standalone path."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
-        data_spec=_retrieval_spec(
-            {
-                "type": "lumid",
-                "mode": "sql",
-                "template": "SELECT * FROM news WHERE symbol = :symbol",
-                "params": [{"name": "symbol", "node": stock.id}],
-            }
-        ),
+    retrieval = retrieval_op(
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT * FROM news WHERE symbol = :symbol",
+            "params": [{"name": "symbol", "node": stock.id}],
+        },
         inputs=[stock],
     )
     judge = LLMChatOp(
