@@ -19,6 +19,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Partition one source op's rows into named branches, one ordinary node per branch. |
+| `Repeat` | Run an op body a fixed number of times, unrolled into one ordinary node per iteration. |
 
 ## YAML Use
 
@@ -565,3 +566,14 @@ ops:
 ```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
+
+### Repeat
+
+`Repeat` runs an op body a fixed number of times. Because a fixed loop is
+static, the parser unrolls it at submit into ordinary nodes named
+`<id>.<n>.<bodyId>` — one declared node per iteration — so no driver round is
+involved and each iteration gets its own cache key, seed and record. Inside
+the body `$in` reads the repeat's `input` on the first iteration and
+`<id>.<n-1>.<output>` afterwards; outside the repeat the id refers to the last
+iteration. A body may not contain a `Repeat` or a `RouterOp`. See
+`docs/WORKFLOWS.md` for the entry shape and the submit-time refusals.
