@@ -10,7 +10,7 @@ Pass the format with the CLI `--format` option or the `Workflow-Format` HTTP hea
 
 ## YAML Structure
 
-A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, required `ops`, and optional `outputs`.
+A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, optional `functions`, required `ops`, and optional `outputs`.
 
 ```yaml
 name: example
@@ -40,6 +40,51 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+
+### Shared functions (`functions:` and `uses:`)
+
+A helper several `LambdaOp`s call is written once under the top-level
+`functions:` mapping, keyed by the name an op names in `uses:`. Each entry is
+Python source: one or more top-level `def`s, classes, imports, assignments or
+compound statements.
+
+```yaml
+name: shared_helpers
+functions:
+  seed:
+    |
+    def seed_value(row):
+        return PREFIX + row["name"]
+    PREFIX = "seed:"
+
+inputs:
+  rows: ['{"name": "a"}']
+
+ops:
+  - id: first
+    op: LambdaOp
+    inputs: [rows]
+    fn_name: first
+    uses: [seed]
+    code: |
+      def first(inputs):
+          return seed_value({"name": inputs[0]})
+```
+
+The listed sources are prepended to the op's own `code` in the listed order,
+separated by a blank line, and everything after that sees the combined
+program: dispatch, the inline-namespace checks and every digest treat it
+exactly as if the source had been written in the op. A block is included once
+per op that uses it.
+
+Submission is refused, naming the op and the function, when `uses` names a
+function the block does not define, names one twice, sits on a non-`LambdaOp`
+op, or when a `functions:` entry does not parse. It is also refused when a
+name is defined by both a used block and the op's own code, or by two used
+blocks: the op must end up with a single definition per name.
+
+`functions:` and `uses:` are YAML-only. A native payload carries resolved code
+already and an n8n workflow has no equivalent annotation.
 
 ## n8n code-node notes
 
