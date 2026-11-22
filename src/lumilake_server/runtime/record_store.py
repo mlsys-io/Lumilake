@@ -153,18 +153,35 @@ def has_declared_seed(op: RuntimeOp) -> bool:
 
 
 def samples(op: RuntimeOp) -> bool:
-    """Whether the op draws tokens rather than decoding deterministically."""
+    """Whether the op draws tokens rather than decoding deterministically.
+
+    The decoder decides, by the same rule structural dedup uses: beam search
+    wider than one, a zero temperature or ``do_sample: false`` is deterministic,
+    and an absent temperature is not, because the engine then samples at its own
+    default. A hosted chat keeps its decoding in the request body rather than its
+    inference spec, so that body is read too."""
     if op.task_type not in _SAMPLING_TASKS:
         return False
-    spec = op.inference_spec
-    if isinstance(spec.get("num_beams"), int) and not isinstance(
-        spec.get("num_beams"), bool
-    ):
-        return False
+    specs: list[Mapping[str, Any]] = [op.inference_spec]
+    body = op.api_spec.get("json")
+    if isinstance(body, Mapping):
+        specs.append(body)
+    return not any(_decodes_deterministically(spec) for spec in specs)
+
+
+def _decodes_deterministically(spec: Mapping[str, Any]) -> bool:
+    """Whether a spec's decoder is fixed: beam search, or a zero temperature."""
+    if spec.get("do_sample") is False:
+        return True
+    beams = spec.get("num_beams")
+    if isinstance(beams, int) and not isinstance(beams, bool) and beams > 1:
+        return True
     temperature = spec.get("temperature")
-    if isinstance(temperature, (int, float)) and not isinstance(temperature, bool):
-        return temperature > 0
-    return True
+    return (
+        isinstance(temperature, (int, float))
+        and not isinstance(temperature, bool)
+        and temperature == 0
+    )
 
 
 def is_marker(value: Any) -> bool:

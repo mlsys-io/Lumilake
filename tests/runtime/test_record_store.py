@@ -379,6 +379,29 @@ async def test_a_draw_no_seed_reproduces_gets_its_own_key() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_seeded_unversioned_record_names_its_production() -> None:
+    """A hosted chat reads a source that promises no snapshot, so one seed in
+    two jobs names two productions and neither job answers from the other's
+    draw; the seed stays beside it as information."""
+    api_spec = {"json": {"model": "m", "messages": "{{prompt}}", "seed": 7}}
+    graph = _paths_graph(
+        task_type="api", model_spec={}, inference_spec={}, api_spec=api_spec
+    )
+    listed = []
+    for job_id in ("req-one", "req-two"):
+        entries = await _store(
+            graph, {"Mark": [{"id": "a"}], "AskX": ["hi"]}, job_id=job_id
+        )
+        listed.append(next(e for e in entries if e.address.record is None))
+    assert [e.realization.production for e in listed] == [
+        "req-one/task-AskX",
+        "req-two/task-AskX",
+    ]
+    assert [e.realization.seed for e in listed] == [7, 7]
+    assert listed[0].digest != listed[1].digest
+
+
+@pytest.mark.asyncio
 async def test_broadcast_literal_yields_when_the_row_is_past_it() -> None:
     """A keyed row Lambda that also reads a one-row literal has no second row
     in it: the write takes the literal's whole list instead of failing the

@@ -507,9 +507,22 @@ def _realization(
     """The draw a record used: its own seed row when the op declares per-row
     seeds, else the op's declared seed.
 
-    A record whose value no seed or snapshot fixes (a sampling op with no seed,
-    or an unversioned read) names its own production instead, so it never
-    shares a key with another run's draw."""
+    A record whose value no snapshot fixes (an unversioned read) names its own
+    production instead, so it never shares a key with another run's draw: the
+    source does not promise the same value twice even under one seed. Only a
+    versioned op's seed decides the realization."""
+    seed = _seed_at(plan, node_records, position)
+    if unversioned:
+        return _draw_unique_to(source, seed)
+    if seed is not None:
+        return RecordRealization(seed=seed)
+    if samples(plan.op):
+        return _draw_unique_to(source)
+    return RecordRealization()
+
+
+def _seed_at(plan: RecordPlan, node_records: NodeRecords, position: int) -> int | None:
+    """The seed the record at ``position`` was drawn with, if the op binds one."""
     seeds = plan.op.data_spec.get("seeds")
     if isinstance(seeds, list) and plan.keyed:
         keyed_rows = sum(1 for key in node_records.keys or [] if key is not None)
@@ -520,19 +533,15 @@ def _realization(
             )
         seed = seeds[position]
         if isinstance(seed, bool) or not isinstance(seed, int):
-            return _draw_unique_to(source) if samples(plan.op) else RecordRealization()
-        return RecordRealization(seed=seed)
-    seed = declared_seed(plan.op)
-    if seed is not None:
-        return RecordRealization(seed=seed)
-    if unversioned or samples(plan.op):
-        return _draw_unique_to(source)
-    return RecordRealization()
+            return None
+        return seed
+    return declared_seed(plan.op)
 
 
-def _draw_unique_to(source: RecordSource) -> RecordRealization:
-    """A draw nothing reproduces: it names the production that made it."""
-    return RecordRealization(production=f"{source.job}/{source.task_id}")
+def _draw_unique_to(source: RecordSource, seed: int | None = None) -> RecordRealization:
+    """A draw nothing reproduces: it names the production that made it, and
+    keeps the seed it was asked for as information only."""
+    return RecordRealization(seed=seed, production=f"{source.job}/{source.task_id}")
 
 
 def _resolve_plans(
