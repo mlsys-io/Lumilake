@@ -148,6 +148,7 @@ class JoinDescription(DataSpecModel):
 
     node: str
     by: list[str]
+    row_key: list[str] | None = None
     inputs: list[int]
     attach: list[tuple[str, int, int]]
     on_missing: Literal["null_fill", "fail_row"]

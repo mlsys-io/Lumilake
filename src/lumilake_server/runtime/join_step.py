@@ -19,7 +19,7 @@ def join_source(
         op_id=op_id,
         module="lumilake_runtime",
         mount=runtime_mount,
-        join=json.dumps(description.model_dump(), ensure_ascii=False),
+        join=json.dumps(description.model_dump(exclude_none=True), ensure_ascii=False),
         plan=json.dumps(
             [entry.model_dump(exclude_none=True) for entry in plan],
             ensure_ascii=False,
