@@ -335,6 +335,7 @@ def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEnt
     is_lambda = op_type.strip() == "LambdaOp"
     uses = entry.get("uses")
     code = entry.get("code")
+    used: tuple[str, ...] = ()
     if is_lambda and code is not None and not isinstance(code, str):
         raise ValueError(f"LambdaOp '{entry_id}' requires 'code: str'")
     if uses is not None:
@@ -347,7 +348,7 @@ def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEnt
                 f"LambdaOp '{entry_id}' cannot combine 'uses' with lambda-expression"
                 " code; write the function as a 'def'"
             )
-        fields_dict["code"] = functions.include(uses, entry_id, code)
+        fields_dict["code"], used = functions.include(uses, entry_id, code)
 
     return OpEntry(
         id=entry_id,
@@ -355,6 +356,7 @@ def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEnt
         inputs=list(raw_inputs),
         fields=fields_dict,
         max_iter=max_iter,
+        uses=used,
     )
 
 
