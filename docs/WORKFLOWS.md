@@ -38,7 +38,7 @@ outputs:
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `RouterOp`, and `Repeat`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks.
 
-`Repeat` repeats an op body a fixed number of times. The parser unrolls it at submit into ordinary ops, one declared op per iteration, so nothing runs as a loop:
+`Repeat` repeats an op body a fixed number of times, unrolled at submit into one ordinary op per iteration:
 
 ```yaml
 ops:
@@ -49,12 +49,11 @@ ops:
     output: Rectify       # body id the next iteration reads
     body:
       - {id: Rectify, op: LLMChatOp, inputs: [$in], messages: [...], config: {...}}
-      - {id: Score, op: LambdaOp, inputs: [Rectify], fn_name: score, code: "..."}
 ```
 
-Iteration `i` copies each body entry to `Retry.i.<bodyId>`. Inside the body `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards; outside it, `Retry` reads the last iteration. `input` may name another repeat, so fixed loops can chain.
+Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, and elsewhere `Retry` reads the last iteration. `input` may name another repeat.
 
-Submit is refused when `times` is not a positive integer, the entry has an unknown field, an id collides, `input` names no known id, `output` is not a body id, a body entry is not a mapping or its id contains `.`, a body holds a `Repeat` or `RouterOp` or reads its own repeat id, an op outside reads a body id directly, `$in` appears outside a body, two repeats form a cycle, or the workflow would unroll more than 1,000 entries in total.
+Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `Repeat` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see
 [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).

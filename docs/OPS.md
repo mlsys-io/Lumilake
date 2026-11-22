@@ -19,7 +19,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Partition one source op's rows into named branches, one ordinary node per branch. |
-| `Repeat` | Run an op body a fixed number of times, unrolled into one ordinary node per iteration. |
+| `Repeat` | Run an op body a fixed number of times; the parser unrolls it into ordinary nodes. See `docs/WORKFLOWS.md`. |
 
 ## YAML Use
 
@@ -566,8 +566,3 @@ ops:
 ```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
-
-### Repeat
-
-`Repeat` is a YAML construct, not a runtime op: the parser unrolls it at submit
-into ordinary op nodes. See `docs/WORKFLOWS.md` for its fields and refusals.
