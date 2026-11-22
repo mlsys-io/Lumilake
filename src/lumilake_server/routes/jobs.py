@@ -709,6 +709,14 @@ class JobStatusPayload(BaseModel):
             "Raw per-workflow scheduler dispatch rows, one per actual dispatch."
         ),
     )
+    reuse_decisions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "One hit-or-miss decision per op when the job asked to reuse the"
+            " record store, each with the first reason a miss ran; empty"
+            " otherwise."
+        ),
+    )
 
 
 class JobStatusResponse(BaseModel):
