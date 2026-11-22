@@ -1,5 +1,6 @@
 """A retrieval's declared record key: YAML -> graph -> runtime check."""
 
+import json
 from typing import Any
 
 import pytest
@@ -26,7 +27,13 @@ outputs:
 
 _KEY = "      key: {column: %r}"
 
-_TABLE = {"table": {"case_id": {"0": "a", "1": "b"}}}
+
+def _df(columns: dict[str, Any]) -> dict[str, Any]:
+    """One retrieval item carrying a column table in its envelope."""
+    return {"table": {"df": json.dumps(columns)}}
+
+
+_TABLE = _df({"case_id": {"0": "a", "1": "b"}})
 
 
 @pytest.fixture(autouse=True)
@@ -62,8 +69,8 @@ def test_a_declared_key_reaches_the_retrieval_node(
 @pytest.mark.parametrize(
     ("items", "problem"),
     [
-        ([_TABLE, {"table": {"case_id": {"0": "c"}}}], None),
-        ([_TABLE, {"table": {"case_id": {"0": "a"}}}], "repeated at row 0"),
+        ([_TABLE, _df({"case_id": {"0": "c"}})], None),
+        ([_TABLE, _df({"case_id": {"0": "a"}})], "repeated at row 0"),
         ([{"table": {"case_id": {"0": None}}}], "null key"),
         ([{"table": {"other": {"0": "a"}}}], "no such column"),
     ],
