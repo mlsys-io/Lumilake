@@ -26,7 +26,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
-from lumilake_server.ops.join_ops import JoinOp
+from lumilake_server.ops.join_ops import JoinOp, JoinSpec
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -1875,7 +1875,7 @@ def test_inlined_row_lambda_read_by_a_join_materializes() -> None:
         [OpMessage(role="user", content=inner)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
-    join = JoinOp([state, inner, llm], by="id", attach={"reply": inner})
+    join = JoinOp([state, inner, llm], JoinSpec(by=["id"]), attach={"reply": inner})
     compiled = Graph.from_ops(
         [as_output("merged", join), as_output("answers", llm)]
     ).compile(Stock=["NVDA", "AAPL"])

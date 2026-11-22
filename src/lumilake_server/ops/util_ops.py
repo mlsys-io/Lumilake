@@ -11,13 +11,13 @@ from pydantic import (
     StrictFloat,
     StrictInt,
     StrictStr,
-    ValidationError,
     field_validator,
     model_validator,
 )
 
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.utils.lambda_runtime import validate_source
 
 MAX_TIMEOUT_S = 600.0
@@ -98,16 +98,7 @@ def build_lambda_spec(
     fields: dict[str, Any], where: str, names: dict[str, str] | None = None
 ) -> LambdaSpec:
     """Validate one `LambdaOp` entry, naming the op and field in the error."""
-    try:
-        return LambdaSpec.model_validate(fields)
-    except ValidationError as exc:
-        parts: list[str] = []
-        for error in exc.errors():
-            message = error["msg"].removeprefix("Value error, ")
-            field = ".".join(str(loc) for loc in error["loc"])
-            field = names[field] if names is not None and field in names else field
-            parts.append(f"{field}: {message}" if field else message)
-        raise ValueError(f"{where}: {'; '.join(parts)}") from exc
+    return validate_fields(LambdaSpec, fields, where, names)
 
 
 def _serialize_fn(fn: Callable[..., Any]) -> str:
