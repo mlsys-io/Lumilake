@@ -311,12 +311,8 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
     answer: str, kept: str, tmp_path: Path
 ) -> None:
     """`on_fail: raw` is no marker source, so a model op may read it."""
-    ops = [
-        _parse(format="json", on_fail="raw"),
-        _lower(code="def f(row):\n    return row[0]\n"),
-    ]
-    items = _run(ops, {"Answer": [answer]}, tmp_path)
-    assert items[0]["value"] == kept
+    items = _run([_parse(format="json", on_fail="raw")], {"Answer": [answer]}, tmp_path)
+    assert items[0]["output"] == kept
     values = {"Answer": [answer], "Images": ["img.png"]}
     raw = [_parse(format="json", on_fail="raw"), _model_reading("P")]
     assert _build(raw, values) is not None
