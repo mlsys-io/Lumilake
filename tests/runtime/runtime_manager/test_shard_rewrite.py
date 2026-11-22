@@ -1,5 +1,15 @@
 import pytest
 
+from lumilake_server.data_specs import (
+    Column,
+    DataSpecModel,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    ListData,
+    TemplateOptions,
+    Value,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -8,7 +18,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 def _op(
     *,
     node_id: str,
-    data_spec: dict[str, object],
+    data_spec: DataSpecModel,
     deps: tuple[str, ...] = (),
 ) -> RuntimeOp:
     return RuntimeOp(
@@ -36,23 +46,17 @@ def _two_node_graph(path: str, items: list[str] | None = None) -> RuntimeGraph:
     values = ["a", "b", "c", "d"] if items is None else items
     return _runtime_graph(
         nodes={
-            "n0": _op(node_id="n0", data_spec={"type": "list", "items": values}),
+            "n0": _op(node_id="n0", data_spec=ListData(items=values)),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {
-                                "label": "x",
-                                "node": "n0",
-                                "path": path,
-                            }
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path=path)],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
         },
@@ -101,29 +105,25 @@ def test_shard_rewrite_fails_fast_without_rewritable_partition_source(
         nodes={
             "n0": _op(
                 node_id="n0",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "seed", "data": {"type": "list", "items": ["a"]}}
-                        ],
-                        "options": {"format": {"template": "{seed}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="seed", data=ListData(items=["a"]))],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
             ),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"}
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path="items.output")],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
         },
@@ -146,23 +146,20 @@ def test_shard_rewrite_keeps_non_contracted_dependency_pinned(
 ) -> None:
     graph = _runtime_graph(
         nodes={
-            "n0": _op(node_id="n0", data_spec={"type": "list", "items": ["a"]}),
+            "n0": _op(node_id="n0", data_spec=ListData(items=["a"])),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"},
-                            {
-                                "label": "seed",
-                                "data": {"type": "list", "items": ["p", "q"]},
-                            },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[
+                            Column(label="x", node="n0", path="items.output"),
+                            Column(label="seed", data=ListData(items=["p", "q"])),
                         ],
-                        "options": {"format": {"template": "{x}{seed}"}},
-                    },
-                },
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
         },
@@ -321,33 +318,30 @@ def test_shard_rewrite_inlines_unsharded_list_dependency_without_boundary_nodes(
         nodes={
             "n0": _op(
                 node_id="n0",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "data": {"type": "value", "value": "a"}}
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[
+                            Column(label="x", data=Value(type="value", value="a"))
                         ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
             ),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"},
-                            {
-                                "label": "seed",
-                                "data": {"type": "list", "items": ["p", "q"]},
-                            },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[
+                            Column(label="x", node="n0", path="items.output"),
+                            Column(label="seed", data=ListData(items=["p", "q"])),
                         ],
-                        "options": {"format": {"template": "{x}:{seed}"}},
-                    },
-                },
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
         },

@@ -18,6 +18,7 @@ from lumilake_server.runtime.server import (
 )
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
+from tests.support import data_specs
 
 
 class FakeHandler:
@@ -292,7 +293,7 @@ def make_runtime_op(node_id: str) -> RuntimeOp:
         task_type="inference",
         backend="dummy",
         model="dummy-model",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
     )

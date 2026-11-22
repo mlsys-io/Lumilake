@@ -1,13 +1,12 @@
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
-from lumilake_server.data_specs import dump_data_spec
+from lumilake_server.data_specs import PythonData, dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
@@ -541,18 +540,16 @@ def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> Non
 def _with_python_step(
     item: WorkflowItem, expected_s: float, timeout_s: float, row_count: int | None = 1
 ) -> WorkflowItem:
-    data_spec: dict[str, Any] = {
-        "expected_runtime_s": expected_s,
-        "timeout_s": timeout_s,
-    }
-    if row_count is not None:
-        data_spec["row_count"] = row_count
     step = RuntimeOp(
         node_id="sim",
         task_type=python_step.TASK_TYPE,
         backend=python_step.BACKEND,
         model="",
-        data_spec=data_spec,
+        data_spec=PythonData(
+            expected_runtime_s=expected_s,
+            timeout_s=timeout_s,
+            row_count=row_count,
+        ),
         model_spec={},
         inference_spec={},
     )

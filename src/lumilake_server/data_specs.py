@@ -1,9 +1,4 @@
-"""Typed ``data_spec`` for every runtime task type.
-
-Each task type's ``data_spec`` is one of these models. Builders construct the
-model and ``RuntimeOp`` keeps it; readers use attributes. Serializing dumps the
-model with unset fields omitted, which is the dict the builders wrote before.
-"""
+"""Typed ``data_spec`` for every runtime task type."""
 
 from typing import Annotated, Any, Literal, TypeGuard
 
@@ -12,23 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 PYTHON_TASK_TYPE = "python"
 RETRIEVAL_TASK_TYPE = "data_retrieval"
 PROFILE_TASK_TYPE = "data_profiling"
-MODELLED_TASK_TYPES = frozenset(
-    {
-        PYTHON_TASK_TYPE,
-        RETRIEVAL_TASK_TYPE,
-        PROFILE_TASK_TYPE,
-        "inference",
-        "diffusion",
-        "embedding",
-        "classification",
-        "omni_text2image",
-        "api",
-    }
-)
 
 
 class DataSpecModel(BaseModel):
-    """Base for every ``data_spec`` model: unknown keys are refused."""
+    """Base model that refuses unknown keys."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -45,7 +27,7 @@ class ImageEmbedding(NodeRead):
 
 
 class ListData(DataSpecModel):
-    """A list-fed task: literal items or an upstream node read."""
+    """A list-fed task reading literal items or an upstream node."""
 
     type: Literal["list"] = "list"
     items: list[Any] | None = None
@@ -77,8 +59,7 @@ class FormatArgument(DataSpecModel):
 
 
 class FormatStep(DataSpecModel):
-    """One format step: a template and its arguments, or a function with its
-    serialized arguments."""
+    """One format step holding a template or a function and its arguments."""
 
     label: str
     template: str | None = None
@@ -87,11 +68,10 @@ class FormatStep(DataSpecModel):
 
 
 class FormatConfig(DataSpecModel):
-    """The ``format`` options a graph template carries."""
+    """The format options a graph template carries."""
 
     messages: list[Message] = Field(default_factory=list)
     steps: list[FormatStep] | None = None
-    template: str | None = None
 
 
 class TemplateOptions(DataSpecModel):
@@ -101,8 +81,7 @@ class TemplateOptions(DataSpecModel):
 
 
 class Column(DataSpecModel):
-    """One column of a rowwise or aggregate table: a literal list, a nested
-    table, one literal value, or an upstream node read, under a label."""
+    """One labelled column: a nested table, a literal list or an upstream read."""
 
     label: str | None = None
     data: "DataFrame | ListData | Value | None" = None
@@ -111,8 +90,7 @@ class Column(DataSpecModel):
 
 
 class DataFrame(DataSpecModel):
-    """A rowwise table: one column per value a row carries, plus the messages
-    its rows render."""
+    """A rowwise table with one column per value and the messages its rows render."""
 
     type: Literal["dataframe"]
     columns: list[Column] = Field(default_factory=list)
@@ -123,11 +101,9 @@ class DataFrame(DataSpecModel):
 class GraphTemplate(DataSpecModel):
     """The template a message-chain task renders."""
 
-    name: str = "format"
+    name: str
     columns: list[Column] = Field(default_factory=list)
-    options: TemplateOptions = Field(
-        default_factory=lambda: TemplateOptions(format=FormatConfig())
-    )
+    options: TemplateOptions
 
 
 class GraphTemplateData(DataSpecModel):
@@ -139,9 +115,7 @@ class GraphTemplateData(DataSpecModel):
 
 
 class ColumnPlanEntry(DataSpecModel):
-    """One entry of a python step's plan: an upstream stage read, or a literal
-    value list. Flatten and regroup plans label their entries and mark the
-    grouped ones."""
+    """One python plan entry: an upstream stage read or literal values."""
 
     kind: Literal["stage", "literal"]
     node: str | None = None
@@ -175,27 +149,19 @@ class PythonData(DataSpecModel):
 
 
 class RetrievalParam(DataSpecModel):
-    """One placeholder value of a retrieval template: a literal list or an
-    upstream node read. Its placeholder is named ``label``, or ``name`` in the
-    legacy form."""
+    """One retrieval placeholder bound to a literal list or an upstream read."""
 
     label: str | None = None
-    name: str | None = None
     data: ListData | None = None
     node: str | None = None
     path: str | None = None
 
 
 class RetrievalData(DataSpecModel):
-    """A lumid-data backend retrieval, or a reduced list/sql/s3 spec a
-    hand-built graph carries."""
+    """A lumid-data backend retrieval."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    type: Literal["lumid", "list", "sql", "s3"] = "lumid"
-    mode: Literal["sql", "s3", "agent"] | None = None
-    connection_string: str | None = None
-    items: list[Any] | None = None
+    type: Literal["lumid"]
+    mode: Literal["sql", "s3", "agent"]
     lumid_data_url: str | None = None
     lumid_data_token: str | None = None
     params: list[RetrievalParam] = Field(default_factory=list)
@@ -214,7 +180,7 @@ class SqlProfileData(DataSpecModel):
     """A SQL data-profile task."""
 
     type: Literal["sql"]
-    template: str = ""
+    template: str
     params: list[RetrievalParam] = Field(default_factory=list)
     constraints: list[dict[str, Any]] | None = None
     num_test_queries: int | None = None
@@ -225,29 +191,27 @@ class S3ProfileData(DataSpecModel):
     """An S3 data-profile task."""
 
     type: Literal["s3"]
-    template: str = ""
+    template: str
     params: list[RetrievalParam] = Field(default_factory=list)
     encoding: str | None = None
+
+
+MODEL_TASK_TYPES = frozenset(
+    {"inference", "diffusion", "embedding", "classification", "omni_text2image", "api"}
+)
+ALL_TASK_TYPES = MODEL_TASK_TYPES | {
+    PYTHON_TASK_TYPE,
+    RETRIEVAL_TASK_TYPE,
+    PROFILE_TASK_TYPE,
+}
 
 
 class EmptyData(DataSpecModel):
     """A task that carries no data spec."""
 
 
-class OpenData(DataSpecModel):
-    """A spec of a task type this module does not model; its keys stay free."""
-
-    model_config = ConfigDict(extra="allow")
-
-
-class MessageChainData(DataSpecModel):
-    """The system and user messages a reduced graph hands its LLM nodes."""
-
-    messages: list[Message] = Field(default_factory=list)
-
-
 ModelTaskData = Annotated[
-    ListData | GraphTemplateData | DataFrame | MessageChainData,
+    ListData | GraphTemplateData | DataFrame,
     Field(union_mode="left_to_right"),
 ]
 
@@ -257,51 +221,50 @@ _PROFILE_DATA: TypeAdapter[SqlProfileData | S3ProfileData] = TypeAdapter(
 )
 
 
-def parse_data_spec(task_type: str, value: dict[str, Any] | BaseModel) -> DataSpecModel:
-    """The typed model for a ``data_spec`` dict of ``task_type``.
-
-    A model passes through unchanged; a dict is validated into the model its
-    task type carries.
-    """
-    if isinstance(value, DataSpecModel):
-        return value
-    if isinstance(value, BaseModel):
-        return OpenData.model_validate(value.model_dump())
+def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
+    """The model a serialized ``data_spec`` dict of ``task_type`` carries."""
     if not value:
         return EmptyData()
-    if task_type not in MODELLED_TASK_TYPES:
-        return OpenData.model_validate(value)
+    if task_type not in ALL_TASK_TYPES:
+        raise ValueError(f"data_spec of unknown task type {task_type!r}")
     try:
         if task_type == PYTHON_TASK_TYPE:
             return PythonData.model_validate(value)
         if task_type == RETRIEVAL_TASK_TYPE:
             return RetrievalData.model_validate(value)
         if task_type == PROFILE_TASK_TYPE:
-            return _PROFILE_DATA.validate_python(value)
-        return _MODEL_DATA.validate_python(value)
+            return validate_profile(value)
+        return validate_model_data(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
 
 
+def validate_model_data(value: dict[str, Any]) -> ModelTaskData:
+    """The list, dataframe or graph-template spec a model task carries."""
+    return _MODEL_DATA.validate_python(value)
+
+
+def validate_profile(value: dict[str, Any]) -> SqlProfileData | S3ProfileData:
+    """The SQL or S3 spec a data-profile task carries."""
+    return _PROFILE_DATA.validate_python(value)
+
+
 def is_sql_data(data_spec: BaseModel) -> TypeGuard[SqlProfileData | RetrievalData]:
-    """Whether the spec reads a SQL source: a SQL profile node, or a retrieval
-    whose ``type`` is ``sql``."""
+    """Whether the spec reads a SQL source."""
     if isinstance(data_spec, SqlProfileData):
         return True
-    return isinstance(data_spec, RetrievalData) and data_spec.type == "sql"
+    return isinstance(data_spec, RetrievalData) and data_spec.mode == "sql"
 
 
 def is_s3_data(data_spec: BaseModel) -> TypeGuard[S3ProfileData | RetrievalData]:
-    """Whether the spec reads an S3 source: an S3 profile node, or a retrieval
-    whose ``type`` is ``s3``."""
+    """Whether the spec reads an S3 source."""
     if isinstance(data_spec, S3ProfileData):
         return True
-    return isinstance(data_spec, RetrievalData) and data_spec.type == "s3"
+    return isinstance(data_spec, RetrievalData) and data_spec.mode == "s3"
 
 
 def dump_data_spec(model: BaseModel) -> dict[str, Any]:
-    """The serialized dict for a typed ``data_spec`` model; a field the builder
-    never set stays out of the wire dict."""
+    """The serialized dict for a typed ``data_spec`` model."""
     return model.model_dump(exclude_none=True)
 
 

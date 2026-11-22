@@ -11,12 +11,19 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.data_specs import (
+    Column,
+    FormatConfig,
+    GraphTemplate,
+    TemplateOptions,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _simple_graph() -> RuntimeGraph:
@@ -26,7 +33,7 @@ def _simple_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={"type": "list", "items": ["a"]},
+            data_spec=data_specs.list_spec("a"),
             model_spec={},
             inference_spec={"max_tokens": 16},
         ),
@@ -35,14 +42,13 @@ def _simple_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={
-                "type": "graph_template",
-                "template": {
-                    "name": "format",
-                    "columns": [{"label": "x", "node": "n1", "path": "items.output"}],
-                    "options": {"format": {"template": "{x}"}},
-                },
-            },
+            data_spec=data_specs.graph_template_spec(
+                GraphTemplate(
+                    name="format",
+                    columns=[Column(label="x", node="n1", path="items.output")],
+                    options=TemplateOptions(format=FormatConfig()),
+                )
+            ),
             model_spec={},
             inference_spec={"max_tokens": 16},
             dependencies=("n1",),
@@ -92,7 +98,7 @@ def _retrieval_graph(*, task_type: str, backend: str) -> RuntimeGraph:
                 task_type=task_type,
                 backend=backend,
                 model="data_retrieval",
-                data_spec={"type": "sql", "template": "SELECT 1"},
+                data_spec=data_specs.sql_profile_spec("SELECT 1"),
                 model_spec={},
                 inference_spec={},
             )
@@ -131,7 +137,7 @@ def _api_graph() -> RuntimeGraph:
                 task_type="api",
                 backend="api",
                 model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec={"type": "graph_template", "template": {}},
+                data_spec=data_specs.graph_template_spec(),
                 model_spec={},
                 inference_spec={},
             )
@@ -167,7 +173,7 @@ def _python_graph() -> RuntimeGraph:
                 task_type="python",
                 backend="python",
                 model="",
-                data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
+                data_spec=data_specs.python_spec(),
                 model_spec={},
                 inference_spec={},
             )

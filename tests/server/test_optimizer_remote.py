@@ -12,6 +12,7 @@ from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _make_graph() -> RuntimeGraph:
@@ -20,7 +21,7 @@ def _make_graph() -> RuntimeGraph:
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         dependencies=(),

@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _build_runtime_op(task_type: str) -> RuntimeOp:
@@ -9,7 +10,7 @@ def _build_runtime_op(task_type: str) -> RuntimeOp:
         task_type=task_type,
         backend="transformers",
         model="test-model",
-        data_spec={"type": "list", "items": ["hello"]},
+        data_spec=data_specs.list_spec("hello"),
         model_spec={"source": {"identifier": "test-model"}},
         inference_spec={"max_tokens": 16},
     )
@@ -66,7 +67,7 @@ def test_condition_node_is_added_to_dependsOn() -> None:
         task_type="inference",
         backend="vllm",
         model="Qwen/Qwen3-32B",
-        data_spec={"type": "list", "items": ["hello"]},
+        data_spec=data_specs.list_spec("hello"),
         model_spec={"source": {"identifier": "Qwen/Qwen3-32B"}},
         inference_spec={"max_tokens": 1},
         dependencies=("some-upstream",),
@@ -93,7 +94,7 @@ def test_condition_node_already_in_dependencies_is_not_duplicated() -> None:
         task_type="inference",
         backend="vllm",
         model="Qwen/Qwen3-32B",
-        data_spec={"type": "list", "items": ["x"]},
+        data_spec=data_specs.list_spec("x"),
         model_spec={"source": {"identifier": "Qwen/Qwen3-32B"}},
         inference_spec={"max_tokens": 1},
         dependencies=("classifier-op", "other-upstream"),

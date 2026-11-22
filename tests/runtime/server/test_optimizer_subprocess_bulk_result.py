@@ -13,6 +13,7 @@ from support.runtime_server import RecordingRuntimeManager
 from lumilake import envs
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 _BULK_PLUGIN = "support.optimizer_bulk_schedule_plugin"
 
@@ -33,7 +34,7 @@ async def test_generate_schedule_in_subprocess_returns_bulk_schedule(
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         dependencies=(),

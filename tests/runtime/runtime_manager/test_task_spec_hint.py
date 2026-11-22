@@ -6,10 +6,11 @@ import pytest
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _op(node_id: str, task_type: str = "api") -> RuntimeOp:
-    return RuntimeOp(node_id, task_type, task_type, "", {}, {}, {})
+    return RuntimeOp(node_id, task_type, task_type, "", data_specs.empty(), {}, {})
 
 
 @pytest.mark.asyncio

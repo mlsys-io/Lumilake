@@ -5,6 +5,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake_server.data_specs import (
+    FormatConfig,
+    GraphTemplate,
+    Message,
+    TemplateOptions,
+)
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.policies.fifo import FifoSchedulingPolicy
@@ -18,6 +24,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
@@ -1418,21 +1425,19 @@ def _build_scenario_graph(model: str, prompt: str, n_nodes: int) -> RuntimeGraph
             task_type="inference",
             backend="vllm",
             model=model,
-            data_spec={
-                "type": "graph_template",
-                "template": {
-                    "name": "format",
-                    "columns": [],
-                    "options": {
-                        "format": {
-                            "messages": [
-                                {"role": "system", "content": prompt},
-                                {"role": "user", "content": "hi"},
+            data_spec=data_specs.graph_template_spec(
+                GraphTemplate(
+                    name="format",
+                    options=TemplateOptions(
+                        format=FormatConfig(
+                            messages=[
+                                Message(role="system", content=prompt),
+                                Message(role="user", content="hi"),
                             ]
-                        }
-                    },
-                },
-            },
+                        )
+                    ),
+                )
+            ),
             model_spec={},
             inference_spec={},
             dependencies=deps,

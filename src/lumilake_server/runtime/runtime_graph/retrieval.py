@@ -265,7 +265,13 @@ class _RetrievalBuilder(_LLMBuilder):
                 if node not in seen:
                     seen.add(node)
                     dependencies.append(node)
-            resolved_params.append(param)
+            resolved_params.append(
+                {
+                    "label": param.get("label"),
+                    "node": param.get("node"),
+                    "path": param.get("path") if param.get("path") is not None else "",
+                }
+            )
 
         if len(set(param_row_counts.values())) > 1:
             raise ValueError(

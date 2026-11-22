@@ -23,6 +23,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from tests.support import data_specs
 
 _DEFAULT_TOKENS = {
     token: principal.model_copy(deep=True)
@@ -346,7 +347,7 @@ async def test_sample_plugin_exercises_every_plugin_component(
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec={},
+                data_spec=data_specs.empty(),
                 model_spec={},
                 inference_spec={},
             ),
@@ -355,7 +356,7 @@ async def test_sample_plugin_exercises_every_plugin_component(
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec={},
+                data_spec=data_specs.empty(),
                 model_spec={},
                 inference_spec={},
                 dependencies=("node-a",),

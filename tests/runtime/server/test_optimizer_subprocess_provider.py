@@ -27,6 +27,7 @@ from lumilake_server.runtime.server import (
     _install_plugins_sync,
     _optimizer_subprocess_entry,
 )
+from tests.support import data_specs
 
 # ---------------------------------------------------------------------------
 # Minimal fake optimizer + provider
@@ -156,7 +157,7 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         dependencies=(),

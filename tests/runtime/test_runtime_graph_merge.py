@@ -1,5 +1,6 @@
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, merge_runtime_graphs
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _op(node_id: str) -> RuntimeOp:
@@ -8,7 +9,7 @@ def _op(node_id: str) -> RuntimeOp:
         task_type="data_profiling",
         backend="data_profiling",
         model="data_profiling",
-        data_spec={"type": "sql"},
+        data_spec=data_specs.sql_profile_spec(),
         model_spec={},
         inference_spec={},
     )

@@ -1,5 +1,6 @@
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def build_dummy_runtime_graph(
@@ -11,7 +12,7 @@ def build_dummy_runtime_graph(
         task_type="inference",
         backend="dummy",
         model="dummy-model",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
     )

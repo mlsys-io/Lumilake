@@ -3,9 +3,18 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import (
+    Column,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    ListData,
+    TemplateOptions,
+)
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, make_chunk_group_key
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeGraph:
@@ -15,7 +24,7 @@ def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeG
             "inference",
             "vllm",
             "model-a",
-            {},
+            data_specs.empty(),
             {},
             {"temperature": 0.7, **inference},
             samples=True,
@@ -59,19 +68,14 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec={
-            "type": "graph_template",
-            "template": {
-                "name": "format",
-                "columns": [
-                    {
-                        "label": root_label,
-                        "data": {"type": "list", "items": ["NVDA"]},
-                    }
-                ],
-                "options": {"format": {"template": f"Stock={{{root_label}}}"}},
-            },
-        },
+        data_spec=GraphTemplateData(
+            type="graph_template",
+            template=GraphTemplate(
+                name="format",
+                columns=[Column(label=root_label, data=ListData(items=["NVDA"]))],
+                options=TemplateOptions(format=FormatConfig()),
+            ),
+        ),
         model_spec={},
         inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(),
@@ -81,20 +85,14 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec={
-            "type": "graph_template",
-            "template": {
-                "name": "format",
-                "columns": [
-                    {
-                        "label": child_label,
-                        "node": root_id,
-                        "path": "items.output",
-                    }
-                ],
-                "options": {"format": {"template": f"Ctx={{{child_label}}}"}},
-            },
-        },
+        data_spec=GraphTemplateData(
+            type="graph_template",
+            template=GraphTemplate(
+                name="format",
+                columns=[Column(label=child_label, node=root_id, path="items.output")],
+                options=TemplateOptions(format=FormatConfig()),
+            ),
+        ),
         model_spec={},
         inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(root_id,),
@@ -132,7 +130,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                     task_type="inference",
                     backend="dummy",
                     model="dummy-model",
-                    data_spec={"type": "list", "items": ["a", "b"]},
+                    data_spec=data_specs.list_spec("a", "b"),
                     model_spec={},
                     inference_spec={"temperature": 0.0},
                     dependencies=(),
@@ -142,20 +140,16 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                     task_type="inference",
                     backend="dummy",
                     model="dummy-model",
-                    data_spec={
-                        "type": "graph_template",
-                        "template": {
-                            "name": "format",
-                            "columns": [
-                                {
-                                    "label": "x",
-                                    "node": seed_id,
-                                    "path": "items.output",
-                                }
+                    data_spec=GraphTemplateData(
+                        type="graph_template",
+                        template=GraphTemplate(
+                            name="format",
+                            columns=[
+                                Column(label="x", node=seed_id, path="items.output")
                             ],
-                            "options": {"format": {"template": "{x}"}},
-                        },
-                    },
+                            options=TemplateOptions(format=FormatConfig()),
+                        ),
+                    ),
                     model_spec={},
                     inference_spec={"temperature": 0.0},
                     dependencies=(seed_id,),
@@ -181,7 +175,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         api_spec={
@@ -197,7 +191,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         api_spec={
@@ -213,7 +207,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
         api_spec={
@@ -251,7 +245,7 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec={},
+            data_spec=data_specs.empty(),
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -285,7 +279,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec={},
+            data_spec=data_specs.empty(),
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -319,7 +313,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
             task_type="inference",
             backend="vllm",
             model="model-a",
-            data_spec={},
+            data_spec=data_specs.empty(),
             model_spec={},
             inference_spec={"temperature": 0.0},
             dependencies=(),
@@ -332,7 +326,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
         task_type="inference",
         backend="vllm",
         model="model-a",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={"temperature": 0.0},
         dependencies=("B",),
@@ -353,7 +347,9 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {"temperature": 0.0})
+    base = RuntimeOp(
+        "A", "inference", "vllm", "m", data_specs.empty(), {}, {"temperature": 0.0}
+    )
     nodes = {
         n: replace(base, node_id=n, output_enforcement={"text_regex": r})
         for n, r in (("A", "a"), ("B", "a"), ("F", "F"))

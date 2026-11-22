@@ -21,6 +21,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
@@ -31,7 +32,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="inference",
             backend="vllm",
             model="llama-7b",
-            data_spec={},
+            data_spec=data_specs.empty(),
             model_spec={},
             inference_spec={},
         )
@@ -42,7 +43,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="python",
             backend="python",
             model="python",
-            data_spec={},
+            data_spec=data_specs.empty(),
             model_spec={},
             inference_spec={},
         )
@@ -53,7 +54,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec={"type": "lumid", "mode": "agent"},
+            data_spec=data_specs.retrieval_spec("agent"),
             model_spec={},
             inference_spec={},
         )
@@ -63,7 +64,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
         task_type="http",
         backend="http",
         model="http",
-        data_spec={},
+        data_spec=data_specs.empty(),
         model_spec={},
         inference_spec={},
     )

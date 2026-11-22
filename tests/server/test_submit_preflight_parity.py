@@ -12,6 +12,7 @@ from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
+from tests.support import data_specs
 
 _BUILD_ERROR = (
     "OutputOp 'greeting' input must be an LLMOp or DataRetrievalOp (got FormatOp)"
@@ -106,7 +107,7 @@ def _list_lambda_graph(output_name: str) -> RuntimeGraph:
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "list"},
+        data_spec=data_specs.python_spec("list"),
         model_spec={},
         inference_spec={},
     )
@@ -124,7 +125,7 @@ def _row_graph(output_name: str) -> RuntimeGraph:
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "row"},
+        data_spec=data_specs.python_spec("row"),
         model_spec={},
         inference_spec={},
     )
@@ -188,7 +189,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "list"},
+        data_spec=data_specs.python_spec("list"),
         model_spec={},
         inference_spec={},
     )
@@ -197,7 +198,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "row"},
+        data_spec=data_specs.python_spec("row"),
         model_spec={},
         inference_spec={},
         dependencies=(lambda_id,),

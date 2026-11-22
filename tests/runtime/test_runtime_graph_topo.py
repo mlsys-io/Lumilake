@@ -10,6 +10,7 @@ real node ids.
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _make_op(node_id: str, dependencies: tuple[str, ...] = ()) -> RuntimeOp:
@@ -18,7 +19,7 @@ def _make_op(node_id: str, dependencies: tuple[str, ...] = ()) -> RuntimeOp:
         task_type="data_retrieval",
         backend="data_retrieval",
         model="data_retrieval",
-        data_spec={"type": "s3", "connection_string": "s3://b", "template": "x"},
+        data_spec=data_specs.s3_profile_spec("x"),
         model_spec={},
         inference_spec={},
         dependencies=dependencies,

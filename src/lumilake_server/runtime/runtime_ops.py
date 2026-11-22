@@ -4,11 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lumilake_server.data_specs import (
-    DataSpecModel,
-    dump_data_spec,
-    parse_data_spec,
-)
+from lumilake_server.data_specs import DataSpecModel, dump_data_spec, parse_data_spec
 from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
@@ -56,42 +52,6 @@ class RuntimeOp:
     skip_when_all_inputs_empty: bool = False
     samples: bool = False
 
-    def __init__(
-        self,
-        node_id: str,
-        task_type: str,
-        backend: str,
-        model: str,
-        data_spec: DataSpecModel | dict[str, Any],
-        model_spec: dict[str, Any],
-        inference_spec: dict[str, Any],
-        api_spec: dict[str, Any] | None = None,
-        output_enforcement: dict[str, Any] | None = None,
-        dependencies: tuple[str, ...] = (),
-        output_spec: dict[str, Any] | None = None,
-        condition: dict[str, str] | None = None,
-        skip_when_all_inputs_empty: bool = False,
-        samples: bool = False,
-    ) -> None:
-        """Build the op, validating ``data_spec`` into the model its task type
-        carries."""
-        object.__setattr__(self, "node_id", node_id)
-        object.__setattr__(self, "task_type", task_type)
-        object.__setattr__(self, "backend", backend)
-        object.__setattr__(self, "model", model)
-        object.__setattr__(self, "data_spec", parse_data_spec(task_type, data_spec))
-        object.__setattr__(self, "model_spec", model_spec)
-        object.__setattr__(self, "inference_spec", inference_spec)
-        object.__setattr__(self, "api_spec", api_spec if api_spec is not None else {})
-        object.__setattr__(self, "output_enforcement", output_enforcement)
-        object.__setattr__(self, "dependencies", dependencies)
-        object.__setattr__(self, "output_spec", output_spec)
-        object.__setattr__(self, "condition", condition)
-        object.__setattr__(
-            self, "skip_when_all_inputs_empty", skip_when_all_inputs_empty
-        )
-        object.__setattr__(self, "samples", samples)
-
     @property
     def model_key(self) -> tuple[str, str, str]:
         return (self.task_type, self.backend, self.model)
@@ -120,12 +80,13 @@ class RuntimeOp:
 
     @classmethod
     def from_schema(cls, node_id: str, schema: RuntimeOpSchema) -> "RuntimeOp":
+        """Build the op from its serialized schema, validating its data spec."""
         return cls(
             node_id=node_id,
             task_type=schema.task_type,
             backend=schema.backend,
             model=schema.model,
-            data_spec=schema.data_spec,
+            data_spec=parse_data_spec(schema.task_type, schema.data_spec),
             model_spec=schema.model_spec,
             inference_spec=schema.inference_spec,
             api_spec=schema.api_spec,

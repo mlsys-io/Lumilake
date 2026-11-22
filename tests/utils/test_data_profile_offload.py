@@ -9,6 +9,7 @@ from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import data_profile_offload
+from tests.support import data_specs
 
 
 class _DummyGraph:
@@ -99,10 +100,9 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
                     task_type="data_profiling",
                     backend="data_profiling",
                     model="data_profiling",
-                    data_spec={
-                        "type": "sql",
-                        "template": "select * from t where q = '{q}'",
-                    },
+                    data_spec=data_specs.sql_profile_spec(
+                        "select * from t where q = '{q}'"
+                    ),
                     model_spec={},
                     inference_spec={},
                 )
@@ -143,7 +143,7 @@ def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> No
                 task_type="data_profiling",
                 backend="data_profiling",
                 model="data_profiling",
-                data_spec={"type": "sql"},
+                data_spec=data_specs.sql_profile_spec(),
                 model_spec={},
                 inference_spec={},
             ),
@@ -152,7 +152,7 @@ def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> No
                 task_type="inference",
                 backend="vllm",
                 model="m",
-                data_spec={"type": "list"},
+                data_spec=data_specs.list_spec(),
                 model_spec={},
                 inference_spec={},
             ),

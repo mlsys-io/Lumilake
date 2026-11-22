@@ -13,6 +13,7 @@ from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _gpu_graph() -> RuntimeGraph:
@@ -23,7 +24,7 @@ def _gpu_graph() -> RuntimeGraph:
                 task_type="inference",
                 backend="vllm",
                 model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec={"type": "list", "items": ["a"]},
+                data_spec=data_specs.list_spec("a"),
                 model_spec={},
                 inference_spec={"max_tokens": 32},
             )

@@ -1,5 +1,14 @@
 import pytest
 
+from lumilake_server.data_specs import (
+    Column,
+    DataSpecModel,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    ListData,
+    TemplateOptions,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -8,7 +17,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 def _op(
     *,
     node_id: str,
-    data_spec: dict[str, object],
+    data_spec: DataSpecModel,
     deps: tuple[str, ...] = (),
 ) -> RuntimeOp:
     return RuntimeOp(
@@ -35,25 +44,17 @@ def _runtime_graph(nodes: dict[str, RuntimeOp], order: list[str]) -> RuntimeGrap
 def _two_node_graph(path: str) -> RuntimeGraph:
     return _runtime_graph(
         nodes={
-            "n0": _op(
-                node_id="n0", data_spec={"type": "list", "items": ["a", "b", "c", "d"]}
-            ),
+            "n0": _op(node_id="n0", data_spec=ListData(items=["a", "b", "c", "d"])),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {
-                                "label": "x",
-                                "node": "n0",
-                                "path": path,
-                            }
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path=path)],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
         },
@@ -147,36 +148,30 @@ def test_shard_rewrite_fails_fast_on_misaligned_static_cardinalities(
 ) -> None:
     graph = _runtime_graph(
         nodes={
-            "n0": _op(node_id="n0", data_spec={"type": "list", "items": ["a", "b"]}),
+            "n0": _op(node_id="n0", data_spec=ListData(items=["a", "b"])),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"}
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path="items.output")],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
-            "n2": _op(
-                node_id="n2", data_spec={"type": "list", "items": ["u", "v", "w", "z"]}
-            ),
+            "n2": _op(node_id="n2", data_spec=ListData(items=["u", "v", "w", "z"])),
             "n3": _op(
                 node_id="n3",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"}
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path="items.output")],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0", "n2"),
             ),
         },
@@ -199,36 +194,30 @@ def test_shard_rewrite_allows_independent_non_sharded_branch_cardinality_mismatc
 ) -> None:
     graph = _runtime_graph(
         nodes={
-            "n0": _op(node_id="n0", data_spec={"type": "list", "items": ["a", "b"]}),
+            "n0": _op(node_id="n0", data_spec=ListData(items=["a", "b"])),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n0", "path": "items.output"}
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n0", path="items.output")],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0",),
             ),
-            "n2": _op(
-                node_id="n2", data_spec={"type": "list", "items": ["u", "v", "w", "z"]}
-            ),
+            "n2": _op(node_id="n2", data_spec=ListData(items=["u", "v", "w", "z"])),
             "n3": _op(
                 node_id="n3",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n2", "path": "items.output"}
-                        ],
-                        "options": {"format": {"template": "{x}"}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[Column(label="x", node="n2", path="items.output")],
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n2",),
             ),
         },
@@ -255,53 +244,41 @@ def test_shard_rewrite_pins_non_contracted_dependencies_to_single_workers(
 ) -> None:
     graph = _runtime_graph(
         nodes={
-            "n0": _op(node_id="n0", data_spec={"type": "list", "items": ["a", "b"]}),
+            "n0": _op(node_id="n0", data_spec=ListData(items=["a", "b"])),
             "n1": _op(
                 node_id="n1",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {"label": "x", "node": "n3", "path": "items.output"},
-                            {
-                                "label": "seed",
-                                "data": {"type": "list", "items": ["left", "right"]},
-                            },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[
+                            Column(label="x", node="n3", path="items.output"),
+                            Column(
+                                label="seed", data=ListData(items=["left", "right"])
+                            ),
                         ],
-                        "options": {"format": {"template": "{x}-{seed}"}},
-                    },
-                },
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n3",),
             ),
             "n2": _op(
                 node_id="n2",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "columns": [
-                            {
-                                "label": "a",
-                                "node": "n0",
-                                "path": "items[0].output",
-                            },
-                            {
-                                "label": "b",
-                                "node": "n1",
-                                "path": "items[0].output",
-                            },
-                            {
-                                "label": "seed",
-                                "data": {"type": "list", "items": ["r0", "r1"]},
-                            },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        columns=[
+                            Column(label="a", node="n0", path="items[0].output"),
+                            Column(label="b", node="n1", path="items[0].output"),
+                            Column(label="seed", data=ListData(items=["r0", "r1"])),
                         ],
-                        "options": {"format": {"template": "{a}:{b}:{seed}"}},
-                    },
-                },
+                        options=TemplateOptions(format=FormatConfig()),
+                    ),
+                ),
                 deps=("n0", "n1"),
             ),
-            "n3": _op(node_id="n3", data_spec={"type": "list", "items": ["s"]}),
+            "n3": _op(node_id="n3", data_spec=ListData(items=["s"])),
         },
         order=["n0", "n1", "n2", "n3"],
     )

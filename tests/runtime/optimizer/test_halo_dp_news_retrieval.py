@@ -18,6 +18,7 @@ and a mixed GPU/CPU worker pool.
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support import data_specs
 
 
 def _news_retrieval_runtime_graph() -> RuntimeGraph:
@@ -27,10 +28,7 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="Qwen/Qwen2.5-1.5B-Instruct",
-            data_spec={
-                "type": "graph_template",
-                "template": {"name": "format"},
-            },
+            data_spec=data_specs.graph_template_spec(),
             model_spec={},
             inference_spec={"max_tokens": 256},
         ),
@@ -41,10 +39,9 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec={
-                "type": "sql",
-                "template": "SELECT id, title FROM demo.fact_news_metadata",
-            },
+            data_spec=data_specs.retrieval_spec(
+                "sql", "SELECT id, title FROM demo.fact_news_metadata"
+            ),
             model_spec={},
             inference_spec={},
             dependencies=("sql_param_proposer",),
@@ -54,10 +51,9 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec={
-                "type": "s3",
-                "template": "unstructured/news-html/{id}.html",
-            },
+            data_spec=data_specs.retrieval_spec(
+                "s3", "unstructured/news-html/{id}.html"
+            ),
             model_spec={},
             inference_spec={},
             dependencies=("news_sql",),
@@ -67,11 +63,7 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={
-                "type": "dataframe",
-                "columns": [],
-                "messages": [{"role": "user", "content": "summary"}],
-            },
+            data_spec=data_specs.dataframe_spec("summary"),
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_s3"),
@@ -81,10 +73,7 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec={
-                "type": "s3",
-                "template": "archive/summaries/{id}.json",
-            },
+            data_spec=data_specs.retrieval_spec("s3", "archive/summaries/{id}.json"),
             model_spec={},
             inference_spec={},
             dependencies=("news_summary",),
@@ -94,7 +83,7 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={"type": "graph_template", "template": {"name": "aggregate"}},
+            data_spec=data_specs.graph_template_spec(),
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_summary"),
