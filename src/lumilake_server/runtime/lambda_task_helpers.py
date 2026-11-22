@@ -114,9 +114,8 @@ def text(value: Any) -> str:
 
 
 def _raw_seed(value: Any, op_id: str, index: int) -> int:
-    """One row's seed out of its seed column: an integer, or a JSON integer
-    text. Anything else, a float, a bool or other text, is refused naming the
-    op and the row rather than being truncated into a different draw."""
+    """One row's seed out of its seed column: an integer, or JSON integer
+    text, refused by name otherwise."""
     decoded = value
     if isinstance(value, str):
         try:

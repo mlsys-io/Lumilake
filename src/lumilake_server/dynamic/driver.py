@@ -618,8 +618,8 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a seed reads, in place, whether it is a
-    chat op's ``rowwise_seed`` or a Lambda op's ``seed``."""
+    """Forward one ``{node, path}`` a seed reads, in place. A non-empty path
+    reads a materializer, which the op must list in its inputs."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:
@@ -1149,8 +1149,7 @@ def build_round(
         "ops": forwarded,
         "outputs": [],
     }
-    # A round never passes through submit_job's whole-input check, so check its
-    # keyed seeds here, over the run input and the values it forwards.
+    # A round never reaches submit_job's whole-input check.
     seed_inputs: dict[str, list[str]] = {
         **workflow_inputs,
         INPUT_NODE_ID: list(symbols),

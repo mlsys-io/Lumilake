@@ -73,7 +73,7 @@ def build_generation_config(
 
 def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> str:
     """The internal id of a node a keyed seed reads, after checking the
-    producer is built first."""
+    producer is listed in the op's inputs."""
     if node_ref not in ctx.user_id_to_internal:
         raise ValueError(f"{op_kind} '{op_id}' seed references unknown id '{node_ref}'")
     node_id = ctx.user_id_to_internal[node_ref]
@@ -95,8 +95,8 @@ def emit_keyed_seed(
     field: str,
     op_kind: str,
 ) -> None:
-    """Derive each row's seed from its key: queue a row function over the
-    key column and bind the op that draws with it to its output."""
+    """Queue a row function over the key column and bind the op that draws
+    with it to that function's output."""
     entry = ctx.entry
     node_ref, path = keyed_seed.key_target(
         entry.id,

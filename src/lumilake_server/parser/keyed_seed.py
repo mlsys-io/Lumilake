@@ -1,13 +1,9 @@
 """Deriving a per-row seed from a row key.
 
-The parser turns ``rowwise_seed: {key: ...}`` into a generated row-mode
-``LambdaOp`` that returns one seed per row from the job seed, the op id, the
-round and the row's key. A row or expand ``LambdaOp`` takes the same key form
-under ``seed`` and receives the derived seed as its second argument.
-
-Two rows of one op that carry the same key draw the same seed, so the key form
-is refused unless it declares ``pairing: shared``; the refusal names the op and
-the two rows, and it is checked over the whole input set at submit.
+The key form of ``rowwise_seed`` (or a Lambda op's ``seed``) names a column
+holding each row's key; the parser adds a generated row-mode ``LambdaOp`` over
+it that returns one seed per row. Repeated keys are refused unless the form
+declares ``pairing: shared``.
 """
 
 import json
@@ -64,7 +60,7 @@ def {fn_name}(row):
 
 def key_parts(path: str) -> list[str]:
     """The field names a key path drills below ``items``; a whole-output path
-    drills nothing."""
+    drills none."""
     if not path:
         return []
     if not path.startswith("items."):
@@ -76,16 +72,14 @@ def key_parts(path: str) -> list[str]:
 
 
 def key_cells(values: list[str], parts: list[str]) -> list[Any]:
-    """The key each row of a literal or forwarded key column carries, read the
-    way the generated row function reads a cell: JSON object or array text is
-    parsed, and any other cell is the key as it stands. A row with no key or a
-    null key is the generated function's refusal, not this one's."""
+    """The key each row of a literal or forwarded key column carries, read as
+    the generated row function reads a cell."""
     return [_decode_cell(value, parts) for value in values]
 
 
 def _decode_cell(value: Any, parts: list[str]) -> Any:
-    """One row's key out of its raw column cell, or ``None`` when the cell
-    carries no key to compare."""
+    """One row's key out of its raw cell, or ``None`` when the cell carries no
+    key to compare."""
     for index, part in enumerate(parts):
         if isinstance(value, str):
             try:
@@ -103,8 +97,7 @@ def _decode_cell(value: Any, parts: list[str]) -> Any:
 
 
 def check_unique(op_id: str, op_kind: str, keys: list[Any], pairing: str) -> None:
-    """Refuse two rows of one key form that carry the same key unless the form
-    declares shared pairing, naming the op and the first such row pair."""
+    """Refuse a repeated key unless the form declares shared pairing."""
     if pairing == "shared":
         return
     seen: dict[str, int] = {}
@@ -139,8 +132,8 @@ def seed_source(
     op_kind: str,
     shared: bool,
 ) -> str:
-    """The source of a keyed-seed row function: it reads one row's key and
-    returns the seed that row draws with."""
+    """The source of a keyed-seed row function, which returns one row's seed
+    from its key."""
     named = f"{op_kind} '{template_id}'"
     return _SEED_FN.format(
         fn_name=fn_name,
@@ -163,14 +156,13 @@ def seed_source(
 
 
 def _seed_message(message: str) -> str:
-    """A runtime message with its value placeholder appended, any ``%`` in the
-    baked text escaped."""
+    """One runtime message with its value placeholder appended, its ``%``
+    escaped."""
     return message.replace("%", "%%") + " %s"
 
 
 def _duplicate_message(named: str) -> str:
-    """The refusal for a second row carrying a key an earlier row of the same
-    task already carried; it names the op and both row positions in the task."""
+    """The refusal for a repeated key inside one task, naming both rows."""
     return (
         named.replace("%", "%%")
         + " derives one seed per key, but rows %r and %r of this task share a"
@@ -186,8 +178,7 @@ def key_target(
     config: Any,
 ) -> tuple[str, str]:
     """The ``(node, path)`` a key form reads, after checking the form fits this
-    op, with the op named in the refusal. ``rowwise_template`` applies to a chat
-    op only; a Lambda draws once per row by construction."""
+    op."""
     key = seed.get("key")
     if not isinstance(key, dict):
         raise ValueError(f"{op_kind} '{op_id}' seed key must be a mapping")
@@ -241,8 +232,7 @@ def seed_op(
     scope: str | None = None,
     pairing: str = PAIRINGS[0],
 ) -> dict[str, Any]:
-    """The row-mode ``LambdaOp`` that returns each row's seed from its key.
-    ``op_kind`` names the op that draws in the refusals."""
+    """The row-mode ``LambdaOp`` that returns each row's seed from its key."""
     return {
         "_id": seed_op_id(op_id, scope),
         "_op": "LambdaOp",
@@ -266,8 +256,7 @@ def rewrite_native_keys(
     graph: dict[str, dict[str, Any]], *, job_seed: int
 ) -> dict[str, dict[str, Any]]:
     """Rewrite every key-form seed of a serialized native graph, adding each
-    generated seed op and binding the op that draws with it to the seed op's
-    output, just ahead of the op that reads it."""
+    generated seed op just ahead of the op that reads it."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
         # Native payloads reach here before graph validation, so an op may not

@@ -194,8 +194,7 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         cells = _column(seed_entry, inputs, text)
-        # The seed step passes a row it cannot key through as its marker, so a
-        # marked seed cell marks its row and is never read as a draw.
+        # A marked seed cell marks its row and is never read as a draw.
         seeds = [
             None
             if failure_of(cells[i]) is not None
@@ -298,8 +297,7 @@ def main(inputs):
     seeds = None
     if seed_entry is not None:
         cells = _column(seed_entry, inputs, text)
-        # The seed step passes a row it cannot key through as its marker, so a
-        # marked seed cell marks its row and is never read as a draw.
+        # A marked seed cell marks its row and is never read as a draw.
         seeds = [
             None
             if failure_of(cells[i]) is not None
@@ -317,7 +315,7 @@ def main(inputs):
         if marked is None and seeds is not None and seeds[index] is None:
             marked = failure_of(cells[index])
         if marked is not None:
-            # A marked row keeps one defined slot, so no child is run or lost.
+            # A marked row keeps its slot and carries the marker onward.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
         values = fn(row) if seeds is None else fn(row, seeds[index])
@@ -664,10 +662,8 @@ def wrapper_source(
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
-    """The python-task code for one standalone LambdaOp. A seeded step carries
-    its derived-seed column in the plan, tagged ``role: seed``, and passes each
-    row's seed to the function as a second argument; the row and expand mains
-    take it when the plan has one and call a one-argument function otherwise."""
+    """The python-task code for one standalone LambdaOp; a seeded step passes
+    each row's seed as the function's second argument."""
     if mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":
