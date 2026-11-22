@@ -266,10 +266,14 @@ def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None
 def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
     """Rows sharing the first key field stay distinct under a composite key."""
     node = _join_node(_merge("State, Route.diagnose", by="[case_id, text]"))
-    same = [dict(_ROWS[1], extra=1), dict(_ROWS[1], text="another row")]
-    out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": same}]})
-    assert [item["output"]["case_id"] for item in out["items"]] == ["a", "b", "c"]
-    assert out["items"][1]["output"]["extra"] == 1
+    repeated = {"case_id": "b", "text": "another row"}
+    same = [dict(_ROWS[1], extra=1), dict(repeated, extra=2)]
+    out = _run(
+        tmp_path, node, {0: [{"output": [*_ROWS, repeated]}], 1: [{"output": same}]}
+    )
+    rows = [item["output"] for item in out["items"]]
+    assert [row["case_id"] for row in rows] == ["a", "b", "c", "b"]
+    assert [row["extra"] for row in rows if "extra" in row] == [1, 2]
 
 
 def test_join_refuses_a_composite_key_that_is_empty_or_not_a_field_name() -> None:
@@ -277,6 +281,8 @@ def test_join_refuses_a_composite_key_that_is_empty_or_not_a_field_name() -> Non
         _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: []}\n")
     with pytest.raises(ValueError, match="Merge.*by must be dotted field names"):
         _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: [case_id, 3]}\n")
+
+
 _MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
 _KEY_MARK = {"_fail": {"op": "join", "reason": 'key "b" is missing from'}}
 _DIAG = _merge("State, Route.diagnose")
