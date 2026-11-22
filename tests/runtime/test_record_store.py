@@ -433,6 +433,62 @@ async def test_broadcast_literal_yields_when_the_row_is_past_it() -> None:
     assert len(set(pair)) == 2
 
 
+@pytest.mark.asyncio
+async def test_a_batch_indexes_only_the_jobs_that_store(graph: Any) -> None:
+    """One batch may hold a storing and a non-storing job: the storing job's
+    index lists the records and the other job gets no index at all."""
+    storage = InMemoryJobStorage()
+    writer = RecordWriter(
+        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
+    )
+    mark = _node_id(graph, "Mark")
+    await writer.write(
+        job_id="req-store",
+        member_job_ids=["req-store", "req-plain"],
+        round_number=0,
+        runtime_graph=graph,
+        node_task_map={mark: "task-Mark"},
+        task_worker={"task-Mark": "worker-1"},
+        results={"task-Mark": {"items": [{"output": {"id": "a"}}]}},
+        member_store={"req-store": True, "req-plain": False},
+        member_rounds={"req-store": 0, "req-plain": 0},
+        node_owners={mark: {"req-store"}},
+    )
+    assert read_index(storage, "req-store") is not None
+    assert read_index(storage, "req-plain") is None
+
+
+@pytest.mark.asyncio
+async def test_a_batch_indexes_each_member_at_its_own_round(graph: Any) -> None:
+    """Two dynamic jobs at different rounds share a batch without one job's
+    records landing under the other's round."""
+    storage = InMemoryJobStorage()
+    writer = RecordWriter(
+        storage=storage, enabled=True, logger=logging.getLogger("test.record_store")
+    )
+    mark, join = _node_id(graph, "Mark"), _node_id(graph, "Join")
+    await writer.write(
+        job_id="req-one",
+        member_job_ids=["req-one", "req-two"],
+        round_number=1,
+        runtime_graph=graph,
+        node_task_map={mark: "task-Mark", join: "task-Join"},
+        task_worker={},
+        results={
+            "task-Mark": {"items": [{"output": {"id": "a"}}]},
+            "task-Join": {"items": [{"output": {"id": "a"}}]},
+        },
+        member_store={"req-one": True, "req-two": True},
+        member_rounds={"req-one": 1, "req-two": 2},
+        node_owners={mark: {"req-one"}, join: {"req-two"}},
+    )
+    mark_index = read_index(storage, "req-one")
+    join_index = read_index(storage, "req-two")
+    assert mark_index is not None and join_index is not None
+    assert mark_index.rounds() == [1]
+    assert join_index.rounds() == [2]
+
+
 def test_ops_reading_different_paths_get_different_signatures() -> None:
     """Two chat ops whose prompt columns read different paths of one producer
     compute different values, so they never share a signature."""
