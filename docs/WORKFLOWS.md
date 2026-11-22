@@ -10,7 +10,7 @@ Pass the format with the CLI `--format` option or the `Workflow-Format` HTTP hea
 
 ## YAML Structure
 
-A YAML workflow is a top-level mapping with optional `name`, optional `seed`, optional `inputs`, required `ops`, and optional `outputs`.
+A YAML workflow is a top-level mapping with optional `name`, optional `seed`, optional `inputs`, optional `functions`, required `ops`, and optional `outputs`.
 
 ```yaml
 name: example
@@ -48,6 +48,71 @@ Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp
 
 `ParseOp` takes `format`, `pattern`, `require`, `flags` and `on_fail`; see
 [`docs/OPS.md`](OPS.md#parseop).
+
+### Shared functions (`functions:` and `uses:`)
+
+A helper several `LambdaOp`s call is written once under the top-level
+`functions:` mapping, keyed by the name an op names in `uses:`. Each entry is
+Python source: one or more top-level `def`s, classes, imports, assignments or
+compound statements.
+
+```yaml
+name: shared_helpers
+functions:
+  seed:
+    |
+    def seed_value(row):
+        return PREFIX + row["name"]
+    PREFIX = "seed:"
+
+inputs:
+  rows: ['{"name": "a"}']
+
+ops:
+  - id: first
+    op: LambdaOp
+    inputs: [rows]
+    fn_name: first
+    uses: [seed]
+    code: |
+      def first(inputs):
+          return seed_value({"name": inputs[0]})
+```
+
+The listed sources are appended after the op's own `code` in the listed order,
+separated by a blank line, and everything after that sees the combined
+program: dispatch and every digest treat it exactly as if the source had been
+written in the op. A block is included once per op that uses it.
+
+A `LambdaOp` that an `LLMChatOp` reads is evaluated inline in the FlowMesh
+worker, whose namespace gives a module-level name no scope. Its `def` must be
+the last statement of its source, with only a module docstring before or after
+it, so a shared block cannot reach it: the block's statement follows the
+`def`, submission is refused naming the binding, and the code must move what
+it needs inside the function. The same rule refuses a trailing helper,
+constant or other statement written into the op's own `code`, whatever the
+workflow format. A `LambdaOp` that is a workflow output, or that only other
+`LambdaOp`s read, runs as its own `python` task and can use blocks freely.
+
+`code` is optional beside `uses`. Without it the op's code is the joined
+blocks, which is how a block can hold the whole function the op runs. `uses`
+needs a `def`: it cannot be combined with `code` that is a lambda expression,
+because the block would then be part of that expression rather than a
+module-level helper.
+
+Submission is refused, naming the op and the function, when `uses` names a
+function `functions:` does not define, names one twice, sits on a non-`LambdaOp`
+op, or when a `functions:` entry does not parse. It is also refused when a
+name is defined by both a used block and the op's own code, or by two used
+blocks: the op must end up with a single definition per name. An import that
+binds the same module under the same name in several places is not such a
+collision.
+
+`functions:` and `uses:` are YAML-only. A native payload carries resolved code
+already and an n8n workflow has no equivalent annotation. They apply to a
+static YAML workflow: a dynamic workflow's library and template entries are
+built without a `functions:` block, so a `uses` there names an unknown
+function.
 
 ## n8n code-node notes
 

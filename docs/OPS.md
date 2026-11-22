@@ -581,6 +581,14 @@ outputs:
     ref: "Lowercase"
 ```
 
+A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
+`uses:`. The listed sources are appended after `code` in the listed order, so
+a helper used by several ops is written once; see
+[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses). An op
+that no LLM op reads can use blocks freely; one an LLM op reads is evaluated
+inline, where the `def` must be the last statement of its source, so a shared
+block is refused at submit.
+
 Where the function runs depends on what reads it:
 
 - **An output, or read only by other `LambdaOp`s** (as above): compiled to its
@@ -608,14 +616,16 @@ Where the function runs depends on what reads it:
   task as a template function step, and evaluated by the FlowMesh worker that
   runs the task. This is not a Lumilake-provided isolation boundary; use the
   standalone form above for code that should run in its own container. The
-  worker's namespace has no `import`, so the code must not import anything;
-  Lumilake wraps it so it decodes each row before calling it. Submit rejects
-  code that cannot run in that namespace: a top-level binding that reuses a
-  name the wrapper binds, a top-level annotated assignment, and an annotation
-  naming a type the worker does not provide. If a runtime node (such as a
-  data-retrieval op) also reads the same `LambdaOp`, it is additionally compiled
-  to its own standalone `python` task so that node can reference its output; the
-  LLM still inlines it, so the function is evaluated once per reader.
+  worker's namespace has no `import` and gives a module-level name no scope, so
+  here the `def` named by `fn_name` must be the last statement of its source,
+  with only a module docstring before it or after it. Lumilake wraps it so it
+  decodes each row before calling it. Submit rejects code that cannot run in
+  that namespace: the wrong shape, a top-level binding that reuses a name the
+  wrapper binds, a top-level annotated assignment, an annotation naming a type
+  the worker does not provide, and any statement after the `def` (named by the
+  binding it makes, or its kind when it makes none). That one rule also refuses
+  a shared `uses:` block and a trailing helper or constant, whatever the
+  workflow format. If a runtime node (such as a data-retrieval op) also
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error

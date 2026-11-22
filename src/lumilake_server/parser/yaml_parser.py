@@ -94,6 +94,7 @@ from ..ops.router_ops import expand_routers
 from ..ops.util_ops import CLEARS_KEY
 from . import keyed_seed
 from .common import make_id as _make_id
+from .yaml_functions import WorkflowFunctions
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
@@ -289,7 +290,10 @@ def _compile_workflow(
     inputs = _validate_inputs(inputs_block)
     expanded, cleared = expand_routers(ops_block)
     cleared = cleared | frozenset(cleared_ids)
-    op_entries = [_parse_op_entry(entry, idx) for idx, entry in enumerate(expanded)]
+    functions = WorkflowFunctions.from_block(spec.get("functions"))
+    op_entries = [
+        _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(expanded)
+    ]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
     ]
@@ -393,10 +397,10 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
     return inputs
 
 
-def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
+def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
-    reserved = {"id", "op", "inputs", "max_iter"}
+    reserved = {"id", "op", "inputs", "max_iter", "uses"}
     user_id = entry.get("id")
     op_type = entry.get("op")
     if not isinstance(user_id, str) or not user_id.strip():
@@ -415,8 +419,26 @@ def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
     if max_iter is not None and not isinstance(max_iter, int):
         raise ValueError(f"op '{user_id}' max_iter must be int or null")
 
+    entry_id = user_id.strip()
+    is_lambda = op_type.strip() == "LambdaOp"
+    uses = entry.get("uses")
+    code = entry.get("code")
+    if is_lambda and code is not None and not isinstance(code, str):
+        raise ValueError(f"LambdaOp '{entry_id}' requires 'code: str'")
+    if uses is not None:
+        if not is_lambda:
+            raise ValueError(
+                f"op '{entry_id}' declares 'uses', which only a LambdaOp accepts"
+            )
+        if isinstance(code, str) and code.strip().startswith("lambda"):
+            raise ValueError(
+                f"LambdaOp '{entry_id}' cannot combine 'uses' with lambda-expression"
+                " code; write the function as a 'def'"
+            )
+        fields_dict["code"] = functions.include(uses, entry_id, code)
+
     return OpEntry(
-        id=user_id.strip(),
+        id=entry_id,
         op=op_type.strip(),
         inputs=list(raw_inputs),
         fields=fields_dict,
