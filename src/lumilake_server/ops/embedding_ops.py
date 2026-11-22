@@ -44,11 +44,6 @@ class EmbeddingOp(LLMOp):
     ``tensor_parallel_size``).
     """
 
-    @property
-    def samples(self) -> bool:
-        """A vector is a function of its text, never a draw."""
-        return False
-
     def __init__(
         self,
         content: str | list[str] | Op,

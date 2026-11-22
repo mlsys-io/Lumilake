@@ -74,6 +74,14 @@ def _refuse_fields_beside_rowwise_messages(
         )
 
 
+def _decodes_by_sampling(config: GenerationConfig) -> bool:
+    """An absent temperature draws; ``temperature: 0`` or ``num_beams > 1`` is
+    deterministic."""
+    if config.num_beams is not None and config.num_beams > 1:
+        return False
+    return config.temperature != 0
+
+
 class LLMOp(Op):
     config: GenerationConfig
     cacheable: bool
@@ -94,15 +102,6 @@ class LLMOp(Op):
                 f"{type(self).__name__} does not support config.output_enforcement;"
                 " use it only on LLMChatOp."
             )
-
-    @property
-    def samples(self) -> bool:
-        """Whether the op's output is a random draw: an absent temperature
-        draws, while ``temperature: 0`` or ``num_beams > 1`` decodes
-        deterministically."""
-        if self.config.num_beams is not None and self.config.num_beams > 1:
-            return False
-        return self.config.temperature != 0
 
     def _serialize(self) -> dict[str, Any]:
         raise NotImplementedError()
@@ -125,6 +124,10 @@ class LLMChatOp(LLMOp):
     rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
     condition: dict[str, str] | None
+
+    @property
+    def samples(self) -> bool:
+        return _decodes_by_sampling(self.config)
 
     def __init__(
         self,
@@ -331,6 +334,10 @@ def llm_chat(
 @Op.registry.register("LLMCompletionOp")
 class LLMCompletionOp(LLMOp):
     """Generate from rendered string prompts without a chat template."""
+
+    @property
+    def samples(self) -> bool:
+        return _decodes_by_sampling(self.config)
 
     def __init__(
         self,
