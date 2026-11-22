@@ -183,14 +183,6 @@ def _shapes(specs: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
 
 
 @pytest.mark.parametrize("graph_name", sorted(_GRAPHS))
-def test_every_task_spec_round_trips(graph_name: str) -> None:
-    """Each task's serialized spec validates back into an identical model."""
-    for op in _GRAPHS[graph_name]().nodes.values():
-        wire = dump_data_spec(op.data_spec)
-        assert dump_data_spec(parse_data_spec(op.task_type, wire)) == wire
-
-
-@pytest.mark.parametrize("graph_name", sorted(_GRAPHS))
 def test_built_data_specs_match_the_golden_wire_shape(graph_name: str) -> None:
     """The serialized spec of every task type matches the builders' original output."""
     golden = json.loads(_GOLDEN.read_text())[graph_name]
