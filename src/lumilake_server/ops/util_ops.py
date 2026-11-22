@@ -260,6 +260,7 @@ class LambdaOp(Op):
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
         clears_markers: bool = False,
+        on_empty: str = "drop",
         by: str | None = None,
         on_fail: str = "fail_group",
     ) -> None:
