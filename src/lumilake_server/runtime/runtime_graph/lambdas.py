@@ -96,14 +96,15 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         dependencies: list[str],
     ) -> python_step.ColumnPlan:
         """Tag the plan entry a seeded Lambda reads its key column from."""
-        if op.seed is None:
+        seed = op.seed
+        if seed is None:
             return plan
-        seed_node = op.seed["node"]
+        seed_node = seed.column.node
         if seed_node not in ctx.graph_dict:
             raise ValueError(
                 f"LambdaOp '{op.id}' seed references unknown node '{seed_node}'"
             )
-        path = op.seed["path"]
+        path = seed.column.path
         for index, entry in enumerate(plan):
             if entry.node != seed_node:
                 continue

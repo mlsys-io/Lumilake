@@ -187,7 +187,7 @@ def test_a_duplicate_key_fails_unless_paired() -> None:
     yaml_parser.check_keyed_seed_duplicates(payload, {})
     payload["ops"][1]["rowwise_seed"]["pairing"] = "paired"
     with pytest.raises(
-        ValueError, match="pairing Input should be 'unique' or 'shared'"
+        ValueError, match="Answer': pairing: Input should be 'unique' or 'shared'"
     ):
         _graph(payload)
 
@@ -208,7 +208,9 @@ def test_the_key_form_is_refused() -> None:
     payloads[0]["ops"][1].pop("rowwise_template")
     payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
     payloads[2]["ops"][1]["rowwise_seed"]["node"] = "Cases"
-    for payload, match in zip(payloads, ["rowwise_template", "API", "combines"]):
+    for payload, match in zip(
+        payloads, ["rowwise_template", "API", "node: Extra inputs are not permitted"]
+    ):
         with pytest.raises(ValueError, match=match):
             _graph(payload)
 

@@ -18,6 +18,7 @@ from pydantic import (
 from lumilake_server.data_specs import ExpandOnEmpty, ReduceOnFail
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.seed_spec import SeedSpec
 from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.utils.lambda_runtime import validate_source
 
@@ -57,7 +58,7 @@ class LambdaSpec(BaseModel):
     cache: StrictBool | None = None
     on_fail: ReduceOnFail | None = None
     on_empty: ExpandOnEmpty | None = None
-    seed: dict[str, Any] | None = None
+    seed: SeedSpec | None = None
     clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
 
     @field_validator("image")
@@ -271,7 +272,7 @@ class LambdaOp(Op):
         by: str | None = None,
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
-        seed: dict[str, Any] | None = None,
+        seed: SeedSpec | None = None,
         clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
@@ -340,8 +341,9 @@ class LambdaOp(Op):
         return self.spec.on_empty or self.ON_EMPTY_DROP
 
     @property
-    def seed(self) -> dict[str, Any] | None:
-        """The keyed seed a row or expand step derives per row."""
+    def seed(self) -> SeedSpec | None:
+        """The seed a row or expand step derives per row: the key it draws from,
+        or the column the parser resolved that key form to."""
         return self.spec.seed
 
     @property

@@ -3,8 +3,9 @@
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_server.ops.seed_spec import KeySeed
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.keyed_seed import read_seed
+from lumilake_server.parser.keyed_seed import read_seed_spec
 
 from .common import (
     EmitContext,
@@ -332,13 +333,12 @@ def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     field = entry.fields.get("rowwise_seed")
     if field is None:
         return
-    spec = read_seed(entry.id, "LLMChatOp", "rowwise_seed", field)
-    if spec.key is not None:
+    spec = read_seed_spec(entry.id, "LLMChatOp", "rowwise_seed", field)
+    if isinstance(spec, KeySeed):
         emit_keyed_seed(op_dict, ctx, spec, "rowwise_seed", "LLMChatOp")
         return
-    column = spec.column
-    node_id = seed_input_id(entry.id, column.node, ctx, "LLMChatOp")
-    op_dict["rowwise_seed"] = {"node": node_id, "path": column.path}
+    node_id = seed_input_id(entry.id, spec.node, ctx, "LLMChatOp")
+    op_dict["rowwise_seed"] = {"node": node_id, "path": spec.path}
     if node_id not in op_dict["_inputs"]:
         op_dict["_inputs"].append(node_id)
 

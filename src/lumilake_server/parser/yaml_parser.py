@@ -92,6 +92,7 @@ from typing import Any
 import yaml
 
 from ..ops.router_ops import expand_routers
+from ..ops.seed_spec import Pairing, SeedKey
 from ..ops.util_ops import CLEARS_KEY
 from . import keyed_seed
 from .common import make_id as _make_id
@@ -231,7 +232,7 @@ def check_keyed_seed_duplicates(
     if not isinstance(ops_block, list):
         return
     literal: dict[str, list[Any]] = {}
-    declared: list[tuple[str, str, keyed_seed.SeedKey, keyed_seed.Pairing]] = []
+    declared: list[tuple[str, str, SeedKey, Pairing]] = []
     for op in ops_block:
         if not isinstance(op, dict):
             continue
@@ -245,11 +246,10 @@ def check_keyed_seed_duplicates(
         field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
         op_id = str(op.get("id"))
         entry = op.get(field)
-        if not isinstance(entry, dict) or not isinstance(entry.get("key"), dict):
+        if not isinstance(entry, dict) or "key" not in entry:
             continue
-        seed = keyed_seed.read_seed(op_id, op_kind, field, entry)
-        if seed.key is not None:
-            declared.append((op_id, op_kind, seed.key, seed.pairing))
+        seed = keyed_seed.read_key_seed(op_id, op_kind, field, entry)
+        declared.append((op_id, op_kind, seed.key, seed.pairing))
     for op_id, op_kind, key, pairing in declared:
         values = inputs.get(key.node, literal.get(key.node))
         if values is None:
