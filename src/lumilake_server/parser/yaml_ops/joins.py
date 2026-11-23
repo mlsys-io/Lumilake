@@ -27,14 +27,14 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     for field, target in spec.attach.items():
         if target not in user_id_to_internal:
             raise ValueError(
-                f"JoinOp '{entry.id}' attach field {field!r} references unknown"
-                f" id {target!r}"
+                f"JoinOp '{entry.id}' attach field {field!r} references unknown id"
+                f" {target!r}"
             )
         if target not in entry.inputs:
             raise ValueError(
-                f"JoinOp '{entry.id}' attach field {field!r} reads '{target}',"
-                " which is not listed in the op's inputs; add it there so its"
-                " producer is built before the join"
+                f"JoinOp '{entry.id}' attach field {field!r} reads '{target}', which is"
+                " not listed in the op's inputs; add it there so its producer is built"
+                " before the join"
             )
         resolved[field] = user_id_to_internal[target]
     op_dict["by"] = spec.by

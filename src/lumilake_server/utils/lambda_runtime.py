@@ -291,8 +291,8 @@ def _check_params(args: ast.arguments, params: int) -> None:
             " parameters. Expected signature: fn(args: tuple[str, ...]) -> str"
         )
     raise ValueError(
-        f"Function must accept exactly {params} parameters, but has"
-        f" {count}. Expected signature: fn(args: tuple[str, ...], seed: int)"
+        f"Function must accept exactly {params} parameters, but has {count}. Expected"
+        " signature: fn(args: tuple[str, ...], seed: int)"
     )
 
 
@@ -409,16 +409,16 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     )
     if annotated is not None:
         raise ValueError(
-            f"it references {annotated!r}, which a LambdaOp that feeds an"
-            " LLM cannot use inline: the FlowMesh worker's namespace has no Message or"
-            " ops, and a def evaluates its annotations there. Annotate with builtin"
-            " types, or move this logic to a LambdaOp that runs as its own python task"
+            f"it references {annotated!r}, which a LambdaOp that feeds an LLM cannot"
+            " use inline: the FlowMesh worker's namespace has no Message or ops, and a"
+            " def evaluates its annotations there. Annotate with builtin types, or move"
+            " this logic to a LambdaOp that runs as its own python task"
         )
     if any(isinstance(stmt, ast.AnnAssign) for stmt in tree.body):
         raise ValueError(
-            "it annotates a top-level assignment, which a LambdaOp that feeds an"
-            " LLM cannot use inline: the generated wrapper runs the code as a module,"
-            " whose annotations land in the namespace before its function does. Assign"
+            "it annotates a top-level assignment, which a LambdaOp that feeds an LLM"
+            " cannot use inline: the generated wrapper runs the code as a module, whose"
+            " annotations land in the namespace before its function does. Assign"
             " without an annotation, or move this logic to a LambdaOp that runs as its"
             " own python task"
         )
@@ -426,10 +426,10 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     collisions = sorted(top_level & _INLINE_WRAPPER_NAMES)
     if collisions:
         raise ValueError(
-            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an"
-            " LLM cannot use inline: its function step embeds a generated wrapper that"
-            " already binds that name. Rename the binding or move this logic to a"
-            " LambdaOp that runs as its own python task"
+            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an LLM cannot use"
+            " inline: its function step embeds a generated wrapper that already binds"
+            " that name. Rename the binding or move this logic to a LambdaOp that runs"
+            " as its own python task"
         )
     return name
 

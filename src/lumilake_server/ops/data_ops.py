@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import Any, Self, cast
 
 from lumilake_server.common import Message
 from lumilake_server.ops.ops import FunctionalOp, Op
@@ -34,7 +34,7 @@ class DataOp(FunctionalOp):
         return dict(data=self.data)
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "DataOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         return cls(data=data["data"])
 
 
@@ -62,9 +62,7 @@ class DataRetrievalOp(FunctionalOp):
         return retrieval_key_column(self.data_spec)
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "DataRetrievalOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
         data_spec = data["data_spec"]
         problem = retrieval_key_problem(data_spec)
@@ -118,9 +116,7 @@ class MessageOp(FunctionalOp):
         )
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "MessageOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         def get_content(content_or_id: str) -> str | Op:
             if content_or_id in other_ops:
                 return other_ops[content_or_id]
@@ -158,7 +154,7 @@ class InputOp(FunctionalOp):
         return dict(name=self.name)
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "InputOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         return cls(name=data["name"])
 
 
@@ -193,7 +189,7 @@ class OutputOp(FunctionalOp):
         return payload
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "OutputOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         input_ids = data["_inputs"]
         if len(input_ids) != 1:
             raise ValueError("OutputOp must have exactly one input")

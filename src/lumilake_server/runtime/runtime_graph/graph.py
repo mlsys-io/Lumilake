@@ -111,7 +111,7 @@ class RuntimeGraph:
         return redact_sensitive(payload)
 
     @classmethod
-    def from_schema(cls, schema: "RuntimeGraphSchema") -> "RuntimeGraph":
+    def from_schema(cls, schema: RuntimeGraphSchema) -> Self:
         nodes = {
             nid: RuntimeOp.from_schema(nid, op_schema)
             for nid, op_schema in schema.nodes.items()
@@ -130,7 +130,7 @@ class RuntimeGraph:
         )
 
     @classmethod
-    def deserialize(cls, payload: Mapping[str, Any]) -> "RuntimeGraph":
+    def deserialize(cls, payload: Mapping[str, Any]) -> Self:
         return cls.from_schema(RuntimeGraphSchema.model_validate(payload))
 
     def to_flowmesh_nodes(self) -> list[dict[str, Any]]:

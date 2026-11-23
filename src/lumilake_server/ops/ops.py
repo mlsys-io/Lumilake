@@ -11,6 +11,7 @@ from lumilake_server.utils.utils import unique_id
 
 T = TypeVar("T")
 SingleDtype = str | list[Message]
+type AnyOp = Op
 
 
 class RecordKey(BaseModel):
@@ -36,7 +37,7 @@ def record_key(key: Any, op_id: str) -> RecordKey:
 class OpRegistry:
     def __init__(self, name: str = "ops"):
         self._name = name
-        self._registry: dict[str, type[Op]] = {}
+        self._registry: dict[str, type[AnyOp]] = {}
 
     def register(self, name: str | None = None) -> Callable[[T], T]:
         def _register(cls):
@@ -49,7 +50,7 @@ class OpRegistry:
 
         return _register
 
-    def get_class(self, key: Any) -> type["Op"]:
+    def get_class(self, key: Any) -> type[AnyOp]:
         if key not in self._registry:
             raise KeyError(f"'{key}' is not registered in {self._name}")
         return self._registry[key]
@@ -65,7 +66,7 @@ class RowShape(Enum):
 
 class Op(ABC):
     id: str
-    inputs: list["Op"]
+    inputs: list[AnyOp]
     registry: OpRegistry = OpRegistry()
     declared_id: str | None = None
     """The id the workflow declared for this op, surviving scope and slicing."""
@@ -91,18 +92,17 @@ class Op(ABC):
     ``None`` when the op's own item shape is the payload."""
 
     @property
-    def row_source(self) -> "Op | None":
+    def row_source(self) -> AnyOp | None:
         """The input whose rows this op emits one output row per, or ``None``
         when the row count is not the input's."""
         return None
 
     @property
     def keys_own_records(self) -> bool:
-        """Whether the op gives each of its own records a key: an expand child,
-        a reduce group or a join row."""
+        """Whether the op gives each of its own records a key."""
         return False
 
-    def __init__(self, inputs: list["Op"] | None = None) -> None:
+    def __init__(self, inputs: list[AnyOp] | None = None) -> None:
         self.id = unique_id()
         self.inputs = [] if inputs is None else inputs
         self._max_iter: int | None = None
@@ -151,7 +151,7 @@ class Op(ABC):
         else:
             self._max_iter = None
 
-    def _traverse_graph(self, graph: dict[str, "Op"]):
+    def _traverse_graph(self, graph: dict[str, AnyOp]):
         assert self.id not in graph
 
         graph[self.id] = self
@@ -159,7 +159,7 @@ class Op(ABC):
             if op.id not in graph:
                 op._traverse_graph(graph)
 
-    def traverse_graph(self, graph: dict[str, "Op"] | None = None) -> dict[str, "Op"]:
+    def traverse_graph(self, graph: dict[str, AnyOp] | None = None) -> dict[str, AnyOp]:
         graph = {} if graph is None else graph
         self._traverse_graph(graph)
         return graph
@@ -170,7 +170,7 @@ class Op(ABC):
 
     @classmethod
     @abstractmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "Op":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, AnyOp]) -> Self:
         pass
 
     def serialize(self) -> dict[str, Any]:
@@ -186,7 +186,7 @@ class Op(ABC):
         return serialized
 
     @classmethod
-    def from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "Op":
+    def from_json(cls, data: dict[str, Any], other_ops: dict[str, AnyOp]) -> Self:
         op = cls._from_json(data, other_ops)
         op.id = data["_id"]
         op.declared_id = data.get("_declared_id")
