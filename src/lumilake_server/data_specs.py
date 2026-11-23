@@ -197,6 +197,12 @@ class RetrievalParam(DataSpecModel):
     path: str | None = None
 
 
+class RetrievalKey(DataSpecModel):
+    """A retrieval's declared record key: the column each emitted row is keyed by."""
+
+    column: str
+
+
 class RetrievalData(DataSpecModel):
     """A lumid-data backend retrieval."""
 
@@ -214,6 +220,7 @@ class RetrievalData(DataSpecModel):
     max_steps: int | None = None
     model: str | None = None
     verify: bool | None = None
+    key: RetrievalKey | None = None
 
 
 class SqlProfileData(DataSpecModel):

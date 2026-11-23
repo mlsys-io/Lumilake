@@ -68,8 +68,7 @@ class Op(ABC):
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
     declared_id: str | None = None
-    """The id the workflow declared for this op, when it declared one; it
-    survives the graph's scope and slicing."""
+    """The id the workflow declared for this op, surviving scope and slicing."""
 
     @property
     def row_shape(self) -> RowShape:
@@ -97,6 +96,12 @@ class Op(ABC):
         when the row count is not the input's."""
         return None
 
+    @property
+    def keys_own_records(self) -> bool:
+        """Whether the op gives each of its own records a key: an expand child,
+        a reduce group or a join row."""
+        return False
+
     def __init__(self, inputs: list["Op"] | None = None) -> None:
         self.id = unique_id()
         self.inputs = [] if inputs is None else inputs
@@ -123,6 +128,8 @@ class Op(ABC):
         if new_id:
             new_op.id = unique_id()
         new_op.inputs = new_op.inputs.copy()
+        if new_op.key is not None:
+            new_op.key = new_op.key.copy()
         return new_op
 
     def set_looping(self, looping: bool = True, max_iter: int | None = None) -> None:

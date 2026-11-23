@@ -179,7 +179,8 @@ async def _write_batch(
         node_task_map=nodes,
         task_worker={},
         results={
-            t: {"items": [{"output": r} for r in _TWO_ROWS]} for t in nodes.values()
+            t: {"items": [{"output": r, "value": r} for r in _TWO_ROWS]}
+            for t in nodes.values()
         },
         member_store=store,
         member_rounds=rounds,

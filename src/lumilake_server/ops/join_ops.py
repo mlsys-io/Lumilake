@@ -155,6 +155,10 @@ class JoinOp(Op):
         """The first input, whose rows fix the output."""
         return self.columns[0]
 
+    @property
+    def keys_own_records(self) -> bool:
+        return True
+
     def _serialize(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "by": self.by,

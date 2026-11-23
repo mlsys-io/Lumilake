@@ -25,8 +25,9 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
         store_records: bool = False,
     ) -> RuntimeGraph:
         """Build a runtime graph; a graph that stores records also carries each
-        node's record key and declared op name."""
+        node's record key and declared op name, which its dedupe signature includes."""
         graph_dict = compiled_graph.graph.as_dict()
+        _refuse_own_record_keys(graph_dict)
         inputs_dict = compiled_graph.inputs
         input_ops_by_id = {op.id: op for op in compiled_graph.graph.input_ops.values()}
         self._inputs_dict = inputs_dict
@@ -201,3 +202,12 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
         path = path_override or self._op_output(op).default_output_path
         if path is not None:
             output_paths[node_id] = path
+
+
+def _refuse_own_record_keys(graph_dict: dict[str, Op]) -> None:
+    """Refuse a declared record key on an op that keys its own records."""
+    for op in graph_dict.values():
+        if op.key is None or not op.keys_own_records:
+            continue
+        name = op.declared_id or op.id
+        raise ValueError(f"op '{name}' keys its own records; remove the declared 'key'")

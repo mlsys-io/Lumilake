@@ -364,6 +364,10 @@ class LambdaOp(Op):
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
 
+    @property
+    def keys_own_records(self) -> bool:
+        return self.mode in ("expand", "reduce")
+
     def _serialize(self) -> dict[str, Any]:
         data = self.spec.model_dump(by_alias=True, exclude_none=True)
         data["_inputs"] = [inp.id for inp in self.inputs]

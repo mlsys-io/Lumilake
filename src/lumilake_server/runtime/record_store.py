@@ -1,6 +1,10 @@
-"""Per-record store: entry format and signature digest; an entry's object key
-is the SHA-256 digest of the decisions that produce its value, and an object is
-trusted only when the digest inside it equals its key."""
+"""Per-record store: entry format and signature digest.
+
+An entry is one computed value at one logical address. Its object key is the
+SHA-256 digest of the decisions that produce the value, so an object is trusted
+only when the digest recorded inside it equals its key. Physical node ids, batch
+ids, workers and row positions never enter the digest.
+"""
 
 import hashlib
 import json
@@ -26,6 +30,12 @@ def canonical_json(value: Any) -> str:
     )
 
 
+def key_text(value: Any) -> str:
+    """A record key as the text its address carries: a string is its own text
+    and any other JSON value is written canonically."""
+    return value if isinstance(value, str) else canonical_json(value)
+
+
 def digest_of(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
@@ -36,8 +46,10 @@ def data_spec_dict(op: RuntimeOp) -> dict[str, Any]:
 
 
 def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
-    """The op's computation, with node ids as their logical names and per-row
-    data left out."""
+    """The op's computation: task, code, prompt, config, model and decoding.
+
+    Node ids take their logical names, and a declared seed or per-row data stays
+    out, so the digest is the same however the graph was sliced or ordered."""
     spec = {
         "task_type": op.task_type,
         "backend": op.backend,
@@ -61,7 +73,7 @@ _LIST_TYPE = "list"
 """The data spec payload whose ``items`` are literal rows one per position."""
 
 _PYTHON_TASK_TYPE = "python"
-"""The task type that reads its rows through a plan."""
+"""The task type that reads its rows through a plan instead of a list payload."""
 
 _SAMPLING_TASKS = frozenset({"inference", "api"})
 """Task types whose decoding may draw tokens; classification takes an argmax
@@ -156,8 +168,12 @@ def _without_values(entry: Mapping[str, Any], logical_names: Mapping[str, str]) 
 
 
 def _without_data(value: Any, logical_names: Mapping[str, str]) -> Any:
-    """Replace every node reference with its logical op name and drop every
-    secret, recursively; every other field stays, a schema's ``items`` too."""
+    """Replace every node reference and drop every secret, recursively.
+
+    A ``node`` reference becomes the logical op name the consumer knows, so a
+    prefixed or sliced graph hashes the same, and a seed or credential drops
+    wherever it sits. Every other field stays, including a schema's own
+    ``items``: what the op computes depends on it."""
     if isinstance(value, Mapping):
         kept: dict[str, Any] = {}
         for key, item in value.items():
@@ -189,15 +205,19 @@ def declared_seed(op: RuntimeOp) -> int | None:
 
 
 def has_declared_seed(op: RuntimeOp) -> bool:
-    """Whether the op names a seed; a sampling op reproduces its draws only
-    when it does."""
+    """Whether the op names a seed; a sampling op that does not gets no
+    reproducible realization."""
     return declared_seed(op) is not None
 
 
 def samples(op: RuntimeOp) -> bool:
-    """Whether the op draws tokens freely; beam search or a zero temperature
-    settles the decoder, and a hosted chat's decoding is read from its request
-    body as well."""
+    """Whether the op draws tokens rather than decoding deterministically.
+
+    Beam search wider than one or a zero temperature is deterministic, and an
+    absent temperature is not, because the engine then samples at its own
+    default. A hosted chat keeps its decoding in the request body rather than
+    its inference spec, so that body is read too.
+    """
     if op.task_type not in _SAMPLING_TASKS:
         return False
     specs: list[Mapping[str, Any]] = [op.inference_spec]
@@ -221,8 +241,8 @@ def _decodes_deterministically(spec: Mapping[str, Any]) -> bool:
 
 
 def is_marker(value: Any) -> bool:
-    """Whether a value is a failed record's marker: the object whose only key is
-    ``_fail``, as the parse-op branch defines it."""
+    """Whether a value is a failed record's marker rather than a result: the
+    object whose only key is ``_fail``, as the parse-op branch defines it."""
     return isinstance(value, dict) and list(value) == [_MARKER_KEY]
 
 
@@ -250,7 +270,7 @@ class RecordRealization(BaseModel):
     attempt: int | None = None
     production: str | None = None
     """Set beside the seed on a record no seed reproduces: the draw is unique to
-    its production."""
+    its production, so it never shares a key with another run's."""
 
     def is_absent(self) -> bool:
         return self.seed is None and self.attempt is None and self.production is None
@@ -262,8 +282,10 @@ class EffectVersions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     unversioned: bool = False
-    """Reads its source live, so its own record names a production unique to the
-    run that made it; its consumers name the value it returned instead."""
+    """Reads a source with no recorded snapshot upstream: never reusable."""
+
+    value_version: str | None = None
+    """An unversioned read's version: the value digest of the record it emitted."""
 
 
 class RecordSource(BaseModel):
@@ -296,6 +318,8 @@ class RecordEntry(BaseModel):
     input_values: list[str] = Field(default_factory=list)
     """The value digests of those same records, in the same order. They enter
     the signature so a changed input value changes it."""
+    member_keys: list[str] = Field(default_factory=list)
+    """A group's member record keys, in the order it read them."""
     realization: RecordRealization = Field(default_factory=RecordRealization)
     versions: EffectVersions = Field(default_factory=EffectVersions)
     source: RecordSource
@@ -340,9 +364,15 @@ def entry_digest(
     realization: RecordRealization,
     versions: EffectVersions,
 ) -> str:
-    """The record's key: its op spec, address, input signatures and values,
-    realization and effect versions. An input's own signature names what it
-    read, so the chain cuts off at a shared signature."""
+    """The signature digest: the key of the record these inputs decide.
+
+    It covers the op spec, the record address, each input record's signature,
+    the value that input returned, the realization and the effect versions. A
+    consumer that probed before running can compute it. An input record's own
+    signature names what that input read, so recomputing an input with changed
+    inputs gives it a new signature even when its value comes out equal, and
+    its consumers' signatures change with it: the key cuts off by signature,
+    never by value."""
     return digest_of(
         _record_body(
             spec_digest=spec_digest,
@@ -365,8 +395,8 @@ def failed_record_digest(
     versions: EffectVersions,
 ) -> str:
     """A failed attempt's key: the success key's own inputs, realization and
-    versions, with the status added, so a failure answers only its own
-    request and two failures on different inputs get separate keys."""
+    versions, with the status added, so it never answers a request for a
+    success and two failures on different inputs never share a key."""
     return digest_of(
         {
             **_record_body(
@@ -402,8 +432,11 @@ class RecordIndexEntry(BaseModel):
 
 
 class RecordIndex(BaseModel):
-    """A job's entries, by op, key and round, so a lineage read needs no scan;
-    the writer serialises each job's load-merge-saves."""
+    """A job's entries, by op, key and round, so a lineage read needs no scan.
+
+    Each batch loads the object at ``records/jobs/<job id>.json`` once per
+    member job, merges that member's additions and saves it once.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -434,8 +467,7 @@ class RecordIndex(BaseModel):
 
 
 def row_key(value: Any, path: str) -> str | None:
-    """The record key a row carries at ``path``, as text; a JSON string row is
-    decoded first and a path that does not resolve gives ``None``."""
+    """A row's record key at ``path`` as text, or ``None`` when it does not resolve."""
     found = path_value(value, path)
     if found is None or isinstance(found, str):
         return found
@@ -443,8 +475,7 @@ def row_key(value: Any, path: str) -> str | None:
 
 
 def path_value(value: Any, path: str) -> Any:
-    """The value a row carries at ``path``: a JSON string row is decoded first,
-    and a path that does not resolve gives ``None``."""
+    """A row's value at ``path``, or ``None`` when the path does not resolve."""
     current: Any = value
     for part in [part for part in path.split(".") if part]:
         if isinstance(current, str):

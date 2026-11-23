@@ -40,13 +40,12 @@ from lumilake_server.runtime.record_writer import (
     content_value,
     input_nodes,
     input_values,
-    key_path,
     literal_rows,
-    logical_names,
     position_inputs,
     read_entry,
     reads_unversioned,
     realization,
+    resolve_plans,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -157,19 +156,13 @@ class ReusePlanner:
         content_values: Mapping[str, NodeRecords] | None = None,
     ) -> tuple[ReusePlan, RuntimeGraph]:
         """Decide every op in topological order."""
-        names = logical_names(runtime_graph)
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
         misses: set[str] = set()
-        plans: dict[str, RecordPlan] = {}
+        order = runtime_graph.topological_order()
+        plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
-        for node_id in runtime_graph.topological_order():
-            plans[node_id] = RecordPlan(
-                op=runtime_graph.nodes[node_id],
-                op_name=names.get(node_id, node_id),
-                key_path=key_path(runtime_graph, node_id, plans),
-                logical_names=names,
-            )
+        for node_id in order:
             plan = plans[node_id]
             if plan.key_path is not None:
                 decision.key_paths[node_id] = plan.key_path

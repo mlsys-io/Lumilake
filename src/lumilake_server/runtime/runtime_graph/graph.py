@@ -87,8 +87,7 @@ class RuntimeGraph:
     output_paths: dict[str, str] = field(default_factory=dict)
     dsl_to_runtime: dict[str, list[str]] = field(default_factory=dict)
     record_keys: dict[str, RecordKey] = field(default_factory=dict)
-    """Node id -> the record key its op declares; a node absent here stores one
-    whole-op entry."""
+    """Node id -> its declared record key; an absent node stores one whole-op entry."""
     op_names: dict[str, str] = field(default_factory=dict)
     """Node id -> the op name its record address carries, at graph scope."""
 

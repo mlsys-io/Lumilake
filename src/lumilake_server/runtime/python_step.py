@@ -353,9 +353,10 @@ _ON_FAIL = {on_fail!r}
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, decode) for entry in _PLAN]
+    decoded_rows = _rows(columns, _PLAN, {op_id!r})
     entries = []
     by_key = {{}}
-    for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+    for i, row in enumerate(decoded_rows):
         try:
             value = _walk_path(row[0], _BY_PATH, "row %d" % i)
         except ValueError as exc:
@@ -365,43 +366,56 @@ def main(inputs):
                     "%s: reduce lambda cannot group row %d by %r: %s"
                     % ({op_id!r}, i, _BY, exc)
                 ) from exc
-            # Only a row whose key cannot be read has no key: it is the marker itself,
-            # or the key path reaches one. Its group is itself, and it emits that
-            # marker.
-            entries.append((None, [row], marker))
+            # Only a row whose key cannot be read has no key: it is the marker
+            # itself, or the key path reaches one. Its group is itself, and it
+            # emits that marker.
+            entries.append((None, None, [i], marker))
             continue
         marker = failure_of(value)
         if marker is not None:
-            entries.append((None, [row], marker))
+            entries.append((None, None, [i], marker))
             continue
         key = json.dumps(value, sort_keys=True)
         if key not in by_key:
             by_key[key] = len(entries)
-            entries.append((key, [], None))
-        entries[by_key[key]][1].append(row)
+            entries.append((key, value, [], None))
+        entries[by_key[key]][2].append(i)
     items = []
-    for key, rows, own in entries:
+    for _, by_value, members, own in entries:
         if own is not None:
-            # The group is the one row without a key, and it emits its marker, which
-            # names the op that failed rather than this one.
-            items.append({{"output": own}})
+            # The group is the one row without a key, and it emits its marker,
+            # which names the op that failed rather than this one.
+            items.append({{"output": own, "key": by_value, "members": members}})
             continue
+        rows = [decoded_rows[i] for i in members]
         markers = [m for m in map(carried_marker, rows) if m is not None]
         if markers:
             if _ON_FAIL == "fail_group":
-                items.append({{"output": markers[0]}})
+                items.append(
+                    {{
+                        "output": markers[0],
+                        "key": by_value,
+                        "members": members,
+                    }}
+                )
                 continue
             rows = [row for row in rows if carried_marker(row) is None]
+            members = [
+                index for index in members
+                if carried_marker(decoded_rows[index]) is None
+            ]
             if not rows:
                 items.append(
                     {{
                         "output": {{
                             "_fail": {{"op": {op_id!r}, "reason": "empty group"}}
-                        }}
+                        }},
+                        "key": by_value,
+                        "members": members,
                     }}
                 )
                 continue
-        items.append({{"output": fn(rows)}})
+        items.append({{"output": fn(rows), "key": by_value, "members": members}})
     return {{"items": items}}
 """
 

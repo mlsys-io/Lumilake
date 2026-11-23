@@ -3,6 +3,10 @@ from typing import Any, cast
 
 from lumilake_server.common import Message
 from lumilake_server.ops.ops import FunctionalOp, Op
+from lumilake_server.utils.retrieval_key import (
+    retrieval_key_column,
+    retrieval_key_problem,
+)
 from lumilake_server.utils.utils import check_and_cast_list
 
 
@@ -51,12 +55,22 @@ class DataRetrievalOp(FunctionalOp):
     def _serialize(self) -> dict[str, Any]:
         return {"data_spec": self.data_spec}
 
+    @property
+    def key_column(self) -> str | None:
+        """The column that holds each emitted row's record key, when the spec
+        declares ``key: {column: <name>}``."""
+        return retrieval_key_column(self.data_spec)
+
     @classmethod
     def _from_json(
         cls, data: dict[str, Any], other_ops: dict[str, "Op"]
     ) -> "DataRetrievalOp":
         inputs = [other_ops[op_id] for op_id in data.get("_inputs", [])]
-        return cls(data_spec=data["data_spec"], inputs=inputs)
+        data_spec = data["data_spec"]
+        problem = retrieval_key_problem(data_spec)
+        if problem is not None:
+            raise ValueError(f"DataRetrievalOp '{data['_id']}' {problem}")
+        return cls(data_spec=data_spec, inputs=inputs)
 
 
 @Op.registry.register("MessageOp")

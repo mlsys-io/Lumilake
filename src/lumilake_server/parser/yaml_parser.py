@@ -428,6 +428,24 @@ def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
     )
 
 
+def _parse_key(key: Any, op_id: str) -> dict[str, str] | None:
+    """A `key: {node, path}` record-key declaration, or an absent or null key.
+
+    The node names the op (or input) that carries the row keys and the path
+    drills into it, the same shape a rowwise column uses."""
+    if key is None:
+        return None
+    if not isinstance(key, dict):
+        raise ValueError(f"op '{op_id}' key must be a mapping of node and path")
+    node = key.get("node")
+    path = key.get("path", "")
+    if not isinstance(node, str) or not node.strip():
+        raise ValueError(f"op '{op_id}' key must name a node")
+    if not isinstance(path, str):
+        raise ValueError(f"op '{op_id}' key path must be a string")
+    return {"node": node.strip(), "path": path}
+
+
 def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"output entry at index {idx} must be a mapping")

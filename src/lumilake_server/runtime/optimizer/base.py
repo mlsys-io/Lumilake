@@ -88,8 +88,7 @@ def _record_key_signature(
     mapping: dict[str, str],
     nodes: Mapping[str, Any],
 ) -> str | None:
-    """A node's declared record key as signature text: its path, and the node
-    it names when that node is another op of the graph."""
+    """A node's record key as signature text: its path and the node it names."""
     if record_key is None:
         return None
     if record_key.node not in nodes:

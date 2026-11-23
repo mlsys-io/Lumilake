@@ -10,6 +10,7 @@ from lumilake import envs
 from lumilake_server.data_specs import (
     DataSpecModel,
     RetrievalData,
+    RetrievalKey,
     RetrievalParam,
     S3ProfileData,
     SqlProfileData,
@@ -306,6 +307,8 @@ class _RetrievalBuilder(_LLMBuilder):
             output_format = spec.get("output_format")
             max_steps = spec.get("max_steps")
             agent_model = spec.get("model")
+        raw_key = spec.get("key")
+        key = None if not isinstance(raw_key, dict) else RetrievalKey(**raw_key)
         data_spec = RetrievalData(
             type="lumid",
             mode=mode,
@@ -321,6 +324,7 @@ class _RetrievalBuilder(_LLMBuilder):
             max_steps=max_steps,
             model=agent_model,
             verify=spec.get("verify"),
+            key=key,
         )
 
         node = self._create_runtime_op(
