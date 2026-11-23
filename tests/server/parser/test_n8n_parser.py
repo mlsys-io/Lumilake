@@ -152,8 +152,7 @@ def _rowwise_trigger_workflow() -> dict:
 
 
 def test_rowwise_trigger_column_keeps_its_input_ref_through_the_graph() -> None:
-    """A rowwise column projected from the trigger keeps ``input_ref`` with a
-    null path once the parsed graph is loaded back."""
+    """A rowwise column projected from the trigger keeps ``input_ref`` with no path."""
     payload = {
         "graphs": [
             {

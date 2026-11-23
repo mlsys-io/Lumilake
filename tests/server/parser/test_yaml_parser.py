@@ -675,8 +675,7 @@ def test_messages_column_is_refused_beside_prompt_fields_and_outside_chat(
 
 
 def test_column_without_data_or_node_names_the_field() -> None:
-    """A column carrying neither ``data`` nor ``node`` is refused, and the
-    message points at the field that is missing."""
+    """A column with neither ``data`` nor ``node`` is refused, naming the field."""
     payload = _messages_payload(
         messages=[{"role": "user", "content": ""}],
         rowwise_columns=[{"label": "topic"}],

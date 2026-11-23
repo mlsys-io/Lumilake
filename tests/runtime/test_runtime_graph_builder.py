@@ -1777,8 +1777,7 @@ _DATAOP_COLUMN_PATH_FORMS = {
 
 @pytest.mark.parametrize("form", sorted(_DATAOP_COLUMN_FORMS))
 def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
-    """A chat column that reads a DataOp carries its values, the way an InputOp
-    column does, and leaves no dangling node reference behind."""
+    """A chat column that reads a DataOp carries its values, like an InputOp column."""
     yaml_text = _DATAOP_COLUMN_WORKFLOW.replace("COLUMN", _DATAOP_COLUMN_FORMS[form])
     spec = next(iter(parse_yaml_payload(yaml_text).values()))
     runtime_graph = RuntimeGraphBuilder().build(

@@ -302,8 +302,7 @@ def _queue_inline_message_op(
 def _resolve_table_nodes(
     table: Any, user_id_to_internal: Mapping[str, str], field: str
 ) -> ColumnTable | None:
-    """Validate one ``aggregate_table``/``rowwise_columns`` table and rewrite
-    each ``node`` user-id to the corresponding internal op id."""
+    """Validate a table, rewriting each ``node`` user-id to its internal op id."""
     columns = build_column_table(table, field)
     for column in columns or []:
         if isinstance(column, NodeColumn) and column.node in user_id_to_internal:

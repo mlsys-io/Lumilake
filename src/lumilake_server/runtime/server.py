@@ -1761,8 +1761,7 @@ class LumilakeServer:
     def _iter_input_bound_list_specs(
         graph: Graph,
     ) -> Generator[tuple[str, list[Any], InputRef | None, _ListSpecWriter], None, None]:
-        """Yield each input-bound literal list: its label, its items, the
-        ``input_ref`` it was projected from, and a writer for its items."""
+        """Yield each input-bound literal list: label, items and an items writer."""
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
                 params = op.data_spec.get("params")

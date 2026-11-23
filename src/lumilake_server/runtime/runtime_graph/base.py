@@ -193,8 +193,7 @@ class _RuntimeGraphBuilderBase:
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
     ) -> Column:
-        """Bind a node column into a spec column, mapping the declared path to
-        the upstream's read path."""
+        """Bind a node column into a spec column at the upstream's read path."""
         label = column.label
         node_ref = column.node
         path = column.path or ""
@@ -239,8 +238,7 @@ class _RuntimeGraphBuilderBase:
     def _mark_literal_column_producers_visited(
         self, columns: ColumnTable | None, visited_node_ids: set[str]
     ) -> None:
-        """Mark every literal column producer visited, so the orphan check
-        counts a producer that supplies only a column."""
+        """Mark each literal column producer visited, so the orphan check counts it."""
         for column in columns or []:
             if isinstance(column, NodeColumn) and isinstance(
                 self._graph_dict.get(column.node), (InputOp, DataOp)
