@@ -102,9 +102,9 @@ class Column(DataSpecModel):
     input_ref: InputRef | None = None
 
     @field_serializer("input_ref")
-    def _keep_ref_path(self, value: InputRef | None) -> dict[str, Any] | None:
+    def _keep_ref_path(self, value: InputRef | None) -> Any:
         """Serialize the ref whole: a dump would drop its null path."""
-        return None if value is None else dict(value)
+        return value
 
 
 class LiteralColumn(Column):
@@ -117,8 +117,7 @@ class LiteralColumn(Column):
 
 
 class NodeColumn(Column):
-    """A ``rowwise_columns`` or ``aggregate_table`` entry read from a node's
-    output at an optional drill path."""
+    """A rowwise table entry read from a node's output at an optional path."""
 
     label: str
     node: str
