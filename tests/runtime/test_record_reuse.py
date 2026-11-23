@@ -533,11 +533,9 @@ async def test_an_unversioned_read_rekeys_only_what_changed(
     )
     content = {read: NodeRecords(keyed=False, values=returned, keys=None)}
     plan, _ = _planned(storage, graph, content_values=content)
-    assert _decisions(plan) == {
-        "Read": ("miss", "unversioned upstream"),
-        "Join": join,
-        "Final": final,
-    }
+    assert _decisions(plan) == dict(
+        Read=("miss", "unversioned upstream"), Join=join, Final=final
+    )
 
 
 def _keyed_read_graph() -> Any:
