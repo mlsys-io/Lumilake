@@ -9,14 +9,7 @@ declares ``pairing: shared``.
 import json
 from typing import Any, Literal, Self
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    StrictStr,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
+from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError, model_validator
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.llm_ops import RowwiseSeed, check_rowwise_seed
@@ -40,8 +33,8 @@ class SeedKey(BaseModel):
 
 
 class RowwiseSeedSpec(BaseModel):
-    """A ``rowwise_seed`` entry, or a Lambda's ``seed``: a ``{node, path}``
-    column, or the ``key`` form that derives each row's seed from its key."""
+    """A ``rowwise_seed`` entry, or a Lambda's ``seed``: a ``{node, path}`` column
+    or the ``key`` form that derives each row's seed from its key."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -50,29 +43,16 @@ class RowwiseSeedSpec(BaseModel):
     key: SeedKey | None = None
     pairing: Pairing = PAIRINGS[0]
 
-    @model_validator(mode="before")
-    @classmethod
-    def _mapping(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            raise ValueError("must be a mapping")
-        return data
-
-    @field_validator("pairing", mode="before")
-    @classmethod
-    def _known_pairing(cls, value: Any) -> Any:
-        if value not in PAIRINGS:
-            raise ValueError(f"must be one of {PAIRINGS}, got {value!r}")
-        return value
-
     @model_validator(mode="after")
     def _one_form(self) -> Self:
-        """An entry reads either a ``{node, path}`` column or a ``key``; the
-        key form takes no node or path beside it."""
+        """An entry reads a ``{node, path}`` column, or a ``key`` on its own."""
         if self.key is None:
             if self.node is None:
                 raise ValueError("must name a node and path, or a key")
             return self
-        beside = [name for name in ("node", "path") if getattr(self, name)]
+        beside = [
+            name for name, value in (("node", self.node), ("path", self.path)) if value
+        ]
         if beside:
             raise ValueError(
                 f"combines a key with {beside}; the key form derives each row's"
@@ -85,8 +65,7 @@ class RowwiseSeedSpec(BaseModel):
         """The column this entry reads, whichever form it declares."""
         if self.key is not None:
             return self.key
-        if self.node is None:
-            raise ValueError("rowwise_seed must name a node and path, or a key")
+        assert self.node is not None
         return SeedKey(node=self.node, path=self.path)
 
 
