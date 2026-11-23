@@ -25,6 +25,7 @@ from lumilake.log import trace_id_var
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.parser import YamlParseError, parse_yaml_payload
+from lumilake_server.parser.n8n_nodes.constants import N8N_CHAT_TRIGGER, N8N_CODE_NODE
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import JobRecord, JobStatus
 from lumilake_server.runtime.protocol import LumilakeResponse
@@ -156,6 +157,15 @@ def app(job_routes: Any) -> FastAPI:
     return app
 
 
+def _n8n_code_workflow() -> dict[str, Any]:
+    """The smallest n8n workflow: a chat trigger feeding a code node."""
+    input_node = {"parameters": {}, "type": N8N_CHAT_TRIGGER, "name": "Input"}
+    code_node = {"parameters": {"pythonCode": "return 'hi'"}, "type": N8N_CODE_NODE}
+    code_node["name"] = "Code"
+    edges = {"Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}}
+    return {"nodes": [input_node, code_node], "connections": edges}
+
+
 def _submit_body(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "data": [
@@ -262,29 +272,8 @@ async def test_submitted_n8n_workflow_records_the_default_seed(
     app: FastAPI, job_routes: Any
 ) -> None:
     """An n8n submission names no seed, so the job records the default one."""
-    workflow = {
-        "nodes": [
-            {
-                "parameters": {},
-                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
-                "name": "Input",
-                "id": "input-node",
-                "typeVersion": 1,
-            },
-            {
-                "parameters": {"pythonCode": "return 'hi'"},
-                "type": "n8n-nodes-base.code",
-                "name": "Code",
-                "id": "code-node",
-                "typeVersion": 1,
-            },
-        ],
-        "connections": {
-            "Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}
-        },
-    }
     body = _submit_body()
-    body["data"][0]["workflow"] = json.dumps(workflow)
+    body["data"][0]["workflow"] = json.dumps(_n8n_code_workflow())
     body["data"][0]["inputs"] = {"Input": ["hello"]}
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

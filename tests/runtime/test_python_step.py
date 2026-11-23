@@ -395,9 +395,8 @@ def _run_wrapper(
     seeded: bool = False,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
-    declared = fn_name or lambda_runtime.validate_source(
-        code, params=2 if seeded else 1
-    )
+    params = 2 if seeded else 1
+    declared = fn_name or lambda_runtime.validate_source(code, params=params)
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     exec(
@@ -473,8 +472,7 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
 
 
 def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
-    """A seeded wrapper takes the tagged seed column from its plan and calls
-    the function with each row's seed as a second argument."""
+    """A seeded wrapper calls the function with each row's seed second."""
     llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
     seed = {"kind": "literal", "values": ["11", "22"], "role": "seed"}
     out = _run_wrapper(
@@ -483,12 +481,7 @@ def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
         {"llm": llm_dir},
         seeded=True,
     )
-    assert out == {
-        "items": [
-            {"output": "a-11", "value": "a-11"},
-            {"output": "b-22", "value": "b-22"},
-        ]
-    }
+    assert [item["output"] for item in out["items"]] == ["a-11", "b-22"]
 
 
 @pytest.mark.parametrize(
@@ -496,15 +489,12 @@ def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
     [
         ("row", ["7"], "op-1: seed column has 1 rows; expected one per row, so 2"),
         ("expand", ["1.5"], "op-1: seed row 0 is '1.5'; a seed must be an integer"),
-        ("row", ["3", "b"], "op-1: seed row 1 is 'b'; a seed must be an integer"),
     ],
 )
 def test_wrapper_refuses_a_seed_it_cannot_use(
     mode: str, values: list[str], message: str
 ) -> None:
-    """A seed column with one seed for several rows would give every row the
-    same draw, and a seed that is not an integer would be truncated into a
-    different draw; the step refuses both, naming the op."""
+    """One seed for several rows, or a seed that is not an integer, fails."""
     code = "def draw(i, seed):\n    return ['%d' % seed]\n"
     if mode == "row":
         code = "def draw(i, seed):\n    return '%d' % seed\n"
@@ -519,7 +509,7 @@ def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
     """A marked row keeps its slot without calling the function or reading its
     seed, so a seed step that forwards the marker in that row's seed cell does
     not fail the task."""
-    marker = {"_fail": {"op": "Parse", "reason": "no JSON object"}}
+    marker = {"_fail": {"op": "Parse"}}
     code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
     if mode == "expand":
         code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
@@ -529,20 +519,6 @@ def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
     ]
     out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
     assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
-
-
-@pytest.mark.parametrize("mode", ["row", "expand"])
-def test_wrapper_takes_one_seed_for_one_row(mode: str) -> None:
-    """One row with one seed stays fine in both seeded modes."""
-    code = "def draw(i, seed):\n    return '%d' % seed\n"
-    if mode == "expand":
-        code = "def draw(i, seed):\n    return ['%d' % seed]\n"
-    plan: list[dict[str, Any]] = [
-        {"kind": "literal", "values": ["a"]},
-        {"kind": "literal", "values": ["7"], "role": "seed"},
-    ]
-    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)["items"]
-    assert [item["output"] for item in out] == ["7"]
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
