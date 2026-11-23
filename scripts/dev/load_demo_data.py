@@ -23,7 +23,7 @@ from lumilake_deploy._demo_data import (
     resolve_env,
 )
 
-REPO = "mlsys-io/lumilake_OSS"
+REPO = "mlsys-io/Lumilake"
 DEFAULT_TAG = "demo-data-v1"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "lumilake-demo"
 EMBEDDED_SCHEMA = "lumilake_demo"

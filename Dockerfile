@@ -8,8 +8,8 @@ FROM python:3.12-slim-bookworm
 
 LABEL org.opencontainers.image.title="Lumilake Server" \
       org.opencontainers.image.description="Lumilake server runtime" \
-      org.opencontainers.image.source="https://github.com/mlsys-io/lumilake_OSS" \
-      org.opencontainers.image.url="https://github.com/mlsys-io/lumilake_OSS"
+      org.opencontainers.image.source="https://github.com/mlsys-io/Lumilake" \
+      org.opencontainers.image.url="https://github.com/mlsys-io/Lumilake"
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -11,11 +11,7 @@ lumilake --help
 uv run lumilake --help
 ```
 
-`pip install lumilake-cli` (no extra) installs a thin CLI that omits the
-deploy lifecycle — useful for users that only need
-`job` / `worker` / `trace` against a remote server. Running
-`lumilake deploy` from a thin install prints an install hint pointing
-back at `lumilake[cli]` or `lumilake-cli[deploy]`.
+`pip install lumilake-cli` (no extra) installs a thin CLI that omits the deploy lifecycle — useful for users that only need `job` / `worker` / `trace` against a remote server. Running `lumilake deploy` from a thin install prints an install hint pointing back at `lumilake[cli]` or `lumilake-cli[deploy]`.
 
 ## Configuration
 
@@ -63,11 +59,7 @@ The compose file and image are resolved from the installed `lumilake-deploy` pac
 
 Set `LUMILAKE_STACK_NAME` in `.env` to run several deployments side by side on one host: it names the Compose project and is carried in every container, volume and FlowMesh worker name of that deployment, so `deploy up` and `deploy down` of one leave the others alone. Each deployment still needs its own ports; leave the key empty to keep the bare names.
 
-If another FlowMesh stack is already running on the host, resolve port
-collisions before `deploy up`. Common co-tenant defaults are FlowMesh
-HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
-`6380`; the bundled stack reads the override keys documented in
-`docs/ENV.md` from `.env.flowmesh`.
+If another FlowMesh stack is already running on the host, resolve port collisions before `deploy up`. Common co-tenant defaults are FlowMesh HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`; the bundled stack reads the override keys documented in `docs/ENV.md` from `.env.flowmesh`.
 
 | Command | Purpose |
 |---------|---------|
@@ -93,9 +85,7 @@ HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry
 | `lumilake deploy clean` | yes | yes (every Lumilake-managed volume) |
 | `lumilake deploy reset` | yes | yes (every Lumilake-managed volume), then re-runs `deploy up`. Prompts for confirmation; pass `--yes` to skip the prompt in scripts. |
 
-Use `deploy down` between sessions. Reach for `clean` / `reset` only when you intentionally want to drop the local stack state.
-Use `deploy purge <image_tag> --dry-run` to preview image cleanup; it removes
-local server image tags only, not containers or volumes.
+Use `deploy down` between sessions. Reach for `clean` / `reset` only when you intentionally want to drop the local stack state. Use `deploy purge <image_tag> --dry-run` to preview image cleanup; it removes local server image tags only, not containers or volumes.
 
 ## Jobs
 
