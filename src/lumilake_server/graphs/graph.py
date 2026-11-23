@@ -98,11 +98,8 @@ class Graph:
         for op_id, op_data in json_graph.items():
             op_cls = Op.registry.get_class(op_data["_op"])
             op = op_cls.from_json(op_data, graph)
-            if op.key is not None and op.key.node not in json_graph:
-                raise ValueError(
-                    f"op '{op.declared_id or op_id}' key references unknown id"
-                    f" '{op.key.node}'"
-                )
+            if op.key is not None:
+                _refuse_unread_key_node(op, op_id, op_data, json_graph, graph)
             graph[op_id] = op
         return cls(graph)
 
@@ -171,3 +168,33 @@ class CompiledGraph:
 
     def dependencies(self) -> dict[Op, set[Op]]:
         return self.graph.dependencies()
+
+
+def _refuse_unread_key_node(
+    op: Op,
+    op_id: str,
+    op_data: dict[str, Any],
+    json_graph: dict[str, Any],
+    built: dict[str, Op],
+) -> None:
+    """Refuse a key naming an op it does not read; an unlisted input still keys."""
+    node = op.key.node if op.key is not None else None
+    if node is None or node not in json_graph:
+        raise ValueError(
+            f"op '{op.declared_id or op_id}' key references unknown id '{node}'"
+        )
+    declared_inputs: list[str] = op_data.get("_inputs", [])
+    source = built.get(node)
+    if isinstance(source, InputOp) or node in declared_inputs:
+        return
+    named = f"op '{op.declared_id or op_id}'"
+    raise ValueError(
+        f"{named} key reads '{_declared_name(node, json_graph)}', which is not one"
+        " of its inputs; list it in inputs: so the key is read from the rows it"
+        " feeds"
+    )
+
+
+def _declared_name(node: str, json_graph: dict[str, Any]) -> str:
+    """The name an error reports for a key's node: its declared id, else its id."""
+    return json_graph[node].get("_declared_id") or node
