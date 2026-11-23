@@ -3,7 +3,6 @@
 import pytest
 
 from lumilake import envs
-from lumilake_server.data_specs import RetrievalData
 from lumilake_server.dynamic.driver import DriverProtocolError, validate_library
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
@@ -85,9 +84,8 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
         _graph(template, "      rows: table\n").compile(Stock=["NVDA"])
     )
     (node,) = [n for n in runtime.nodes.values() if n.task_type == "data_retrieval"]
-    assert isinstance(node.data_spec, RetrievalData)
-    assert node.data_spec.rows == "table"
-    assert node.data_spec.require_non_empty_rows is False
+    declared = node.data_spec.model_dump(include={"rows", "require_non_empty_rows"})
+    assert declared == {"rows": "table", "require_non_empty_rows": False}
 
 
 def test_rows_table_refuses_a_position_inside_it() -> None:
