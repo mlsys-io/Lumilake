@@ -1127,13 +1127,7 @@ def _validate_list_lambda_slice_span(
     runtime_graphs: dict[str, RuntimeGraph],
     workflow_slices: dict[str, list[WorkflowSliceMeta]],
 ) -> None:
-    """Reject at submit time a list-derived output that would span more
-    than one slice.
-
-    A list-mode Lambda runs once over the whole input lists of one run, so its
-    single whole-list result cannot be partitioned per slice; neither can a
-    row step below it.
-    """
+    """Reject at submit a list-derived output that would span several slices."""
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
         list_lambda_fanout = graph.list_lambda_fanout_nodes()
@@ -1145,25 +1139,23 @@ def _validate_list_lambda_slice_span(
         for node_id, output_name in graph.output_node_map.items():
             if node_id in list_lambda_dependent:
                 produced = (
-                    "by a list-mode Lambda,"
-                    " which runs once over the whole input lists of one run"
+                    "by a list-mode Lambda, which runs once over the whole input "
+                    "lists of one run"
                 )
             elif node_id in list_lambda_fanout:
                 produced = (
-                    "below a list-mode Lambda,"
-                    " whose fan-out sets its row count to one value per list element"
+                    "below a list-mode Lambda, whose fan-out sets its row count to "
+                    "one value per list element"
                 )
             else:
                 continue
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Workflow '{graph_name}' output '{output_name}'"
-                    f" is produced {produced}"
-                    f" and cannot be split across {len(slices)} slice(s)."
-                    " Submit one input value per job,"
-                    " or raise input_batch_size"
-                    " so the whole input set runs in a single slice."
+                    f"Workflow '{graph_name}' output '{output_name}' is produced "
+                    f"{produced} and cannot be split across {len(slices)} slice(s). "
+                    "Submit one input value per job, or raise input_batch_size so the "
+                    "whole input set runs in a single slice."
                 ),
             )
 
