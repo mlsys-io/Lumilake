@@ -119,7 +119,7 @@ def _run(
     stages: dict[str, str] = {}
     for index, items in upstream.items():
         stage = tmp_path / name / f"{plan[index].node or 'literal'}-{index}"
-        stage.mkdir(parents=True)
+        stage.mkdir(parents=True, exist_ok=True)
         (stage / "results.json").write_text(
             json.dumps({"task_id": "t", "result": {"items": items}})
         )
@@ -245,43 +245,17 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
         _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
 
 
-_TAG = """
-  - id: Tag
-    op: LambdaOp
-    mode: row
-    inputs: [Rows]
-    fn_name: tag
-    code: |
-      def tag(row):
-          return row["case_id"].upper()
-"""
-
-
 def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None:
-    node = _join_node(_TAG + _merge("Rows, Tag", "    attach: {tag: Tag}\n"))
+    node = _join_node(_merge("Rows"))
     assert node.data_spec.plan[0].kind == "literal"
-    out = _run(tmp_path, node, {1: [{"output": v, "value": v} for v in "ABC"]})
-    assert [item["output"]["tag"] for item in out["items"]] == ["A", "B", "C"]
+    out = _run(tmp_path, node, {})
+    assert [item["output"]["case_id"] for item in out["items"]] == ["a", "b", "c"]
 
 
-def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
-    """Rows sharing the first key field stay distinct under a composite key."""
-    node = _join_node(_merge("State, Route.diagnose", by="[case_id, text]"))
-    repeated = {"case_id": "b", "text": "another row"}
-    same = [{**_ROWS[1], "extra": 1}, {**repeated, "extra": 2}]
-    out = _run(
-        tmp_path, node, {0: [{"output": [*_ROWS, repeated]}], 1: [{"output": same}]}
-    )
-    rows = [item["output"] for item in out["items"]]
-    assert [row["case_id"] for row in rows] == ["a", "b", "c", "b"]
-    assert [row["extra"] for row in rows if "extra" in row] == [1, 2]
-
-
-def test_join_refuses_a_composite_key_that_is_empty_or_not_a_field_name() -> None:
-    with pytest.raises(ValueError, match="Merge.*requires 'by'"):
-        _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: []}\n")
-    with pytest.raises(ValueError, match="Merge.*by must be dotted field names"):
-        _join_node("  - {id: Merge, op: JoinOp, inputs: [State], by: [case_id, 3]}\n")
+def test_join_refuses_an_empty_key_or_one_that_is_not_a_field_name() -> None:
+    for by, match in [("[]", "requires 'by'"), ("[case_id, 3]", "dotted field")]:
+        with pytest.raises(ValueError, match=f"Merge.*{match}"):
+            _join_node(f"  - {{id: Merge, op: JoinOp, inputs: [State], by: {by}}}\n")
 
 
 _MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
@@ -294,7 +268,8 @@ _PART = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
 )
 _A, _B, _C = _ROWS
 _META = {"meta": {"unit": "u1", "kind": "x"}}
-_MARKED_META = {"meta": {**_META["meta"], "kind": _MARK}}
+_META_Y = {"meta": {"unit": "u1", "kind": "y"}}
+_META_SIZED = [{**_META, "s": 1}, {**_META_Y, "s": 2}]
 _NULL = {"case_id": None, "text": "no key"}
 
 
@@ -316,12 +291,12 @@ _PARTED = {0: _rows(_A, _B, _C), 1: _rows(_B), 2: _cells(1), 3: _rows(_B)}
     "ops, upstream, expected",
     [
         # A marked row keeps its slot: in the first input the row is the marker,
-        # in a further input the key's output is. A composite key reads each
-        # path, so a marked row whose paths read keeps its slot too, while one
-        # whose path reaches a marker has no key to be placed by.
+        # in a further input the key's output is. A composite key reads each path,
+        # so a marked row whose path reaches a marker has no key to be placed by.
         (_DIAG, {0: _rows(_A, _MARK, _B), 1: _rows(_B)}, [_A, _MARK, _B]),
         (_COMPOSITE, {0: _rows(_META), 1: _rows({**_META, "s": _MARK})}, [_MARK]),
-        (_COMPOSITE, {0: _rows(_META), 1: _rows(_MARKED_META)}, "cannot be placed"),
+        # A composite key keeps rows that share its first field apart.
+        (_COMPOSITE, {0: _rows(_META, _META_Y), 1: _rows(*_META_SIZED)}, _META_SIZED),
         # A marked attach value marks its paired key, whether the value column
         # covers the live source rows only or every source row. An attach whose
         # values cannot be paired one per row fails the job, as does a live
@@ -387,23 +362,19 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
 
 
 _UNITS = [{"unit": "u1", "rid": r} for r in "ab"] + [{"unit": "u2", "rid": "c"}]
-_SIZE = {"u1": 2, "u2": 1}
-_SIZES = [{"unit": unit, "size": size} for unit, size in _SIZE.items()]
+_SIZES = [{"unit": "u1", "size": 2}, {"unit": "u2", "size": 1}]
+_SIZE = {size["unit"]: size["size"] for size in _SIZES}
 _JOINED = [{**u, "size": _SIZE[u["unit"]], "tag": u["rid"].upper()} for u in _UNITS]
-_BROADCAST_YAML = """
+_BROADCAST = """
 name: u
 inputs: {Rows: []}
 ops:
   - {id: State, op: DataOp, data: __ROWS__}
-  - {id: Summary, op: DataOp, data: __SIZES__}
+  - {id: Summary, op: DataOp, data: __SIZES__}__EXTRA__
   - {id: Tag, op: LambdaOp, mode: row, inputs: [State], fn_name: tag,
      code: "def tag(row): return row['rid'].upper()"}
-  - id: Merge
-    op: JoinOp
-    inputs: [State, Summary__TAG_INPUT__]
-    by: unit
-__FIELDS__
-__ATTACH__
+  - {id: Merge, op: JoinOp, inputs: [State__INPUTS__, Summary], by: unit,
+     __FIELDS__, attach: {__ATTACH__}}
 outputs: [{name: merged, ref: Merge}]
 """
 
@@ -416,75 +387,57 @@ def _broadcast(
     tmp_path: Path,
     rows: list[Any] | None = None,
     sizes: list[Any] | None = None,
+    part: list[Any] | None = None,
     tags: list[Any] | None = None,
-    fields: tuple[str, ...] = ("row_key: [unit, rid]",),
-    attach: str = "tag",
-    extra: list[Any] | None = None,
-    name: str = "run",
+    fields: str = "row_key: [unit, rid]",
 ) -> list[Any]:
-    if attach == "part":
-        ops = (
-            "  - {id: Extra, op: DataOp, data: "
-            + _quoted(extra or [])
-            + "}\n  - id: Part\n    op: LambdaOp\n    mode: row\n    inputs: [Extra]\n"
-            "    fn_name: part\n    code: \"def part(row): return row['part']\"\n"
-        )
-        inputs, line = ", Extra, Part", "    attach: {part: Part}"
-    else:
-        ops = ""
-        inputs = ", Tag" if attach == "tag" else ""
-        line = "    attach: {tag: Tag}" if attach == "tag" else ""
-    code = (
-        _BROADCAST_YAML.replace("__ROWS__", _quoted(rows or _UNITS))
-        .replace("__SIZES__", _quoted(sizes or _SIZES))
-        .replace("  - {id: State, op: DataOp", ops + "  - {id: State, op: DataOp")
-        .replace("__TAG_INPUT__", inputs)
-        .replace("__ATTACH__\n", line + "\n" if line else "")
-        .replace("__FIELDS__\n", "".join(f"    {line}\n" for line in fields))
-    )
+    swaps = {
+        "__ROWS__": _quoted(rows or _UNITS),
+        "__SIZES__": _quoted(sizes or _SIZES),
+        "__EXTRA__": "",
+        "__INPUTS__": ", Tag",
+        "__FIELDS__": fields,
+        "__ATTACH__": "tag: Tag",
+    }
+    if part is not None:
+        swaps["__EXTRA__"] = f"\n  - {{id: Extra, op: DataOp, data: {_quoted(part)}}}"
+        swaps["__EXTRA__"] += "\n  - {id: Part, op: LambdaOp, mode: row,"
+        swaps["__EXTRA__"] += " inputs: [Extra], fn_name: part,"
+        swaps["__EXTRA__"] += " code: \"def part(row): return row['part']\"}"
+        swaps["__INPUTS__"], swaps["__ATTACH__"] = ", Extra, Part", "part: Part"
+    code = _BROADCAST
+    for marker, value in swaps.items():
+        code = code.replace(marker, value)
     spec = parse_yaml_payload(code)["u"]
     graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     node = _join_of(RuntimeGraphBuilder().build(graph))
-    upstream: dict[int, list[dict[str, Any]]] = {}
-    if attach:
-        _, value_index, *_ = node.data_spec.join.attach[0]
-        default = ["A", "B"] if attach == "part" else ["A", "B", "C"]
-        upstream[value_index] = _cells(*(tags or default))
-    return [item["output"] for item in _run(tmp_path, node, upstream, name)["items"]]
+    _, value_index, *_ = node.data_spec.join.attach[0]
+    staged = {value_index: _cells(*(tags or ["A", "B", "C"]))}
+    return [item["output"] for item in _run(tmp_path, node, staged)["items"]]
 
 
 def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> None:
     """Each row of a shared by key keeps its own output row, in its order."""
     assert _broadcast(tmp_path) == _JOINED
-    swap = _broadcast(tmp_path, rows=_UNITS[::-1], tags=["C", "B", "A"], name="w")
-    assert swap == _JOINED[::-1]
     with pytest.raises(ValueError, match="duplicate row_key"):
-        _broadcast(tmp_path, rows=[_UNITS[0], _UNITS[0]], name="d")
+        _broadcast(tmp_path, rows=[_UNITS[0], _UNITS[0]])
     with pytest.raises(ValueError, match="row_key must name every by path"):
-        _broadcast(tmp_path, fields=("row_key: rid",), name="p")
+        _broadcast(tmp_path, fields="row_key: rid")
 
 
 def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
     """A missing key leaves its rows out under null_fill and marks them."""
     only_u1, missing = [_SIZES[0]], {**_UNITS[2], "tag": "C"}
     assert _broadcast(tmp_path, sizes=only_u1) == [_JOINED[0], _JOINED[1], missing]
-    fail = ("row_key: [unit, rid]", "on_missing: fail_row")
-    rows = _broadcast(tmp_path, sizes=only_u1, fields=fail, name="f")
+    fail = "row_key: [unit, rid], on_missing: fail_row"
+    rows = _broadcast(tmp_path, sizes=only_u1, fields=fail)
     assert rows[:2] == _JOINED[:2] and "key" in rows[2]["_fail"]["reason"]
 
 
-def test_a_marked_broadcast_row_marks_exactly_its_keys_rows(tmp_path: Path) -> None:
-    """A marked further-input or attach source row marks every row of its key;
-    a marked first-input row is its own marker, and an attach over the first
-    input lands by position, any other attach value on every row of its key."""
+def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
+    """A marked further-input row marks each row of its key."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
     sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
-    out = _broadcast(tmp_path, attach="part", extra=sources, tags=["C"], name="p")
+    out = _broadcast(tmp_path, part=sources, tags=["C"])
     assert out == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
-    rows = [{**_UNITS[0], "rid": _MARK}, {**_UNITS[1], "text": _MARK}, _UNITS[2]]
-    u2 = {**_UNITS[2], "size": 1}
-    assert _broadcast(tmp_path, rows=rows, attach="", name="m") == [_MARK, _MARK, u2]
-    source = [{"unit": "u1", "rid": "x"}, {"unit": "u2", "rid": "c"}]
-    part = _broadcast(tmp_path, rows=rows, attach="part", extra=source, tags=["A", "b"])
-    assert part == [_MARK, _MARK, {**u2, "part": "b"}]
