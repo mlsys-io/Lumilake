@@ -107,11 +107,20 @@ class Column(DataSpecModel):
         return value
 
 
+class DataFrame(DataSpecModel):
+    """A rowwise table with one column per value and the messages its rows render."""
+
+    type: Literal["dataframe"]
+    columns: list[Column] = Field(default_factory=list)
+    messages: list[Message] | None = None
+    seeds: list[int | None] | NodeRead | None = None
+
+
 class LiteralColumn(Column):
     """A ``rowwise_columns`` or ``aggregate_table`` entry holding its own list."""
 
     label: str
-    data: "DataFrame | ListData"
+    data: DataFrame | ListData
     node: None = None
     path: None = None
 
@@ -124,7 +133,9 @@ class NodeColumn(Column):
     data: None = None
 
 
-ColumnTable = list[LiteralColumn | NodeColumn]
+class ColumnTable(list[LiteralColumn | NodeColumn]):
+    """A validated ``rowwise_columns`` or ``aggregate_table``."""
+
 
 _ColumnTableEntry = Annotated[
     NodeColumn | LiteralColumn, Field(union_mode="left_to_right")
@@ -147,17 +158,8 @@ def build_column_table(
             for part in error["loc"]
             if part not in ("NodeColumn", "LiteralColumn")
         )
-        message = str(error["msg"]).removeprefix("Value error, ")
+        message = error["msg"].removeprefix("Value error, ")
         raise ValueError(f"{field}{where}: {message}") from exc
-
-
-class DataFrame(DataSpecModel):
-    """A rowwise table with one column per value and the messages its rows render."""
-
-    type: Literal["dataframe"]
-    columns: list[Column] = Field(default_factory=list)
-    messages: list[Message] | None = None
-    seeds: list[int | None] | NodeRead | None = None
 
 
 class GraphTemplate(DataSpecModel):
