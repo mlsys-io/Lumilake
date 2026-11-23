@@ -40,7 +40,7 @@ Any op may declare `key: {node, path}` to name its records' logical keys, so a j
     key: {node: Cases, path: case_id}
 ```
 
-An unknown `node` id is refused at submit.
+An unknown `node` id is refused at submit, and so is a `node` naming an op the keyed op does not read: listing it in `inputs:` is what lets the key be read from the rows it feeds, while a workflow input the op does not list still keys it from the literal column that input fills.
 
 See [`docs/WORKFLOWS.md`](WORKFLOWS.md#per-record-store-store) for the `store:` flag.
 

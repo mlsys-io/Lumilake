@@ -335,6 +335,16 @@ async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
     assert [e.address.record for e in found if e.address.op == "P"] == ["a", "b"]
 
 
+def test_a_key_on_an_op_it_does_not_read_is_refused() -> None:
+    """A key reads its declared op's rows, so naming an unread op is refused."""
+    payload = _payload()
+    payload["ops"][0] = {**payload["ops"][0], "key": {"node": "Join", "path": "id"}}
+    with pytest.raises(
+        ValueError, match="op 'Mark' key reads 'Join', which is not one of its inputs"
+    ):
+        _runtime_graph(payload)
+
+
 def _list_graph(key: dict[str, str] | None = None) -> Any:
     payload = _payload()
     keep = _op("Keep", inputs=["Mark"], fn_name="keep", mode="list", code=_CODE_LIST)
