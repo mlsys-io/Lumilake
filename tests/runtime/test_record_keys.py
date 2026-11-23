@@ -46,7 +46,7 @@ ops:
      code: "lambda c: json.loads(c[0])"}
   - {id: E, op: LambdaOp, inputs: [Extra], mode: row, fn_name: read,
      code: "lambda c: json.loads(c[0])"}
-  - {id: M, op: JoinOp, inputs: [D, E], by: doc, row_key: [doc, id]}
+  - {id: M, op: JoinOp, inputs: [D, E], by: %s, row_key: %s}
 outputs: [{name: merged, ref: M}]
 """
 
@@ -361,17 +361,41 @@ async def test_an_attach_reads_its_value_at_the_source_rows_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_broadcast_join_keys_each_row_by_its_row_key() -> None:
+@pytest.mark.parametrize(
+    ("by", "row_key", "docs", "extra", "keys"),
+    [
+        (
+            "doc",
+            "[doc, id]",
+            [{"id": 1, "doc": "a"}, {"id": 2, "doc": "a"}],
+            [{"doc": "a", "n": 1}],
+            ['["a",1]', '["a",2]'],
+        ),
+        (
+            "[unit]",
+            "[unit, rid]",
+            [
+                {"unit": "u1", "rid": "r1"},
+                {"unit": "u1", "rid": "r2"},
+                {"unit": "u2", "rid": "r3"},
+            ],
+            [{"unit": "u1", "total": 30}, {"unit": "u2", "total": 3}],
+            ['["u1","r1"]', '["u1","r2"]', '["u2","r3"]'],
+        ),
+    ],
+    ids=["one-path", "composite"],
+)
+async def test_a_broadcast_join_keys_each_row_by_its_row_key(
+    by: str, row_key: str, docs: list[dict[str, Any]], extra: list[Any], keys: list[str]
+) -> None:
     """Rows of one ``by`` value stay apart: each is one record at its row_key."""
-    docs = [{"id": 1, "doc": "a"}, {"id": 2, "doc": "a"}]
-    merged = [{"id": 1, "doc": "a", "n": 1}, {"id": 2, "doc": "a", "n": 1}]
     entries = await _records_of(
-        _graph(_BROADCAST % (_rows_text(docs), _rows_text([{"doc": "a", "n": 1}]))),
-        {"D": _items(*docs), "M": _items(*merged)},
+        _graph(_BROADCAST % (_rows_text(docs), _rows_text(extra), by, row_key)),
+        {"D": _items(*docs), "M": _items(*docs)},
         "M",
     )
-    assert sorted(entries) == ['["a",1]', '["a",2]']
-    assert len({entry.digest for entry in entries.values()}) == 2
+    assert sorted(entries) == keys
+    assert len({entry.digest for entry in entries.values()}) == len(keys)
 
 
 @pytest.mark.asyncio
