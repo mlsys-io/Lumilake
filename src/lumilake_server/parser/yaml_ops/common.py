@@ -7,6 +7,7 @@ from typing import Any
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.parser import keyed_seed
+from lumilake_server.parser.repeat import CopyIdentity
 
 _GENERATION_CONFIG_FIELDS: frozenset[str] = frozenset(
     f.name for f in fields(GenerationConfig)
@@ -31,7 +32,7 @@ class EmitContext:
     job_seed: int = 0
     round_number: int | None = None
     template_ids: dict[str, str] = field(default_factory=dict)
-    rounds: dict[str, int] = field(default_factory=dict)
+    copies: dict[str, CopyIdentity] = field(default_factory=dict)
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]
@@ -106,10 +107,13 @@ def emit_keyed_seed(
     node_id = seed_input_id(entry.id, node_ref, ctx, op_kind)
     template_id = ctx.template_ids.get(entry.id, entry.id)
     round_number = ctx.round_number
-    if round_number is None:
-        round_number = ctx.rounds.get(entry.id)
-    elif entry.id in ctx.rounds:
-        template_id = entry.id
+    copy = ctx.copies.get(entry.id)
+    if copy is not None:
+        if round_number is None:
+            template_id, round_number = copy.body_id, copy.iteration
+        else:
+            repeat_id = ctx.template_ids.get(copy.repeat_id, copy.repeat_id)
+            template_id = f"{repeat_id}.{copy.iteration}.{copy.body_id}"
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,

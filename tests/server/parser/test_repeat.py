@@ -32,7 +32,7 @@ def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
 
 _KEYED = _chat("Ask", "$in").replace(
     " rowwise_columns:",
-    " rowwise_seed: {key: {node: $in, path: items.output.value}}," " rowwise_columns:",
+    " rowwise_seed: {key: {node: $in, path: items.output.value}}, rowwise_columns:",
 )
 
 
@@ -106,9 +106,12 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
 
 
 def _draws(round_number: int | None) -> list[str]:
-    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', _KEYED)}"
-    graph = parse_yaml_payload(text, round_number=round_number)["repeat"]["graph"]
-    return [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
+    rendered = "R" if round_number is None else f"R{round_number - 1}"
+    templates = {rendered: "R{{round}}"} if round_number else None
+    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', _KEYED, rendered)}"
+    seeded = parse_yaml_payload(text, round_number=round_number, template_ids=templates)
+    seeds = seeded["repeat"]["graph"].values()
+    return [o["_code"] for o in seeds if o.get("fn_name") == "seed_for_row"]
 
 
 def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
@@ -117,6 +120,7 @@ def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
     graph = _graph(_repeat("2", "Start", "Ask", step))
     literal = [o["config"]["seed"] for o in graph.values() if o["_op"] == "LLMChatOp"]
     assert "[0, 'Ask', 1, value]" in static[0] and "[0, 'Ask', 2, value]" in static[1]
+    assert all("R{{round}}.1.Ask" in code for code in (round_2[0], round_3[0]))
     assert round_2[0] != round_2[1] and round_2[0] != round_3[0]
     assert literal[0] != literal[1] and max(literal) < 2**31
 
@@ -163,10 +167,7 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         ),
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
         pytest.param(_repeat(output="Status", body=_router("$in")), "is a body router"),
-        pytest.param(
-            _router("Start", router_id="a.b").replace("path", "copied: true, path"),
-            "letters, digits or underscores",
-        ),
+        pytest.param(_router("Start", router_id="a.b"), "underscores"),
         pytest.param(
             _repeat(
                 output="Ask",

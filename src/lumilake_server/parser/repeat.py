@@ -116,13 +116,20 @@ class _Scoped(Mapping[str, str]):
 References = Callable[[Mapping[str, str], str, str], _Scoped]
 
 
+class CopyIdentity(NamedTuple):
+    """One copy's seed identity: the repeat it belongs to, its iteration and body id."""
+
+    repeat_id: str
+    iteration: int
+    body_id: str
+
+
 class Unrolled(NamedTuple):
     """The unrolled ops, their reference binder and each copy's seed identity."""
 
     ops: list[Any]
     bind: References
-    template_ids: dict[str, str]
-    rounds: dict[str, int]
+    copies: dict[str, CopyIdentity]
     copied_routers: frozenset[str]
 
 
@@ -195,8 +202,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
     frames: dict[str, dict[str, str]] = {}
     frame_owner: dict[str, str] = {}
     iterations: dict[str, list[Any]] = {}
-    template_ids: dict[str, str] = {}
-    rounds: dict[str, int] = {}
+    copies: dict[str, CopyIdentity] = {}
     copied_routers: set[str] = set()
     for spec in ordered:
         iterations[spec.id] = []
@@ -209,16 +215,15 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
             frame_owner.update(
                 (spec.at(index, name), spec.id) for name in spec.written_ids
             )
-            copies = [
+            made = [
                 _iteration_copy(copy, iteration[copy["id"]], spec.id, index)
                 for copy in spec.body
             ]
-            for body, copy in zip(spec.body, copies):
-                template_ids[copy["id"]] = body["id"]
-                rounds[copy["id"]] = index
+            for body, copy in zip(spec.body, made):
+                copies[copy["id"]] = CopyIdentity(spec.id, index, body["id"])
                 if body["id"] in spec.branches:
                     copied_routers.add(copy["id"])
-            iterations[spec.id].extend(copies)
+            iterations[spec.id].extend(made)
 
     unrolled: list[Any] = []
     for entry in ops:
@@ -236,7 +241,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
             frame_owner.get(referrer),
         )
 
-    return Unrolled(unrolled, bind, template_ids, rounds, frozenset(copied_routers))
+    return Unrolled(unrolled, bind, copies, frozenset(copied_routers))
 
 
 def _iteration_copy(
