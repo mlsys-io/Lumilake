@@ -1,6 +1,4 @@
-"""The SQL row-order rule at submit and the `rows: one` bound at run time."""
-
-from contextlib import nullcontext
+"""The SQL row-order rule at submit and the `rows` bounds at run time."""
 
 import pytest
 
@@ -92,15 +90,14 @@ def test_rows_table_carries_the_whole_result(template: str) -> None:
     assert node.data_spec.require_non_empty_rows is False
 
 
-@pytest.mark.parametrize("path", ["items.table.close", "items.table.0.close"])
-def test_rows_table_refuses_a_position_inside_it(path: str) -> None:
-    expect = pytest.raises(ValueError, match="read the whole value or")
-    with expect if path.startswith("items.table.0") else nullcontext():
-        _reader_graph(path)
+def test_rows_table_refuses_a_position_inside_it() -> None:
+    _reader_graph("items.table.close")
+    with pytest.raises(ValueError, match="read the whole value or"):
+        _reader_graph("items.table.0.close")
 
 
 def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
-    with pytest.raises(ValueError, match="only on a mode: sql retrieval"):
+    with pytest.raises(ValueError, match="'rows' is declared only on a mode: sql"):
         _reader_graph("items.table", mode="s3")
 
 

@@ -80,9 +80,7 @@ class OpOutput:
 
     def refuse_position(self, declared: str, consumer: str) -> None:
         """Refuse a read of one position inside a whole-result value."""
-        if not self.whole_result or self.kind is not OutputKind.DECLARED:
-            return
-        if not _drills_index(declared, self.path):
+        if not self.whole_result or not _drills_index(declared, self.path):
             return
         raise ValueError(
             f"{consumer} reads '{declared}' from op '{self.node}', which"

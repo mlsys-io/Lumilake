@@ -43,8 +43,8 @@ class RetrievalSpec(RetrievalData):
     def _rows_sql_only(self) -> Self:
         if self.rows is not None and self.mode != "sql":
             raise ValueError(
-                f"'{ROWS_KEY}' is declared only on a mode: sql retrieval"
-                f" (got mode {self.mode!r})"
+                f"'{ROWS_KEY}' is declared only on a mode: sql retrieval "
+                f"(got mode {self.mode!r})"
             )
         return self
 
