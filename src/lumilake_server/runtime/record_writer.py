@@ -22,6 +22,7 @@ from lumilake_server.runtime.record_keys import (
     child_key,
     composite_key,
     join_key_paths,
+    join_row_key_paths,
 )
 from lumilake_server.runtime.record_store import (
     EffectVersions,
@@ -178,6 +179,7 @@ class RecordPlan:
         op_name: str,
         key_path: str | None,
         key_paths: list[str],
+        row_key_paths: list[str],
         column: str | None,
         groups_keyed: bool,
         expand_source: str | None,
@@ -188,6 +190,7 @@ class RecordPlan:
         self.op_name = op_name
         self.key_path = key_path
         self.key_paths = key_paths
+        self.row_key_paths = row_key_paths
         self.column = column
         self.groups_keyed = groups_keyed
         self.expand_source = expand_source
@@ -200,6 +203,7 @@ class RecordPlan:
             self.key_path is not None
             or self.column is not None
             or bool(self.key_paths)
+            or bool(self.row_key_paths)
             or self.groups_keyed
             or self.expand_source is not None
             or self.inherits_key is not None
@@ -1224,6 +1228,7 @@ def _resolve_plans(
             op_name=names.get(node_id, node_id),
             key_path=_key_path(runtime_graph, node_id, plans),
             key_paths=join_key_paths(data_spec_dict(op)),
+            row_key_paths=join_row_key_paths(data_spec_dict(op)),
             column=retrieval_key_column(op.data_spec),
             groups_keyed=_groups_keyed(op),
             expand_source=_mode_source(runtime_graph, node_id, plans),
@@ -1394,12 +1399,9 @@ def _keyed_mode_records(
             ]
             continue
         if plan.mode == "join":
+            key_paths = _join_row_paths(plan)
             node_records.keys = [
-                (
-                    composite_key(_item_output(item), plan.key_paths)
-                    if plan.key_paths
-                    else None
-                )
+                (composite_key(_item_output(item), key_paths) if key_paths else None)
                 for item in items_of[node_id]
             ]
             continue
@@ -1442,11 +1444,17 @@ def _key_marked_join_rows(
             _join_row_key(
                 key,
                 node_records.values[position],
-                plan.key_paths,
+                _join_row_paths(plan),
                 None if first is None else record_key_at(first.keys, position),
             )
             for position, key in enumerate(node_records.keys)
         ]
+
+
+def _join_row_paths(plan: RecordPlan) -> list[str]:
+    """The paths that address a join's rows: its ``row_key`` when it has one,
+    else its ``by``."""
+    return plan.row_key_paths or plan.key_paths
 
 
 def _join_row_key(

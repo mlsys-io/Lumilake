@@ -52,11 +52,25 @@ def child_key(parent_key: str, child: int) -> str:
 def join_key_paths(data_spec: Mapping[str, Any]) -> list[str]:
     """The paths a join's rows are keyed by: its ``by``, one path or a
     composite."""
+    return _path_list(_join_spec(data_spec).get("by"))
+
+
+def join_row_key_paths(data_spec: Mapping[str, Any]) -> list[str]:
+    """The paths that keep a broadcast join's rows apart: its ``row_key``, or
+    nothing when it emits one row per ``by`` value."""
+    return _path_list(_join_spec(data_spec).get("row_key"))
+
+
+def _join_spec(data_spec: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The join description a python step's spec carries."""
     join = data_spec.get("join")
-    spec = join if isinstance(join, Mapping) else data_spec
-    by = spec.get("by")
-    if isinstance(by, str):
-        return [by]
-    if isinstance(by, list):
-        return [path for path in by if isinstance(path, str)]
+    return join if isinstance(join, Mapping) else data_spec
+
+
+def _path_list(paths: Any) -> list[str]:
+    """One path or a list of them, as a list of the paths it names."""
+    if isinstance(paths, str):
+        return [paths]
+    if isinstance(paths, list):
+        return [path for path in paths if isinstance(path, str)]
     return []

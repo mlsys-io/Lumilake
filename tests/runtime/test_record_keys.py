@@ -38,6 +38,18 @@ outputs:
   - {name: merged, ref: M}
 """
 
+_BROADCAST = """\
+name: broadcast
+inputs: {Docs: %s, Extra: %s}
+ops:
+  - {id: D, op: LambdaOp, inputs: [Docs], mode: row, fn_name: read,
+     code: "lambda c: json.loads(c[0])"}
+  - {id: E, op: LambdaOp, inputs: [Extra], mode: row, fn_name: read,
+     code: "lambda c: json.loads(c[0])"}
+  - {id: M, op: JoinOp, inputs: [D, E], by: doc, row_key: [doc, id]}
+outputs: [{name: merged, ref: M}]
+"""
+
 _UNKEYED = """\
 name: unkeyed
 ops:
@@ -274,6 +286,20 @@ async def test_a_join_reads_each_further_input_at_its_own_join_key() -> None:
         "req-2",
     )
     assert after['["N1","b"]'].input_digests[1] == further["r9"].digest
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_join_keys_each_row_by_its_row_key() -> None:
+    """Rows of one ``by`` value stay apart: each is one record at its row_key."""
+    docs = [{"id": 1, "doc": "a"}, {"id": 2, "doc": "a"}]
+    merged = [{"id": 1, "doc": "a", "n": 1}, {"id": 2, "doc": "a", "n": 1}]
+    entries = await _records_of(
+        _graph(_BROADCAST % (_rows_text(docs), _rows_text([{"doc": "a", "n": 1}]))),
+        {"D": _items(*docs), "M": _items(*merged)},
+        "M",
+    )
+    assert sorted(entries) == ['["a",1]', '["a",2]']
+    assert len({entry.digest for entry in entries.values()}) == 2
 
 
 @pytest.mark.asyncio
