@@ -5,6 +5,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake_server.data_specs import (
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    Message,
+    TemplateOptions,
+)
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.policies.fifo import FifoSchedulingPolicy
@@ -1419,21 +1426,21 @@ def _build_scenario_graph(model: str, prompt: str, n_nodes: int) -> RuntimeGraph
             task_type="inference",
             backend="vllm",
             model=model,
-            data_spec={
-                "type": "graph_template",
-                "template": {
-                    "name": "format",
-                    "columns": [],
-                    "options": {
-                        "format": {
-                            "messages": [
-                                {"role": "system", "content": prompt},
-                                {"role": "user", "content": "hi"},
+            data_spec=GraphTemplateData(
+                type="graph_template",
+                template=GraphTemplate(
+                    name="format",
+                    columns=[],
+                    options=TemplateOptions(
+                        format=FormatConfig(
+                            messages=[
+                                Message(role="system", content=prompt),
+                                Message(role="user", content="hi"),
                             ]
-                        }
-                    },
-                },
-            },
+                        )
+                    ),
+                ),
+            ),
             model_spec={},
             inference_spec={},
             dependencies=deps,

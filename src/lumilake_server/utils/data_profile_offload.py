@@ -13,12 +13,7 @@ from lumilake_server.data_profile_models import (
     DataProfileResultRow,
     DataProfileResultsPayload,
 )
-from lumilake_server.data_specs import (
-    RetrievalParam,
-    SqlProfileData,
-    dump_data_spec,
-    is_sql_data,
-)
+from lumilake_server.data_specs import RetrievalParam, SqlProfileData
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.utils.lumid_data_client import profile as lumid_profile
 
@@ -57,13 +52,9 @@ _SQL_TABLE_PATTERN = re.compile(
 class DataProfileTaskNode(BaseModel):
     node_id: str
     raw_node_id: str
-    data_spec: dict[str, Any]
+    data_spec: SqlProfileData
 
     model_config = ConfigDict(extra="forbid")
-
-    def spec(self) -> SqlProfileData:
-        """The node's SQL profile spec."""
-        return SqlProfileData.model_validate(self.data_spec)
 
 
 class DataProfileTaskPayload(BaseModel):
@@ -157,14 +148,13 @@ def build_request_data_profile_tasks(
         nodes: dict[str, DataProfileTaskNode] = {}
         for node_id in runtime_graph.node_order:
             op = runtime_graph.nodes[node_id]
-            if not is_sql_data(op.data_spec):
+            if not isinstance(op.data_spec, SqlProfileData):
                 continue
-            data_spec = op.data_spec
             raw_node_id = runtime_to_raw.get(node_id, node_id)
             nodes[node_id] = DataProfileTaskNode(
                 node_id=node_id,
                 raw_node_id=raw_node_id,
-                data_spec=dump_data_spec(data_spec),
+                data_spec=op.data_spec,
             )
             node_order.append(node_id)
         if not node_order:
@@ -190,7 +180,7 @@ def run_data_profile_task(
         node = payload.nodes.get(node_id)
         if node is None:
             continue
-        spec = node.spec()
+        spec = node.data_spec
         table = spec.table
         if table:
             table = _normalize_table_name(table)
@@ -261,7 +251,7 @@ def project_data_profile_results_to_runtime_graph(
     projected: dict[str, list[DataProfileResultRow]] = {}
     for node_id in target_graph.node_order:
         op = target_graph.nodes[node_id]
-        if not is_sql_data(op.data_spec):
+        if not isinstance(op.data_spec, SqlProfileData):
             continue
         raw_node_id = runtime_to_raw.get(node_id)
         if not raw_node_id:
@@ -346,16 +336,14 @@ def _type_default_sample(type_name: str | None) -> Any:
 
 
 def _collect_data_profile_param_candidates(
-    params: Sequence[RetrievalParam | dict[str, Any]] | None,
+    params: Sequence[RetrievalParam] | None,
     constraints: Sequence[dict[str, Any]] | None,
 ) -> dict[str, list[Any]]:
     result: dict[str, list[Any]] = {}
     for item in params or ():
-        if not isinstance(item, RetrievalParam):
-            item = RetrievalParam.model_validate(item)
         if not item.label:
             continue
-        if item.data is not None and item.data.items:
+        if item.data is not None and isinstance(item.data.items, list):
             result[item.label] = list(item.data.items)
     if isinstance(constraints, list):
         for item in constraints:
@@ -386,8 +374,8 @@ def _collect_data_profile_param_candidates(
 def _build_sample_data_profile_queries(
     *,
     template: str,
-    params: Any,
-    constraints: Any,
+    params: Sequence[RetrievalParam] | None,
+    constraints: Sequence[dict[str, Any]] | None,
     num_samples: int,
     node_id: str | None = None,
 ) -> list[str]:

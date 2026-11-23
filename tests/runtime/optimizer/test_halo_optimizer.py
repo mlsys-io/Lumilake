@@ -2,7 +2,6 @@ import contextlib
 import json
 import struct
 from pathlib import Path
-from typing import Any
 
 import httpx2
 import pytest
@@ -11,6 +10,19 @@ from huggingface_hub.utils import NotASafetensorsRepoError
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
+)
+from lumilake_server.data_specs import (
+    Column,
+    DataSpecModel,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    ListData,
+    Message,
+    PythonData,
+    RetrievalData,
+    SqlProfileData,
+    TemplateOptions,
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output, input_placeholder
@@ -27,7 +39,7 @@ def _simple_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={"type": "list", "items": ["a"]},
+            data_spec=ListData(type="list", items=["a"]),
             model_spec={},
             inference_spec={"max_tokens": 16},
         ),
@@ -36,16 +48,18 @@ def _simple_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec={
-                "type": "graph_template",
-                "template": {
-                    "name": "format",
-                    "columns": [{"label": "x", "node": "n1", "path": "items.output"}],
-                    "options": {
-                        "format": {"messages": [{"role": "user", "content": "{x}"}]}
-                    },
-                },
-            },
+            data_spec=GraphTemplateData(
+                type="graph_template",
+                template=GraphTemplate(
+                    name="format",
+                    columns=[Column(label="x", node="n1", path="items.output")],
+                    options=TemplateOptions(
+                        format=FormatConfig(
+                            messages=[Message(role="user", content="{x}")]
+                        )
+                    ),
+                ),
+            ),
             model_spec={},
             inference_spec={"max_tokens": 16},
             dependencies=("n1",),
@@ -88,15 +102,15 @@ def test_halo_optimizer_requires_workers() -> None:
 
 
 def _retrieval_graph(*, task_type: str, backend: str) -> RuntimeGraph:
-    data_spec: dict[str, Any]
+    data_spec: DataSpecModel
     if task_type == "data_profiling":
-        data_spec = {"type": "sql", "template": "SELECT 1"}
+        data_spec = SqlProfileData(type="sql", template="SELECT 1")
     elif task_type == "python":
-        data_spec = {"mode": "row"}
+        data_spec = PythonData(mode="row")
     elif task_type == "data_retrieval":
-        data_spec = {"type": "lumid", "mode": "sql", "template": "SELECT 1"}
+        data_spec = RetrievalData(type="lumid", mode="sql", template="SELECT 1")
     else:
-        data_spec = {"type": "list", "items": []}
+        data_spec = ListData(type="list", items=[])
     return RuntimeGraph(
         nodes={
             "r1": runtime_op(
@@ -143,13 +157,13 @@ def _api_graph() -> RuntimeGraph:
                 task_type="api",
                 backend="api",
                 model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec={
-                    "type": "graph_template",
-                    "template": {
-                        "name": "format",
-                        "options": {"format": {"messages": []}},
-                    },
-                },
+                data_spec=GraphTemplateData(
+                    type="graph_template",
+                    template=GraphTemplate(
+                        name="format",
+                        options=TemplateOptions(format=FormatConfig(messages=[])),
+                    ),
+                ),
                 model_spec={},
                 inference_spec={},
             )
@@ -185,7 +199,7 @@ def _python_graph() -> RuntimeGraph:
                 task_type="python",
                 backend="python",
                 model="",
-                data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
+                data_spec=PythonData(code="lambda a: a[0]", plan=[], timeout_s=600),
                 model_spec={},
                 inference_spec={},
             )

@@ -8,7 +8,7 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
-from lumilake_server.data_specs import dump_data_spec
+from lumilake_server.data_specs import ColumnPlanEntry, PythonData, dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -49,7 +49,7 @@ def _python_nodes(graph: Any) -> dict[str, Any]:
 
 
 def _published_blobs(
-    plan: python_step.RawPlan,
+    plan: python_step.ColumnPlan,
 ) -> dict[str, python_step.PublishedBlob]:
     blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
     return {blob.key: blob for blob in blobs}
@@ -59,7 +59,7 @@ def _spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
         node.node_id,
         node.data_spec,
-        _published_blobs(dump_data_spec(node.data_spec)["plan"]),
+        _published_blobs(node.data_spec.plan),
     )
 
 
@@ -356,7 +356,7 @@ def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
 
 def _run_wrapper(
     code: str,
-    plan: python_step.RawPlan,
+    plan: python_step.ColumnPlan,
     inputs: dict[str, str],
     fn_name: str | None = None,
     mode: str = "row",
@@ -376,7 +376,7 @@ def _run_wrapper(
 
 def _run_reshape(
     mode: str,
-    plan: python_step.RawPlan,
+    plan: python_step.ColumnPlan,
     inputs: dict[str, str],
     template: str = "{symbol}: {title}",
 ):
@@ -421,7 +421,10 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
     out = _run_wrapper(
         "def join(inputs):\n    return '-'.join(inputs)\n",
-        [{"kind": "stage", "node": "llm"}, {"kind": "literal", "values": ["x"]}],
+        [
+            ColumnPlanEntry.model_validate({"kind": "stage", "node": "llm"}),
+            ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]}),
+        ],
         {"llm": llm_dir},
     )
     assert out == {
@@ -432,7 +435,7 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     mounted.write_text(json.dumps(["mounted"]))
     assert _run_wrapper(
         "def identity(inputs):\n    return str(inputs[0])\n",
-        [{"kind": "literal", "file": str(mounted)}],
+        [ColumnPlanEntry.model_validate({"kind": "literal", "file": str(mounted)})],
         {},
     ) == {"items": [{"output": "mounted", "value": "mounted"}]}
 
@@ -442,7 +445,10 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     api_dir = _stage(tmp_path, "api", {"text": "t"})
     out = _run_wrapper(
         "lambda inputs: inputs[0] + inputs[1]",
-        [{"kind": "stage", "node": "py"}, {"kind": "stage", "node": "api"}],
+        [
+            ColumnPlanEntry.model_validate({"kind": "stage", "node": "py"}),
+            ColumnPlanEntry.model_validate({"kind": "stage", "node": "api"}),
+        ],
         {"py": py_dir, "api": api_dir},
     )
     assert out == {"items": [{"output": "pt", "value": "pt"}]}
@@ -459,7 +465,11 @@ def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
     )
     out = _run_wrapper(
         "lambda inputs: inputs[0]",
-        [{"kind": "stage", "node": "llm", "flatten": True}],
+        [
+            ColumnPlanEntry.model_validate(
+                {"kind": "stage", "node": "llm", "flatten": True}
+            )
+        ],
         {"llm": llm_dir},
         mode="list",
     )
@@ -497,7 +507,11 @@ def test_wrapper_flattens_api_rowwise_llm_rows_list_mode(tmp_path: Path) -> None
     )
     out = _run_wrapper(
         "lambda inputs: inputs[0]",
-        [{"kind": "stage", "node": "llm", "flatten": True}],
+        [
+            ColumnPlanEntry.model_validate(
+                {"kind": "stage", "node": "llm", "flatten": True}
+            )
+        ],
         {"llm": llm_dir},
         mode="list",
     )
@@ -530,7 +544,11 @@ def test_wrapper_flattens_api_rowwise_llm_rows_standalone(tmp_path: Path) -> Non
     )
     out = _run_wrapper(
         "lambda inputs: inputs[0]",
-        [{"kind": "stage", "node": "llm", "flatten": True}],
+        [
+            ColumnPlanEntry.model_validate(
+                {"kind": "stage", "node": "llm", "flatten": True}
+            )
+        ],
         {"llm": llm_dir},
         mode="row",
     )
@@ -549,7 +567,11 @@ def test_wrapper_flatten_keeps_a_list_value_as_one_value(tmp_path: Path) -> None
     )
     out = _run_wrapper(
         "lambda inputs: inputs[0]",
-        [{"kind": "stage", "node": "llm", "flatten": True}],
+        [
+            ColumnPlanEntry.model_validate(
+                {"kind": "stage", "node": "llm", "flatten": True}
+            )
+        ],
         {"llm": llm_dir},
         mode="list",
     )
@@ -571,7 +593,11 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
     )
     out = _run_wrapper(
         "lambda inputs: inputs[0]",
-        [{"kind": "stage", "node": "llm", "flatten": True}],
+        [
+            ColumnPlanEntry.model_validate(
+                {"kind": "stage", "node": "llm", "flatten": True}
+            )
+        ],
         {"llm": llm_dir},
         mode="list",
     )
@@ -601,7 +627,7 @@ def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
     out = _run_wrapper(
         "def titles(inputs):\n"
         "    return [json.loads(v['table']['df'])['title']['0'] for v in inputs[0]]\n",
-        [{"kind": "stage", "node": "ret"}],
+        [ColumnPlanEntry.model_validate({"kind": "stage", "node": "ret"})],
         {"ret": ret_dir},
         mode="list",
         fn_name="titles",
@@ -614,8 +640,12 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
         _run_wrapper(
             "lambda inputs: inputs[0]",
             [
-                {"kind": "literal", "values": ["a", "b", "c"]},
-                {"kind": "literal", "values": ["a", "b"]},
+                ColumnPlanEntry.model_validate(
+                    {"kind": "literal", "values": ["a", "b", "c"]}
+                ),
+                ColumnPlanEntry.model_validate(
+                    {"kind": "literal", "values": ["a", "b"]}
+                ),
             ],
             {},
         )
@@ -623,7 +653,9 @@ def test_wrapper_rejects_misaligned_rows(tmp_path: Path) -> None:
 
 def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
     code = "def a(inputs):\n    return 'a'\n"
-    plan: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
+    ]
     assert _run_wrapper(code, plan, {}, fn_name="a") == {
         "items": [{"output": "a", "value": "a"}]
     }
@@ -638,8 +670,10 @@ def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
     code = (
         "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
     )
-    plan: python_step.RawPlan = [
-        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+        )
     ]
     out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="list")
     assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
@@ -651,8 +685,10 @@ def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
     code = (
         "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
     )
-    plan: python_step.RawPlan = [
-        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+        )
     ]
     out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode="aligned")
     assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
@@ -662,7 +698,9 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
     # An aligned lambda that returns a different number of values than there are
     # rows is rejected by the wrapper.
     code = "def bad(columns):\n    return [columns[0][0]]\n"
-    plan: python_step.RawPlan = [{"kind": "literal", "values": ["a", "b", "c"]}]
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["a", "b", "c"]})
+    ]
     with pytest.raises(
         ValueError, match="aligned lambda 'op-1' returned 1 values for 3 rows"
     ):
@@ -671,16 +709,18 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
 
 def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
     code = "def f(columns):\n    return columns[0]\n"
-    plan: python_step.RawPlan = [
-        {"kind": "literal", "values": ["a", "b", "c"]},
-        {"kind": "literal", "values": ["x", "y"]},
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["a", "b", "c"]}),
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x", "y"]}),
     ]
     with pytest.raises(ValueError, match="expected 1 or 3"):
         _run_wrapper(code, plan, {}, fn_name="f", mode="aligned")
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
-    plan: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
+    ]
     out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
     assert out == {"items": [{"output": "x", "value": "x"}]}
 
@@ -690,7 +730,9 @@ def test_wrapper_requires_a_function() -> None:
         _run_wrapper("X = 1\n", [], {}, fn_name="a")
 
 
-_PLAN_X: python_step.RawPlan = [{"kind": "literal", "values": ["x"]}]
+_PLAN_X: python_step.ColumnPlan = [
+    ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
+]
 
 
 @pytest.mark.parametrize(
@@ -724,7 +766,7 @@ def test_wrapper_runs_stdlib_imports_and_a_preamble(code: str, output: str) -> N
 def test_wrapper_keeps_the_restricted_namespace() -> None:
     out = _run_wrapper(
         "def f(inputs):\n    return json.dumps([math.floor(2.5), len(inputs)])",
-        [{"kind": "literal", "values": ["x"]}],
+        [ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})],
         {},
     )
     assert out == {"items": [{"output": "[2, 1]", "value": "[2, 1]"}]}
@@ -962,14 +1004,14 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
     assert specs[2]["blobs"] == [specs[0]["blobs"][0]]
     assert "def materialize(" not in specs[0]["code"]
 
-    too_many: python_step.RawPlan = [
-        {"kind": "literal", "values": [f"literal-{i}"] * 200}
+    too_many: python_step.ColumnPlan = [
+        ColumnPlanEntry(kind="literal", values=[f"literal-{i}"] * 200)
         for i in range(python_step.MAX_BLOBS_PER_TASK)
     ]
     with pytest.raises(ValueError, match="limit of 16 per task"):
         python_step.flowmesh_spec(
             "task",
-            {"code": "def f(i):\n    return i\n", "fn_name": "f", "plan": too_many},
+            PythonData(code="def f(i):\n    return i\n", fn_name="f", plan=too_many),
             _published_blobs(too_many),
         )
 
@@ -1064,28 +1106,34 @@ def _s3_stage(tmp_path: Path, name: str, keys: list[list[str]]) -> str:
     )
 
 
-def _flatten_plan() -> python_step.RawPlan:
+def _flatten_plan() -> python_step.ColumnPlan:
     return [
-        {
-            "kind": "stage",
-            "node": "art",
-            "path": "keys",
-            "label": "art_batch",
-            "grouped": True,
-        },
-        {
-            "kind": "literal",
-            "values": ["AAA", "BBB", "CCC"],
-            "label": "symbol",
-            "grouped": False,
-        },
-        {
-            "kind": "stage",
-            "node": "news",
-            "path": "table.title",
-            "label": "title",
-            "grouped": True,
-        },
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "stage",
+                "node": "art",
+                "path": "keys",
+                "label": "art_batch",
+                "grouped": True,
+            }
+        ),
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "literal",
+                "values": ["AAA", "BBB", "CCC"],
+                "label": "symbol",
+                "grouped": False,
+            }
+        ),
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "stage",
+                "node": "news",
+                "path": "table.title",
+                "label": "title",
+                "grouped": True,
+            }
+        ),
     ]
 
 
@@ -1164,21 +1212,25 @@ def test_flatten_checks_grouped_columns_against_image_counts(tmp_path: Path) -> 
         ],
     )
     art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
-    plan: python_step.RawPlan = [
-        {
-            "kind": "stage",
-            "node": "art",
-            "path": "keys",
-            "label": "art_batch",
-            "grouped": True,
-        },
-        {
-            "kind": "stage",
-            "node": "news",
-            "path": "table.title",
-            "label": "title",
-            "grouped": True,
-        },
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "stage",
+                "node": "art",
+                "path": "keys",
+                "label": "art_batch",
+                "grouped": True,
+            }
+        ),
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "stage",
+                "node": "news",
+                "path": "table.title",
+                "label": "title",
+                "grouped": True,
+            }
+        ),
     ]
     inputs = {"news": news, "art": art}
     with pytest.raises(ValueError, match="row 1 has 2 values; expected 1"):
@@ -1191,20 +1243,24 @@ def test_flatten_with_only_literal_symbol_emits_prompts_without_image_text(
     # Images [2, 1] and only a literal symbol column: 3 prompts, rows [0,0,1],
     # and no image content is rendered into the prompt.
     art = _s3_stage(tmp_path, "art", [["k0", "k1"], ["k2"]])
-    plan: python_step.RawPlan = [
-        {
-            "kind": "stage",
-            "node": "art",
-            "path": "keys",
-            "label": "art_batch",
-            "grouped": True,
-        },
-        {
-            "kind": "literal",
-            "values": ["AAA", "BBB"],
-            "label": "symbol",
-            "grouped": False,
-        },
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "stage",
+                "node": "art",
+                "path": "keys",
+                "label": "art_batch",
+                "grouped": True,
+            }
+        ),
+        ColumnPlanEntry.model_validate(
+            {
+                "kind": "literal",
+                "values": ["AAA", "BBB"],
+                "label": "symbol",
+                "grouped": False,
+            }
+        ),
     ]
     out = _run_reshape("flatten", plan, {"art": art}, template="{symbol}")
     items = out["items"]
@@ -1253,10 +1309,14 @@ def test_regroup_groups_outputs_back_per_symbol(tmp_path: Path) -> None:
             {"title": {"0": "t2", "1": "t3", "2": "t4"}},
         ],
     )
-    plan: python_step.RawPlan = [
-        {"kind": "stage", "node": "infer"},
-        {"kind": "stage", "node": "flatten", "path": "row"},
-        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "stage", "node": "infer"}),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "flatten", "path": "row"}
+        ),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "news", "path": "table.title", "grouped": True}
+        ),
     ]
     out = _run_reshape(
         "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
@@ -1278,10 +1338,14 @@ def test_regroup_rejects_row_out_of_range(tmp_path: Path) -> None:
         "news",
         [{"title": {"0": "t0"}}, {"title": {"0": "t1"}}, {"title": {"0": "t2"}}],
     )
-    plan: python_step.RawPlan = [
-        {"kind": "stage", "node": "infer"},
-        {"kind": "stage", "node": "flatten", "path": "row"},
-        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "stage", "node": "infer"}),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "flatten", "path": "row"}
+        ),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "news", "path": "table.title", "grouped": True}
+        ),
     ]
     with pytest.raises(ValueError, match="row 5 out of range for 3 symbols"):
         _run_reshape(
@@ -1297,10 +1361,14 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
         {"items": [{"output": "p", "row": 0}, {"output": "p", "row": 0}]},
     )
     news = _sql_stage(tmp_path, "news", [{"title": {"0": "t0", "1": "t1", "2": "t2"}}])
-    plan: python_step.RawPlan = [
-        {"kind": "stage", "node": "infer"},
-        {"kind": "stage", "node": "flatten", "path": "row"},
-        {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
+    plan: python_step.ColumnPlan = [
+        ColumnPlanEntry.model_validate({"kind": "stage", "node": "infer"}),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "flatten", "path": "row"}
+        ),
+        ColumnPlanEntry.model_validate(
+            {"kind": "stage", "node": "news", "path": "table.title", "grouped": True}
+        ),
     ]
     with pytest.raises(ValueError, match="1 outputs but 2 rows"):
         _run_reshape(
@@ -1383,7 +1451,7 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
     # own key (``value``) rather than only the textified ``output``.
     out = _run_wrapper(
         "def q(row):\n    return {'question': 'what?'}\n",
-        [{"kind": "literal", "values": ["x"]}],
+        [ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})],
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]

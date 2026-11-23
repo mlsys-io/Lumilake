@@ -161,9 +161,9 @@ def test_forwarded_sql_param_resolves_from_round_input() -> None:
     )
     (node,) = task.payload.nodes.values()
     queries = data_profile_offload._build_sample_data_profile_queries(
-        template=node.data_spec["template"],
-        params=node.data_spec["params"],
-        constraints=node.data_spec.get("constraints"),
+        template=node.data_spec.template,
+        params=node.data_spec.params,
+        constraints=node.data_spec.constraints,
         num_samples=1,
         node_id=node.node_id,
     )

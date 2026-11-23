@@ -7,7 +7,7 @@ FlowMesh ``python`` task in a per-task container.
 import hashlib
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -30,25 +30,12 @@ MAX_BLOBS_PER_TASK = 16
 
 # Column plan entries: a stage reads an upstream node, a literal carries values.
 ColumnPlan = list[ColumnPlanEntry]
-RawPlan = Sequence[ColumnPlanEntry | dict[str, Any]]
 
 
-def as_plan(plan: RawPlan) -> ColumnPlan:
-    """A plan's entries as models; a dict entry is validated into one."""
-    return [
-        (
-            entry
-            if isinstance(entry, ColumnPlanEntry)
-            else ColumnPlanEntry.model_validate(entry)
-        )
-        for entry in plan
-    ]
-
-
-def plan_json(plan: RawPlan) -> str:
+def plan_json(plan: ColumnPlan) -> str:
     """A plan as the JSON the generated task code embeds; a mounted literal's
     ``file`` comes last, as the builder emits it."""
-    dumped = [entry.model_dump(exclude_none=True) for entry in as_plan(plan)]
+    dumped = [entry.model_dump(exclude_none=True) for entry in plan]
     for entry in dumped:
         if "file" in entry:
             entry["file"] = entry.pop("file")
@@ -262,7 +249,7 @@ def main(inputs):
 """
 
 
-def flatten_source(node_id: str, plan: RawPlan, template: str) -> str:
+def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
     """The python-task code for a flatten step: one rendered prompt per image."""
     return (_RESHAPE_PRELUDE + _FLATTEN_MAIN).format(
         op_id=node_id,
@@ -282,7 +269,7 @@ def main(inputs):
 """
 
 
-def flatten_step_source(node_id: str, plan: RawPlan) -> str:
+def flatten_step_source(node_id: str, plan: ColumnPlan) -> str:
     """The python-task code for expanding a grouped upstream column to one
     value per row."""
     return (_RESHAPE_PRELUDE + _FLATTEN_STEP_MAIN).format(
@@ -293,7 +280,7 @@ def flatten_step_source(node_id: str, plan: RawPlan) -> str:
     )
 
 
-def pairs_source(node_id: str, plan: RawPlan) -> str:
+def pairs_source(node_id: str, plan: ColumnPlan) -> str:
     """The python-task code for reshaping query and candidate columns to pairs."""
     return (_RESHAPE_PRELUDE + _PAIRS_MAIN).format(
         op_id=node_id,
@@ -303,7 +290,7 @@ def pairs_source(node_id: str, plan: RawPlan) -> str:
     )
 
 
-def regroup_source(node_id: str, plan: RawPlan) -> str:
+def regroup_source(node_id: str, plan: ColumnPlan) -> str:
     """The python-task code for a regroup step: outputs back to one item per
     symbol."""
     return (_RESHAPE_PRELUDE + _REGROUP_MAIN).format(
@@ -334,9 +321,8 @@ def runtime_blob() -> PublishedBlob:
     )
 
 
-def literal_blob(entry: ColumnPlanEntry | dict[str, Any]) -> PublishedBlob | None:
+def literal_blob(entry: ColumnPlanEntry) -> PublishedBlob | None:
     """The mounted blob for one literal entry, or None when it stays inline."""
-    entry = ColumnPlanEntry.model_validate(entry)
     encoded = json.dumps(entry.values, ensure_ascii=False).encode("utf-8")
     if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
         return None
@@ -353,11 +339,11 @@ def literal_blob(entry: ColumnPlanEntry | dict[str, Any]) -> PublishedBlob | Non
 
 
 def literal_blobs(
-    plan: RawPlan,
+    plan: ColumnPlan,
 ) -> dict[str, PublishedBlob]:
     """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
     blobs: dict[str, PublishedBlob] = {}
-    for entry in as_plan(plan):
+    for entry in plan:
         if entry.kind != "literal":
             continue
         blob = literal_blob(entry)
@@ -374,7 +360,7 @@ def blob_url(object_name: str) -> str:
 
 
 def resolve_plan(
-    plan: RawPlan,
+    plan: ColumnPlan,
     published: Mapping[str, PublishedBlob],
 ) -> tuple[ColumnPlan, list[PublishedBlob]]:
     """Return a final plan with large literals mounted, plus its blobs.
@@ -382,7 +368,7 @@ def resolve_plan(
     Every entry that resolves to the same digest points at one shared mount,
     because FlowMesh rejects a task spec that mounts a path twice.
     """
-    task_plan = [entry.model_copy() for entry in as_plan(plan)]
+    task_plan = [entry.model_copy() for entry in plan]
     mounts: dict[str, PublishedBlob] = {}
     for entry in task_plan:
         if entry.kind != "literal":
@@ -419,7 +405,7 @@ def wrapper_source(
     op_id: str,
     fn_name: str,
     user_code: str,
-    plan: RawPlan,
+    plan: ColumnPlan,
     mode: str = "row",
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
@@ -441,12 +427,10 @@ def wrapper_source(
 
 def flowmesh_spec(
     node_id: str,
-    data_spec: PythonData | dict[str, Any],
+    data_spec: PythonData,
     published_blobs: Mapping[str, PublishedBlob],
 ) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
-    if not isinstance(data_spec, PythonData):
-        data_spec = PythonData.model_validate(data_spec)
     plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
     mode = data_spec.mode or "row"
     if mode == "flatten":

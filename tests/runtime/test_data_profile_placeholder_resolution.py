@@ -66,9 +66,9 @@ class TestStructuralOutputTypeDefault:
         compiled = Graph.from_ops([as_output("r", report)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, retrieval.id)
         queries = _build_sample_data_profile_queries(
-            template=dump_data_spec(node.data_spec)["template"],
-            params=dump_data_spec(node.data_spec)["params"],
-            constraints=dump_data_spec(node.data_spec).get("constraints"),
+            template=node.data_spec.template,
+            params=node.data_spec.params,
+            constraints=node.data_spec.constraints,
             num_samples=1,
             node_id=retrieval.id,
         )
@@ -103,9 +103,9 @@ class TestStructuralOutputTypeDefault:
         compiled = Graph.from_ops([as_output("r", report)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, retrieval.id)
         queries = _build_sample_data_profile_queries(
-            template=dump_data_spec(node.data_spec)["template"],
-            params=dump_data_spec(node.data_spec)["params"],
-            constraints=dump_data_spec(node.data_spec).get("constraints"),
+            template=node.data_spec.template,
+            params=node.data_spec.params,
+            constraints=node.data_spec.constraints,
             num_samples=1,
             node_id=retrieval.id,
         )

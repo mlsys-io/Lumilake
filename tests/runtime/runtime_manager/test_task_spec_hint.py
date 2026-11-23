@@ -3,6 +3,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import EmptyData
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -10,7 +11,7 @@ from tests.support.data_specs import runtime_op
 
 
 def _op(node_id: str, task_type: str = "api") -> RuntimeOp:
-    return runtime_op(node_id, task_type, task_type, "", {}, {}, {})
+    return runtime_op(node_id, task_type, task_type, "", EmptyData(), {}, {})
 
 
 @pytest.mark.asyncio

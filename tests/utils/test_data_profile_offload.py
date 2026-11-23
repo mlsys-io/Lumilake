@@ -3,7 +3,7 @@ from typing import Any, cast
 import pytest
 
 from lumilake_server.data_profile_models import DataProfileCostEstimate
-from lumilake_server.data_specs import ListData, SqlProfileData
+from lumilake_server.data_specs import ListData, RetrievalParam, SqlProfileData
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -99,10 +99,10 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
                     task_type="data_profiling",
                     backend="data_profiling",
                     model="data_profiling",
-                    data_spec={
-                        "type": "sql",
-                        "template": "select * from t where q = '{q}'",
-                    },
+                    data_spec=SqlProfileData(
+                        type="sql",
+                        template="select * from t where q = '{q}'",
+                    ),
                     model_spec={},
                     inference_spec={},
                 )
@@ -195,12 +195,11 @@ def test_build_sample_data_profile_queries_keeps_slice_fixed_values() -> None:
             "and start_date='{start_date}' and end_date='{end_date}'"
         ),
         params=[
-            {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
-            {"label": "start_date", "data": {"type": "list", "items": ["2025-01-01"]}},
-            {
-                "label": "end_date",
-                "data": {"type": "list", "items": ["2025-03-31", "2025-06-30"]},
-            },
+            RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
+            RetrievalParam(label="start_date", data=ListData(items=["2025-01-01"])),
+            RetrievalParam(
+                label="end_date", data=ListData(items=["2025-03-31", "2025-06-30"])
+            ),
         ],
         constraints=[],
         num_samples=6,
@@ -221,7 +220,7 @@ def test_build_sample_data_profile_queries_raises_on_unresolved_placeholder() ->
         data_profile_offload._build_sample_data_profile_queries(
             template="select * from t where symbol='{symbol}' and dt='{date}'",
             params=[
-                {"label": "symbol", "data": {"type": "list", "items": ["NVDA"]}},
+                RetrievalParam(label="symbol", data=ListData(items=["NVDA"])),
             ],
             constraints=[],
             num_samples=1,
@@ -248,17 +247,14 @@ def test_run_data_profile_task_raises_when_no_valid_estimates(
             "g__slice_1__db_node": data_profile_offload.DataProfileTaskNode(
                 node_id="g__slice_1__db_node",
                 raw_node_id="g__slice_1__raw_db_node",
-                data_spec={
-                    "type": "sql",
-                    "template": "select * from t where symbol='{symbol}'",
-                    "params": [
-                        {
-                            "label": "symbol",
-                            "data": {"type": "list", "items": ["NVDA"]},
-                        }
+                data_spec=SqlProfileData(
+                    type="sql",
+                    template="select * from t where symbol='{symbol}'",
+                    params=[
+                        RetrievalParam(label="symbol", data=ListData(items=["NVDA"]))
                     ],
-                    "num_test_queries": 2,
-                },
+                    num_test_queries=2,
+                ),
             )
         },
     )
@@ -305,22 +301,22 @@ def test_run_data_profile_task_passes_num_test_queries_per_sql_node(
             "sql_1": data_profile_offload.DataProfileTaskNode(
                 node_id="sql_1",
                 raw_node_id="raw_sql_1",
-                data_spec={
-                    "type": "sql",
-                    "template": "select 1 from public.t",
-                    "table": "public.t",
-                    "num_test_queries": 3,
-                },
+                data_spec=SqlProfileData(
+                    type="sql",
+                    template="select 1 from public.t",
+                    table="public.t",
+                    num_test_queries=3,
+                ),
             ),
             "sql_2": data_profile_offload.DataProfileTaskNode(
                 node_id="sql_2",
                 raw_node_id="raw_sql_2",
-                data_spec={
-                    "type": "sql",
-                    "template": "select 2 from public.t",
-                    "table": "public.t",
-                    "num_test_queries": 5,
-                },
+                data_spec=SqlProfileData(
+                    type="sql",
+                    template="select 2 from public.t",
+                    table="public.t",
+                    num_test_queries=5,
+                ),
             ),
         },
     )

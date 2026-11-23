@@ -719,7 +719,7 @@ class _RetrievalBuilder(_LLMBuilder):
         constraints = self._build_data_profile_constraints(params, graph_dict)
         queries = _build_sample_data_profile_queries(
             template=template,
-            params=resolved_params,
+            params=[RetrievalParam.model_validate(param) for param in resolved_params],
             constraints=constraints,
             num_samples=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
             node_id=upstream_id,

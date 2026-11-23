@@ -7,6 +7,7 @@ import pytest
 import respx
 
 from lumilake import envs as envs_mod
+from lumilake_server.data_specs import EmptyData
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
@@ -20,7 +21,7 @@ def _make_graph() -> RuntimeGraph:
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec={},
+        data_spec=EmptyData(),
         model_spec={},
         inference_spec={},
         dependencies=(),

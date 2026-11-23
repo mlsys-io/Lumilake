@@ -1,3 +1,4 @@
+from lumilake_server.data_specs import EmptyData, ListData
 from lumilake_server.runtime.optimizer.topological_sort import TopologicalSortOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -10,7 +11,7 @@ def _op(node_id: str, backend: str, task_type: str = "inference") -> RuntimeOp:
         task_type=task_type,
         backend=backend,
         model="m",
-        data_spec={} if task_type == "python" else {"items": []},
+        data_spec=EmptyData() if task_type == "python" else ListData(items=[]),
         model_spec={},
         inference_spec={},
         dependencies=(),

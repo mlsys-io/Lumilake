@@ -242,8 +242,7 @@ def _generated_code(op: Any) -> str | None:
     """The python task code a python step generates, or None for other tasks."""
     if op.task_type != python_step.TASK_TYPE:
         return None
-    plan = _dumped(op.data_spec).get("plan") or []
-    published = dict(python_step.literal_blobs(plan))
+    published = dict(python_step.literal_blobs(op.data_spec.plan))
     for key, blob in list(published.items()):
         published[key] = python_step.PublishedBlob(
             key=key,

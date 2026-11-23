@@ -1,23 +1,14 @@
-"""A runtime op for tests: its dict ``data_spec`` validates at the boundary."""
+"""Runtime ops for tests, built from their typed ``data_spec`` models."""
 
 from typing import Any
 
-from lumilake_server.data_specs import (
-    DataSpecModel,
-    EmptyData,
-    FormatConfig,
-    GraphTemplate,
-    TemplateOptions,
-    parse_data_spec,
-)
+from lumilake_server.data_specs import DataSpecModel, dump_data_spec
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def _model(data_spec: dict[str, Any] | DataSpecModel, task_type: str) -> DataSpecModel:
-    """The model a dict spec validates into, or the model itself."""
-    if isinstance(data_spec, dict):
-        return parse_data_spec(task_type, data_spec)
-    return data_spec
+def specs(op: RuntimeOp) -> dict[str, Any]:
+    """A runtime op's data spec as the dict a worker receives."""
+    return dump_data_spec(op.data_spec)
 
 
 def runtime_op(
@@ -25,7 +16,7 @@ def runtime_op(
     task_type: str,
     backend: str,
     model: str,
-    data_spec: dict[str, Any] | DataSpecModel,
+    data_spec: DataSpecModel,
     model_spec: dict[str, Any],
     inference_spec: dict[str, Any],
     api_spec: dict[str, Any] | None = None,
@@ -36,13 +27,13 @@ def runtime_op(
     skip_when_all_inputs_empty: bool = False,
     samples: bool = False,
 ) -> RuntimeOp:
-    """A runtime op whose dict ``data_spec`` validates through the boundary."""
+    """A runtime op carrying its typed ``data_spec``."""
     return RuntimeOp(
         node_id=node_id,
         task_type=task_type,
         backend=backend,
         model=model,
-        data_spec=_model(data_spec, task_type),
+        data_spec=data_spec,
         model_spec=model_spec,
         inference_spec=inference_spec,
         api_spec={} if api_spec is None else api_spec,
@@ -52,23 +43,4 @@ def runtime_op(
         condition=condition,
         skip_when_all_inputs_empty=skip_when_all_inputs_empty,
         samples=samples,
-    )
-
-
-def empty() -> EmptyData:
-    """A task that carries no data spec."""
-    return EmptyData()
-
-
-def graph_template_spec():
-    """A message-chain task over an empty format template."""
-    return _model(
-        {
-            "type": "graph_template",
-            "template": GraphTemplate(
-                name="format",
-                options=TemplateOptions(format=FormatConfig()),
-            ),
-        },
-        "inference",
     )

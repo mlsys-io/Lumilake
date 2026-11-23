@@ -7,7 +7,14 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
-from lumilake_server.data_specs import dump_data_spec
+from lumilake_server.data_specs import (
+    EmptyData,
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    TemplateOptions,
+    dump_data_spec,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -30,7 +37,6 @@ from lumilake_server.runtime.runtime_graph import (
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support import data_specs
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -2220,7 +2226,12 @@ def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
     consumer) but share an identical data_spec must still be kept distinct by
     the optimizer's dedupe pass when their api_spec differs - dedupe must key
     on api_spec, not just data_spec."""
-    shared_data_spec = data_specs.graph_template_spec()
+    shared_data_spec = GraphTemplateData(
+        type="graph_template",
+        template=GraphTemplate(
+            name="format", options=TemplateOptions(format=FormatConfig())
+        ),
+    )
     row0 = RuntimeOp(
         node_id="Summarise",
         task_type="api",
@@ -2254,7 +2265,7 @@ def test_row_fanned_api_nodes_distinguished_by_api_spec_in_dedupe() -> None:
         task_type="inference",
         backend="local",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec=data_specs.empty(),
+        data_spec=EmptyData(),
         model_spec={},
         inference_spec={},
         dependencies=(row0.node_id,),

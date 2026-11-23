@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lumilake import envs
+from lumilake_server.data_specs import EmptyData, RetrievalData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import estimate_area
@@ -32,7 +33,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="inference",
             backend="vllm",
             model="llama-7b",
-            data_spec={},
+            data_spec=EmptyData(),
             model_spec={},
             inference_spec={},
         )
@@ -43,7 +44,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="python",
             backend="python",
             model="python",
-            data_spec={},
+            data_spec=EmptyData(),
             model_spec={},
             inference_spec={},
         )
@@ -54,7 +55,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec={"type": "lumid", "mode": "agent"},
+            data_spec=RetrievalData(type="lumid", mode="agent"),
             model_spec={},
             inference_spec={},
         )
@@ -64,7 +65,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
         task_type="http",
         backend="http",
         model="http",
-        data_spec={},
+        data_spec=EmptyData(),
         model_spec={},
         inference_spec={},
     )
