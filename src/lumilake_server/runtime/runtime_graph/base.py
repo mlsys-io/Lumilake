@@ -9,7 +9,6 @@ from lumilake_server.data_specs import (
     Column,
     DataSpecModel,
     ListData,
-    dump_data_spec,
 )
 from lumilake_server.ops import (
     InputOp,
@@ -281,7 +280,7 @@ class _RuntimeGraphBuilderBase:
         entries, and the condition node. Literal payloads (``node`` without
         ``path``/``expr``) are data, not references."""
         yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-            dump_data_spec(node.data_spec)
+            node.data_spec.model_dump(exclude_none=True)
         )
         condition = node.condition
         if condition is not None:

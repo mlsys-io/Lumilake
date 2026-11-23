@@ -17,7 +17,6 @@ from lumilake_server.data_specs import (
     Message,
     NodeRead,
     TemplateOptions,
-    dump_data_spec,
 )
 from lumilake_server.ops import (
     DataOp,
@@ -386,7 +385,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             for dep in [
                 *upstream_llm_ids,
                 *self._collect_graph_template_dependencies(
-                    dump_data_spec(template_spec)
+                    template_spec.model_dump(exclude_none=True)
                 ),
             ]:
                 if dep in seen_deps:
@@ -481,7 +480,9 @@ class _LLMBuilder(_EmbeddingBuilder):
         seen_deps: set[str] = set()
         for dep in [
             *upstream_llm_ids,
-            *self._collect_graph_template_dependencies(dump_data_spec(template_spec)),
+            *self._collect_graph_template_dependencies(
+                template_spec.model_dump(exclude_none=True)
+            ),
         ]:
             if dep in seen_deps:
                 continue
@@ -772,7 +773,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             ):
                 dependencies.append(node_ref)
         for dep in self._collect_graph_template_dependencies(
-            dump_data_spec(template_spec)
+            template_spec.model_dump(exclude_none=True)
         ):
             if dep not in dependencies:
                 dependencies.append(dep)

@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
-from lumilake_server.data_specs import dump_data_spec, parse_data_spec
+from lumilake_server.data_specs import parse_data_spec
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     chunk_group_parent,
@@ -83,7 +83,7 @@ def _normalize_spec_for_signature(
 
 def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, ...]:
     normalized_data_spec = _normalize_spec_for_signature(
-        dump_data_spec(op.data_spec), mapping
+        op.data_spec.model_dump(exclude_none=True), mapping
     )
     normalized_model_spec = _normalize_spec_for_signature(op.model_spec, mapping)
     normalized_inference_spec = _normalize_spec_for_signature(
@@ -248,7 +248,8 @@ def _dedupe_runtime_graph(
             op,
             node_id=canonical,
             data_spec=parse_data_spec(
-                op.task_type, _remap_node_spec(dump_data_spec(op.data_spec), mapping)
+                op.task_type,
+                _remap_node_spec(op.data_spec.model_dump(exclude_none=True), mapping),
             ),
             model_spec=_remap_node_spec(op.model_spec, mapping),
             inference_spec=_remap_node_spec(op.inference_spec, mapping),

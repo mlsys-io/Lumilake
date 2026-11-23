@@ -17,7 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import RetrievalData, dump_data_spec
+from lumilake_server.data_specs import RetrievalData
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -618,7 +618,7 @@ class HaloOptimizer(BaseOptimizer):
 
     @staticmethod
     def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:
-        raw = dump_data_spec(op.data_spec)
+        raw = op.data_spec.model_dump(exclude_none=True)
         if isinstance(op.inference_spec, dict) and op.inference_spec:
             raw["_inference_spec"] = dict(op.inference_spec)
         if deps and "parent" not in raw:
@@ -858,7 +858,7 @@ class HaloOptimizer(BaseOptimizer):
         inferred_lengths: list[int] = []
         for op in graph.nodes.values():
             inferred_lengths.extend(
-                self._collect_input_lengths(dump_data_spec(op.data_spec))
+                self._collect_input_lengths(op.data_spec.model_dump(exclude_none=True))
             )
         inferred = max(inferred_lengths) if inferred_lengths else 0
         resolved = inferred if inferred > 0 else self._input_query_count_default

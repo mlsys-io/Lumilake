@@ -7,6 +7,18 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 PYTHON_TASK_TYPE = "python"
 RETRIEVAL_TASK_TYPE = "data_retrieval"
 PROFILE_TASK_TYPE = "data_profiling"
+MODEL_TASK_TYPES = frozenset(
+    {"inference", "diffusion", "embedding", "classification", "omni_text2image", "api"}
+)
+ALL_TASK_TYPES = MODEL_TASK_TYPES | {
+    PYTHON_TASK_TYPE,
+    RETRIEVAL_TASK_TYPE,
+    PROFILE_TASK_TYPE,
+}
+
+PythonMode = Literal[
+    "row", "list", "aligned", "flatten", "regroup", "pairs", "flatten_step"
+]
 
 
 class DataSpecModel(BaseModel):
@@ -117,11 +129,6 @@ class ColumnPlanEntry(DataSpecModel):
     file: str | None = None
 
 
-PythonMode = Literal[
-    "row", "list", "aligned", "flatten", "regroup", "pairs", "flatten_step"
-]
-
-
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -189,16 +196,6 @@ class S3ProfileData(DataSpecModel):
     encoding: str | None = None
 
 
-MODEL_TASK_TYPES = frozenset(
-    {"inference", "diffusion", "embedding", "classification", "omni_text2image", "api"}
-)
-ALL_TASK_TYPES = MODEL_TASK_TYPES | {
-    PYTHON_TASK_TYPE,
-    RETRIEVAL_TASK_TYPE,
-    PROFILE_TASK_TYPE,
-}
-
-
 class EmptyData(DataSpecModel):
     """A task that carries no data spec."""
 
@@ -230,11 +227,6 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
         return _MODEL_DATA.validate_python(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
-
-
-def dump_data_spec(model: DataSpecModel) -> dict[str, Any]:
-    """The serialized dict for a typed ``data_spec`` model."""
-    return model.model_dump(exclude_none=True)
 
 
 Column.model_rebuild()

@@ -11,7 +11,6 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ListData,
     PythonData,
-    dump_data_spec,
     parse_data_spec,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
@@ -260,7 +259,8 @@ class RuntimeGraph:
                 backend=op.backend,
                 model=op.model,
                 data_spec=parse_data_spec(
-                    op.task_type, remap(dump_data_spec(op.data_spec), rewritable)
+                    op.task_type,
+                    remap(op.data_spec.model_dump(exclude_none=True), rewritable),
                 ),
                 model_spec=remap(op.model_spec, rewritable),
                 inference_spec=remap(op.inference_spec, rewritable),

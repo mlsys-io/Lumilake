@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lumilake_server.data_specs import DataSpecModel, dump_data_spec, parse_data_spec
+from lumilake_server.data_specs import DataSpecModel, parse_data_spec
 from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
@@ -66,7 +66,7 @@ class RuntimeOp:
             task_type=self.task_type,
             backend=self.backend,
             model=self.model,
-            data_spec=dump_data_spec(self.data_spec),
+            data_spec=self.data_spec.model_dump(exclude_none=True),
             model_spec=self.model_spec,
             inference_spec=self.inference_spec,
             api_spec=self.api_spec,
@@ -105,7 +105,7 @@ class RuntimeOp:
     def to_flowmesh_node(self) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {
             "taskType": self.task_type,
-            "data": dump_data_spec(self.data_spec),
+            "data": self.data_spec.model_dump(exclude_none=True),
         }
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec

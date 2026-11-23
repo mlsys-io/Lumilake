@@ -10,7 +10,6 @@ from lumilake_server.data_specs import (
     NodeRead,
     PythonData,
     TemplateOptions,
-    dump_data_spec,
 )
 from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
@@ -175,7 +174,7 @@ class _VisionBuilder(_RetrievalBuilder):
         if llm_op_id not in self._flattened_vlm_ids:
             template_spec.columns = [*template_spec.columns, batch_column]
             template_dependencies = self._collect_graph_template_dependencies(
-                dump_data_spec(template_spec)
+                template_spec.model_dump(exclude_none=True)
             )
             dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
             dependencies.extend(template_dependencies)

@@ -8,7 +8,7 @@ nothing here fits, learns, or requires historical data.
 from dataclasses import dataclass, field
 
 from lumilake import envs
-from lumilake_server.data_specs import RetrievalData, dump_data_spec
+from lumilake_server.data_specs import RetrievalData
 from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
@@ -85,7 +85,7 @@ def _classify(op: RuntimeOp) -> str:
 
 def _to_halo_node(op: RuntimeOp) -> Node:
     """Build the minimal ``Node`` view ``compute_gpu_exec_cost`` needs."""
-    raw = dump_data_spec(op.data_spec)
+    raw = op.data_spec.model_dump(exclude_none=True)
     if isinstance(op.inference_spec, dict) and op.inference_spec:
         raw["_inference_spec"] = dict(op.inference_spec)
     return Node(
