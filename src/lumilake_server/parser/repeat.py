@@ -7,6 +7,8 @@ before any id is registered, so one declared op exists per iteration.
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
+from pydantic import BaseModel, ConfigDict, StrictInt
+
 from lumilake_server.ops.router_ops import ROUTER_OP, RouterSpec
 from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.parser.keyed_seed import keyed_seed
@@ -15,6 +17,22 @@ REPEAT_OP = "RepeatOp"
 INPUT_REF = "$in"
 _MAX_UNROLLED = 1000
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
+
+
+class _SeedConfig(BaseModel):
+    """The part of a body entry's ``config`` the unroll reads."""
+
+    model_config = ConfigDict(extra="allow")
+
+    seed: StrictInt | None = None
+
+
+class _BodyEntry(BaseModel):
+    """A body entry as the unroll reads it: only its seed."""
+
+    model_config = ConfigDict(extra="allow")
+
+    config: _SeedConfig | None = None
 
 
 class _Repeat(NamedTuple):
@@ -233,16 +251,9 @@ def _iteration_copy(
 
 def _literal_seed(entry: dict[str, Any], repeat_id: str) -> int | None:
     """The literal seed ``entry`` carries, or None when its config has none."""
-    config = entry.get("config")
-    if not isinstance(config, dict) or "seed" not in config:
-        return None
-    seed = config["seed"]
-    if isinstance(seed, int) and not isinstance(seed, bool):
-        return seed
-    raise ValueError(
-        f"RepeatOp '{repeat_id}' body entry '{entry['id']}' has a 'config.seed' that is"
-        f" not an integer: {seed!r}"
-    )
+    where = f"RepeatOp '{repeat_id}' body entry '{entry['id']}'"
+    config = validate_fields(_BodyEntry, entry, where).config
+    return None if config is None else config.seed
 
 
 def _iteration_seed(seed: int, body_id: str, index: int) -> int:

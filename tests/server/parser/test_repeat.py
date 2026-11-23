@@ -178,7 +178,7 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
                 body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model:"
                 " m, seed: '7'}, messages: [{role: user, content: x}]}\n",
             ),
-            "not an integer",
+            "config.seed: Input should be a valid integer",
         ),
         pytest.param(_repeat(source="Nowhere"), "is unknown"),
         pytest.param(_repeat(source=""), "requires a non-empty 'input'"),
