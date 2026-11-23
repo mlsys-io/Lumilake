@@ -70,8 +70,8 @@ class LambdaSpec(BaseModel):
         parts = self.by.split(".") if self.by is not None else []
         if not parts or any(not part or part != part.strip() for part in parts):
             raise ValueError(
-                "reduce mode requires 'by' to be a dotted path of non-empty"
-                f" segments (got {self.by!r})"
+                "reduce mode requires 'by' to be a dotted path of non-empty segments"
+                f" (got {self.by!r})"
             )
         return self
 
@@ -88,8 +88,8 @@ class LambdaSpec(BaseModel):
             and self.expected_runtime_s > effective_timeout
         ):
             raise ValueError(
-                "expected_runtime_s must be in (0,"
-                f" {effective_timeout:g}], got {self.expected_runtime_s}"
+                f"expected_runtime_s must be in (0, {effective_timeout:g}], got"
+                f" {self.expected_runtime_s}"
             )
         return self
 
@@ -129,8 +129,8 @@ def _serialize_fn(fn: Callable[..., Any]) -> str:
                     pass
         for var_name, var_value in closure_vars.items():
             pattern = r"\b" + re.escape(var_name) + r"\b"
-            # Callable replacement: re.sub would otherwise interpret backslashes
-            # in repr() as backrefs.
+            # Callable replacement: re.sub would otherwise interpret backslashes in
+            # repr() as backrefs.
             replacement: str = repr(var_value)
 
             def _replace(_m: re.Match[str], r: str = replacement) -> str:

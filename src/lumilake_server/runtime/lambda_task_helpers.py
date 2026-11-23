@@ -119,8 +119,8 @@ def _rows(
     for entry, col in zip(plan, columns):
         if len(col) not in (1, n):
             raise ValueError(
-                f"{op_id}: input {entry.get('node', 'literal')!r} has {len(col)}"
-                f" rows; expected 1 or {n}"
+                f"{op_id}: input {entry.get('node', 'literal')!r} has {len(col)} rows;"
+                f" expected 1 or {n}"
             )
     return [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
 

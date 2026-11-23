@@ -171,9 +171,9 @@ def _require_list_lambda(op: dict[str, Any], export_id: str) -> None:
         )
     if op.get("mode") not in WHOLE_RESULT_MODES:
         raise DriverProtocolError(
-            f"stop_when_empty {export_id!r} must be a list, expand or reduce"
-            f" mode LambdaOp, got mode {op.get('mode')!r}: only those exports"
-            " read as an empty list"
+            f"stop_when_empty {export_id!r} must be a list, expand or reduce mode"
+            f" LambdaOp, got mode {op.get('mode')!r}: only those exports read as an"
+            " empty list"
         )
 
 
