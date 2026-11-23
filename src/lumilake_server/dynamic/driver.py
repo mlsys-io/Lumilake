@@ -618,8 +618,7 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a seed reads, in place. A non-empty path
-    reads a materializer, which the op must list in its inputs."""
+    """Forward one ``{node, path}`` a seed reads, in place."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:

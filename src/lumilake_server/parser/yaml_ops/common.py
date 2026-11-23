@@ -72,8 +72,7 @@ def build_generation_config(
 
 
 def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> str:
-    """The internal id of a node a keyed seed reads, after checking the
-    producer is listed in the op's inputs."""
+    """The internal id of a node a keyed seed reads, checked to be an input."""
     if node_ref not in ctx.user_id_to_internal:
         raise ValueError(f"{op_kind} '{op_id}' seed references unknown id '{node_ref}'")
     node_id = ctx.user_id_to_internal[node_ref]
@@ -81,9 +80,8 @@ def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> 
     is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
     if node_ref not in ctx.entry.inputs and not is_workflow_input:
         raise ValueError(
-            f"{op_kind} '{op_id}' seed reads '{node_ref}', which is"
-            " not listed in the op's inputs; add it there so the seed's"
-            " producer is built before it"
+            f"{op_kind} '{op_id}' seed reads '{node_ref}', which is not listed in"
+            " the op's inputs; add it there so the seed's producer is built before it"
         )
     return node_id
 
@@ -95,8 +93,7 @@ def emit_keyed_seed(
     field: str,
     op_kind: str,
 ) -> None:
-    """Queue a row function over the key column and bind the op that draws
-    with it to that function's output."""
+    """Queue a row function over the key column and bind the op to it."""
     entry = ctx.entry
     node_ref, path, pairing = keyed_seed.key_target(
         entry.id,
