@@ -454,8 +454,7 @@ def forward_refs(
         inputs[input_id] = [_coerce_output_value(v) for v in walked]
 
     def add_materializer(ref: str, path: str, walked: list[Any]) -> str:
-        """Bind a JSON input per row plus a LambdaOp that passes it through;
-        returns the materializer id."""
+        """Bind a JSON input per row plus a pass-through LambdaOp; return its id."""
         input_id = f"{ref} | {path}"
         if input_id not in materialized:
             bind_input(input_id, walked)
