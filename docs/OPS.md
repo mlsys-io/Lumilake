@@ -311,8 +311,6 @@ For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)` serializes the
 
 `match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
 
-`match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
-
 ```yaml
 ops:
   - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
