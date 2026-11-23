@@ -99,7 +99,7 @@ class LambdaSpec(BaseModel):
     def _seed_needs_a_per_row_mode(self) -> Self:
         if self.seed is not None and self.mode not in SEED_MODES:
             raise ValueError(
-                f"'seed' is available in modes {SEED_MODES}, where the function"
+                f"seed is available in modes {SEED_MODES}, where the function"
                 f" runs once per row (got mode {self.mode!r})"
             )
         return self
