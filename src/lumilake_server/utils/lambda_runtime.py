@@ -300,14 +300,7 @@ def _inline_statement_kind(stmt: ast.stmt) -> str:
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
-    """Check source for a LambdaOp the FlowMesh worker evaluates inline.
-
-    A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
-    which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and its module-level names have no scope. So the ``def``
-    named ``fn_name`` must be the last statement, with only module docstrings
-    around it. Code that namespace cannot run is rejected here, at submit.
-    """
+    """Check source for a LambdaOp the FlowMesh worker evaluates inline."""
     name = validate_source(code, fn_name)
     tree = _parse(code)
     if isinstance(tree, ast.Expression):

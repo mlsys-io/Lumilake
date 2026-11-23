@@ -155,8 +155,7 @@ def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
 
 
 def test_inline_source_refuses_any_statement_after_the_def() -> None:
-    """The ``def`` must be the last statement: a trailing statement with no
-    binding is refused by its kind."""
+    """A trailing statement with no binding is refused by the statement kind."""
     with pytest.raises(ValueError, match="module-level assert statement"):
         lambda_runtime.validate_inline_source(
             "def main(x):\n    return x\n\nassert True", "main"

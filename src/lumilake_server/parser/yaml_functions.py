@@ -1,10 +1,4 @@
-"""Workflow-level ``functions:`` sources and the ``uses:`` that includes them.
-
-A ``LambdaOp``'s named blocks are appended after its ``code`` in listed order,
-so the dispatched source and every digest see one program. An op an LLM op
-reads runs inline, where only a module docstring may follow the ``def``, so it
-cannot use a block.
-"""
+"""Workflow-level ``functions:`` sources and the ``uses:`` that include them."""
 
 import ast
 import symtable
@@ -98,8 +92,8 @@ class WorkflowFunctions(RootModel[dict[_Ident, _Ident]]):
                 ast.parse(source)
             except SyntaxError as exc:
                 raise ValueError(
-                    f"function {name!r} does not parse as Python: {exc.msg}"
-                    f" (line {exc.lineno})"
+                    f"function {name!r} does not parse as Python: {exc.msg} (line "
+                    f"{exc.lineno})"
                 ) from exc
         return sources
 
@@ -108,8 +102,8 @@ class WorkflowFunctions(RootModel[dict[_Ident, _Ident]]):
         unknown = [name for name in uses if name not in self.root]
         if unknown:
             raise ValueError(
-                f"LambdaOp '{op_id}' uses unknown function {unknown[0]!r};"
-                f" 'functions' defines {sorted(self.root)}"
+                f"LambdaOp '{op_id}' uses unknown function {unknown[0]!r}; 'functions' "
+                f"defines {sorted(self.root)}"
             )
         own = None
         if code is not None:
@@ -130,8 +124,8 @@ class WorkflowFunctions(RootModel[dict[_Ident, _Ident]]):
                 shared = sorted(_collides(own, current))
                 if shared:
                     raise ValueError(
-                        f"LambdaOp '{op_id}' code defines {shared[0]!r}, which"
-                        f" the function {name!r} it uses also defines"
+                        f"LambdaOp '{op_id}' code defines {shared[0]!r}, which the "
+                        f"function {name!r} it uses also defines"
                     )
             included.append((name, current))
             blocks.append(source.strip())
@@ -153,8 +147,8 @@ class UsedFunctions(BaseModel):
             raise ValueError("declares 'uses', which only a LambdaOp accepts")
         if self.code is not None and self.code.strip().startswith("lambda"):
             raise ValueError(
-                "cannot combine 'uses' with lambda-expression code; write the"
-                " function as a 'def'"
+                "cannot combine 'uses' with lambda-expression code; write the function "
+                "as a 'def'"
             )
         for name in self.uses:
             if self.uses.count(name) > 1:
