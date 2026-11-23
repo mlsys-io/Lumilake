@@ -328,29 +328,12 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
-    """A parse step is 1:1: each parsed row keeps its input row's record key."""
-    payload = {
-        "name": "parsed",
-        "inputs": {"Rows": list(_ROWS)},
-        "ops": [
-            _keyed_op(
-                "Read",
-                "Rows",
-                "read",
-                "def read(c):\n    return json.loads(c[0])\n",
-            ),
-            {"id": "P", "op": "ParseOp", "inputs": ["Read"], "format": "json"},
-        ],
-        "outputs": [{"name": "parsed", "ref": "P"}],
-    }
-    graph = _runtime_graph(payload)
-    parsed = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
-    storage, _ = await _write(graph, {"Read": parsed, "P": parsed})
-    name = _declared_name(graph, "P")
-    assert [k for k in _indexed(storage, "req-1") if k[0] == name] == [
-        (name, "a"),
-        (name, "b"),
-    ]
+    """A parse step is 1:1, so its rows keep their record keys."""
+    payload = _payload()
+    payload["ops"].append(_op("P", "ParseOp", inputs=["Mark"], format="json"))
+    rows = {"Mark": _TWO_ROWS, "P": _TWO_ROWS}
+    found = await _store(_runtime_graph(payload), rows)
+    assert [e.address.record for e in found if e.address.op == "P"] == ["a", "b"]
 
 
 def _list_graph(key: dict[str, str] | None = None) -> Any:
