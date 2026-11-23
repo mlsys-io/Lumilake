@@ -415,9 +415,7 @@ outputs:
     ref: "Lowercase"
 ```
 
-A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in
-`uses:`; see
-[`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
+A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in `uses:`; see [`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
 
 Where the function runs depends on what reads it:
 
@@ -442,18 +440,7 @@ Where the function runs depends on what reads it:
   an `image` always runs as its own standalone `python` task. If the function
   raises, the job's error names the step and the exception, for example `Output
   task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
-  task as a template function step, and evaluated by the FlowMesh worker that
-  runs the task. This is not a Lumilake-provided isolation boundary; use the
-  standalone form above for code that should run in its own container. The
-  worker's namespace has no `import` and gives a module-level name no scope, so
-  the `def` named by `fn_name` must be the last statement of its source, with
-  only a module docstring before or after it. Submission is refused for any
-  statement after it, a shared `uses:` block and a trailing helper included. If
-  a runtime node (such as a data-retrieval op) also reads the same `LambdaOp`,
-  it is additionally compiled to its own standalone `python` task so that node
-  can reference its output; the LLM still inlines it, so the function is
-  evaluated once per reader.
+- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh task as a template function step, and evaluated by the FlowMesh worker that runs the task. This is not a Lumilake-provided isolation boundary; use the standalone form above for code that should run in its own container. The worker's namespace has no `import` and gives a module-level name no scope, so the `def` named by `fn_name` must be the last statement of its source, with only a module docstring before or after it. Submission is refused for any statement after it, a shared `uses:` block and a trailing helper included. If a runtime node (such as a data-retrieval op) also reads the same `LambdaOp`, it is additionally compiled to its own standalone `python` task so that node can reference its output; the LLM still inlines it, so the function is evaluated once per reader.
 - **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
   server does not run `LambdaOp` code to render an API request body, and the
   request body cannot carry a function step, so the build fails with an error
