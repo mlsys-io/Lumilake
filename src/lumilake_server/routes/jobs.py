@@ -12,7 +12,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Collection
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
@@ -989,7 +989,7 @@ class JobSubmitItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobSubmitItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
@@ -1059,7 +1059,7 @@ class JobPreviewItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobPreviewItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
