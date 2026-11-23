@@ -1429,9 +1429,7 @@ class FlowmeshRuntimeManager:
         """Fail a ``rows: one`` retrieval that returned more than one row for
         a parameter row."""
         node = runtime_graph.nodes.get(node_id)
-        if node is None or node.task_type != "data_retrieval":
-            return
-        if not isinstance(node.data_spec, RetrievalData):
+        if node is None or not isinstance(node.data_spec, RetrievalData):
             return
         if node.data_spec.rows != ROWS_ONE:
             return

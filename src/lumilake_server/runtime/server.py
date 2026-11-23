@@ -1785,7 +1785,7 @@ class LumilakeServer:
                     data = param.data
                     if label is None or data is None:
                         continue
-                    if data.type != "list" or not isinstance(data.items, list):
+                    if not isinstance(data.items, list):
                         continue
                     yield label, data, param
             if isinstance(op, LLMChatOp):
