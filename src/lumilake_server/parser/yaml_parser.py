@@ -226,8 +226,7 @@ def _get_job_seed(spec: dict[str, Any]) -> int:
 def check_keyed_seed_duplicates(
     spec: dict[str, Any], inputs: dict[str, list[str]]
 ) -> None:
-    """Refuse a repeated key over the whole input set, before slicing splits
-    it; only an input column or a literal data op is visible here."""
+    """Refuse a repeated key over the whole input set, before slicing."""
     ops_block = spec.get("ops")
     if not isinstance(ops_block, list):
         return

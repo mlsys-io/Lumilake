@@ -662,8 +662,7 @@ def wrapper_source(
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
-    """The python-task code for one standalone LambdaOp; a seeded step passes
-    each row's seed as the function's second argument."""
+    """The python-task code for one standalone LambdaOp, seeded or not."""
     if mode == "list":
         main = _LIST_MAIN
     elif mode == "aligned":

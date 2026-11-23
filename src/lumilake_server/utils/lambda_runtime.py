@@ -287,9 +287,8 @@ def _check_params(args: ast.arguments, params: int) -> None:
         return
     if params == 1:
         raise ValueError(
-            "Function must accept exactly 1 parameter (a tuple), but has"
-            f" {count} parameters. Expected signature:"
-            " fn(args: tuple[str, ...]) -> str"
+            f"Function must accept exactly 1 parameter (a tuple), but has {count}"
+            " parameters. Expected signature: fn(args: tuple[str, ...]) -> str"
         )
     raise ValueError(
         f"Function must accept exactly {params} parameters, but has"

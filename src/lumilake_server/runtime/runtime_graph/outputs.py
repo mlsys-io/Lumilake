@@ -88,8 +88,7 @@ class OpOutput:
         raise ValueError(self._unreadable_message(declared, consumer))
 
     def read_value(self, declared: str, consumer: str) -> str:
-        """``read`` for a consumer that needs the value unchanged, as a row
-        step writes the typed return under ``value``."""
+        """``read`` for a consumer that needs the value unchanged."""
         full = self.read(declared, consumer)
         if self.kind is OutputKind.ROW_LAMBDA and full == self.path:
             return self.path[: -len(_OUTPUT)] + "value"

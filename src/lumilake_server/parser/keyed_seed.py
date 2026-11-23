@@ -80,8 +80,7 @@ def {fn_name}(row):
 
 
 def key_parts(path: str) -> list[str]:
-    """The field names a key path drills below ``items``; a whole-output path
-    drills none."""
+    """The field names a key path drills below ``items``."""
     if not path:
         return []
     if not path.startswith("items."):
@@ -93,14 +92,12 @@ def key_parts(path: str) -> list[str]:
 
 
 def key_cells(values: list[str], parts: list[str]) -> list[Any]:
-    """The key each row of a literal or forwarded key column carries, read as
-    the generated row function reads a cell."""
+    """The key each row of a literal or forwarded key column carries."""
     return [_decode_cell(value, parts) for value in values]
 
 
 def _decode_cell(value: Any, parts: list[str]) -> Any:
-    """One row's key out of its raw cell, or ``None`` when the cell carries no
-    key to compare."""
+    """One row's key out of its raw cell, or ``None`` with no key to compare."""
     for index, part in enumerate(parts):
         if isinstance(value, str):
             try:
@@ -137,8 +134,7 @@ def check_unique(op_id: str, op_kind: str, keys: list[Any], pairing: str) -> Non
 
 
 def seed_op_id(chat_op_id: str, scope: str | None = None) -> str:
-    """The id of the row function generated for one op, which no user op can
-    hold."""
+    """The id of the row function generated for one op, held by no user op."""
     if scope is None:
         return f"{chat_op_id}{SEED_SUFFIX}"
     return make_id(scope, "seed", chat_op_id)
@@ -153,20 +149,16 @@ def seed_source(
     op_kind: str,
     shared: bool,
 ) -> str:
-    """The source of a keyed-seed row function, which returns one row's seed
-    from its key."""
+    """The source of a keyed-seed row function, which returns one row's seed."""
     named = f"{op_kind} '{template_id}'"
+    columns = ".".join(parts) or "<the value itself>"
     return _SEED_FN.format(
         fn_name=fn_name,
         parts=parts,
         missing=_seed_message(
-            f"{named} has no row key in the value with path"
-            f" {'.'.join(parts) or '<the value itself>'}:"
+            f"{named} has no row key in the value with path {columns}:"
         ),
-        null=_seed_message(
-            f"{named} has a null row key in"
-            f" {'.'.join(parts) or '<the value itself>'}:"
-        ),
+        null=_seed_message(f"{named} has a null row key in {columns}:"),
         duplicate=_duplicate_message(named),
         unique=not shared,
         job_seed=job_seed,
@@ -177,8 +169,7 @@ def seed_source(
 
 
 def _seed_message(message: str) -> str:
-    """One runtime message with its value placeholder appended, its ``%``
-    escaped."""
+    """One runtime message with its value placeholder appended."""
     return message.replace("%", "%%") + " %s"
 
 
@@ -250,12 +241,10 @@ def seed_op(
 def rewrite_native_keys(
     graph: dict[str, dict[str, Any]], *, job_seed: int
 ) -> dict[str, dict[str, Any]]:
-    """Rewrite every key-form seed of a serialized native graph, adding each
-    generated seed op just ahead of the op that reads it."""
+    """Rewrite every key-form seed of a native graph in place."""
     rewritten: dict[str, dict[str, Any]] = {}
     for op_id, op in graph.items():
-        # Native payloads reach here before graph validation, so an op may not
-        # name its kind; leave it for the graph builder to refuse.
+        # Native payloads reach here unvalidated, so an op may name no kind.
         op_kind = op.get("_op")
         field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
         seed = op.get(field)
