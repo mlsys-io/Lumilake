@@ -358,12 +358,7 @@ A first-input row carrying a failed record makes its output row that marker, and
 
 A duplicate key and an attach length mismatch fail the job under either policy.
 
-`row_key` (one dotted path or a list, naming every `by` path) lets the first
-input hold several rows per `by` key, each unique by its `row_key` value. Each
-keeps its own output row, and every further input's row for that key reaches all
-of them. An attach over the first input fills its own row; any other attach
-value reaches every row of its key. A duplicate `row_key` fails the job, and a
-marked first-input row passes through as its marker.
+`row_key` (one dotted path or a list, naming every `by` path) lets the first input hold several rows per `by` key, each unique by its `row_key` value. Each keeps its own output row, and every further input's row for that key reaches all of them. An attach over the first input fills its own row; any other attach value reaches every row of its key. A duplicate `row_key` fails the job, and a marked first-input row passes through as its marker.
 
 ```yaml
 ops:
