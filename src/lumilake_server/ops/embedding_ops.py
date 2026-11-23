@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp
@@ -67,9 +67,7 @@ class EmbeddingOp(LLMOp):
         )
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "EmbeddingOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         config = GenerationConfig(**data["config"])
         return cls(other_ops[data["content"]], config, data["cacheable"])
 

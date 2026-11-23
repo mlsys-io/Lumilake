@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import Op
@@ -119,9 +119,7 @@ class ClassificationOp(Op):
         }
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, Op]
-    ) -> "ClassificationOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         return cls(
             query=other_ops[data["query"]],
             candidates=other_ops[data["candidates"]],

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op
@@ -109,9 +109,7 @@ class HttpFetchOp(FunctionalOp):
         return payload
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, Op]
-    ) -> "HttpFetchOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         return cls(
             url=data["url"],
             query=other_ops[data["query"]],
