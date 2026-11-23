@@ -325,6 +325,33 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
     assert len({first.digest, second.digest, ok.digest}) == 3
 
 
+@pytest.mark.asyncio
+async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
+    """A parse step is 1:1: each parsed row keeps its input row's record key."""
+    payload = {
+        "name": "parsed",
+        "inputs": {"Rows": list(_ROWS)},
+        "ops": [
+            _keyed_op(
+                "Read",
+                "Rows",
+                "read",
+                "def read(c):\n    return json.loads(c[0])\n",
+            ),
+            {"id": "P", "op": "ParseOp", "inputs": ["Read"], "format": "json"},
+        ],
+        "outputs": [{"name": "parsed", "ref": "P"}],
+    }
+    graph = _runtime_graph(payload)
+    parsed = [{"id": "a", "text": "one"}, {"id": "b", "text": "two"}]
+    storage, _ = await _write(graph, {"Read": parsed, "P": parsed})
+    name = _declared_name(graph, "P")
+    assert [k for k in _indexed(storage, "req-1") if k[0] == name] == [
+        (name, "a"),
+        (name, "b"),
+    ]
+
+
 def _list_graph(key: dict[str, str] | None = None) -> Any:
     payload = _payload()
     keep = _op("Keep", inputs=["Mark"], fn_name="keep", mode="list", code=_CODE_LIST)

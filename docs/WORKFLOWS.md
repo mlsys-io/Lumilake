@@ -80,11 +80,7 @@ A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where the code may i
 
 ## Per-record store (`store:`)
 
-Set `store: true` at the top level of a YAML document, beside `graph` in a native
-payload, or at the top level of a dynamic workflow beside `type: dynamic`. It
-defaults to off, and a dynamic workflow's every round writes its records. An op's
-`key` is in [`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's
-chain with `GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
+Set `store: true` at the top level of a YAML document, beside `graph` in a native payload, or at the top level of a dynamic workflow beside `type: dynamic`. It defaults to off, and a dynamic workflow's every round writes its records. An op's `key` is in [`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's chain with `GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
 
 ## n8n code-node notes
 
