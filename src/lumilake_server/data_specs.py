@@ -26,6 +26,7 @@ PythonMode = Literal[
     "flatten_step",
     "expand",
     "reduce",
+    "join",
 ]
 
 
@@ -137,6 +138,17 @@ class ColumnPlanEntry(DataSpecModel):
     file: str | None = None
 
 
+class JoinDescription(DataSpecModel):
+    """A lowered join: its key path, the plan indexes of its row columns, and
+    each attach field's value and source plan index."""
+
+    node: str
+    by: list[str]
+    inputs: list[int]
+    attach: list[tuple[str, int, int]]
+    missing: Literal["null", "error"]
+
+
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -145,6 +157,7 @@ class PythonData(DataSpecModel):
     plan: list[ColumnPlanEntry] = Field(default_factory=list)
     mode: PythonMode | None = None
     by: str | None = None
+    join: JoinDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
     memory_mb: int | None = None

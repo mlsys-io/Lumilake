@@ -474,7 +474,7 @@ def wrapper_source(
     )
 
 
-def _required(value: str | None, field: str, mode: str) -> str:
+def _required[T](value: T | None, field: str, mode: str) -> T:
     """A field a python step of ``mode`` must carry."""
     if value is None:
         raise ValueError(f"a {mode}-mode python step requires {field!r}")
@@ -491,7 +491,10 @@ def flowmesh_spec(
     mode = data_spec.mode or "row"
     if mode == "join":
         code = join_step.join_source(
-            node_id, data_spec["join"], plan, TASK_RUNTIME_MOUNT
+            node_id,
+            _required(data_spec.join, "join", mode),
+            plan,
+            TASK_RUNTIME_MOUNT,
         )
     elif mode == "flatten":
         code = flatten_source(

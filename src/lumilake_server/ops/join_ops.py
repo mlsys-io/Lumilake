@@ -98,7 +98,7 @@ class JoinOp(Op):
         return self.spec.by
 
     @property
-    def missing(self) -> str:
+    def missing(self) -> Literal["null", "error"]:
         return self.spec.missing
 
     @property

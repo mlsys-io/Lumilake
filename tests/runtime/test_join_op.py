@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import ColumnPlanEntry, DataFrame, PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import join_step, python_step
@@ -77,12 +78,12 @@ def _merge(inputs: str, rest: str = "") -> str:
     )
 
 
-def _find(runtime: Any, **spec: Any) -> Any:
-    """The one runtime node whose data_spec matches every ``spec`` entry."""
+def _join_of(runtime: Any) -> Any:
+    """The runtime node that runs the join."""
     return next(
         node
         for node in runtime.nodes.values()
-        if all(node.data_spec.get(key) == value for key, value in spec.items())
+        if isinstance(node.data_spec, PythonData) and node.data_spec.mode == "join"
     )
 
 
@@ -94,7 +95,7 @@ def _build(ops: str) -> Any:
 
 
 def _join_node(ops: str) -> Any:
-    return _find(_build(ops), mode=join_step.JOIN_MODE)
+    return _join_of(_build(ops))
 
 
 _RUNTIME_MOUNT: dict[str, str] = {}
@@ -114,17 +115,17 @@ def _run(
     name: str = "run",
 ) -> dict[str, Any]:
     """Run the generated step over one staged result list per plan entry."""
-    plan = node.data_spec["plan"]
+    plan = node.data_spec.plan
     stages: dict[str, str] = {}
     for index, items in upstream.items():
-        stage = tmp_path / name / f"{plan[index]['node']}-{index}"
+        stage = tmp_path / name / f"{plan[index].node}-{index}"
         stage.mkdir(parents=True)
         (stage / "results.json").write_text(
             json.dumps({"task_id": "t", "result": {"items": items}})
         )
-        stages[plan[index]["node"]] = str(stage)
+        stages[str(plan[index].node)] = str(stage)
     code = join_step.join_source(
-        node.node_id, node.data_spec["join"], plan, python_step.TASK_RUNTIME_MOUNT
+        node.node_id, node.data_spec.join, plan, python_step.TASK_RUNTIME_MOUNT
     ).replace(python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"])
     namespace: dict[str, Any] = {}
     exec(code, namespace)
@@ -162,12 +163,12 @@ outputs:
 """,
         )
     )
-    merge = _find(runtime, mode=join_step.JOIN_MODE)
+    merge = _join_of(runtime)
     summary = next(
         node for node in runtime.nodes.values() if "Summary_" in node.node_id
     )
-    (entry,) = summary.data_spec["plan"]
-    assert entry == {"kind": "stage", "node": merge.node_id}
+    (entry,) = summary.data_spec.plan
+    assert entry == ColumnPlanEntry(kind="stage", node=merge.node_id)
     assert summary.dependencies == (merge.node_id,)
     assert runtime.output_node_map == {merge.node_id: "merged"}
     assert runtime.output_paths[merge.node_id] == "items.output"
@@ -262,10 +263,12 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
 """,
         )
     )
-    merge = _find(runtime, mode=join_step.JOIN_MODE)
-    ask = _find(runtime, type="dataframe")
-    (column,) = ask.data_spec["columns"]
-    assert column["node"] == merge.node_id
+    merge = _join_of(runtime)
+    ask = next(
+        node for node in runtime.nodes.values() if isinstance(node.data_spec, DataFrame)
+    )
+    (column,) = ask.data_spec.columns
+    assert column.node == merge.node_id
     # A join's per-row fields sit under the python envelope, as a list
     # Lambda's do, not at the declared path.
-    assert column["path"] == "value.items.output.text"
+    assert column.path == "value.items.output.text"

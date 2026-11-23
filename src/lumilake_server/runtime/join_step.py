@@ -5,15 +5,14 @@ holds no user code.
 """
 
 import json
-from typing import Any
 
-JOIN_MODE = "join"
+from lumilake_server.data_specs import ColumnPlanEntry, JoinDescription
 
 
 def join_source(
     op_id: str,
-    description: dict[str, Any],
-    plan: list[Any],
+    description: JoinDescription,
+    plan: list[ColumnPlanEntry],
     runtime_mount: str,
 ) -> str:
     """The python-task code for one lowered join."""
@@ -21,8 +20,11 @@ def join_source(
         op_id=op_id,
         module="lumilake_runtime",
         mount=runtime_mount,
-        join=json.dumps(description, ensure_ascii=False),
-        plan=json.dumps(plan, ensure_ascii=False),
+        join=json.dumps(description.model_dump(), ensure_ascii=False),
+        plan=json.dumps(
+            [entry.model_dump(exclude_none=True) for entry in plan],
+            ensure_ascii=False,
+        ),
     )
 
 

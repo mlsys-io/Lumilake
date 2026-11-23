@@ -5,14 +5,18 @@ keys by position. Consumers in an earlier phase read the join by its op id,
 which is its runtime node id, so only the join phase builds the step.
 """
 
-from typing import Any
-
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ColumnPlanEntry,
+    JoinDescription,
+    PythonData,
+)
 from lumilake_server.ops import DataOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMChatOp, LLMCompletionOp, LLMVisionOp
 from lumilake_server.ops.util_ops import FormatOp
-from lumilake_server.runtime import join_step, python_step
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
 from lumilake_server.runtime.runtime_graph.lowering import LoweringContext
 from lumilake_server.runtime.runtime_graph.outputs import (
@@ -104,12 +108,12 @@ def build_join_step(
 ) -> RuntimeOp:
     """Build a join's python step."""
     ctx.visited.add(op.id)
-    plan: list[dict[str, Any]] = []
+    plan: list[ColumnPlanEntry] = []
     dependencies: list[str] = []
     columns: list[int] = []
     for column in op.columns:
         columns.append(_planned(builder, op, column, ctx, plan, dependencies))
-    attach: list[list[Any]] = []
+    attach: list[tuple[str, int, int]] = []
     for field, target in op.attach_ops.items():
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
         if isinstance(target, FormatOp):
@@ -119,27 +123,27 @@ def build_join_step(
             )
         source = resolve_row_source(target, set(op.column_ids), ctx, consumer)
         attach.append(
-            [
+            (
                 field,
                 _planned(builder, op, target, ctx, plan, dependencies),
                 _planned(builder, op, source, ctx, plan, dependencies),
-            ]
+            )
         )
     node = builder._create_runtime_op(
         name=op.id,
-        task_type=python_step.TASK_TYPE,
-        data_spec={
-            "mode": join_step.JOIN_MODE,
-            "plan": plan,
-            "join": {
-                "node": op.id,
-                "by": op.by,
-                "inputs": columns,
-                "attach": attach,
-                "missing": op.missing,
-            },
-            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-        },
+        task_type=PYTHON_TASK_TYPE,
+        data_spec=PythonData(
+            mode="join",
+            plan=plan,
+            join=JoinDescription(
+                node=op.id,
+                by=op.by,
+                inputs=columns,
+                attach=attach,
+                missing=op.missing,
+            ),
+            timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+        ),
         model_spec={},
         inference_spec={},
         backend=python_step.BACKEND,
@@ -154,7 +158,7 @@ def _planned(
     join: JoinOp,
     column: Op,
     ctx: LoweringContext,
-    plan: list[dict[str, Any]],
+    plan: list[ColumnPlanEntry],
     dependencies: list[str],
 ) -> int:
     """The plan index reading one column's values, one per row."""
@@ -166,15 +170,15 @@ def _planned(
             " runtime node before the join"
         )
     node = runtime_ids[-1]
-    entry: dict[str, Any] = {"kind": "stage", "node": node}
+    entry = ColumnPlanEntry(kind="stage", node=node)
     output = builder._op_output(column)
     if output.needs_flatten:
-        entry["flatten"] = True
+        entry.flatten = True
     elif output.kind is OutputKind.ROW_LAMBDA:
         # A row step writes the typed value under ``value``.
-        entry["path"] = "value"
+        entry.path = "value"
     else:
-        entry["path"] = item_relative_path(output.path)
+        entry.path = item_relative_path(output.path)
     plan.append(entry)
     if node not in dependencies:
         dependencies.append(node)
