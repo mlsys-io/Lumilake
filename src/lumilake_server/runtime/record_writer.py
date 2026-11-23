@@ -148,8 +148,7 @@ class NodeRecords:
         )
 
     def identity_of(self, key: str | None, round_number: int) -> tuple[str, str] | None:
-        """The record a consumer names by key, whatever position it was stored
-        at."""
+        """The record a consumer names by key, whatever position it was stored at."""
         found = self._digest_at(key, round_number)
         if found is not None:
             digest, value = found
@@ -1489,8 +1488,7 @@ def _collect_node_records(
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
 ) -> tuple[dict[str, NodeRecords], dict[str, list[Mapping[str, Any]]]]:
-    """Read every finished node's records and items in the order it produced
-    them."""
+    """Read every finished node's records and items in the order it produced them."""
     produced: dict[str, list[Any]] = {}
     items_of: dict[str, list[Mapping[str, Any]]] = {}
     for node_id, task_id in node_task_map.items():

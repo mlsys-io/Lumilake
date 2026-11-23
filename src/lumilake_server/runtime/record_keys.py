@@ -50,8 +50,7 @@ def child_key(parent_key: str, child: int) -> str:
 
 
 def join_key_paths(data_spec: Mapping[str, Any]) -> list[str]:
-    """The paths a join's rows are keyed by: its ``by``, one path or a
-    composite."""
+    """The paths a join's rows are keyed by: its ``by``, one path or a composite."""
     return _path_list(_join_spec(data_spec).get("by"))
 
 
