@@ -506,9 +506,7 @@ def test_wrapper_refuses_a_seed_it_cannot_use(
 
 @pytest.mark.parametrize("mode", ["row", "expand"])
 def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
-    """A marked row keeps its slot without calling the function or reading its
-    seed, so a seed step that forwards the marker in that row's seed cell does
-    not fail the task."""
+    """A marked row keeps its slot unseeded instead of failing the task."""
     marker = {"_fail": {"op": "Parse"}}
     code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
     if mode == "expand":
