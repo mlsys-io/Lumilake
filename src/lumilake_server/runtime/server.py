@@ -3123,8 +3123,7 @@ class LumilakeServer:
         batch_request_info.data_profile_graph = merged_data_profile_graph
         batch_request_info.output_node_map = output_mapping
         # A reuse plan may drop a list-mode output node, so record the whole-list
-        # cardinality and fanout the merged graph declares before the plan
-        # removes it.
+        # cardinality and fanout the merged graph declares before the plan removes it.
         list_lambda_cardinality_nodes = merged_graph.list_lambda_cardinality_nodes()
         list_lambda_fanout_nodes = merged_graph.list_lambda_fanout_nodes()
 

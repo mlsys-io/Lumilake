@@ -671,8 +671,8 @@ def _submitted_job_seed(
     if len(seeds) > 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="one job carries workflows with different seeds; submit each"
-            " seed as its own job",
+            detail="one job carries workflows with different seeds; submit each seed as"
+            " its own job",
         )
     return seeds.pop() if seeds else 0
 
@@ -805,9 +805,8 @@ class JobStatusPayload(BaseModel):
     reuse_decisions: list[OpDecision] = Field(
         default_factory=list,
         description=(
-            "One hit-or-miss decision per op when the job asked to reuse the"
-            " record store, each with the first reason a miss ran; empty"
-            " otherwise."
+            "One hit-or-miss decision per op when the job asked to reuse the record"
+            " store, each with the first reason a miss ran; empty otherwise."
         ),
     )
 
@@ -4249,8 +4248,8 @@ async def get_job_result(
     summary="Get a record's lineage",
     description=(
         "Walk one stored record's input digests back through the records it was"
-        " computed from. The first entry is the record itself; each entry names"
-        " the job, round, task and worker that produced it."
+        " computed from. The first entry is the record itself; each entry names the"
+        " job, round, task and worker that produced it."
     ),
     response_description="Record lineage payload.",
     status_code=status.HTTP_200_OK,

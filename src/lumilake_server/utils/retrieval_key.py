@@ -30,8 +30,8 @@ def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
     if mode in (None, "sql"):
         return None
     return (
-        f"key is refused for mode {mode!r}; only a sql retrieval emits one row"
-        " per table row, so only its rows carry a column as their key"
+        f"key is refused for mode {mode!r}; only a sql retrieval emits one row per"
+        " table row, so only its rows carry a column as their key"
     )
 
 
