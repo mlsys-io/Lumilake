@@ -57,29 +57,22 @@ api_key  = "lm_pat_..."  # optional; falls back to LUMILAKE_API_KEY env or empty
 
 ### What writes it
 
-`lumilake init --deploy-dir <dir>` writes the file with the local stack
-URL read from that deployment's `.env`. Remote / hosted users should pass
-`base_url=` explicitly or set `LUMILAKE_BASE_URL`.
+`lumilake init --deploy-dir <dir>` writes the file with the local stack URL read from that deployment's `.env`. Remote / hosted users should pass `base_url=` explicitly or set `LUMILAKE_BASE_URL`.
 
 ### How clients resolve
 
-`from_config(path=...)` reads a specific config file directly; use it
-for tests or non-default installs. The default constructor resolves
-`base_url` (and `api_key`) through the precedence below.
+`from_config(path=...)` reads a specific config file directly; use it for tests or non-default installs. The default constructor resolves `base_url` (and `api_key`) through the precedence below.
 
 ### Authentication
 
-Both clients accept `api_key=` and resolve it together with `base_url`
-through a single `resolve_config()` call. Precedence:
+Both clients accept `api_key=` and resolve it together with `base_url` through a single `resolve_config()` call. Precedence:
 
 1. Explicit `base_url=` / `api_key=` constructor args.
 2. `LUMILAKE_BASE_URL` / `LUMILAKE_API_KEY` environment variables.
 3. Saved `~/.lumilake/config.toml` (written by `lumilake init`).
 4. Defaults: `base_url=http://127.0.0.1:9000`, `api_key=None`.
 
-When `api_key` resolves to a value, the SDK sends it as
-`Authorization: Bearer <api_key>` on every request. Deployments running
-with `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1` reject requests without it.
+When `api_key` resolves to a value, the SDK sends it as `Authorization: Bearer <api_key>` on every request. Deployments running with `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1` reject requests without it.
 
 ```python
 from lumilake import LumilakeClient
@@ -154,14 +147,9 @@ async for job in async_client.jobs.list_all():
 
 ### Dynamic workflows
 
-A dynamic workflow is a YAML document with a plaintext `goal` and a `driver`
-section; `name` is optional. The server owns the planning-agent loop: there is
-no Python block class to subclass and no block catalog. Each round the planner
-(an LLM) emits a small acyclic subgraph of ops that advances the goal, or
-`STOP`.
+A dynamic workflow is a YAML document with a plaintext `goal` and a `driver` section; `name` is optional. The server owns the planning-agent loop: there is no Python block class to subclass and no block catalog. Each round the planner (an LLM) emits a small acyclic subgraph of ops that advances the goal, or `STOP`.
 
-Submit a dynamic workflow to the server with `workflow_format="yaml"` (the
-YAML's root `type: dynamic` field marks it as dynamic):
+Submit a dynamic workflow to the server with `workflow_format="yaml"` (the YAML's root `type: dynamic` field marks it as dynamic):
 
 ```python
 from lumilake import LumilakeClient
@@ -183,62 +171,29 @@ with LumilakeClient(base_url="http://localhost:9000") as client:
     print(resp["job_id"])
 ```
 
-The payload is the server's `JobSubmitRequest` shape: a top-level `data` list,
-each item carrying `workflow` (the YAML text), `inputs`, and `output_location`.
-`output_location` is REQUIRED in every envelope item even when the YAML
-declares `driver.output_location` — the server only gives the YAML value
-precedence after request-model validation. The async client uses the same
-payload with `await client.jobs.submit(...)`.
+The payload is the server's `JobSubmitRequest` shape: a top-level `data` list, each item carrying `workflow` (the YAML text), `inputs`, and `output_location`. `output_location` is REQUIRED in every envelope item even when the YAML declares `driver.output_location` — the server only gives the YAML value precedence after request-model validation. The async client uses the same payload with `await client.jobs.submit(...)`.
 
-The server renders round 0, runs each round as a child job, validates each
-emitted subgraph, and stops on `STOP` or `max_rounds`. The parent job owns the
-run's traces and lifecycle. Each round runs one native graph:
+The server renders round 0, runs each round as a child job, validates each emitted subgraph, and stops on `STOP` or `max_rounds`. The parent job owns the run's traces and lifecycle. Each round runs one native graph:
 
-- the emitted subgraph runs first (each leaf is archived under a `leaf_<id>`
-  output, each exported op under an `export_<id>` output);
-- the observation LambdaOp computes numeric statistics and a bounded preview
-  of the subgraph's leaf outputs;
-- the proposer LLMChatOp sees the goal, all prior observations, and the overall
-  topology, and emits one structured plan: either `{"next": "STOP"}` or
-  `{"next": "subgraph", "ops": [...]}`.
+- the emitted subgraph runs first (each leaf is archived under a `leaf_<id>` output, each exported op under an `export_<id>` output);
+- the observation LambdaOp computes numeric statistics and a bounded preview of the subgraph's leaf outputs;
+- the proposer LLMChatOp sees the goal, all prior observations, and the overall topology, and emits one structured plan: either `{"next": "STOP"}` or `{"next": "subgraph", "ops": [...]}`.
 
-Within one run, a later round can reference an earlier round's node by id
-(an accumulated global node registry); nodes are immutable once created. A
-round never recomputes earlier nodes: the round graph contains only the ops
-emitted that round, and each reference to an earlier node is bound as a
-workflow input carrying that node's stored result. A node's result is
-available to later rounds when it was a leaf of its round (an op no other op
-of that round consumes) or the plan listed it under `export`. A reference to
-any other earlier node is rejected with an error naming it. A run targets one
-or more non-empty symbols. The parent's result carries the per-round plans.
+Within one run, a later round can reference an earlier round's node by id (an accumulated global node registry); nodes are immutable once created. A round never recomputes earlier nodes: the round graph contains only the ops emitted that round, and each reference to an earlier node is bound as a workflow input carrying that node's stored result. A node's result is available to later rounds when it was a leaf of its round (an op no other op of that round consumes) or the plan listed it under `export`. A reference to any other earlier node is rejected with an error naming it. A run targets one or more non-empty symbols. The parent's result carries the per-round plans.
 
-With several symbols, each round child is sliced like a static submission with
-`input_batch_size: 1`: one graph per symbol, merged back into one batch by the
-job manager, so every op emits one item per symbol and the stored round
-results and the observation cover all of them. Forwarded values bind per row:
-item `i` of an earlier result feeds symbol `i` only. A result that does not
-hold exactly one item per symbol fails the round with an error naming the op
-and the reference. A row value that is a list (a grouped reference, e.g. an
-aggregate table reading per-symbol summaries) is forwarded through a
-row-aligned materializer that decodes each row's JSON back to its list, so the
-consumer sees one group per row.
+With several symbols, each round child is sliced like a static submission with `input_batch_size: 1`: one graph per symbol, merged back into one batch by the job manager, so every op emits one item per symbol and the stored round results and the observation cover all of them. Forwarded values bind per row: item `i` of an earlier result feeds symbol `i` only. A result that does not hold exactly one item per symbol fails the round with an error naming the op and the reference. A row value that is a list (a grouped reference, e.g. an aggregate table reading per-symbol summaries) is forwarded through a row-aligned materializer that decodes each row's JSON back to its list, so the consumer sees one group per row.
 
-A subgraph plan may carry an optional `export` list of op ids from the same
-subgraph:
+A subgraph plan may carry an optional `export` list of op ids from the same subgraph:
 
 ```json
 {"next": "subgraph", "ops": [...], "export": ["top_sector"]}
 ```
 
-Each exported op must be an op of that plan's `ops`. Its whole result is
-archived (under `export_<id>`) next to the leaf results, so later rounds can
-reference a non-leaf op without recomputing it.
+Each exported op must be an op of that plan's `ops`. Its whole result is archived (under `export_<id>`) next to the leaf results, so later rounds can reference a non-leaf op without recomputing it.
 
 #### External planner endpoint (`driver.api`)
 
-By default the planner runs inside each round graph as a proposer op. Setting
-`driver.api` moves it out: the server calls an OpenAI-compatible
-chat-completions endpoint itself between rounds.
+By default the planner runs inside each round graph as a proposer op. Setting `driver.api` moves it out: the server calls an OpenAI-compatible chat-completions endpoint itself between rounds.
 
 ```yaml
 driver:
@@ -254,49 +209,25 @@ driver:
 - `url` — required; the full chat-completions URL.
 - `model` — model name sent in the request; defaults to `driver.model`.
 - `authorization` — optional; sent verbatim as the `Authorization` header.
-- `timeout_sec` — optional per-call timeout; defaults to the server HTTP
-  timeout (`LUMILAKE_HTTP_TIMEOUT_SECONDS`). Must be greater than zero.
-- `retries` — optional number of extra attempts after a failed call, default
-  `0`.
+- `timeout_sec` — optional per-call timeout; defaults to the server HTTP timeout (`LUMILAKE_HTTP_TIMEOUT_SECONDS`). Must be greater than zero.
+- `retries` — optional number of extra attempts after a failed call, default `0`.
 
 With `api` set:
 
-- round 0 dispatches no graph; the server calls the planner for the first
-  subgraph, and that subgraph runs as round 1 (`chain_round` is `1`);
-- each round graph holds only the emitted ops and their archived outputs
-  (leaves plus `export` entries); there is no observation lambda and no
-  proposer op;
-- after each round the server computes the observation from the stored leaf
-  results, builds the same system and user messages the in-graph proposer
-  receives, and POSTs `{model, messages, max_tokens, temperature}` (plus
-  `chat_template_kwargs` when `driver.chat_template_kwargs` is set) to `url`;
-- the reply text, `choices[0].message.content`, is validated as a plan exactly
-  like the in-graph proposer's output (`{"next": "STOP"}` or
-  `{"next": "subgraph", "ops": [...]}` with an optional `export`);
-- a failed call (after `retries`) or an invalid plan fails the parent job with
-  an error naming the endpoint or the plan problem;
-- `POST /jobs/preview` rejects the spec with 422: there is no round graph to
-  preview before the planner runs.
+- round 0 dispatches no graph; the server calls the planner for the first subgraph, and that subgraph runs as round 1 (`chain_round` is `1`);
+- each round graph holds only the emitted ops and their archived outputs (leaves plus `export` entries); there is no observation lambda and no proposer op;
+- after each round the server computes the observation from the stored leaf results, builds the same system and user messages the in-graph proposer receives, and POSTs `{model, messages, max_tokens, temperature}` (plus `chat_template_kwargs` when `driver.chat_template_kwargs` is set) to `url`;
+- the reply text, `choices[0].message.content`, is validated as a plan exactly like the in-graph proposer's output (`{"next": "STOP"}` or `{"next": "subgraph", "ops": [...]}` with an optional `export`);
+- a failed call (after `retries`) or an invalid plan fails the parent job with an error naming the endpoint or the plan problem;
+- `POST /jobs/preview` rejects the spec with 422: there is no round graph to preview before the planner runs.
 
-Submission compiles no graph for an api-driven spec: `hardware.gpu: 0` and the
-engine-sizing fields are not checked at submit, and each dispatched round's
-graph is checked when it runs.
+Submission compiles no graph for an api-driven spec: `hardware.gpu: 0` and the engine-sizing fields are not checked at submit, and each dispatched round's graph is checked when it runs.
 
-`driver.model`, `max_tokens`, `temperature`, and `chat_template_kwargs` still
-describe the planner request. The engine-sizing fields (`max_model_len`,
-`gpu_memory_utilization`, `dtype`, `extra_engine_kwargs`) configure the
-in-graph proposer and have no effect when `api` is set. Without `api`,
-behavior is unchanged.
+`driver.model`, `max_tokens`, `temperature`, and `chat_template_kwargs` still describe the planner request. The engine-sizing fields (`max_model_len`, `gpu_memory_utilization`, `dtype`, `extra_engine_kwargs`) configure the in-graph proposer and have no effect when `api` is set. Without `api`, behavior is unchanged.
 
 #### Fixed round templates (`driver.template`)
 
-A workload whose round body is fixed can declare `driver.template` instead of
-a planner: `first` runs as round 1, `next` as every later round, with
-`{{round}}` and `{{prev}}` rendered into every string a body carries. All three
-of `first`, `next` and `stop_when_empty` are required; a template is a loop
-that stops on data, and a fixed-count loop is a static workflow. The server
-stops before a round whose list-mode `LambdaOp` export held no rows. Template
-mode calls no planner and is mutually exclusive with `api`.
+A workload whose round body is fixed can declare `driver.template` instead of a planner: `first` runs as round 1, `next` as every later round, with `{{round}}` and `{{prev}}` rendered into every string a body carries. All three of `first`, `next` and `stop_when_empty` are required; a template is a loop that stops on data, and a fixed-count loop is a static workflow. The server stops before a round whose list-mode `LambdaOp` export held no rows. Template mode calls no planner and is mutually exclusive with `api`.
 
 ```yaml
 template:
@@ -318,43 +249,18 @@ The `driver:` YAML settings the server accepts are:
 - `max_rounds` — round limit, default `10`.
 - `max_nodes_per_round` — per-round subgraph node limit, default `8`.
 - `threshold` — sufficiency threshold, default `None`.
-- `chat_template_kwargs` — chat-template kwargs for the proposer, default
-  `None`. Use it to turn off a reasoning model's thinking mode (Qwen3:
-  `{enable_thinking: false}`), which otherwise consumes the token budget
-  the plan has to fit behind.
-- `max_model_len` — proposer engine max model length, default `None` (the
-  server-wide `LUMILAKE_VLLM_MAX_MODEL_LEN` default applies). Must be a
-  positive integer when given. Sizes the planner's vLLM KV cache per job, so
-  one job does not dictate engine sizing for every other job on the deployment.
-- `gpu_memory_utilization` — proposer engine GPU memory utilization, default
-  `None`; must be in `(0, 1]` when given.
-- `dtype` — proposer engine data type, default `None` (the model's native dtype
-  applies). Must be a non-empty string when given; the backend rejects values it
-  does not support.
-- `extra_engine_kwargs` — extra proposer engine options with no typed field,
-  default `None`. This is the route for `quantization` (e.g. `{quantization:
-  fp8}` or `{quantization: awq}`) to serve a quantized model.
-- `output_location` — OPTIONAL S3 destination. When omitted, the envelope's
-  item-level `output_location` is used. S3 outputs receive a unique
-  run-and-round suffix. DB output locations are rejected: the server has no DB
-  writer, so a DB destination cannot be produced.
+- `chat_template_kwargs` — chat-template kwargs for the proposer, default `None`. Use it to turn off a reasoning model's thinking mode (Qwen3: `{enable_thinking: false}`), which otherwise consumes the token budget the plan has to fit behind.
+- `max_model_len` — proposer engine max model length, default `None` (the server-wide `LUMILAKE_VLLM_MAX_MODEL_LEN` default applies). Must be a positive integer when given. Sizes the planner's vLLM KV cache per job, so one job does not dictate engine sizing for every other job on the deployment.
+- `gpu_memory_utilization` — proposer engine GPU memory utilization, default `None`; must be in `(0, 1]` when given.
+- `dtype` — proposer engine data type, default `None` (the model's native dtype applies). Must be a non-empty string when given; the backend rejects values it does not support.
+- `extra_engine_kwargs` — extra proposer engine options with no typed field, default `None`. This is the route for `quantization` (e.g. `{quantization: fp8}` or `{quantization: awq}`) to serve a quantized model.
+- `output_location` — OPTIONAL S3 destination. When omitted, the envelope's item-level `output_location` is used. S3 outputs receive a unique run-and-round suffix. DB output locations are rejected: the server has no DB writer, so a DB destination cannot be produced.
 
-A non-default `poll_interval` is REJECTED server-side (the server runs the
-loop, so there is nothing to poll). Output-location writes are best-effort on
-the server: a write failure is logged while the job can still be recorded as
-completed, so `output_location` is not a durability guarantee.
+A non-default `poll_interval` is REJECTED server-side (the server runs the loop, so there is nothing to poll). Output-location writes are best-effort on the server: a write failure is logged while the job can still be recorded as completed, so `output_location` is not a durability guarantee.
 
-A dynamic spec may declare a `library:` section: named, pre-configured op
-templates the planner can emit by id. Each entry is a full op config (e.g. a
-`DataRetrievalOp` with a real SQL template). The planner references one with
-`{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is
-authoritative for its config, so the planner may only override `id` and
-`inputs`. Ops without a `ref` are emitted fully inline. The planner sees the
-library (id, op type, key config) in its system message each round.
+A dynamic spec may declare a `library:` section: named, pre-configured op templates the planner can emit by id. Each entry is a full op config (e.g. a `DataRetrievalOp` with a real SQL template). The planner references one with `{"ref": "<id>", "id": <unique>, "inputs": [...]}`; the template is authoritative for its config, so the planner may only override `id` and `inputs`. Ops without a `ref` are emitted fully inline. The planner sees the library (id, op type, key config) in its system message each round.
 
-The parent job's result carries the per-round plans. Missing, malformed,
-unknown, or wrongly typed plan output fails the parent; it never becomes a
-successful termination.
+The parent job's result carries the per-round plans. Missing, malformed, unknown, or wrongly typed plan output fails the parent; it never becomes a successful termination.
 
 ## Timeouts
 

@@ -28,9 +28,9 @@ classifiers = [
 dependencies = ["httpx>=0.27.0,<1"]
 
 [project.urls]
-Homepage = "https://github.com/mlsys-io/lumilake_OSS"
-Repository = "https://github.com/mlsys-io/lumilake_OSS"
-Issues = "https://github.com/mlsys-io/lumilake_OSS/issues"
+Homepage = "https://github.com/mlsys-io/Lumilake"
+Repository = "https://github.com/mlsys-io/Lumilake"
+Issues = "https://github.com/mlsys-io/Lumilake/issues"
 
 [project.optional-dependencies]
 sdk = ["lumilake-sdk==0.1.10"]

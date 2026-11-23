@@ -60,9 +60,7 @@ Multiple plugins are comma-separated. Plugins should expose an `install()` funct
 
 ### Layout
 
-A plugin is an ordinary Python package whose top-level module exposes an
-`install()` callable. The example layout under
-`examples/plugins/simple_plugin/` is:
+A plugin is an ordinary Python package whose top-level module exposes an `install()` callable. The example layout under `examples/plugins/simple_plugin/` is:
 
 ```text
 simple_plugin/
@@ -100,14 +98,11 @@ def install() -> BaseBindings:
     )
 ```
 
-`BaseBindings` (re-exported from `lumilake_hook`) is the default
-`HookBindings` implementation. A plugin only needs to populate the
-fields it actually overrides.
+`BaseBindings` (re-exported from `lumilake_hook`) is the default `HookBindings` implementation. A plugin only needs to populate the fields it actually overrides.
 
 ### `install()` shapes
 
-The server accepts three shapes; pick whichever matches the
-implementation:
+The server accepts three shapes; pick whichever matches the implementation:
 
 - **Plain function** returning `HookBindings`:
 
@@ -116,8 +111,7 @@ implementation:
       return BaseBindings(...)
   ```
 
-- **Async function** returning `HookBindings`. Use when setup needs to
-  await I/O at boot:
+- **Async function** returning `HookBindings`. Use when setup needs to await I/O at boot:
 
   ```python
   async def install() -> HookBindings:
@@ -125,9 +119,7 @@ implementation:
       return BaseBindings(usage_sinks=(MyUsageSink(client),))
   ```
 
-- **Async context manager** yielding `HookBindings`. Use when the
-  plugin owns resources that need clean shutdown (the server enters the
-  context at startup and exits it on shutdown):
+- **Async context manager** yielding `HookBindings`. Use when the plugin owns resources that need clean shutdown (the server enters the context at startup and exits it on shutdown):
 
   ```python
   from contextlib import asynccontextmanager
@@ -143,9 +135,7 @@ implementation:
 
 ### Local testing
 
-Plugins are loaded inside the server process, so test against a source
-checkout. Set `PYTHONPATH` to the directory that contains the plugin
-package and list the module name in `LUMILAKE_PLUGINS`:
+Plugins are loaded inside the server process, so test against a source checkout. Set `PYTHONPATH` to the directory that contains the plugin package and list the module name in `LUMILAKE_PLUGINS`:
 
 ```bash
 export PYTHONPATH=$PWD/examples/plugins
@@ -154,21 +144,11 @@ uv run lumilake deploy -C ~/lumilake-deploy up
 uv run lumilake deploy -C ~/lumilake-deploy logs server --tail 100
 ```
 
-The server logs `Plugin '<name>' registered.` on success. A plugin that
-imports, defines `install()`, but returns something other than
-`HookBindings` (or whose `install()` raises) is logged with
-`Plugin '<name>' install() failed validation; skipping` — the server
-boots without it instead of crashing. Watch the log for this line when a
-new plugin appears not to take effect.
+The server logs `Plugin '<name>' registered.` on success. A plugin that imports, defines `install()`, but returns something other than `HookBindings` (or whose `install()` raises) is logged with `Plugin '<name>' install() failed validation; skipping` — the server boots without it instead of crashing. Watch the log for this line when a new plugin appears not to take effect.
 
 ### Unit tests
 
-Tests can call `install()` directly and inspect the returned bindings,
-or feed the bindings into `lumilake_server.hooks.register()` and drive
-the resulting providers from `lumilake_server.hooks.*`. See
-`tests/server/test_simple_plugin_e2e.py` for a worked example covering
-identity, submission, permissions, registrar, usage, and optimizer
-behavior end-to-end.
+Tests can call `install()` directly and inspect the returned bindings, or feed the bindings into `lumilake_server.hooks.register()` and drive the resulting providers from `lumilake_server.hooks.*`. See `tests/server/test_simple_plugin_e2e.py` for a worked example covering identity, submission, permissions, registrar, usage, and optimizer behavior end-to-end.
 
 ## Schedule Protocol Contract
 
