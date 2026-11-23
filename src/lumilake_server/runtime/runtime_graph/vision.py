@@ -214,9 +214,9 @@ class _VisionBuilder(_RetrievalBuilder):
         # and a regroup python step (back to one item per symbol). The image
         # source is the group boundary: it defines the per-symbol image counts,
         # and every other grouped column must match them.
+        image_node = embedding_data_spec.node
         image_path = embedding_data_spec.path
-        if image_path is None:
-            raise ValueError(f"Per-row VLM '{llm_op_id}' image source has no path")
+        assert image_node is not None and image_path is not None
         if not image_path.startswith("items."):
             raise ValueError(
                 f"Per-row VLM '{llm_op_id}' image path '{image_path}' must"
@@ -224,12 +224,13 @@ class _VisionBuilder(_RetrievalBuilder):
             )
         image_entry = ColumnPlanEntry(
             kind="stage",
-            node=embedding_data_spec.node,
+            node=image_node,
             path=image_path[len("items.") :],
             label=batch_column.label,
             grouped=True,
         )
         plan: list[ColumnPlanEntry] = [image_entry]
+        flatten_deps = [image_node]
         for c in columns:
             if isinstance(c.data, ListData):
                 if not isinstance(c.data.items, list):
@@ -277,13 +278,9 @@ class _VisionBuilder(_RetrievalBuilder):
                     grouped=isinstance(up, DataRetrievalOp),
                 )
             )
+            flatten_deps.append(c.node)
 
         flatten_id = f"{llm_op_id}_flatten"
-        flatten_deps = list(
-            dict.fromkeys(
-                e.node for e in plan if e.kind == "stage" and e.node is not None
-            )
-        )
         flatten = self._create_runtime_op(
             name=flatten_id,
             task_type=PYTHON_TASK_TYPE,
@@ -297,7 +294,7 @@ class _VisionBuilder(_RetrievalBuilder):
             inference_spec={},
             backend=python_step.BACKEND,
             model="",
-            dependencies=flatten_deps,
+            dependencies=list(dict.fromkeys(flatten_deps)),
         )
 
         infer_id = f"{llm_op_id}_infer"
@@ -333,13 +330,7 @@ class _VisionBuilder(_RetrievalBuilder):
             source_op=llm_op,
         )
 
-        regroup_deps = list(
-            dict.fromkeys(
-                dep
-                for dep in (infer_id, flatten_id, image_entry.node)
-                if dep is not None
-            )
-        )
+        regroup_deps = list(dict.fromkeys([infer_id, flatten_id, image_node]))
         regroup = self._create_runtime_op(
             name=llm_op_id,
             task_type=PYTHON_TASK_TYPE,
@@ -386,7 +377,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 raise ValueError(
                     f"Image inputs for '{image_source_op.name}' must be a list."
                 )
-            embedding_data_spec = ListData(type="list", items=image_items)
+            embedding_data_spec = ListData(items=image_items)
             batch_column = Column(
                 label=f"{image_source_op.id}_batch",
                 data=ListData(items=["" for _ in range(len(image_items))]),
@@ -397,9 +388,7 @@ class _VisionBuilder(_RetrievalBuilder):
             resolved_path = (
                 "items.image" if llm_op.image_path == "images" else llm_op.image_path
             )
-            embedding_data_spec = ListData(
-                type="list", node=image_source_id, path=resolved_path
-            )
+            embedding_data_spec = ListData(node=image_source_id, path=resolved_path)
             batch_column = Column(
                 label=f"{image_source_id}_batch",
                 node=image_source_id,
@@ -413,9 +402,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 if llm_op.image_path != "images"
                 else self._op_output(image_source_op).path
             )
-            embedding_data_spec = ListData(
-                type="list", node=image_source_id, path=image_path
-            )
+            embedding_data_spec = ListData(node=image_source_id, path=image_path)
             batch_column = Column(
                 label=f"{image_source_id}_batch",
                 node=image_source_id,

@@ -63,7 +63,7 @@ class _MessagesBuilder(_DerivedBuilder):
                 raise ValueError(
                     f"{consumer} reads {node!r}, which has no values supplied"
                 )
-            return ListData(type="list", items=_decoded(values, consumer)), []
+            return ListData(items=_decoded(values, consumer)), []
         output = self._op_output(upstream)
         if output.needs_flatten:
             raise ValueError(
@@ -84,7 +84,7 @@ class _MessagesBuilder(_DerivedBuilder):
             )
         path = output.read(column.path or _WHOLE, consumer)
         return (
-            ListData(type="list", node=runtime_ids[-1], path=path),
+            ListData(node=runtime_ids[-1], path=path),
             [runtime_ids[-1]],
         )
 

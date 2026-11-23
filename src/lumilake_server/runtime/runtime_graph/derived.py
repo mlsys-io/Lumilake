@@ -118,18 +118,18 @@ class _DerivedBuilder(_VisionBuilder):
         if isinstance(values, list):
             if not values:
                 raise ValueError(f"{consumer} requires at least one query")
-            return ListData(type="list", items=values), [], []
+            return ListData(items=values), [], []
         if values.needs_flatten:
             # A grouped upstream yields one item per table, so only a python
             # step can expand it to one value per row.
             step = self._flatten_step(op_id, values)
             return (
-                ListData(type="list", items=f"${{{step.node_id}.value.items}}"),
+                ListData(items=f"${{{step.node_id}.value.items}}"),
                 [step.node_id],
                 [step],
             )
         return (
-            ListData(type="list", node=values.node, path=values.path),
+            ListData(node=values.node, path=values.path),
             [values.node],
             [],
         )
@@ -191,7 +191,6 @@ class _DerivedBuilder(_VisionBuilder):
         if isinstance(query_values, list) and isinstance(candidate_values, list):
             pairs = literal_pairs(query_values, candidate_values, op_id=op_id)
             data_spec = ListData(
-                type="list",
                 items=[
                     {"text": pair.query, "text_pair": pair.candidate} for pair in pairs
                 ],
@@ -226,7 +225,7 @@ class _DerivedBuilder(_VisionBuilder):
                     dependencies=pairs_dependencies or None,
                 )
             )
-            data_spec = ListData(type="list", items=f"${{{pairs_node_id}.value.items}}")
+            data_spec = ListData(items=f"${{{pairs_node_id}.value.items}}")
             dependencies = [pairs_node_id]
 
         backend = op.config.backend

@@ -62,9 +62,7 @@ def _published_blobs(
 
 def _spec(node: Any) -> dict[str, Any]:
     return python_step.flowmesh_spec(
-        node.node_id,
-        node.data_spec,
-        _published_blobs(node.data_spec.plan),
+        node.node_id, node.data_spec, _published_blobs(node.data_spec.plan)
     )
 
 
@@ -426,10 +424,7 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
     llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
     out = _run_wrapper(
         "def join(inputs):\n    return '-'.join(inputs)\n",
-        [
-            {"kind": "stage", "node": "llm"},
-            {"kind": "literal", "values": ["x"]},
-        ],
+        [{"kind": "stage", "node": "llm"}, {"kind": "literal", "values": ["x"]}],
         {"llm": llm_dir},
     )
     assert out == {
@@ -450,10 +445,7 @@ def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
     api_dir = _stage(tmp_path, "api", {"text": "t"})
     out = _run_wrapper(
         "lambda inputs: inputs[0] + inputs[1]",
-        [
-            {"kind": "stage", "node": "py"},
-            {"kind": "stage", "node": "api"},
-        ],
+        [{"kind": "stage", "node": "py"}, {"kind": "stage", "node": "api"}],
         {"py": py_dir, "api": api_dir},
     )
     assert out == {"items": [{"output": "pt", "value": "pt"}]}

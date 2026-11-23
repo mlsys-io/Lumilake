@@ -208,7 +208,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f"ImageGenerationOp '{llm_op_id}' content references"
                         f" InputOp {content_op.name!r} with no values supplied."
                     )
-                content_data_spec = ListData(type="list", items=list(items))
+                content_data_spec = ListData(items=list(items))
                 content_dependencies: list[str] = []
             else:
                 self._guard_single_row_node_ref(
@@ -218,9 +218,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     kind="content",
                 )
                 content_path = self._op_output(content_op).path
-                content_data_spec = ListData(
-                    type="list", node=content_op.id, path=content_path
-                )
+                content_data_spec = ListData(node=content_op.id, path=content_path)
                 content_dependencies = [content_op.id]
             return self._create_runtime_op(
                 name=llm_op_id,
@@ -276,10 +274,10 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f"LLMCompletionOp '{llm_op_id}' prompt input "
                         f"{prompt_op.name!r} has no values supplied"
                     )
-                data_spec = ListData(type="list", items=list(prompt_values))
+                data_spec = ListData(items=list(prompt_values))
                 row_dependencies: list[str] = []
             elif isinstance(prompt_op, DataOp):
-                data_spec = ListData(type="list", items=list(prompt_op.data))
+                data_spec = ListData(items=list(prompt_op.data))
                 row_dependencies = []
             else:
                 if not (
@@ -292,7 +290,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         " not produce one prompt string per row"
                     )
                 prompt_path = self._op_output(prompt_op).path
-                data_spec = ListData(type="list", node=prompt_op.id, path=prompt_path)
+                data_spec = ListData(node=prompt_op.id, path=prompt_path)
                 row_dependencies = [prompt_op.id]
             return self._create_runtime_op(
                 name=llm_op_id,

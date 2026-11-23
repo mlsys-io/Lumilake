@@ -332,9 +332,7 @@ def literal_blob(entry: ColumnPlanEntry) -> PublishedBlob | None:
     )
 
 
-def literal_blobs(
-    plan: ColumnPlan,
-) -> dict[str, PublishedBlob]:
+def literal_blobs(plan: ColumnPlan) -> dict[str, PublishedBlob]:
     """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
     blobs: dict[str, PublishedBlob] = {}
     for entry in plan:
@@ -466,13 +464,7 @@ def flowmesh_spec(
     spec["blobs"] = [_blob_entry(runtime)] + [
         _blob_entry(blob) for blob in literal_mounts
     ]
-    stages = list(
-        dict.fromkeys(
-            entry.node
-            for entry in plan
-            if entry.kind == "stage" and entry.node is not None
-        )
-    )
+    stages = list(dict.fromkeys(entry.node for entry in plan if entry.kind == "stage"))
     if stages:
         spec["inputs"] = [{"stage": stage} for stage in stages]
     if data_spec.memory_mb is not None:

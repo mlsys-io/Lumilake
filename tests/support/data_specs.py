@@ -12,8 +12,17 @@ def wire(op: RuntimeOp) -> dict[str, Any]:
 
 
 def runtime_op(
-    node_id: str, task_type: str, backend: str, model: str, data_spec: dict, *a, **kw
+    node_id: str,
+    task_type: str,
+    backend: str,
+    model: str,
+    data_spec: dict[str, Any],
+    model_spec: dict[str, Any],
+    inference_spec: dict[str, Any],
+    **fields: Any,
 ) -> RuntimeOp:
     """A runtime op whose ``data_spec`` is parsed from its dict."""
     spec = parse_data_spec(task_type, data_spec)
-    return RuntimeOp(node_id, task_type, backend, model, spec, *a, **kw)
+    return RuntimeOp(
+        node_id, task_type, backend, model, spec, model_spec, inference_spec, **fields
+    )
