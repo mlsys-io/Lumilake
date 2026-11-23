@@ -74,9 +74,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 ### Scheduling policy
 
-`LUMILAKE_SCHEDULER_POLICY` selects how the scheduler orders a batch:
-`default` (per-user round-robin with affinity clustering), `fifo`, `spt`,
-`lpt`, `plas`, or `cohort_pack` (see `docs/SCHEDULING.md`).
+`LUMILAKE_SCHEDULER_POLICY` selects how the scheduler orders a batch: `default` (per-user round-robin with affinity clustering), `fifo`, `spt`, `lpt`, `plas`, or `cohort_pack` (see `docs/SCHEDULING.md`).
 
 | Key | Purpose |
 |-----|---------|
@@ -126,10 +124,7 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 
 ## Hardware Requirements
 
-Used by FlowMesh worker placement as the fallback when a job does not pass an
-explicit per-job override (see `lumilake job submit --cpu / --memory / --gpu
-/ --gpu-memory / --hardware-json`). Overrides merge field-by-field against
-these defaults — unset fields fall back here.
+Used by FlowMesh worker placement as the fallback when a job does not pass an explicit per-job override (see `lumilake job submit --cpu / --memory / --gpu / --gpu-memory / --hardware-json`). Overrides merge field-by-field against these defaults — unset fields fall back here.
 
 | Key | Purpose |
 |-----|---------|
@@ -138,21 +133,9 @@ these defaults — unset fields fall back here.
 | `HARDWARE_GPU_REQUIREMENT` | GPUs per worker. Defaults to `1`. |
 | `HARDWARE_GPU_MEMORY_REQUIREMENT` | GPU memory per worker. Defaults to `8Gi`. |
 
-Jobs with different per-job override tuples (the raw ``hardware`` payload —
-``None`` is its own partition, ``{"cpu": 8}`` is another, ``{"cpu": 8,
-"memory": "16Gi"}`` is another) land in distinct FlowMesh dispatches because
-a single FlowMesh task spec carries one hardware tuple. The partition is
-keyed on the raw override, not the env-resolved value, so two jobs that
-happen to resolve to the same effective spec via env defaults still split.
+Jobs with different per-job override tuples (the raw ``hardware`` payload — ``None`` is its own partition, ``{"cpu": 8}`` is another, ``{"cpu": 8, "memory": "16Gi"}`` is another) land in distinct FlowMesh dispatches because a single FlowMesh task spec carries one hardware tuple. The partition is keyed on the raw override, not the env-resolved value, so two jobs that happen to resolve to the same effective spec via env defaults still split.
 
-The worker filter is role-aware: ``cpu`` and ``memory`` filter every worker
-(CPU and GPU), but ``gpu`` and ``gpu_memory`` only filter GPU-capable
-workers. A mixed CPU+GPU graph that sets ``gpu=1`` therefore still picks up
-CPU workers for its CPU ops; ``gpu`` is not a job-wide "GPU workers only"
-switch.
-Submitting `--gpu 0` against a workflow that contains a GPU op (vLLM /
-transformers / diffusers / text-to-image) is rejected with a clear error
-before the optimizer runs.
+The worker filter is role-aware: ``cpu`` and ``memory`` filter every worker (CPU and GPU), but ``gpu`` and ``gpu_memory`` only filter GPU-capable workers. A mixed CPU+GPU graph that sets ``gpu=1`` therefore still picks up CPU workers for its CPU ops; ``gpu`` is not a job-wide "GPU workers only" switch. Submitting `--gpu 0` against a workflow that contains a GPU op (vLLM / transformers / diffusers / text-to-image) is rejected with a clear error before the optimizer runs.
 
 ## FlowMesh TLS and Worker Config
 
@@ -170,17 +153,9 @@ Picked up by the bundled FlowMesh deploy helpers.
 | `SERVER_TLS_DIR` | Directory holding FlowMesh server gRPC TLS certs, in `.env.flowmesh`. Empty disables TLS. |
 | `SERVER_WORKER_CONFIG` | Path to a FlowMesh worker config override, in `.env.flowmesh`. |
 
-A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG`
-or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh`
-directory, beside its `.env.flowmesh`. `FLOWMESH_PLUGIN_DATA_DIR` does too,
-so each deployment mounts its own `.flowmesh/plugin-data` rather than the
-bundled stack's folder; a bare name there selects a named Docker volume
-instead.
+A relative path in `REDIS_TLS_DIR`, `SERVER_TLS_DIR`, `SERVER_WORKER_CONFIG` or `FLOWMESH_PLUGIN_DIR` resolves under the deployment's `.flowmesh` directory, beside its `.env.flowmesh`. `FLOWMESH_PLUGIN_DATA_DIR` does too, so each deployment mounts its own `.flowmesh/plugin-data` rather than the bundled stack's folder; a bare name there selects a named Docker volume instead.
 
-`lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that
-also run another FlowMesh stack, check the common defaults before
-`deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis
-telemetry `6380`.
+`lumilake deploy init --flowmesh` writes `.env.flowmesh`. On hosts that also run another FlowMesh stack, check the common defaults before `deploy up`: HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`.
 
 ## SDK / CLI Client
 

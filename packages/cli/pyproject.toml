@@ -29,8 +29,8 @@ classifiers = [
 deploy = ["lumilake-deploy==0.1.10"]
 
 [project.urls]
-Homepage = "https://github.com/mlsys-io/lumilake_OSS"
-Repository = "https://github.com/mlsys-io/lumilake_OSS"
+Homepage = "https://github.com/mlsys-io/Lumilake"
+Repository = "https://github.com/mlsys-io/Lumilake"
 
 [project.scripts]
 lumilake = "lumilake_cli.cli:main"

@@ -43,6 +43,7 @@ This guide collects rules agents and contributors should apply before editing so
 - Docstrings and comments describe current behavior, not what the code replaced.
 - Do not leave source-history breadcrumbs such as "old path", "replacement for", or "previously".
 - Do not add hardcoded file-path examples that will drift; point to the owning doc or command instead.
+- Write Markdown docs with one line per paragraph and one line per list item; do not hard-wrap them.
 
 ## Deploy and Runtime
 

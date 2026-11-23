@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import queue
 from pathlib import Path
@@ -18,6 +19,7 @@ from support.runtime_server import (
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
+from lumilake_server.data_specs import Column, DataFrame, ListData
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -1414,12 +1416,13 @@ def _install_list_lambda_downstream_build_and_schedule(
 
 
 def _install_rowwise_python_downstream_build_and_schedule(
-    server: Any, output_name: str
+    server: Any, output_name: str, mixed_read: str | None = None
 ) -> None:
     """Fake build/schedule with a list-mode python node feeding a row-mode
     python step whose output is the workflow output. The row-mode step runs
     once per upstream element and emits one output per element, so it does NOT
-    follow the list Lambda's cardinality."""
+    follow the list Lambda's cardinality. ``mixed_read`` also reads the job's
+    input rows."""
 
     def _fake_build(
         compiled_graph: Any,
@@ -1439,16 +1442,33 @@ def _install_rowwise_python_downstream_build_and_schedule(
             model_spec={},
             inference_spec={},
         )
+        plan: list[dict[str, Any]] = [{"kind": "stage", "node": lambda_id}]
+        if mixed_read == "plan":
+            plan.insert(0, {"kind": "literal", "values": []})
+        row_spec: dict[str, Any] = {} if mixed_read is None else {"plan": plan}
         row_op = runtime_op(
             node_id=row_id,
             task_type="python",
             backend="python",
             model="",
-            data_spec={},
+            data_spec=row_spec,
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
         )
+        if mixed_read == "column":
+            row_op = dataclasses.replace(
+                row_op,
+                data_spec=DataFrame(
+                    type="dataframe",
+                    columns=[
+                        Column(
+                            data=ListData(type="list", items=["NVDA", "AAPL"]),
+                        ),
+                        Column(node=lambda_id, path="items"),
+                    ],
+                ),
+            )
         output_node_map = (
             {} if task_type_override == "data_profile" else {row_id: output_name}
         )
@@ -1615,7 +1635,7 @@ async def test_list_lambda_output_multi_slice_run_fails_closed(
     resp = handlers["req-slices"].results[0]
     assert resp.error_info is not None
     assert any(
-        "List-Lambda output cannot be split across slices" in str(item)
+        "Whole-run output cannot be split across slices" in str(item)
         for item in resp.error_info
     )
 
@@ -1909,32 +1929,46 @@ async def test_list_lambda_output_two_values_for_one_row_slice_fails_closed(
     )
 
 
+@pytest.mark.parametrize(
+    "slice_lengths, mixed_read",
+    [
+        pytest.param([2], None, id="list-lambda-fanout"),
+        pytest.param([1, 1], "plan", id="input-rows-beside-a-list-lambda"),
+        pytest.param([1, 1], "column", id="input-column-beside-a-list-lambda"),
+    ],
+)
 @pytest.mark.asyncio
 async def test_rowwise_python_downstream_list_lambda_returns_every_value(
     server_factory,
     monkeypatch: pytest.MonkeyPatch,
+    slice_lengths: list[int],
+    mixed_read: str | None,
 ) -> None:
     """A row-mode python step downstream of a list-mode Lambda runs once per
     upstream element and emits one output per element. Its output must surface
     every value (one per input row), not be forced into the list-Lambda
-    one-whole-list path and rejected as a length mismatch."""
+    one-whole-list path and rejected as a length mismatch. A step that also
+    reads the job's input rows keeps the input's row count across slices."""
     server = server_factory()
     server.runtime_manager = cast(
         Any,
         _RowwisePythonDownstreamListLambdaRuntimeManager(
-            items=[{"output": "tagged:NVDA"}, {"output": "tagged:AAPL"}]
+            items=[{"output": f"tagged:{name}"} for name in ("NVDA", "AAPL")]
         ),
     )
 
     workflows = [
         make_workflow(
-            workflow_id="wf-rowwise-python-downstream",
+            workflow_id=f"wf-rowwise-python-downstream-{index}",
             request_id="req-rowwise-python-downstream",
             graph_name="ga",
             public_graph_name="shared",
-            slice_length=2,
-            total_length=2,
-        ),
+            slice_index=index,
+            slice_start=sum(slice_lengths[:index]),
+            slice_length=length,
+            total_length=sum(slice_lengths),
+        )
+        for index, length in enumerate(slice_lengths)
     ]
     handlers = attach_request_states(server, workflows)
     batch = make_batch(workflows)
@@ -1944,7 +1978,7 @@ async def test_rowwise_python_downstream_list_lambda_returns_every_value(
         "_merge_group_compiled_graph",
         lambda items: cast(Any, SimpleNamespace(_coalesce_rewrite_hits={})),
     )
-    _install_rowwise_python_downstream_build_and_schedule(server, "out")
+    _install_rowwise_python_downstream_build_and_schedule(server, "out", mixed_read)
 
     await server._run_batch(["worker-1"], batch)
 
