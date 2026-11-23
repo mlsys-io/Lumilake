@@ -1394,7 +1394,7 @@ class FlowmeshRuntimeManager:
         tid: str,
         node_id: str,
     ) -> dict[str, Any]:
-        """Archive a task's redacted FlowMesh response and return it as JSON."""
+        """Archive a task's redacted FlowMesh response and return a JSON object."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"

@@ -243,7 +243,7 @@ def _sql_data_spec(
     node_name: str,
     table: str | None = None,
 ) -> dict[str, Any]:
-    """The retrieval spec of an n8n postgres node and its notes' rows."""
+    """The n8n postgres node's retrieval spec, with its notes' ``rows`` declaration."""
     raw: dict[str, Any] = {
         "type": "lumid",
         "mode": "sql",
