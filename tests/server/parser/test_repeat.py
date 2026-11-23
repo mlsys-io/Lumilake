@@ -51,8 +51,9 @@ def _repeat(
     )
 
 
-def _graph(ops: str, outputs: str = "") -> dict:
-    return parse_yaml_payload(f"{_HEADER}ops:\n{ops}{outputs}")["repeat"]["graph"]
+def _graph(ops: str, outputs: str = "", *, round_number: int | None = None) -> dict:
+    text = f"{_HEADER}ops:\n{ops}{outputs}"
+    return parse_yaml_payload(text, round_number=round_number)["repeat"]["graph"]
 
 
 def _named(graph: dict, name: str) -> dict:
@@ -101,32 +102,24 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     assert len(list(compiled.iter_ops(LambdaOp))) == 6
 
 
-def test_a_body_chat_op_draws_a_different_seed_each_iteration() -> None:
-    step = (
-        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m, seed: 7}, "
-        "messages: [{role: user, content: x}]}\n"
+def _draws(round_number: int | None) -> list[str]:
+    body = _chat("Ask", "$in").replace(
+        "rowwise_template: x,",
+        "rowwise_template: x, rowwise_seed: {key: {node: $in,"
+        " path: items.output.value}, pairing: shared},",
     )
-
-    def seeds() -> list[int]:
-        graph = _graph(_repeat("2", "Start", "Ask", step))
-        return [o["config"]["seed"] for o in graph.values() if o["_op"] == "LLMChatOp"]
-
-    drawn = seeds()
-    assert len(drawn) == 2 and drawn[0] != drawn[1]
-    assert all(0 <= seed < 2**31 for seed in drawn) and seeds() == drawn
+    graph = _graph(_repeat("2", "Start", "Ask", body), round_number=round_number)
+    return [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
 
 
-def test_a_body_keyed_seed_draws_its_iteration_round_from_the_body_id() -> None:
-    body = (
-        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m}, messages:"
-        " [{role: user, content: x}], rowwise_template: x, rowwise_columns: [{label: p,"
-        " node: $in}], rowwise_seed: {key: {node: $in, path: items.output.value},"
-        " pairing: shared}}\n"
-    )
-    graph = _graph(_repeat("2", "Start", "Ask", body))
-    draws = [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
-    assert len(draws) == 2 and "[0, 'Ask', 1, value]" in draws[0]
-    assert "[0, 'Ask', 2, value]" in draws[1]
+def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
+    static, round_2, round_3 = _draws(None), _draws(2), _draws(3)
+    step = _chat("Ask", "$in").replace("model: m}", "model: m, seed: 7}")
+    graph = _graph(_repeat("2", "Start", "Ask", step))
+    literal = [o["config"]["seed"] for o in graph.values() if o["_op"] == "LLMChatOp"]
+    assert "[0, 'Ask', 1, value]" in static[0] and "[0, 'Ask', 2, value]" in static[1]
+    assert round_2[0] != round_2[1] and round_2[0] != round_3[0]
+    assert literal[0] != literal[1] and max(literal) < 2**31
 
 
 def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:

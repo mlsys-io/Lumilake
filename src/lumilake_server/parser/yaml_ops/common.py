@@ -104,7 +104,12 @@ def emit_keyed_seed(
         entry.fields.get("config", {}),
     )
     node_id = seed_input_id(entry.id, node_ref, ctx, op_kind)
-    round_number = ctx.rounds.get(entry.id, ctx.round_number)
+    template_id = ctx.template_ids.get(entry.id, entry.id)
+    round_number = ctx.round_number
+    if round_number is None:
+        round_number = ctx.rounds.get(entry.id)
+    elif entry.id in ctx.rounds:
+        template_id = entry.id
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,
@@ -112,7 +117,7 @@ def emit_keyed_seed(
         ctx.job_seed,
         round_number,
         op_kind,
-        template_id=ctx.template_ids.get(entry.id, entry.id),
+        template_id=template_id,
         scope=ctx.scope,
         pairing=pairing,
     )
