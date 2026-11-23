@@ -3,7 +3,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from string import Formatter
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,11 +15,9 @@ from lumilake_server.data_profile_models import (
 )
 from lumilake_server.data_specs import RetrievalParam, SqlProfileData
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.runtime.protocol import WorkflowSliceMeta
+from lumilake_server.runtime.runtime_graph.graph import RuntimeGraph
 from lumilake_server.utils.lumid_data_client import profile as lumid_profile
-
-if TYPE_CHECKING:
-    from lumilake_server.runtime.request import WorkflowSliceMeta
-    from lumilake_server.runtime.runtime_graph import RuntimeGraph
 
 RuntimeGraphBuilder = None
 
@@ -91,7 +89,7 @@ def build_request_data_profile_tasks(
     *,
     request_id: str,
     graphs: dict[str, CompiledGraph],
-    workflow_slices: dict[str, "WorkflowSliceMeta"],
+    workflow_slices: dict[str, WorkflowSliceMeta],
 ) -> list[DataProfileTaskSpec]:
     grouped: dict[str, list[tuple[str, WorkflowSliceMeta, CompiledGraph]]] = {}
     for graph_name, compiled in graphs.items():
@@ -240,7 +238,7 @@ def normalize_data_profile_result(
 def project_data_profile_results_to_runtime_graph(
     *,
     data_profile_results: Mapping[str, Sequence[DataProfileResultRow]],
-    target_graph: "RuntimeGraph",
+    target_graph: RuntimeGraph,
 ) -> dict[str, list[DataProfileResultRow]]:
     source_by_raw: dict[str, list[DataProfileResultRow]] = {}
     for rows in data_profile_results.values():
@@ -277,7 +275,7 @@ def data_profile_key_for_node_query(node_id: str, query_name: str) -> str:
     return f"data_profile::{node_id}::{query_name}"
 
 
-def _runtime_to_raw_node_map(graph: "RuntimeGraph") -> dict[str, str]:
+def _runtime_to_raw_node_map(graph: RuntimeGraph) -> dict[str, str]:
     runtime_to_raw: dict[str, str] = {}
     for raw_node_id, runtime_ids in graph.dsl_to_runtime.items():
         for runtime_id in runtime_ids:
