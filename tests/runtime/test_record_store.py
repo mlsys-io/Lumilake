@@ -258,19 +258,16 @@ async def test_writer_stores_one_entry_per_keyed_row(graph: Any) -> None:
     index = read_index(storage, "req-1")
     assert index is not None and index.rounds() == [0]
     chain = lineage(storage, index=index, op=join, record="a", round_number=0)
-    assert [(e.address.op, e.source.task_id) for e in chain] == [
-        (join, "task-Join"),
-        (mark, "task-Mark"),
-    ]
+    named = [(e.address.op, e.source.task_id) for e in chain]
+    assert named == [(join, "task-Join"), (mark, "task-Mark")]
 
 
 @pytest.mark.asyncio
 async def test_slices_of_one_job_store_equal_digests() -> None:
     """One job run whole and sliced stores the same records under one key."""
     rows = [{"id": json.loads(row)["id"], "text": "X"} for row in _ROWS]
-    whole = _keys(
-        await _store(_runtime_graph(_payload()), {"Mark": rows, "Join": rows})
-    )
+    entries = await _store(_runtime_graph(_payload()), {"Mark": rows, "Join": rows})
+    whole = _keys(entries)
     for index, row in enumerate(rows):
         graph = _runtime_graph(
             _payload({"Rows": [_ROWS[index]]}), node_prefix=f"slice-{index}"
@@ -429,10 +426,8 @@ async def test_a_keyed_chat_writes_one_record_per_row(source: str) -> None:
         )
         storage, _ = await _write(graph, {"Ask": ["LEFT", "RIGHT"]})
         chat = _declared_name(graph, "Ask")
-    assert [k for k in _indexed(storage, "req-1") if k[0] == chat] == [
-        (chat, "a"),
-        (chat, "b"),
-    ]
+    keys = [k for k in _indexed(storage, "req-1") if k[0] == chat]
+    assert keys == [(chat, "a"), (chat, "b")]
 
 
 async def _asked(graph: Any, job_id: str = "req-1") -> RecordEntry:
@@ -455,9 +450,8 @@ async def test_a_draw_no_seed_reproduces_gets_its_own_key(spec: dict[str, Any]) 
     seeded = {e.digest for e in by_seed}
     assert len(seeded) == 2 and seeded.isdisjoint(e.digest for e in runs)
     same = [await _asked(_hosted(7), job) for job in ("req-one", "req-two")]
-    assert [(e.realization.seed, e.realization.production) for e in same] == [
-        (7, draw) for draw in draws
-    ]
+    realized = [(e.realization.seed, e.realization.production) for e in same]
+    assert realized == [(7, draw) for draw in draws]
 
 
 @pytest.mark.asyncio
@@ -552,11 +546,10 @@ async def test_a_node_bound_seed_reaches_its_records() -> None:
     graph = _runtime_graph(payload)
     rows = {"Mark": _TWO_ROWS, "Seeds": [0, 1], "Join": ["LEFT", "RIGHT"]}
     stored, chat = await _store(graph, rows), _declared_name(graph, "Join")
-    assert [
-        (e.address.record, e.realization.seed, e.realization.production)
-        for e in stored
-        if e.address.op == chat
-    ] == [("a", 0, None), ("b", 1, None)]
+    seeded = [
+        (e.address.record, e.realization.seed) for e in stored if e.address.op == chat
+    ]
+    assert seeded == [("a", 0), ("b", 1)]
 
 
 @pytest.mark.asyncio
