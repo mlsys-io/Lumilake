@@ -148,7 +148,7 @@ def test_parse_reads_a_row_by_its_spec_or_marks_it(
 
 def test_parse_rejects_a_bad_spec_naming_the_op() -> None:
     payload = {"name": "p", "inputs": {"Answer": ["x"]}}
-    with pytest.raises(ValueError, match="ParseOp 'P' pattern must name"):
+    with pytest.raises(ValueError, match="ParseOp 'P': pattern must name"):
         parse_yaml_payload({**payload, "ops": [_parse(format="regex", pattern="1")]})
 
 

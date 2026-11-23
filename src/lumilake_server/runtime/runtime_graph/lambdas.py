@@ -1,11 +1,6 @@
 from collections.abc import Sequence
 
-from lumilake_server.data_specs import (
-    PYTHON_TASK_TYPE,
-    ColumnPlanEntry,
-    ParseDescription,
-    PythonData,
-)
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -280,7 +275,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
                 mode="parse",
-                parse=ParseDescription.model_validate(op.parse_spec),
+                parse=op.parse_spec,
                 plan=plan,
                 timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
                 row_count=row_count,
