@@ -92,15 +92,6 @@ A retrieval re-runs, so its consumers hit while its rows are unchanged; a retrie
 
 A job records one decision per op, `hit` or `miss` with the first reason it missed; see [`docs/API.md`](API.md).
 
-## Per-record store (`store:`)
-
-Set `store: true` at the top level of a YAML document, beside `graph` in a native
-payload, or at the top level of a dynamic workflow beside `type: dynamic`. It
-defaults to off, so existing workflows are unchanged, and a dynamic workflow's
-every round writes its records. An op's `key` is in
-[`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's chain with
-`GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
-
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its `parameters.pythonCode` is the function source, and its `notes` field carries Lumilake annotations as a JSON object with kebab-case keys:
@@ -168,11 +159,7 @@ params:
     path: items.table.id
 ```
 
-A `sql` retrieval may name each emitted row's record key as
-`key: {column: <name>}` inside its `data_spec`; a consumer then reads the key
-at `items.table.<name>`, the same column a `path` reads. See
-[`docs/OPS.md`](OPS.md#dataretrievalop) for the declaration and the checks
-that run when each task's result arrives.
+A `sql` retrieval may name each emitted row's record key as `key: {column: <name>}` inside its `data_spec`; a consumer then reads the key at `items.table.<name>`, the same column a `path` reads. See [`docs/OPS.md`](OPS.md#dataretrievalop) for the declaration and the checks that run when each task's result arrives.
 
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 

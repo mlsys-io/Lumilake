@@ -11,21 +11,22 @@ refused. The keys of each arrived result are checked separately, in
 
 from typing import Any
 
-from lumilake_server.data_specs import DataSpecModel, RetrievalData
+from pydantic import ValidationError
+
+from lumilake_server.data_specs import DataSpecModel, RetrievalData, RetrievalKey
 
 
 def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
     """The first problem with a declared ``key``, or ``None`` when it is sound."""
-    key = data_spec.get("key")
-    if key is None:
+    raw_key = data_spec.get("key")
+    if raw_key is None:
         return None
-    if not isinstance(key, dict):
-        return f"key must be a mapping of column, got {key!r}"
-    if set(key) != {"column"}:
-        return f"key takes only a column field, got {sorted(key)}"
-    column = key["column"]
-    if not isinstance(column, str) or not column.strip():
-        return f"key column must be a non-empty string, got {column!r}"
+    try:
+        key = RetrievalKey.model_validate(raw_key)
+    except ValidationError as exc:
+        return f"key is not a column: {exc.errors()[0]['msg']}"
+    if not key.column.strip():
+        return f"key column must be a non-empty string, got {key.column!r}"
     mode = data_spec.get("mode")
     if mode in (None, "sql"):
         return None
@@ -35,11 +36,7 @@ def retrieval_key_problem(data_spec: dict[str, Any]) -> str | None:
     )
 
 
-def retrieval_key_column(data_spec: DataSpecModel | dict[str, Any]) -> str | None:
+def retrieval_key_column(data_spec: DataSpecModel) -> str | None:
     """The column holding each row's record key, when the spec declares one."""
-    if isinstance(data_spec, RetrievalData):
-        return None if data_spec.key is None else data_spec.key.column
-    if isinstance(data_spec, dict):
-        key = data_spec.get("key")
-        return key["column"] if isinstance(key, dict) else None
-    return None
+    key = data_spec.key if isinstance(data_spec, RetrievalData) else None
+    return None if key is None else key.column

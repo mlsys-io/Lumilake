@@ -128,8 +128,6 @@ class Op(ABC):
         if new_id:
             new_op.id = unique_id()
         new_op.inputs = new_op.inputs.copy()
-        if new_op.key is not None:
-            new_op.key = new_op.key.copy()
         return new_op
 
     def set_looping(self, looping: bool = True, max_iter: int | None = None) -> None:

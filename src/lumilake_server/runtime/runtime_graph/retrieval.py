@@ -308,7 +308,7 @@ class _RetrievalBuilder(_LLMBuilder):
             max_steps = spec.get("max_steps")
             agent_model = spec.get("model")
         raw_key = spec.get("key")
-        key = None if not isinstance(raw_key, dict) else RetrievalKey(**raw_key)
+        key = None if raw_key is None else RetrievalKey.model_validate(raw_key)
         data_spec = RetrievalData(
             type="lumid",
             mode=mode,
