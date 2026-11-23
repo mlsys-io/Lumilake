@@ -735,9 +735,15 @@ class _LLMBuilder(_EmbeddingBuilder):
         table_columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for column in llm_op.aggregate_table or []:
-            if not isinstance(column, NodeColumn) or column.path is None:
+            if not isinstance(column, NodeColumn):
                 continue
             upstream = graph_dict.get(column.node)
+            if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                raise ValueError(
+                    f"Column '{column.label}' of consumer '{llm_op_id}'"
+                    f" references node '{column.node}' without a path;"
+                    " only InputOp and DataOp refs may omit it."
+                )
             table_columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,

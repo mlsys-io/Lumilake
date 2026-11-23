@@ -146,7 +146,7 @@ params:
 
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
-An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` with no `path`, `path: ""`, or, for a `DataOp`, `items.output`. The referenced literal values are then inlined as the column's list. Deeper paths are rejected.
+An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` alone: the column carries that op's literal values whole and takes no `path`.
 
 Live sampling is **off by default**. The recommended path is to set `sample_value` on the upstream `data_spec` — that supplies a representative value at build time with zero live execution. To explicitly opt in to bounded live queries, set `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1`. To skip data profiling entirely, set `LUMILAKE_DISABLE_DATA_PROFILE=1`.
 

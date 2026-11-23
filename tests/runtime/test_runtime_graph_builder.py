@@ -1762,6 +1762,13 @@ outputs: [{name: answer, ref: Ask}]
 
 _DATAOP_COLUMN_FORMS = {
     "rowwise_columns": '    rowwise_template: "Explain {topic}."\n    rowwise_columns: '
+    "[{label: topic, node: Const}]\n",
+    "aggregate_table": '    prompt: {template: "Explain {df}."}\n    aggregate_table: '
+    "[{label: topic, node: Const}]\n",
+}
+
+_DATAOP_COLUMN_PATH_FORMS = {
+    "rowwise_columns": '    rowwise_template: "Explain {topic}."\n    rowwise_columns: '
     "[{label: topic, node: Const, path: items.output}]\n",
     "aggregate_table": '    prompt: {template: "Explain {df}."}\n    aggregate_table: '
     "[{label: topic, node: Const, path: items.output}]\n",
@@ -1791,6 +1798,23 @@ def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
         "data": {"type": "list", "items": ["a database index", "a lunar eclipse"]},
     }
     assert not node.dependencies
+
+
+@pytest.mark.parametrize("form", sorted(_DATAOP_COLUMN_PATH_FORMS))
+def test_chat_column_referencing_dataop_rejects_drill_path(form: str) -> None:
+    """A ``path`` on a DataOp column is refused, naming the op and the column."""
+    yaml_text = _DATAOP_COLUMN_WORKFLOW.replace(
+        "COLUMN", _DATAOP_COLUMN_PATH_FORMS[form]
+    )
+    spec = next(iter(parse_yaml_payload(yaml_text).values()))
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    with pytest.raises(
+        ValueError,
+        match=r"Column 'topic' of consumer .* references DataOp .* with drill"
+        r" path 'items.output'; a DataOp-derived column carries the op's values"
+        " whole, so it takes no path.",
+    ):
+        RuntimeGraphBuilder().build(compiled)
 
 
 def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
@@ -2476,8 +2500,7 @@ def _aggregate_chat(upstream: Op) -> LLMChatOp:
         [OpMessage(role="user", content=upstream)],
         config=_READ_RULES_MODEL,
         aggregate_table=column_table(
-            [{"label": "df", "node": upstream.id, "path": "items.output"}],
-            "aggregate_table",
+            [{"label": "df", "node": upstream.id}], "aggregate_table"
         ),
     )
 
@@ -2491,7 +2514,7 @@ def _rowwise_vlm(upstream: Op, image_source: Op) -> LLMVisionOp:
         image_source_op=image_source,
         rowwise_template="Describe {label}.",
         rowwise_columns=column_table(
-            [{"label": "label", "node": upstream.id, "path": "items.output"}],
+            [{"label": "label", "node": upstream.id}],
             "rowwise_columns",
         ),
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),

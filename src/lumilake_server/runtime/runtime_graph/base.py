@@ -220,13 +220,14 @@ class _RuntimeGraphBuilderBase:
                 )
             return Column(label=label, data=ListData(items=list(values)))
         if isinstance(upstream, DataOp):
-            # A DataOp has no runtime envelope; ``items.output`` names it whole.
-            if column.path not in (None, "items.output"):
+            # A DataOp has no runtime envelope, so its values bind whole and a
+            # path would read something the op never produces.
+            if column.path is not None:
                 raise ValueError(
                     f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" DataOp '{node_ref}' with drill path {path!r}; a"
-                    " DataOp-derived column binds its values whole, so the only"
-                    " paths it accepts are none and 'items.output'."
+                    f" DataOp '{node_ref}' with drill path {column.path!r}; a"
+                    " DataOp-derived column carries the op's values whole, so"
+                    " it takes no path."
                 )
             return Column(label=label, data=ListData(items=upstream.data.copy()))
         if upstream is not None:
