@@ -36,7 +36,7 @@ from lumilake_server.runtime.runtime_graph import (
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -554,9 +554,10 @@ def test_api_rowwise_template_emits_single_task() -> None:
             api=ApiConfig(timeout_sec=300.0, model="gpt-4o"),
         ),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", llm)
@@ -604,9 +605,10 @@ def test_api_aggregate_table_renders_df_column() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(timeout_sec=300.0, model="gpt-4o"),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -651,9 +653,10 @@ def test_api_aggregate_df_prompt_renders_into_request_body() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
@@ -684,9 +687,10 @@ def test_api_aggregate_op_emits_condition() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -1315,9 +1319,10 @@ def test_api_aggregate_node_feeding_local_multi_row_upstream_builds() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": local.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": local.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(local)
     output = as_output("result", llm)
@@ -1342,7 +1347,10 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
@@ -1350,9 +1358,10 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": api_up.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": api_up.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(api_up)
     output = as_output("result", llm)
@@ -1382,7 +1391,10 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1391,7 +1403,10 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(api_up)
     output = as_output("result", llm)
@@ -1419,7 +1434,9 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1428,7 +1445,10 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": src.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": src.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(src)
     output = as_output("result", llm)
@@ -1486,7 +1506,10 @@ def test_api_node_consuming_local_rowwise_literal_upstream_fails_closed() -> Non
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     relay = FormatOp("{prior}", prior=local_rw)
     api = LLMChatOp(
@@ -1553,7 +1576,10 @@ def test_fanned_consumer_condition_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     relay = FormatOp("{prior}", prior=gate)
     consumer = LLMChatOp(
@@ -1582,13 +1608,19 @@ def test_local_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local_rw = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     local_rw.inputs.append(api_up)
     output = as_output("result", local_rw)
@@ -1615,14 +1647,18 @@ def test_local_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local_agg = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[
-            {"label": "summary", "node": api_up.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": api_up.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     local_agg.inputs.append(api_up)
     output = as_output("result", local_agg)
@@ -1651,7 +1687,10 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     vision = LLMVisionOp(
         [OpMessage(role="user", content="ignored")],
@@ -1659,7 +1698,10 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
         image_source_op=stock,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     vision.inputs.append(api_up)
     output = as_output("result", vision)
@@ -1727,7 +1769,10 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     retrieval = DataRetrievalOp(
         data_spec={
@@ -1858,15 +1903,18 @@ def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
                 api=ApiConfig(),
             ),
             rowwise_template="Summarize {S}.",
-            rowwise_columns=[
-                {
-                    "label": "S",
-                    "data": {
-                        "type": "list",
-                        "items": [str(i) for i in range(source_rows)],
-                    },
-                }
-            ],
+            rowwise_columns=column_table(
+                [
+                    {
+                        "label": "S",
+                        "data": {
+                            "type": "list",
+                            "items": [str(i) for i in range(source_rows)],
+                        },
+                    }
+                ],
+                "rowwise_columns",
+            ),
         )
         consumer = LLMChatOp(
             [OpMessage(role="user", content=stock)],
@@ -1875,15 +1923,18 @@ def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
                 api=ApiConfig(),
             ),
             rowwise_template="Summarize {Stock}.",
-            rowwise_columns=[
-                {
-                    "label": "Stock",
-                    "data": {
-                        "type": "list",
-                        "items": [str(i) for i in range(consumer_rows)],
-                    },
-                }
-            ],
+            rowwise_columns=column_table(
+                [
+                    {
+                        "label": "Stock",
+                        "data": {
+                            "type": "list",
+                            "items": [str(i) for i in range(consumer_rows)],
+                        },
+                    }
+                ],
+                "rowwise_columns",
+            ),
             condition={"node": gate.id, "expr": "gate == on"},
         )
         gate_out = as_output("gate_out", gate)
@@ -1909,7 +1960,10 @@ def test_one_row_consumer_of_fanned_source_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1973,7 +2027,10 @@ def test_condition_on_local_rowwise_source_fails_closed() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1982,12 +2039,15 @@ def test_condition_on_local_rowwise_source_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {
-                "label": "Stock",
-                "data": {"type": "list", "items": ["x", "y"]},
-            }
-        ],
+        rowwise_columns=column_table(
+            [
+                {
+                    "label": "Stock",
+                    "data": {"type": "list", "items": ["x", "y"]},
+                }
+            ],
+            "rowwise_columns",
+        ),
         condition={"node": local_rw.id, "expr": "gate == on"},
     )
     compiled = Graph.from_ops(
@@ -2009,7 +2069,9 @@ def test_condition_source_rowwise_node_ref_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     relay = FormatOp("{prior}", prior=gate)
     consumer = LLMChatOp(
@@ -2040,7 +2102,9 @@ def test_condition_source_rowwise_node_ref_consumer_first_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content="hi")],
@@ -2078,7 +2142,10 @@ def test_local_consumer_of_fanned_source_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local = LLMChatOp(
         [OpMessage(role="user", content="hi")],
@@ -2274,9 +2341,10 @@ def test_api_node_ref_column_accepts_items_output_path() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": upstream.id, "path": "items.output"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": upstream.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -2307,9 +2375,10 @@ def test_api_node_ref_column_rejects_other_paths() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": upstream.id, "path": "items.output.statement"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": upstream.id, "path": "items.output.statement"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -2333,7 +2402,9 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[{"label": "summary", "node": stock.id, "path": ""}],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": stock.id, "path": ""}], "aggregate_table"
+        ),
     )
     aggregate.inputs.append(stock)
     rowwise = LLMChatOp(
@@ -2343,9 +2414,10 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": aggregate.id, "path": "items.output"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": aggregate.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     rowwise.inputs.append(aggregate)
     output = as_output("result", rowwise)
@@ -2371,7 +2443,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     aggregate = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
@@ -2379,9 +2454,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": fanout.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": fanout.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     aggregate.inputs.append(fanout)
     refanout = LLMChatOp(
@@ -2391,9 +2467,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": aggregate.id, "path": "items.output"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Prior", "node": aggregate.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     refanout.inputs.append(aggregate)
     output = as_output("result", refanout)
@@ -2442,9 +2519,10 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
             [OpMessage(role="user", content=stock)],
             config=cfg,
             rowwise_template="Summarize {Prior}.",
-            rowwise_columns=[
-                {"label": "Prior", "node": upstream.id, "path": "items.output"}
-            ],
+            rowwise_columns=column_table(
+                [{"label": "Prior", "node": upstream.id, "path": "items.output"}],
+                "rowwise_columns",
+            ),
         )
         llm.inputs.append(upstream)
         output = as_output("result", llm)
@@ -2485,7 +2563,10 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
             api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a"]}}],
+        rowwise_columns=column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a"]}}],
+            "rowwise_columns",
+        ),
     )
     aggregate = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -2493,9 +2574,10 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     aggregate.inputs.append(upstream)
     output = as_output("result", rowwise)

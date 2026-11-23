@@ -2,13 +2,20 @@
 
 from typing import Any
 
-from lumilake_server.data_specs import parse_data_spec
+from lumilake_server.data_specs import ColumnTable, build_column_table, parse_data_spec
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def wire(op: RuntimeOp) -> dict[str, Any]:
     """The data spec as the dict a worker receives."""
     return op.data_spec.model_dump(exclude_none=True)
+
+
+def column_table(
+    table: list[dict[str, Any]] | None, field: str = "rowwise_columns"
+) -> ColumnTable | None:
+    """A column table built the way a parser builds one."""
+    return build_column_table(table, field)
 
 
 def runtime_op(

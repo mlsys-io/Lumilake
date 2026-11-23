@@ -606,12 +606,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for column in llm_op.rowwise_columns or []:
             if isinstance(column, LiteralColumn):
-                columns.append(
-                    Column(
-                        label=column.label,
-                        data=ListData.model_validate(column.data),
-                    )
-                )
+                columns.append(Column(label=column.label, data=column.data))
                 continue
             upstream = graph_dict.get(column.node)
             if column.path is None and not isinstance(upstream, (InputOp, DataOp)):

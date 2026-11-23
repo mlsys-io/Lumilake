@@ -29,7 +29,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -198,14 +198,17 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -311,14 +314,17 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -368,14 +374,17 @@ def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -401,9 +410,12 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -468,9 +480,12 @@ def test_rowwise_column_without_data_or_node_path_raises() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": news_sql.id},
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "node": news_sql.id},
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -489,9 +504,10 @@ def test_local_rowwise_op_emits_condition() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}],
+            "rowwise_columns",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -512,9 +528,12 @@ def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+            ],
+            "rowwise_columns",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
@@ -538,9 +557,10 @@ def test_local_aggregate_op_emits_condition() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -1705,7 +1725,9 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "ticker", "node": stock.id, "path": ""}],
+        aggregate_table=column_table(
+            [{"label": "ticker", "node": stock.id, "path": ""}], "aggregate_table"
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
@@ -1777,7 +1799,10 @@ def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "ticker", "node": stock.id, "path": "items.output"}],
+        aggregate_table=column_table(
+            [{"label": "ticker", "node": stock.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
@@ -1815,7 +1840,10 @@ def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1844,7 +1872,10 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize {df}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        aggregate_table=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1876,7 +1907,10 @@ def test_inlined_row_lambda_referenced_by_column_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1898,7 +1932,10 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
         [OpMessage(role="user", content=inner)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": inner.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": inner.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(inner)
     outer = LambdaOp([inner], fn=_row_lambda_fn)
@@ -1921,7 +1958,10 @@ def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
         condition={"node": shout.id, "expr": "gate == 'on'"},
     )
     llm.inputs.append(shout)
@@ -1944,15 +1984,18 @@ def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "kind": "literal"}],
-                },
-            }
-        ],
+        rowwise_columns=column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "kind": "literal"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1973,15 +2016,18 @@ def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "expr": "literal"}],
-                },
-            }
-        ],
+        rowwise_columns=column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "expr": "literal"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -2001,15 +2047,18 @@ def test_inlined_row_lambda_literal_item_with_path_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "path": "items.output"}],
-                },
-            }
-        ],
+        rowwise_columns=column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "path": "items.output"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -2031,7 +2080,10 @@ def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
+        rowwise_columns=column_table(
+            [{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
@@ -2423,7 +2475,10 @@ def _aggregate_chat(upstream: Op) -> LLMChatOp:
     return LLMChatOp(
         [OpMessage(role="user", content=upstream)],
         config=_READ_RULES_MODEL,
-        aggregate_table=[{"label": "df", "node": upstream.id, "path": "items.output"}],
+        aggregate_table=column_table(
+            [{"label": "df", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
 
 
@@ -2435,9 +2490,10 @@ def _rowwise_vlm(upstream: Op, image_source: Op) -> LLMVisionOp:
         image_source=image_source.id,
         image_source_op=image_source,
         rowwise_template="Describe {label}.",
-        rowwise_columns=[
-            {"label": "label", "node": upstream.id, "path": "items.output"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "label", "node": upstream.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
     )
 

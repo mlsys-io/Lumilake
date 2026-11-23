@@ -29,7 +29,7 @@ from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -80,10 +80,13 @@ def _python_rowwise():
     rowwise = LLMChatOp(
         [OpMessage(role="user", content="hello")],
         rowwise_template="Summarize {value}",
-        rowwise_columns=[
-            {"label": "value", "node": explode.id, "path": "items.output.value"},
-            {"label": "tone", "data": {"type": "list", "items": ["a", "b"]}},
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "value", "node": explode.id, "path": "items.output.value"},
+                {"label": "tone", "data": {"type": "list", "items": ["a", "b"]}},
+            ],
+            "rowwise_columns",
+        ),
         rowwise_seed=RowwiseSeed(node=explode.id, path="items.output.value"),
         rowwise_seed_op=explode,
         config=_config(),
@@ -139,9 +142,10 @@ def _completion_vision_image():
         image_source_op=images,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}],
+            "rowwise_columns",
+        ),
     )
     image = ImageGenerationOp(
         content=prompt, config=GenerationConfig(model="black-forest-labs/FLUX.1-dev")
@@ -165,7 +169,9 @@ def _grouped_fetch_classify():
         [OpMessage(role="user", content=prompt)],
         config=_config(),
         rowwise_template="{prompt}",
-        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+        rowwise_columns=column_table(
+            [{"label": "prompt", "node": prompt.id, "path": ""}], "rowwise_columns"
+        ),
     )
     fetch = HttpFetchOp("https://example.com/{query}", rowwise)
     candidates = LambdaOp([stock], fn=shout_rows, mode="list")
@@ -191,9 +197,10 @@ def _aggregate_retrieval_python():
     digest = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table")],
         config=_config(),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     agent = DataRetrievalOp(
         data_spec={

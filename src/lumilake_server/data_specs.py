@@ -1,6 +1,5 @@
 """Typed ``data_spec`` for every runtime task type."""
 
-from collections.abc import Sequence
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -133,8 +132,7 @@ class NodeColumn(Column):
     data: None = None
 
 
-class ColumnTable(list[LiteralColumn | NodeColumn]):
-    """A validated ``rowwise_columns`` or ``aggregate_table``."""
+ColumnTable = list[LiteralColumn | NodeColumn]
 
 
 _ColumnTableEntry = Annotated[
@@ -143,9 +141,7 @@ _ColumnTableEntry = Annotated[
 _COLUMN_TABLE: TypeAdapter[ColumnTable] = TypeAdapter(list[_ColumnTableEntry])
 
 
-def build_column_table(
-    table: Sequence[Column | dict[str, Any]] | None, field: str
-) -> ColumnTable | None:
+def build_column_table(table: Any, field: str) -> ColumnTable | None:
     """Validate one ``rowwise_columns`` or ``aggregate_table`` table."""
     if table is None:
         return None

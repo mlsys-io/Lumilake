@@ -27,6 +27,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuil
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 from tests.runtime.runtime_manager.conftest import serve
+from tests.support.data_specs import column_table
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
@@ -345,9 +346,9 @@ def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, st
     if rowwise:
         kwargs = {
             "rowwise_template": "Summarize {Stock}.",
-            "rowwise_columns": [
-                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}
-            ],
+            "rowwise_columns": column_table(
+                [{"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}]
+            ),
         }
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -779,7 +780,10 @@ def _build_rowwise_lambda_output_request() -> tuple[RequestInfo, str, str]:
         [OpMessage(role="user", content="Result: {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Result: {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("reply", llm)

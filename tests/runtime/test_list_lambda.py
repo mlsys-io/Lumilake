@@ -18,7 +18,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -321,7 +321,10 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     reply.inputs.append(shout)
     tally = LambdaOp(
@@ -371,9 +374,12 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-        ],
+        rowwise_columns=column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+            ],
+            "rowwise_columns",
+        ),
     )
     tally = LambdaOp(
         [vision],
@@ -424,7 +430,10 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         [OpMessage(role="user", content="Judge {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Judge {r}",
-        rowwise_columns=[{"label": "r", "node": retrieval.id, "path": "items.table"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": retrieval.id, "path": "items.table"}],
+            "rowwise_columns",
+        ),
     )
     judge.inputs.append(retrieval)
     combine = LambdaOp(
@@ -436,7 +445,10 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         [OpMessage(role="user", content="Summarize {c}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {c}",
-        rowwise_columns=[{"label": "c", "node": combine.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "c", "node": combine.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(combine)
     output = as_output("result", llm)
@@ -486,9 +498,10 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {value}.",
-        rowwise_columns=[
-            {"label": "value", "node": explode.id, "path": "items.output.value"}
-        ],
+        rowwise_columns=column_table(
+            [{"label": "value", "node": explode.id, "path": "items.output.value"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(explode)
     output = as_output("result", llm)

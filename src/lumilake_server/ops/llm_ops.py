@@ -1,10 +1,8 @@
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.data_specs import (
-    Column,
     ColumnTable,
     NodeColumn,
     build_column_table,
@@ -53,9 +51,9 @@ class RowwiseSeed:
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
-    aggregate_table: Sequence[Column | dict[str, Any]] | None,
+    aggregate_table: ColumnTable | None,
     rowwise_template: str | None,
-    rowwise_columns: Sequence[Column | dict[str, Any]] | None,
+    rowwise_columns: ColumnTable | None,
     system_messages: list[str] | None,
     condition: dict[str, str] | None,
     return_history: bool,
@@ -142,9 +140,9 @@ class LLMChatOp(LLMOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         structural_outputs: dict[str, Any] | list[dict[str, Any]] | None = None,
-        aggregate_table: Sequence[Column | dict[str, Any]] | None = None,
+        aggregate_table: ColumnTable | None = None,
         rowwise_template: str | None = None,
-        rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTable | None = None,
         rowwise_messages: RowwiseMessages | None = None,
         rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
@@ -196,9 +194,9 @@ class LLMChatOp(LLMOp):
         super().__init__(inputs, config, cacheable)
         self.return_history = return_history
         self.structural_outputs = structural_outputs
-        self.aggregate_table = build_column_table(aggregate_table, "aggregate_table")
+        self.aggregate_table = aggregate_table
         self.rowwise_template = rowwise_template
-        self.rowwise_columns = build_column_table(rowwise_columns, "rowwise_columns")
+        self.rowwise_columns = rowwise_columns
         self.rowwise_messages = rowwise_messages
         self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
@@ -260,9 +258,13 @@ class LLMChatOp(LLMOp):
         return_history = data["return_history"]
         cacheable = data["cacheable"]
         structural_outputs = data.get("structural_outputs")
-        aggregate_table = data.get("aggregate_table")
+        aggregate_table = build_column_table(
+            data.get("aggregate_table"), "aggregate_table"
+        )
         rowwise_template = data.get("rowwise_template")
-        rowwise_columns = data.get("rowwise_columns")
+        rowwise_columns = build_column_table(
+            data.get("rowwise_columns"), "rowwise_columns"
+        )
         column_data = data.get("rowwise_messages")
         rowwise_messages: RowwiseMessages | None = None
         rowwise_messages_op: Op | None = None
@@ -436,7 +438,7 @@ class LLMVisionOp(LLMChatOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         rowwise_template: str | None = None,
-        rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTable | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
     ) -> None:
@@ -474,7 +476,9 @@ class LLMVisionOp(LLMChatOp):
         image_source = data.get("image_source", "")
         image_path = data.get("image_path", "images")
         rowwise_template = data.get("rowwise_template")
-        rowwise_columns = data.get("rowwise_columns")
+        rowwise_columns = build_column_table(
+            data.get("rowwise_columns"), "rowwise_columns"
+        )
         system_messages = data.get("system_messages")
         image_source_op = other_ops.get(image_source)
         op = cls(
@@ -501,7 +505,7 @@ def llm_vision(
     config: GenerationConfig | None = None,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
+    rowwise_columns: ColumnTable | None = None,
     system_messages: list[str] | None = None,
     cacheable: bool = False,
 ) -> LLMVisionOp:

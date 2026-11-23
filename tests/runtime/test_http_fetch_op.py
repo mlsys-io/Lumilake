@@ -23,7 +23,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +151,9 @@ def test_fetch_flattens_a_grouped_upstream_to_one_query_per_row(
             model="org/llm", api=ApiConfig() if upstream == "api" else None
         ),
         rowwise_template="{prompt}",
-        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+        rowwise_columns=column_table(
+            [{"label": "prompt", "node": prompt.id, "path": ""}], "rowwise_columns"
+        ),
     )
     fetch = HttpFetchOp("http://fixture.test/search?q={query}", rowwise)
     compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(

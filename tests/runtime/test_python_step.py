@@ -27,7 +27,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.support.data_specs import wire
+from tests.support.data_specs import column_table, wire
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -109,7 +109,10 @@ def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     reply.inputs.append(shout)
     tally = LambdaOp([reply], fn=lambda inputs: str(len(inputs[0])))
@@ -869,7 +872,10 @@ def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
         [OpMessage(role="user", content="Result: {r}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="Result: {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
