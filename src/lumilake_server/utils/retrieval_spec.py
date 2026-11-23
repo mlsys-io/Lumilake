@@ -37,11 +37,13 @@ class RetrievalSpec(RetrievalData):
 
     @model_validator(mode="after")
     def _row_order(self, info: ValidationInfo) -> Self:
-        if not (info.context or {}).get(_CHECK_ROW_ORDER):
-            return self
-        if self.mode != "sql" or self.rows is not None or self.template is None:
-            return self
-        if sql_has_top_level_order_by(self.template):
+        if (
+            not (info.context or {}).get(_CHECK_ROW_ORDER)
+            or self.mode != "sql"
+            or self.rows is not None
+            or self.template is None
+            or sql_has_top_level_order_by(self.template)
+        ):
             return self
         raise ValueError(
             "a mode: sql retrieval returns rows in no defined order without a "
