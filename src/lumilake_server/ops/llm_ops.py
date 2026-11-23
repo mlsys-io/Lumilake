@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
@@ -92,7 +92,7 @@ class LLMOp(Op):
 
     def __init__(
         self,
-        inputs: list["Op"] | None,
+        inputs: list[Op] | None,
         config: GenerationConfig | None,
         cacheable: bool,
     ) -> None:
@@ -109,7 +109,7 @@ class LLMOp(Op):
         raise NotImplementedError()
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LLMOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         raise NotImplementedError()
 
 
@@ -244,9 +244,7 @@ class LLMChatOp(LLMOp):
         return payload
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "LLMChatOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         message = other_ops[data["messages"]]
         config = GenerationConfig(**data["config"])
         return_history = data["return_history"]
@@ -307,19 +305,19 @@ def check_rowwise_seed(
     named = f"LLMChatOp '{op_id}' "
     if rowwise_template is None:
         raise ValueError(
-            f"{named}rowwise_seed needs a rowwise_template; only a rowwise"
-            " LLMChatOp seeds each row separately"
+            f"{named}rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
+            " seeds each row separately"
         )
     num_beams = config.num_beams
     if num_beams is not None and num_beams > 1:
         raise ValueError(
-            f"{named}rowwise_seed is not supported with num_beams > 1: the beam"
-            " path takes no per-row seed"
+            f"{named}rowwise_seed is not supported with num_beams > 1: the beam path"
+            " takes no per-row seed"
         )
     if config.api is not None:
         raise ValueError(
-            f"{named}rowwise_seed is available only for local vLLM generation,"
-            " not API mode, which takes no per-row seed"
+            f"{named}rowwise_seed is available only for local vLLM generation, not API"
+            " mode, which takes no per-row seed"
         )
 
 
@@ -375,9 +373,7 @@ class LLMCompletionOp(LLMOp):
         }
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "LLMCompletionOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         return cls(
             prompt=other_ops[data["prompt"]],
             config=GenerationConfig(**data["config"]),
@@ -447,9 +443,7 @@ class LLMVisionOp(LLMChatOp):
         return payload
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "LLMVisionOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         message = other_ops[data["messages"]]
         config = GenerationConfig(**data["config"])
         return_history = data["return_history"]
@@ -530,9 +524,7 @@ class ImageGenerationOp(LLMOp):
         )
 
     @classmethod
-    def _from_json(
-        cls, data: dict[str, Any], other_ops: dict[str, "Op"]
-    ) -> "ImageGenerationOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         config = GenerationConfig(**data["config"])
         return cls(other_ops[data["content"]], config, data["cacheable"])
 

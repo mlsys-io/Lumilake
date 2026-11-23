@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections.abc import Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, ClassVar, Self
 
 import lumid_hooks
 import yaml
@@ -106,6 +106,12 @@ def _empty_runtime_graph() -> RuntimeGraph:
 
 
 @dataclass(slots=True)
+class PlanCacheEntry:
+    data_profile_results: dict[str, list[dict[str, Any]]]
+    schedule: Schedule
+
+
+@dataclass(slots=True)
 class RequestState:
     handler: RequestHandler
     config: LumilakeRequestConfig
@@ -122,7 +128,7 @@ class RequestState:
     reuse_decisions: list[RecordDecision] = field(default_factory=list)
     """The reuse plan's per-op decisions across the request's batches; empty
     when no batch was planned from the store."""
-    plan_cache: dict[str, "PlanCacheEntry"] = field(default_factory=dict)
+    plan_cache: dict[str, PlanCacheEntry] = field(default_factory=dict)
     pending_runtime_nodes_raw: int = 0
     processing_runtime_nodes_raw: int = 0
     processing_runtime_nodes_optimized: int = 0
@@ -131,7 +137,7 @@ class RequestState:
     optimization_seconds: float = 0.0
     selection_seconds: float = 0.0
     clustering_seconds: float = 0.0
-    workflow_dispatches: list["WorkflowDispatch"] = field(default_factory=list)
+    workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     batch_node_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     total_input_items: int = 0
     completed_input_items_success: int = 0
@@ -139,12 +145,6 @@ class RequestState:
     list_lambda_outputs: dict[str, set[str]] = field(default_factory=dict)
     list_fanout_outputs: dict[str, set[str]] = field(default_factory=dict)
     ready: bool = False
-
-
-@dataclass(slots=True)
-class PlanCacheEntry:
-    data_profile_results: dict[str, list[dict[str, Any]]]
-    schedule: Schedule
 
 
 @dataclass(slots=True)
@@ -355,7 +355,7 @@ class LumilakeServerConfig:
 
 
 class LumilakeServer:
-    _instance: "LumilakeServer | None" = None
+    _instance: ClassVar[Self | None] = None
 
     def __init__(
         self,
@@ -4040,13 +4040,13 @@ class LumilakeServer:
         return parsed_query
 
     @classmethod
-    def get_instance(cls, *args, **kwargs) -> "LumilakeServer":
+    def get_instance(cls, *args, **kwargs) -> Self:
         if cls._instance is None:
             cls._instance = cls(*args, **kwargs)
         return cls._instance
 
     @classmethod
-    def get_started_instance(cls, *args, **kwargs) -> "LumilakeServer":
+    def get_started_instance(cls, *args, **kwargs) -> Self:
         """Asynchronously gets the server instance, starts it if not already
 
         It does not close the server instance after the context manager exits.
@@ -4058,7 +4058,7 @@ class LumilakeServer:
 
     @classmethod
     @contextmanager
-    def serve_instance(cls, *args, **kwargs) -> Generator["LumilakeServer", None, None]:
+    def serve_instance(cls, *args, **kwargs) -> Generator[Self, None, None]:
         """Asynchronously gets the server instance, starts it if not already
 
         It closes the server instance after the context manager exits.
