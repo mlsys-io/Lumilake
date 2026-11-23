@@ -95,6 +95,7 @@ from ..ops.router_ops import expand_routers
 from ..ops.util_ops import CLEARS_KEY
 from . import keyed_seed
 from .common import make_id as _make_id
+from .common import read_workflow_seed
 from .repeat import unroll_repeats
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
@@ -218,10 +219,7 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
 
 def _get_job_seed(spec: dict[str, Any]) -> int:
     """The workflow's job seed."""
-    value = spec.get("seed", 0)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"workflow 'seed' must be an integer, got {value!r}")
-    return value
+    return read_workflow_seed(spec, "workflow")
 
 
 def check_keyed_seed_duplicates(

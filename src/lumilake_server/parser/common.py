@@ -12,6 +12,25 @@ Anything that is specific to the n8n wire format lives in
 
 import hashlib
 import re
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError
+
+
+class WorkflowSeed(BaseModel):
+    """The workflow-level ``seed``, the draw a job's keyed seeds start from."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    seed: StrictInt = 0
+
+
+def read_workflow_seed(document: Any, where: str) -> int:
+    """A workflow document's ``seed``, naming the field in the error."""
+    try:
+        return WorkflowSeed.model_validate(document).seed
+    except ValidationError as exc:
+        raise ValueError(f"{where} 'seed' must be an integer") from exc
 
 
 def make_id(scope: str, prefix: str, name: str) -> str:
