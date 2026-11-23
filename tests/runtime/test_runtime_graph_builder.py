@@ -1809,9 +1809,9 @@ def test_chat_column_referencing_dataop_rejects_drill_path(form: str) -> None:
     compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     with pytest.raises(
         ValueError,
-        match=r"Column 'topic' of consumer .* references DataOp .* with drill"
-        r" path 'items.output'; a DataOp-derived column carries the op's values"
-        " whole, so it takes no path.",
+        match=r"Column 'topic' of consumer .* references DataOp .* with drill path"
+        " 'items.output'; a DataOp-derived column carries the op's values whole, so it"
+        " takes no path.",
     ):
         RuntimeGraphBuilder().build(compiled)
 

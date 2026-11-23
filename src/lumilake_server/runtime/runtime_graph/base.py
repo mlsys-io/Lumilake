@@ -211,22 +211,21 @@ class _RuntimeGraphBuilderBase:
             # absent / empty.
             if column.path:
                 raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' with drill path {column.path!r}; "
-                    "InputOp-derived columns cannot be drilled — wrap "
-                    "record-shaped inputs in an upstream op that exposes the "
-                    "target field, or drop the ``path`` for scalar inputs."
+                    f"Column '{label}' of consumer '{consumer_id}' references InputOp"
+                    f" '{node_ref}' with drill path {column.path!r}; InputOp-derived"
+                    " columns cannot be drilled — wrap record-shaped inputs in an"
+                    " upstream op that exposes the target field, or drop the ``path``"
+                    " for scalar inputs."
                 )
             return Column(label=label, data=ListData(items=list(values)))
         if isinstance(upstream, DataOp):
-            # A DataOp has no runtime envelope, so its values bind whole and a
-            # path would read something the op never produces.
+            # A DataOp has no runtime envelope, so its values bind whole and a path
+            # would read something the op never produces.
             if column.path is not None:
                 raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" DataOp '{node_ref}' with drill path {column.path!r}; a"
-                    " DataOp-derived column carries the op's values whole, so"
-                    " it takes no path."
+                    f"Column '{label}' of consumer '{consumer_id}' references DataOp"
+                    f" '{node_ref}' with drill path {column.path!r}; a DataOp-derived"
+                    " column carries the op's values whole, so it takes no path."
                 )
             return Column(label=label, data=ListData(items=upstream.data.copy()))
         if upstream is not None:
