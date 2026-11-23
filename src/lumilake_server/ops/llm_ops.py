@@ -307,19 +307,19 @@ def check_rowwise_seed(
     named = f"LLMChatOp '{op_id}' "
     if rowwise_template is None:
         raise ValueError(
-            f"{named}rowwise_seed needs a rowwise_template; only a rowwise"
-            " LLMChatOp seeds each row separately"
+            f"{named}rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
+            " seeds each row separately"
         )
     num_beams = config.num_beams
     if num_beams is not None and num_beams > 1:
         raise ValueError(
-            f"{named}rowwise_seed is not supported with num_beams > 1: the beam"
-            " path takes no per-row seed"
+            f"{named}rowwise_seed is not supported with num_beams > 1: the beam path"
+            " takes no per-row seed"
         )
     if config.api is not None:
         raise ValueError(
-            f"{named}rowwise_seed is available only for local vLLM generation,"
-            " not API mode, which takes no per-row seed"
+            f"{named}rowwise_seed is available only for local vLLM generation, not API"
+            " mode, which takes no per-row seed"
         )
 
 

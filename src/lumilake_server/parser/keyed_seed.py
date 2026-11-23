@@ -120,9 +120,9 @@ def check_unique(op_id: str, op_kind: str, keys: list[Any], pairing: str) -> Non
         first = seen.get(identity)
         if first is not None:
             raise ValueError(
-                f"{op_kind} '{op_id}' derives one seed per key, but rows"
-                f" {first} and {index} share the key {identity}; declare"
-                " 'pairing: shared' if the same key should draw the same seed"
+                f"{op_kind} '{op_id}' derives one seed per key, but rows {first} and"
+                f" {index} share the key {identity}; declare 'pairing: shared' if the"
+                " same key should draw the same seed"
             )
         seen[identity] = index
 
@@ -171,8 +171,8 @@ def _duplicate_message(named: str) -> str:
     """The refusal for a repeated key inside one task, naming both rows."""
     return (
         named.replace("%", "%%")
-        + " derives one seed per key, but rows %r and %r of this task share a"
-        " key; declare pairing: shared if the same key should draw the same seed"
+        + " derives one seed per key, but rows %r and %r of this task share a key;"
+        " declare pairing: shared if the same key should draw the same seed"
     )
 
 
@@ -259,9 +259,9 @@ def rewrite_native_keys(
         )
         if node_ref not in op.get("_inputs", []):
             raise ValueError(
-                f"{op_kind} '{op_id}' seed reads '{node_ref}', which is not"
-                " listed in the op's inputs; add it there so the seed's"
-                " producer is built before it"
+                f"{op_kind} '{op_id}' seed reads '{node_ref}', which is not listed in"
+                " the op's inputs; add it there so the seed's producer is built before"
+                " it"
             )
         generated = seed_op(
             op_id,
@@ -274,9 +274,9 @@ def rewrite_native_keys(
         )
         if generated["_id"] in graph:
             raise ValueError(
-                f"{op_kind} '{op_id}' keyed seed generates the id"
-                f" '{generated['_id']}', which the graph already holds; rename"
-                " that op so the generated row function has its own id"
+                f"{op_kind} '{op_id}' keyed seed generates the id '{generated['_id']}',"
+                " which the graph already holds; rename that op so the generated row"
+                " function has its own id"
             )
         rewritten[generated["_id"]] = generated
         rewritten[op_id] = {

@@ -291,8 +291,8 @@ def _check_params(args: ast.arguments, params: int) -> None:
             " parameters. Expected signature: fn(args: tuple[str, ...]) -> str"
         )
     raise ValueError(
-        f"Function must accept exactly {params} parameters, but has"
-        f" {count}. Expected signature: fn(args: tuple[str, ...], seed: int)"
+        f"Function must accept exactly {params} parameters, but has {count}. Expected"
+        " signature: fn(args: tuple[str, ...], seed: int)"
     )
 
 

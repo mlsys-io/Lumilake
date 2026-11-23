@@ -665,8 +665,8 @@ def _submitted_job_seed(
     if len(seeds) > 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="one job carries workflows with different seeds; submit each"
-            " seed as its own job",
+            detail="one job carries workflows with different seeds; submit each seed as"
+            " its own job",
         )
     return seeds.pop() if seeds else 0
 

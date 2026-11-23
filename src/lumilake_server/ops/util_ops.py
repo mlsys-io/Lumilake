@@ -34,8 +34,8 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
-# A seeded function takes each row's seed as its second argument, so only a
-# mode that calls it once per row carries one.
+# A seeded function takes each row's seed as its second argument, so only a mode that
+# calls it once per row carries one.
 SEED_MODES = ("row", "expand")
 CLEARS_KEY = "_clears_markers"
 """The private serialized key for ``LambdaOp.clears_markers``."""
@@ -134,8 +134,8 @@ def check_seed_mode(mode: LambdaMode, where: str = "") -> None:
     if mode in SEED_MODES:
         return
     detail = (
-        f"seed is available in modes {SEED_MODES}, where the function runs once"
-        f" per row (got mode {mode!r})"
+        f"seed is available in modes {SEED_MODES}, where the function runs once per row"
+        f" (got mode {mode!r})"
     )
     raise ValueError(f"{where}: {detail}" if where else detail)
 

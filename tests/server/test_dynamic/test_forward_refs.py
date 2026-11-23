@@ -859,8 +859,8 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
     assert wire(node)["seeds"] == [7, 9]
 
-    # A Lambda's keyed seed binds the same way: the earlier round's key column
-    # becomes a flat input, and the generated row function reads it per row.
+    # A Lambda's keyed seed binds the same way: the earlier round's key column becomes a
+    # flat input, and the generated row function reads it per row.
     draw = {"id": "d1", "op": "LambdaOp", "inputs": [seed_id]}
     draw["fn_name"] = "draw"
     draw["code"] = "def draw(row, seed):\n    return '%d' % seed\n"
