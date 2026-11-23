@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
+    DataFrame,
     ListData,
     PythonData,
     parse_data_spec,
@@ -195,6 +196,46 @@ class RuntimeGraph:
             if any(dep in list_lambda_dependent for dep in node.dependencies):
                 list_lambda_dependent.add(node_id)
         return list_lambda_dependent
+
+    def list_lambda_fanout_nodes(self) -> set[str]:
+        """Node ids whose output count a list-mode Lambda's fan-out sets, not
+        the job's input rows: every node below a list-mode Lambda that reads
+        nothing but nodes of that fan-out."""
+        seeds = {
+            node_id
+            for node_id, node in self.nodes.items()
+            if node.task_type == PYTHON_TASK_TYPE
+            and isinstance(node.data_spec, PythonData)
+            and node.data_spec.mode == "list"
+        }
+        reached: set[str] = set()
+        for node_id in self.node_order:
+            node = self.nodes[node_id]
+            if node_id in seeds:
+                reached.add(node_id)
+                continue
+            reads = self._fanout_graph_reads(node)
+            if reads and all(read in reached for read in reads):
+                reached.add(node_id)
+        return reached - self.list_lambda_cardinality_nodes()
+
+    @staticmethod
+    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
+        """The node ids a node reads, or ``None`` when it also reads a literal
+        value such as the job's input rows."""
+        data_spec = node.data_spec
+        if isinstance(data_spec, PythonData):
+            reads: set[str] = set()
+            for entry in data_spec.plan:
+                if entry.kind != "stage" or entry.node is None:
+                    return None
+                reads.add(entry.node)
+            return reads
+        if isinstance(data_spec, DataFrame) and any(
+            column.data is not None for column in data_spec.columns
+        ):
+            return None
+        return set(node.dependencies)
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a whole-result ``LambdaOp`` one hop
