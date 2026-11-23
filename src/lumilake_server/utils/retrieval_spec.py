@@ -21,8 +21,6 @@ ROWS_ONE = "one"
 
 ROWS_TABLE = "table"
 
-ROWS_KEY = "rows"
-
 _ORDER_BY = "ORDER BY"
 
 _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
@@ -43,7 +41,7 @@ class RetrievalSpec(RetrievalData):
     def _rows_sql_only(self) -> Self:
         if self.rows is not None and self.mode != "sql":
             raise ValueError(
-                f"'{ROWS_KEY}' is declared only on a mode: sql retrieval "
+                "'rows' is declared only on a mode: sql retrieval "
                 f"(got mode {self.mode!r})"
             )
         return self
