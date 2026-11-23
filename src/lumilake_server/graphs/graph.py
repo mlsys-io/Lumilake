@@ -189,9 +189,8 @@ def _refuse_unread_key_node(
         return
     named = f"op '{op.declared_id or op_id}'"
     raise ValueError(
-        f"{named} key reads '{_declared_name(node, json_graph)}', which is not one"
-        " of its inputs; list it in inputs: so the key is read from the rows it"
-        " feeds"
+        f"{named} key reads '{_declared_name(node, json_graph)}', which is not one of"
+        " its inputs; list it in inputs: so the key is read from the rows it feeds"
     )
 
 
