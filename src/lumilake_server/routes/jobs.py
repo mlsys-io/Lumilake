@@ -638,12 +638,10 @@ def _dispatch_workflow_to_graph_specs(
 
 
 def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
-    """A native workflow's ops, with the workflow-level ``seed`` taken out of a
-    bare graph."""
+    """A native workflow's ops, without a bare graph's workflow-level ``seed``."""
     if "graph" in workflow_payload:
         return workflow_payload["graph"]
-    ops = {op_id: op for op_id, op in workflow_payload.items() if op_id != "seed"}
-    return ops
+    return {op_id: op for op_id, op in workflow_payload.items() if op_id != "seed"}
 
 
 def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
