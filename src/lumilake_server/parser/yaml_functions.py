@@ -7,12 +7,10 @@ from typing import Annotated, Any, Self
 
 from pydantic import (
     BaseModel,
-    ConfigDict,
     RootModel,
     StringConstraints,
     ValidationError,
     field_validator,
-    model_validator,
 )
 
 _SEPARATOR = "\n\n"
@@ -132,41 +130,10 @@ class WorkflowFunctions(RootModel[dict[_Ident, _Ident]]):
         return _SEPARATOR.join(blocks)
 
 
-class UsedFunctions(BaseModel):
-    """A LambdaOp's ``uses``: function names, each listed once, with its code."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    op: _Ident
-    code: str | None = None
-    uses: list[_Ident]
-
-    @model_validator(mode="after")
-    def _checked(self) -> Self:
-        if self.op != "LambdaOp":
-            raise ValueError("declares 'uses', which only a LambdaOp accepts")
-        if self.code is not None and self.code.strip().startswith("lambda"):
-            raise ValueError(
-                "cannot combine 'uses' with lambda-expression code; write the function "
-                "as a 'def'"
-            )
-        for name in self.uses:
-            if self.uses.count(name) > 1:
-                raise ValueError(f"names the function {name!r} more than once")
-        return self
-
-
 def parse_functions(block: Any) -> WorkflowFunctions:
     """A workflow's ``functions:`` block."""
     return _validated(
         WorkflowFunctions,
         block if block is not None else {},
         "'functions'",
-    )
-
-
-def parse_uses(op: Any, uses: Any, code: Any, op_id: str) -> UsedFunctions:
-    """A LambdaOp's ``uses`` and its own ``code``."""
-    return _validated(
-        UsedFunctions, {"op": op, "uses": uses, "code": code}, f"op {op_id!r}"
     )

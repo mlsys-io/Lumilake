@@ -101,3 +101,21 @@ def test_uses_and_the_inline_rule_are_enforced_at_submit(
         return
     with pytest.raises(ValueError, match=match):
         _run(spec)
+
+
+@pytest.mark.parametrize(
+    "entry, match",
+    [
+        ({"op": "DataOp", "data": ["x"]}, "id: Field required"),
+        ({"id": "a", "data": ["x"]}, "op: Field required"),
+        ({"id": "  ", "op": "DataOp"}, "id: must be a non-empty string"),
+        ({"id": "a", "op": "DataOp", "inputs": "nope"}, "inputs: Input should be a"),
+        ({"id": "a", "op": "DataOp", "max_iter": "soon"}, "max_iter: Input should"),
+    ],
+)
+def test_an_op_entry_field_is_refused_naming_the_entry_and_field(
+    entry: dict[str, Any], match: str
+) -> None:
+    text = yaml.safe_dump({"ops": [entry]}, sort_keys=False)
+    with pytest.raises(ValueError, match=match):
+        parse_yaml_payload(text)

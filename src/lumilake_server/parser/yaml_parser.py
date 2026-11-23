@@ -87,18 +87,76 @@ YAML equivalent of the n8n wire format exists in this parser.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
 import yaml
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from ..ops.router_ops import expand_routers
+from ..ops.spec_validation import validate_fields
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
-from .yaml_functions import WorkflowFunctions, parse_functions, parse_uses
+from .yaml_functions import WorkflowFunctions, parse_functions
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
 
 SUPPORTED_OPS: frozenset[str] = frozenset(EMITTERS)
+
+
+class _OpEntrySpec(BaseModel):
+    """One YAML op entry: its id, op, inputs, iteration cap and used functions."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: StrictStr
+    op: StrictStr
+    inputs: list[StrictStr] = Field(default_factory=list)
+    max_iter: StrictInt | None = None
+    uses: list[StrictStr] = Field(default_factory=list)
+    code: str | None = None
+
+    @field_validator("id", "op")
+    @classmethod
+    def _named(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value.strip()
+
+    @field_validator("inputs", "uses", mode="before")
+    @classmethod
+    def _none_as_empty(cls, value: Any) -> Any:
+        return [] if value is None else value
+
+    @model_validator(mode="after")
+    def _uses_on_a_lambda(self) -> Self:
+        if not self.uses:
+            return self
+        if self.op != "LambdaOp":
+            raise ValueError("declares 'uses', which only a LambdaOp accepts")
+        if self.code is not None and self.code.strip().startswith("lambda"):
+            raise ValueError(
+                "cannot combine 'uses' with lambda-expression code; write the function "
+                "as a 'def'"
+            )
+        for name in self.uses:
+            if self.uses.count(name) > 1:
+                raise ValueError(f"names the function {name!r} more than once")
+        return self
+
+    def op_fields(self) -> dict[str, Any]:
+        """Every key the user wrote beyond the entry's own, ``code`` included."""
+        fields = (self.model_extra or {}).copy()
+        if self.code is not None:
+            fields["code"] = self.code
+        return fields
 
 
 @dataclass
@@ -311,38 +369,25 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
 def _parse_op_entry(entry: Any, idx: int, functions: WorkflowFunctions) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
-    reserved = {"id", "op", "inputs", "max_iter", "uses"}
-    user_id = entry.get("id")
-    op_type = entry.get("op")
-    if not isinstance(user_id, str) or not user_id.strip():
-        raise ValueError(f"op entry at index {idx} missing 'id'")
-    if not isinstance(op_type, str) or not op_type.strip():
-        raise ValueError(f"op entry '{user_id}' missing 'op' type")
-
-    raw_inputs = entry.get("inputs", []) or []
-    if not isinstance(raw_inputs, list) or not all(
-        isinstance(r, str) for r in raw_inputs
-    ):
-        raise ValueError(f"op '{user_id}' inputs must be a list of ids")
-
-    fields_dict = {k: v for k, v in entry.items() if k not in reserved}
-    max_iter = entry.get("max_iter")
-    if max_iter is not None and not isinstance(max_iter, int):
-        raise ValueError(f"op '{user_id}' max_iter must be int or null")
-
-    entry_id = user_id.strip()
-    uses = entry.get("uses")
-    if uses is not None:
-        extended = parse_uses(op_type, uses, entry.get("code"), entry_id)
-        fields_dict["code"] = functions.include(extended.uses, entry_id, extended.code)
-
+    spec = validate_fields(_OpEntrySpec, entry, _entry_where(entry, idx))
+    fields = spec.op_fields()
+    if spec.uses:
+        fields["code"] = functions.include(spec.uses, spec.id, spec.code)
     return OpEntry(
-        id=entry_id,
-        op=op_type.strip(),
-        inputs=list(raw_inputs),
-        fields=fields_dict,
-        max_iter=max_iter,
+        id=spec.id,
+        op=spec.op,
+        inputs=spec.inputs,
+        fields=fields,
+        max_iter=spec.max_iter,
     )
+
+
+def _entry_where(entry: dict[str, Any], idx: int) -> str:
+    """Name an op entry by its id once it gives one, and by its index before."""
+    user_id = entry.get("id")
+    if isinstance(user_id, str) and user_id.strip():
+        return f"op '{user_id.strip()}'"
+    return f"op entry at index {idx}"
 
 
 def _parse_output_entry(entry: Any, idx: int) -> _OutputEntry:
