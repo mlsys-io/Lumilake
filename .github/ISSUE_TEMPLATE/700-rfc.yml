@@ -9,7 +9,7 @@ body:
       value: >
         RFCs are for significant changes that affect Lumilake's architecture,
         protocols, or public APIs. Please review previous
-        [RFCs](https://github.com/mlsys-io/lumilake_OSS/issues?q=label%3ARFC+sort%3Aupdated-desc)
+        [RFCs](https://github.com/mlsys-io/Lumilake/issues?q=label%3ARFC+sort%3Aupdated-desc)
         for reference.
 
   - type: textarea

@@ -177,10 +177,10 @@ def test_row_mode_output_spanning_multiple_slices_is_accepted() -> None:
     )
 
 
-def test_list_lambda_output_not_an_output_is_accepted() -> None:
-    """A list-mode Lambda feeding a row-mode python step is not a
-    list-cardinality output node (the row-mode step is a barrier), so
-    multi-slice is fine."""
+def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> None:
+    """A row-mode python step below a list-mode Lambda emits one value per
+    list element, so its row count follows the fan-out, not the slice's input
+    rows; a submission that would split it across slices is rejected."""
     lambda_id = "g__lambda"
     downstream_id = "g__downstream"
     op = runtime_op(
@@ -197,7 +197,10 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "row"},
+        data_spec={
+            "mode": "row",
+            "plan": [{"kind": "stage", "node": lambda_id}],
+        },
         model_spec={},
         inference_spec={},
         dependencies=(lambda_id,),
@@ -207,7 +210,10 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         node_order=[lambda_id, downstream_id],
         output_node_map={downstream_id: "out"},
     )
-    _validate_list_lambda_slice_span(
-        {"g": graph},
-        {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_list_lambda_slice_span(
+            {"g": graph},
+            {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
+        )
+    assert exc_info.value.status_code == 422
+    assert "fan-out" in exc_info.value.detail
