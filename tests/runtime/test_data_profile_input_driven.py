@@ -11,6 +11,7 @@ minimum the op is guaranteed to fetch per invocation.
 from lumilake_server.runtime.data_profile_utils import _derive_s3_profile_for_graph
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _s3_node(
@@ -19,9 +20,9 @@ def _s3_node(
     template: str,
     params: list[dict[str, str]],
 ) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
-        task_type="data_retrieval",
+        task_type="data_profiling",
         backend="data_retrieval",
         model="data_retrieval",
         data_spec={
@@ -35,9 +36,9 @@ def _s3_node(
 
 
 def _sql_node(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
-        task_type="data_retrieval",
+        task_type="data_profiling",
         backend="data_retrieval",
         model="data_retrieval",
         data_spec={

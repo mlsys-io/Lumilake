@@ -4,7 +4,6 @@ A LambdaOp that is an output, or feeds only other LambdaOps, runs as its own
 FlowMesh ``python`` task in a per-task container.
 """
 
-import copy
 import hashlib
 import inspect
 import json
@@ -14,6 +13,7 @@ from functools import cache
 from typing import Any
 
 from lumilake import envs
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
 from lumilake_server.runtime import lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
@@ -23,14 +23,17 @@ TASK_RUNTIME_MODULE = "lumilake_runtime"
 LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
-TASK_TYPE = "python"
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
 
-# Column plan entries: {"kind": "stage", "node": <upstream node id>} or
-# {"kind": "literal", "values": [...]}.
-ColumnPlan = list[dict[str, Any]]
+# Column plan entries: a stage reads an upstream node, a literal carries values.
+ColumnPlan = list[ColumnPlanEntry]
+
+
+def plan_json(plan: ColumnPlan) -> str:
+    """A plan as the JSON the generated task code embeds."""
+    return json.dumps([entry.model_dump(exclude_none=True) for entry in plan])
 
 
 @dataclass(frozen=True)
@@ -246,7 +249,7 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps(plan),
+        plan=plan_json(plan),
         template=template,
     )
 
@@ -267,7 +270,7 @@ def flatten_step_source(node_id: str, plan: ColumnPlan) -> str:
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps(plan),
+        plan=plan_json(plan),
     )
 
 
@@ -277,7 +280,7 @@ def pairs_source(node_id: str, plan: ColumnPlan) -> str:
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps(plan),
+        plan=plan_json(plan),
     )
 
 
@@ -288,7 +291,7 @@ def regroup_source(node_id: str, plan: ColumnPlan) -> str:
         op_id=node_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps(plan),
+        plan=plan_json(plan),
     )
 
 
@@ -312,9 +315,9 @@ def runtime_blob() -> PublishedBlob:
     )
 
 
-def literal_blob(entry: dict[str, Any]) -> PublishedBlob | None:
+def literal_blob(entry: ColumnPlanEntry) -> PublishedBlob | None:
     """The mounted blob for one literal entry, or None when it stays inline."""
-    encoded = json.dumps(entry["values"], ensure_ascii=False).encode("utf-8")
+    encoded = json.dumps(entry.values, ensure_ascii=False).encode("utf-8")
     if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
         return None
     digest = hashlib.sha256(encoded).hexdigest()
@@ -333,7 +336,7 @@ def literal_blobs(plan: ColumnPlan) -> dict[str, PublishedBlob]:
     """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
     blobs: dict[str, PublishedBlob] = {}
     for entry in plan:
-        if entry["kind"] != "literal":
+        if entry.kind != "literal":
             continue
         blob = literal_blob(entry)
         if blob is not None:
@@ -357,17 +360,17 @@ def resolve_plan(
     Every entry that resolves to the same digest points at one shared mount,
     because FlowMesh rejects a task spec that mounts a path twice.
     """
-    task_plan = copy.deepcopy(plan)
+    task_plan = [entry.model_copy() for entry in plan]
     mounts: dict[str, PublishedBlob] = {}
     for entry in task_plan:
-        if entry["kind"] != "literal":
+        if entry.kind != "literal":
             continue
         blob = literal_blob(entry)
         if blob is None:
             continue
         blob = published[blob.key]
-        del entry["values"]
-        entry["file"] = blob.mount_path
+        entry.values = None
+        entry.file = blob.mount_path
         mounts[blob.key] = blob
     task_blobs = list(mounts.values())
     if len(task_blobs) + 1 > MAX_BLOBS_PER_TASK:
@@ -410,20 +413,29 @@ def wrapper_source(
         mount=TASK_RUNTIME_MOUNT,
         code=user_code,
         fn_name=fn_name,
-        plan=json.dumps(plan),
+        plan=plan_json(plan),
     )
+
+
+def _required(value: str | None, field: str, mode: str) -> str:
+    """A field a python step of ``mode`` must carry."""
+    if value is None:
+        raise ValueError(f"a {mode}-mode python step requires {field!r}")
+    return value
 
 
 def flowmesh_spec(
     node_id: str,
-    data_spec: dict[str, Any],
+    data_spec: PythonData,
     published_blobs: Mapping[str, PublishedBlob],
 ) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
-    plan, literal_mounts = resolve_plan(data_spec["plan"], published_blobs)
-    mode = data_spec.get("mode", "row")
+    plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
+    mode = data_spec.mode or "row"
     if mode == "flatten":
-        code = flatten_source(node_id, plan, data_spec["template"])
+        code = flatten_source(
+            node_id, plan, _required(data_spec.template, "template", mode)
+        )
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
     elif mode == "pairs":
@@ -432,27 +444,29 @@ def flowmesh_spec(
         code = flatten_step_source(node_id, plan)
     else:
         code = wrapper_source(
-            node_id, data_spec["fn_name"], data_spec["code"], plan, mode
+            node_id,
+            _required(data_spec.fn_name, "fn_name", mode),
+            _required(data_spec.code, "code", mode),
+            plan,
+            mode,
         )
     spec: dict[str, Any] = {
-        "taskType": TASK_TYPE,
+        "taskType": PYTHON_TASK_TYPE,
         "code": code,
         "entrypoint": "main",
-        "timeoutSeconds": data_spec["timeout_s"],
+        "timeoutSeconds": data_spec.timeout_s,
     }
-    if data_spec.get("image"):
-        spec["image"] = data_spec["image"]
-    if data_spec.get("cache") is not None:
-        spec["cache"] = data_spec["cache"]
+    if data_spec.image:
+        spec["image"] = data_spec.image
+    if data_spec.cache is not None:
+        spec["cache"] = data_spec.cache
     runtime = published_blobs[runtime_blob().key]
     spec["blobs"] = [_blob_entry(runtime)] + [
         _blob_entry(blob) for blob in literal_mounts
     ]
-    stages = list(
-        dict.fromkeys(entry["node"] for entry in plan if entry["kind"] == "stage")
-    )
+    stages = list(dict.fromkeys(entry.node for entry in plan if entry.kind == "stage"))
     if stages:
         spec["inputs"] = [{"stage": stage} for stage in stages]
-    if "memory_mb" in data_spec:
-        spec["resources"] = {"hardware": {"memory": f"{data_spec['memory_mb']}Mi"}}
+    if data_spec.memory_mb is not None:
+        spec["resources"] = {"hardware": {"memory": f"{data_spec.memory_mb}Mi"}}
     return spec

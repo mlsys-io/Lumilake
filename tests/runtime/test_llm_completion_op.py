@@ -16,6 +16,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import wire
 
 
 def test_completion_op_compiles_to_string_prompt_list_without_chat_template() -> None:
@@ -32,7 +33,7 @@ def test_completion_op_compiles_to_string_prompt_list_without_chat_template() ->
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[op.id]
 
-    assert node.data_spec == {
+    assert wire(node) == {
         "type": "list",
         "items": ["first raw prompt", "second raw prompt"],
     }
@@ -70,7 +71,7 @@ def test_completion_yaml_uses_string_prompt_and_no_chat_template() -> None:
         node for node in runtime_graph.nodes.values() if node.task_type == "inference"
     ]
 
-    assert node.data_spec == {
+    assert wire(node) == {
         "type": "list",
         "items": ["first raw prompt", "second raw prompt"],
     }
@@ -91,7 +92,7 @@ def test_completion_prompt_from_upstream_lambda_binds_exact_runtime_path() -> No
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[completion.id]
 
-    assert node.data_spec == {
+    assert wire(node) == {
         "type": "list",
         "node": render.id,
         "path": "value.items.output",
@@ -118,7 +119,7 @@ def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> No
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[completion.id]
 
-    assert node.data_spec == {
+    assert wire(node) == {
         "type": "list",
         "node": render.id,
         "path": "value.items.output",

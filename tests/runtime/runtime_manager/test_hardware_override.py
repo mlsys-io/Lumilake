@@ -12,13 +12,13 @@ import pytest
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _gpu_graph() -> RuntimeGraph:
     return RuntimeGraph(
         nodes={
-            "n1": RuntimeOp(
+            "n1": runtime_op(
                 node_id="n1",
                 task_type="inference",
                 backend="vllm",

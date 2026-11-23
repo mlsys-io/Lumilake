@@ -10,6 +10,7 @@ import pytest
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, Any]:
@@ -23,7 +24,7 @@ def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, A
 
 
 def _python_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="python",
         backend="python",
@@ -35,7 +36,7 @@ def _python_op(node_id: str) -> RuntimeOp:
 
 
 def _api_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="api",
         backend="api",
@@ -48,7 +49,7 @@ def _api_op(node_id: str) -> RuntimeOp:
 
 
 def _inference_op(node_id: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="inference",
         backend="vllm",

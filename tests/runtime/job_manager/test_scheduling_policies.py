@@ -21,11 +21,12 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
     if kind == "gpu":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="inference",
@@ -36,7 +37,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             inference_spec={},
         )
     if kind == "python":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="python",
@@ -47,7 +48,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             inference_spec={},
         )
     if kind == "agent":
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             dependencies=dependencies,
             task_type="data_retrieval",
@@ -57,7 +58,7 @@ def _op(node_id: str, kind: str, dependencies: tuple[str, ...]) -> RuntimeOp:
             model_spec={},
             inference_spec={},
         )
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         dependencies=dependencies,
         task_type="http",

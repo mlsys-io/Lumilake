@@ -12,7 +12,7 @@ from support.runtime_server import RecordingRuntimeManager
 
 from lumilake import envs
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 _BULK_PLUGIN = "support.optimizer_bulk_schedule_plugin"
 
@@ -28,7 +28,7 @@ async def test_generate_schedule_in_subprocess_returns_bulk_schedule(
     monkeypatch.setattr(envs, "LUMILAKE_PLUGINS", [_BULK_PLUGIN])
     monkeypatch.setattr(envs, "LUMILAKE_OPTIMIZER_SUBPROCESS_TIMEOUT_SECONDS", 10)
 
-    op = RuntimeOp(
+    op = runtime_op(
         node_id="n1",
         task_type="inference",
         backend="vllm",

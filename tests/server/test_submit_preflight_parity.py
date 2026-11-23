@@ -10,8 +10,8 @@ from lumilake_server.routes.jobs import (
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
+from tests.support.data_specs import runtime_op
 
 _BUILD_ERROR = (
     "OutputOp 'greeting' input must be an LLMOp or DataRetrievalOp (got FormatOp)"
@@ -101,7 +101,7 @@ def test_no_graphs_is_not_an_error() -> None:
 
 def _list_lambda_graph(output_name: str) -> RuntimeGraph:
     node_id = "g__lambda"
-    op = RuntimeOp(
+    op = runtime_op(
         node_id=node_id,
         task_type="python",
         backend="python",
@@ -119,7 +119,7 @@ def _list_lambda_graph(output_name: str) -> RuntimeGraph:
 
 def _row_graph(output_name: str) -> RuntimeGraph:
     node_id = "g__row"
-    op = RuntimeOp(
+    op = runtime_op(
         node_id=node_id,
         task_type="python",
         backend="python",
@@ -183,7 +183,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
     multi-slice is fine."""
     lambda_id = "g__lambda"
     downstream_id = "g__downstream"
-    op = RuntimeOp(
+    op = runtime_op(
         node_id=lambda_id,
         task_type="python",
         backend="python",
@@ -192,7 +192,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         model_spec={},
         inference_spec={},
     )
-    downstream = RuntimeOp(
+    downstream = runtime_op(
         node_id=downstream_id,
         task_type="python",
         backend="python",

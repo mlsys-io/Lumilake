@@ -4,6 +4,7 @@ column."""
 import json
 from typing import Any
 
+from lumilake_server.data_specs import ListData
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import LLMChatOp, RowwiseMessages
 from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
@@ -38,7 +39,7 @@ class _MessagesBuilder(_DerivedBuilder):
 
     def _messages_data_spec(
         self, llm_op: LLMChatOp, column: RowwiseMessages, ctx: LoweringContext
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[ListData, list[str]]:
         """The ``list`` data spec one row per conversation, plus the runtime
         node that produces the column."""
         consumer = f"LLMChatOp '{llm_op.id}' rowwise_messages"
@@ -62,7 +63,7 @@ class _MessagesBuilder(_DerivedBuilder):
                 raise ValueError(
                     f"{consumer} reads {node!r}, which has no values supplied"
                 )
-            return {"type": "list", "items": _decoded(values, consumer)}, []
+            return ListData(items=_decoded(values, consumer)), []
         output = self._op_output(upstream)
         if output.needs_flatten:
             raise ValueError(
@@ -83,14 +84,14 @@ class _MessagesBuilder(_DerivedBuilder):
             )
         path = output.read(column.path or _WHOLE, consumer)
         return (
-            {"type": "list", "node": runtime_ids[-1], "path": path},
+            ListData(node=runtime_ids[-1], path=path),
             [runtime_ids[-1]],
         )
 
     def _messages_op(
         self,
         llm_op: LLMChatOp,
-        data_spec: dict[str, Any],
+        data_spec: ListData,
         dependencies: list[str],
         ctx: LoweringContext,
     ) -> RuntimeOp:

@@ -1,15 +1,16 @@
 from lumilake_server.runtime.optimizer.topological_sort import TopologicalSortOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _op(node_id: str, backend: str, task_type: str = "inference") -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type=task_type,
         backend=backend,
         model="m",
-        data_spec={"type": "list", "items": []},
+        data_spec={},
         model_spec={},
         inference_spec={},
         dependencies=(),

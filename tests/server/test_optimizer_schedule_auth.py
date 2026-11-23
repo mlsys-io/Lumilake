@@ -19,7 +19,7 @@ from lumilake_server import hooks
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------
 # Stub identity provider
@@ -105,7 +105,7 @@ _DENIED_PRINCIPALS = {"bob"}
 
 def _schedule_body() -> dict[str, Any]:
     """Minimal body that passes ScheduleRequest validation."""
-    op = RuntimeOp(
+    op = runtime_op(
         node_id="n1",
         task_type="inference",
         backend="vllm",

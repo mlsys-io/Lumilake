@@ -18,6 +18,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _slice_meta(graph_name: str) -> WorkflowSliceMeta:
@@ -1413,7 +1414,7 @@ def _build_scenario_graph(model: str, prompt: str, n_nodes: int) -> RuntimeGraph
     for idx in range(n_nodes):
         node_id = f"n{idx}"
         deps = (prev,) if prev else ()
-        nodes[node_id] = RuntimeOp(
+        nodes[node_id] = runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",

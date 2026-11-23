@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lumilake_server.data_specs import DataSpecModel, parse_data_spec
 from lumilake_server.runtime.worker_capability import (
     model_spec_gpu_memory_utilization,
 )
@@ -40,7 +41,7 @@ class RuntimeOp:
     task_type: str
     backend: str
     model: str
-    data_spec: dict[str, Any]
+    data_spec: DataSpecModel
     model_spec: dict[str, Any]
     inference_spec: dict[str, Any]
     api_spec: dict[str, Any] = field(default_factory=dict)
@@ -65,7 +66,7 @@ class RuntimeOp:
             task_type=self.task_type,
             backend=self.backend,
             model=self.model,
-            data_spec=self.data_spec,
+            data_spec=self.data_spec.model_dump(exclude_none=True),
             model_spec=self.model_spec,
             inference_spec=self.inference_spec,
             api_spec=self.api_spec,
@@ -79,12 +80,13 @@ class RuntimeOp:
 
     @classmethod
     def from_schema(cls, node_id: str, schema: RuntimeOpSchema) -> "RuntimeOp":
+        """Build the op from its serialized schema, validating its data spec."""
         return cls(
             node_id=node_id,
             task_type=schema.task_type,
             backend=schema.backend,
             model=schema.model,
-            data_spec=schema.data_spec,
+            data_spec=parse_data_spec(schema.task_type, schema.data_spec),
             model_spec=schema.model_spec,
             inference_spec=schema.inference_spec,
             api_spec=schema.api_spec,
@@ -103,7 +105,7 @@ class RuntimeOp:
     def to_flowmesh_node(self) -> dict[str, Any]:
         spec_payload: dict[str, Any] = {
             "taskType": self.task_type,
-            "data": self.data_spec,
+            "data": self.data_spec.model_dump(exclude_none=True),
         }
         if self.task_type == "api":
             spec_payload["api"] = self.api_spec

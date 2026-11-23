@@ -6,11 +6,12 @@ import pytest
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, make_chunk_group_key
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _sampling_graph(scope: str, op_ids: list[str], **inference: Any) -> RuntimeGraph:
     nodes = {
-        f"{scope}__{op_id}": RuntimeOp(
+        f"{scope}__{op_id}": runtime_op(
             f"{scope}__{op_id}",
             "inference",
             "vllm",
@@ -54,7 +55,7 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
     root_label = f"input_{scope}_Stock_1001"
     child_label = f"context_{scope}_root_2002"
 
-    root = RuntimeOp(
+    root = runtime_op(
         node_id=root_id,
         task_type="inference",
         backend="vllm",
@@ -69,14 +70,16 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
                         "data": {"type": "list", "items": ["NVDA"]},
                     }
                 ],
-                "options": {"format": {"template": f"Stock={{{root_label}}}"}},
+                "options": {
+                    "format": {"messages": [{"content": f"Stock={{{root_label}}}"}]}
+                },
             },
         },
         model_spec={},
         inference_spec={"echo": True, "temperature": 0.0},
         dependencies=(),
     )
-    child = RuntimeOp(
+    child = runtime_op(
         node_id=child_id,
         task_type="inference",
         backend="vllm",
@@ -92,7 +95,9 @@ def _build_scoped_graph(scope: str) -> RuntimeGraph:
                         "path": "items.output",
                     }
                 ],
-                "options": {"format": {"template": f"Ctx={{{child_label}}}"}},
+                "options": {
+                    "format": {"messages": [{"content": f"Ctx={{{child_label}}}"}]}
+                },
             },
         },
         model_spec={},
@@ -127,7 +132,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
         infer_id = f"{scope}__infer"
         return RuntimeGraph(
             nodes={
-                seed_id: RuntimeOp(
+                seed_id: runtime_op(
                     node_id=seed_id,
                     task_type="inference",
                     backend="dummy",
@@ -137,7 +142,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                     inference_spec={"temperature": 0.0},
                     dependencies=(),
                 ),
-                infer_id: RuntimeOp(
+                infer_id: runtime_op(
                     node_id=infer_id,
                     task_type="inference",
                     backend="dummy",
@@ -153,7 +158,7 @@ def test_optimize_graphs_dedupes_prefix_only_differences() -> None:
                                     "path": "items.output",
                                 }
                             ],
-                            "options": {"format": {"template": "{x}"}},
+                            "options": {"format": {"messages": [{"content": "{x}"}]}},
                         },
                     },
                     model_spec={},
@@ -176,7 +181,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
     """When dedupe merges an API predecessor, ``${node.path}`` references to it
     inside a downstream ``api_spec`` body must be remapped to the canonical node,
     or the placeholder would name a node that no longer exists."""
-    api0 = RuntimeOp(
+    api0 = runtime_op(
         node_id="Api0",
         task_type="api",
         backend="api",
@@ -192,7 +197,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         },
         dependencies=(),
     )
-    api1 = RuntimeOp(
+    api1 = runtime_op(
         node_id="Api1",
         task_type="api",
         backend="api",
@@ -208,7 +213,7 @@ def test_dedupe_remaps_placeholder_refs_in_api_spec() -> None:
         },
         dependencies=(),
     )
-    downstream = RuntimeOp(
+    downstream = runtime_op(
         node_id="Down",
         task_type="api",
         backend="api",
@@ -246,7 +251,7 @@ def test_dedupe_keys_on_condition_and_preserves_it() -> None:
     surviving op must keep its ``condition`` through the rebuild."""
 
     def _op(node_id: str, expr: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
@@ -280,7 +285,7 @@ def test_dedupe_merges_ops_with_identical_condition() -> None:
     op keeps the condition and its empty-input skip."""
 
     def _op(node_id: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
@@ -314,7 +319,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
     no longer exists."""
 
     def _op(node_id: str) -> RuntimeOp:
-        return RuntimeOp(
+        return runtime_op(
             node_id=node_id,
             task_type="inference",
             backend="vllm",
@@ -327,7 +332,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
     a = _op("A")
     b = _op("B")
-    c = RuntimeOp(
+    c = runtime_op(
         node_id="C",
         task_type="inference",
         backend="vllm",
@@ -353,7 +358,7 @@ def test_dedupe_remaps_condition_node_reference() -> None:
 
 
 def test_dedupe_keys_on_output_enforcement() -> None:
-    base = RuntimeOp("A", "inference", "vllm", "m", {}, {}, {"temperature": 0.0})
+    base = runtime_op("A", "inference", "vllm", "m", {}, {}, {"temperature": 0.0})
     nodes = {
         n: replace(base, node_id=n, output_enforcement={"text_regex": r})
         for n, r in (("A", "a"), ("B", "a"), ("F", "F"))

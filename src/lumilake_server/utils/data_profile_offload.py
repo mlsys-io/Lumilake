@@ -13,6 +13,7 @@ from lumilake_server.data_profile_models import (
     DataProfileResultRow,
     DataProfileResultsPayload,
 )
+from lumilake_server.data_specs import RetrievalParam, SqlProfileData
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.utils.lumid_data_client import profile as lumid_profile
 
@@ -51,7 +52,7 @@ _SQL_TABLE_PATTERN = re.compile(
 class DataProfileTaskNode(BaseModel):
     node_id: str
     raw_node_id: str
-    data_spec: dict[str, Any]
+    data_spec: SqlProfileData
 
     model_config = ConfigDict(extra="forbid")
 
@@ -147,14 +148,13 @@ def build_request_data_profile_tasks(
         nodes: dict[str, DataProfileTaskNode] = {}
         for node_id in runtime_graph.node_order:
             op = runtime_graph.nodes[node_id]
-            data_spec = op.data_spec if isinstance(op.data_spec, dict) else {}
-            if data_spec.get("type") != "sql":
+            if not isinstance(op.data_spec, SqlProfileData):
                 continue
             raw_node_id = runtime_to_raw.get(node_id, node_id)
             nodes[node_id] = DataProfileTaskNode(
                 node_id=node_id,
                 raw_node_id=raw_node_id,
-                data_spec=data_spec,
+                data_spec=op.data_spec,
             )
             node_order.append(node_id)
         if not node_order:
@@ -180,30 +180,26 @@ def run_data_profile_task(
         node = payload.nodes.get(node_id)
         if node is None:
             continue
-        data_spec = node.data_spec if isinstance(node.data_spec, dict) else {}
-        if data_spec.get("type") != "sql":
-            continue
-        template = data_spec.get("template")
-        if not isinstance(template, str):
-            continue
-        table = data_spec.get("table")
-        if not isinstance(table, str) or not table.strip():
-            table = _extract_table_from_sql(template)
-        else:
+        spec = node.data_spec
+        table = spec.table
+        if table:
             table = _normalize_table_name(table)
+        else:
+            table = _extract_table_from_sql(spec.template)
         if not table:
             continue
-        num_test_queries_raw = data_spec.get(
-            "num_test_queries", envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES
+        num_test_queries = max(
+            1,
+            (
+                spec.num_test_queries
+                if spec.num_test_queries is not None
+                else envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES
+            ),
         )
-        try:
-            num_test_queries = max(1, int(num_test_queries_raw))
-        except (TypeError, ValueError):
-            num_test_queries = max(1, envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES)
         queries = _build_sample_data_profile_queries(
-            template=template,
-            params=data_spec.get("params"),
-            constraints=data_spec.get("constraints"),
+            template=spec.template,
+            params=spec.params,
+            constraints=spec.constraints,
             num_samples=num_test_queries,
             node_id=node_id,
         )
@@ -255,8 +251,7 @@ def project_data_profile_results_to_runtime_graph(
     projected: dict[str, list[DataProfileResultRow]] = {}
     for node_id in target_graph.node_order:
         op = target_graph.nodes[node_id]
-        data_spec = op.data_spec if isinstance(op.data_spec, dict) else {}
-        if data_spec.get("type") != "sql":
+        if not isinstance(op.data_spec, SqlProfileData):
             continue
         raw_node_id = runtime_to_raw.get(node_id)
         if not raw_node_id:
@@ -341,22 +336,19 @@ def _type_default_sample(type_name: str | None) -> Any:
 
 
 def _collect_data_profile_param_candidates(
-    params: Any,
-    constraints: Any,
+    params: Sequence[RetrievalParam] | None,
+    constraints: Sequence[dict[str, Any]] | None,
 ) -> dict[str, list[Any]]:
     result: dict[str, list[Any]] = {}
-    if isinstance(params, list):
-        for item in params:
-            if not isinstance(item, dict):
-                continue
-            label = item.get("label")
-            if not isinstance(label, str) or not label:
-                continue
-            data = item.get("data")
-            if isinstance(data, dict) and data.get("type") == "list":
-                items = data.get("items")
-                if isinstance(items, list) and items:
-                    result[label] = list(items)
+    for item in params or ():
+        if not item.label:
+            continue
+        if (
+            item.data is not None
+            and isinstance(item.data.items, list)
+            and item.data.items
+        ):
+            result[item.label] = item.data.items
     if isinstance(constraints, list):
         for item in constraints:
             if not isinstance(item, dict):
@@ -386,8 +378,8 @@ def _collect_data_profile_param_candidates(
 def _build_sample_data_profile_queries(
     *,
     template: str,
-    params: Any,
-    constraints: Any,
+    params: Sequence[RetrievalParam] | None,
+    constraints: Sequence[dict[str, Any]] | None,
     num_samples: int,
     node_id: str | None = None,
 ) -> list[str]:

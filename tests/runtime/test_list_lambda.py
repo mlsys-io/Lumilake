@@ -18,6 +18,7 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from tests.support.data_specs import wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -74,18 +75,18 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
     explode_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert explode_node.data_spec["mode"] == "list"
-    assert explode_node.data_spec["plan"] == [
+    assert wire(explode_node)["mode"] == "list"
+    assert wire(explode_node)["plan"] == [
         {"kind": "literal", "values": ["NVDA", "AAPL"]}
     ]
 
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in n.data_spec
+        if n.task_type == "inference" and "columns" in wire(n)
     )
     assert explode_node.node_id in summarize_node.dependencies
-    columns = summarize_node.data_spec["columns"]
+    columns = wire(summarize_node)["columns"]
     assert {
         "label": "value",
         "node": explode_node.node_id,
@@ -135,15 +136,15 @@ def test_list_lambda_groups_then_collapses() -> None:
     group_node = next(
         n
         for n in python_nodes
-        if n.data_spec["plan"] == [{"kind": "literal", "values": ["NVDA", "AAPL"]}]
+        if wire(n)["plan"] == [{"kind": "literal", "values": ["NVDA", "AAPL"]}]
     )
     collapse_node = next(n for n in python_nodes if n is not group_node)
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in n.data_spec
+        if n.task_type == "inference" and "columns" in wire(n)
     )
-    (collapse_plan,) = collapse_node.data_spec["plan"]
+    (collapse_plan,) = wire(collapse_node)["plan"]
     assert collapse_plan == {
         "kind": "stage",
         "node": summarize_node.node_id,
@@ -175,7 +176,7 @@ def test_list_lambda_as_workflow_output() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert explode_node.data_spec["mode"] == "list"
+    assert wire(explode_node)["mode"] == "list"
     assert explode_node.node_id in runtime_graph.output_node_map
     assert runtime_graph.output_paths[explode_node.node_id] == "items.output"
 
@@ -238,7 +239,7 @@ def test_per_row_lambda_behaviour_unchanged() -> None:
     summarize_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "inference"
     )
-    template = summarize_node.data_spec["template"]
+    template = wire(summarize_node)["template"]
     steps = template["options"]["format"]["steps"]
     assert any(step.get("function") is not None for step in steps)
 
@@ -282,23 +283,23 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
     explode_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert explode_node.data_spec["mode"] == "list"
+    assert wire(explode_node)["mode"] == "list"
     extract_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" not in n.data_spec
+        if n.task_type == "inference" and "columns" not in wire(n)
     )
-    (extract_plan,) = explode_node.data_spec["plan"]
+    (extract_plan,) = wire(explode_node)["plan"]
     assert extract_plan == {"kind": "stage", "node": extract_node.node_id}
     assert extract_node.node_id in explode_node.dependencies
 
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in n.data_spec
+        if n.task_type == "inference" and "columns" in wire(n)
     )
     assert explode_node.node_id in summarize_node.dependencies
-    columns = summarize_node.data_spec["columns"]
+    columns = wire(summarize_node)["columns"]
     assert {
         "label": "value",
         "node": explode_node.node_id,
@@ -335,13 +336,13 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
     tally_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert tally_node.data_spec["mode"] == "list"
+    assert wire(tally_node)["mode"] == "list"
     reply_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in n.data_spec
+        if n.task_type == "inference" and "columns" in wire(n)
     )
-    (reply_plan,) = tally_node.data_spec["plan"]
+    (reply_plan,) = wire(tally_node)["plan"]
     assert reply_plan == {
         "kind": "stage",
         "node": reply_node.node_id,
@@ -384,8 +385,8 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     tally_node = runtime_graph.nodes[tally.id]
-    assert tally_node.data_spec["mode"] == "list"
-    (vision_plan,) = tally_node.data_spec["plan"]
+    assert wire(tally_node)["mode"] == "list"
+    (vision_plan,) = wire(tally_node)["plan"]
     assert vision_plan == {"kind": "stage", "node": vision.id}
 
 
@@ -400,7 +401,7 @@ def test_list_lambda_data_op_input_compiles() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert explode_node.data_spec["plan"] == [
+    assert wire(explode_node)["plan"] == [
         {"kind": "literal", "values": ["NVDA", "AAPL"]}
     ]
 
@@ -445,13 +446,13 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     combine_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert combine_node.data_spec["mode"] == "list"
+    assert wire(combine_node)["mode"] == "list"
     judge_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in n.data_spec
+        if n.task_type == "inference" and "columns" in wire(n)
     )
-    assert combine_node.data_spec["plan"] == [
+    assert wire(combine_node)["plan"] == [
         {"kind": "stage", "node": judge_node.node_id, "flatten": True},
         {"kind": "stage", "node": retrieval.id},
     ]
@@ -462,7 +463,7 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         n
         for n in runtime_graph.nodes.values()
         if n.task_type == "inference"
-        and "columns" in n.data_spec
+        and "columns" in wire(n)
         and combine_node.node_id in n.dependencies
     )
     assert combine_node.node_id in llm_node.dependencies
@@ -497,10 +498,10 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert explode_node.data_spec["mode"] == "list"
+    assert wire(explode_node)["mode"] == "list"
     (llm_node,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_node]
-    assert node.data_spec["columns"][0] == {
+    assert wire(node)["columns"][0] == {
         "label": "value",
         "node": explode_node.node_id,
         "path": "value.items.output.value",

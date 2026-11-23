@@ -144,9 +144,13 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
     return FormatOp(template, *args, **kwargs)
 
 
+LambdaMode = Literal["row", "list", "aligned"]
+
+
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn
+    mode: LambdaMode
 
     LAMBDA_MODES = ("row", "list", "aligned")
 
@@ -200,7 +204,7 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: RowLambdaFn | ListLambdaFn,
         code: str | None = None,
-        mode: str = "row",
+        mode: LambdaMode = "row",
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,

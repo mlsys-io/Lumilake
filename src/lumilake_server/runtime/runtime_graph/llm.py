@@ -4,6 +4,20 @@ from typing import Any, cast
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig
+from lumilake_server.data_specs import (
+    Column,
+    DataFrame,
+    DataSpecModel,
+    FormatArgument,
+    FormatConfig,
+    FormatStep,
+    GraphTemplate,
+    GraphTemplateData,
+    ListData,
+    Message,
+    NodeRead,
+    TemplateOptions,
+)
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -193,10 +207,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f"ImageGenerationOp '{llm_op_id}' content references"
                         f" InputOp {content_op.name!r} with no values supplied."
                     )
-                content_data_spec: dict[str, Any] = {
-                    "type": "list",
-                    "items": list(items),
-                }
+                content_data_spec = ListData(items=list(items))
                 content_dependencies: list[str] = []
             else:
                 self._guard_single_row_node_ref(
@@ -206,11 +217,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                     kind="content",
                 )
                 content_path = self._op_output(content_op).path
-                content_data_spec = {
-                    "type": "list",
-                    "node": content_op.id,
-                    "path": content_path,
-                }
+                content_data_spec = ListData(node=content_op.id, path=content_path)
                 content_dependencies = [content_op.id]
             return self._create_runtime_op(
                 name=llm_op_id,
@@ -232,7 +239,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             # Raw completions read their prompt directly and never build a
             # chat-message graph, including when the prompt is a list-mode op.
             upstream_llm_ids: list[str] = []
-            template_spec: dict[str, Any] = {}
         else:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 llm_op_id,
@@ -267,10 +273,10 @@ class _LLMBuilder(_EmbeddingBuilder):
                         f"LLMCompletionOp '{llm_op_id}' prompt input "
                         f"{prompt_op.name!r} has no values supplied"
                     )
-                data_spec = {"type": "list", "items": list(prompt_values)}
+                data_spec = ListData(items=list(prompt_values))
                 row_dependencies: list[str] = []
             elif isinstance(prompt_op, DataOp):
-                data_spec = {"type": "list", "items": list(prompt_op.data)}
+                data_spec = ListData(items=list(prompt_op.data))
                 row_dependencies = []
             else:
                 if not (
@@ -283,11 +289,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                         " not produce one prompt string per row"
                     )
                 prompt_path = self._op_output(prompt_op).path
-                data_spec = {
-                    "type": "list",
-                    "node": prompt_op.id,
-                    "path": prompt_path,
-                }
+                data_spec = ListData(node=prompt_op.id, path=prompt_path)
                 row_dependencies = [prompt_op.id]
             return self._create_runtime_op(
                 name=llm_op_id,
@@ -306,7 +308,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.rowwise_template:
-            data_spec, row_dependencies = self._rowwise_data_spec(
+            rowwise_spec, row_dependencies = self._rowwise_data_spec(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
                 upstream_llm_ids=upstream_llm_ids,
@@ -315,7 +317,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 dsl_to_runtime=dsl_to_runtime,
             )
             self._attach_rowwise_seed(
-                data_spec,
+                rowwise_spec,
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
                 dependencies=row_dependencies,
@@ -326,7 +328,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             return self._create_runtime_op(
                 name=llm_op_id,
                 task_type=task_type,
-                data_spec=data_spec,
+                data_spec=rowwise_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
                 output_enforcement=output_enforcement,
@@ -346,7 +348,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             )
 
         if isinstance(llm_op, LLMChatOp) and llm_op.aggregate_table:
-            data_spec, aggregate_dependencies = self._aggregate_data_spec(
+            aggregate_spec, aggregate_dependencies = self._aggregate_data_spec(
                 llm_op_id=llm_op_id,
                 llm_op=llm_op,
                 template_spec=template_spec,
@@ -358,7 +360,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             return self._create_runtime_op(
                 name=llm_op_id,
                 task_type=task_type,
-                data_spec=data_spec,
+                data_spec=aggregate_spec,
                 model_spec=self._build_model_spec(llm_op.config, backend),
                 inference_spec=inference_spec,
                 output_enforcement=output_enforcement,
@@ -382,7 +384,9 @@ class _LLMBuilder(_EmbeddingBuilder):
             seen_deps: set[str] = set()
             for dep in [
                 *upstream_llm_ids,
-                *self._collect_graph_template_dependencies(template_spec),
+                *self._collect_graph_template_dependencies(
+                    template_spec.model_dump(exclude_none=True)
+                ),
             ]:
                 if dep in seen_deps:
                     continue
@@ -392,10 +396,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         return self._create_runtime_op(
             name=llm_op_id,
             task_type=task_type,
-            data_spec={
-                "type": "graph_template",
-                "template": template_spec,
-            },
+            data_spec=GraphTemplateData(type="graph_template", template=template_spec),
             model_spec=self._build_model_spec(llm_op.config, backend),
             inference_spec=inference_spec,
             output_enforcement=output_enforcement,
@@ -441,7 +442,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         llm_op_id: str,
         llm_op: LLMOp,
         api_config: ApiConfig,
-        template_spec: dict[str, Any],
+        template_spec: GraphTemplate,
         upstream_llm_ids: list[str],
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
@@ -479,7 +480,9 @@ class _LLMBuilder(_EmbeddingBuilder):
         seen_deps: set[str] = set()
         for dep in [
             *upstream_llm_ids,
-            *self._collect_graph_template_dependencies(template_spec),
+            *self._collect_graph_template_dependencies(
+                template_spec.model_dump(exclude_none=True)
+            ),
         ]:
             if dep in seen_deps:
                 continue
@@ -489,7 +492,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             llm_op_id=llm_op_id,
             llm_op=llm_op,
             api_config=api_config,
-            data_spec={"type": "graph_template", "template": template_spec},
+            data_spec=GraphTemplateData(type="graph_template", template=template_spec),
             dependencies=merged_dependencies or None,
             output_spec=output_spec,
             condition=condition,
@@ -504,7 +507,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         llm_op_id: str,
         llm_op: LLMOp,
         api_config: ApiConfig,
-        data_spec: dict[str, Any],
+        data_spec: DataSpecModel,
         dependencies: list[str] | None,
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
@@ -593,12 +596,12 @@ class _LLMBuilder(_EmbeddingBuilder):
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[DataFrame, list[str]]:
         """Build the dataframe data_spec for a rowwise LLMChatOp, shared by the
         local and API paths."""
         if llm_op.rowwise_template is None:
             raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
-        columns: list[dict[str, Any]] = []
+        columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.rowwise_columns or []:
             label = col.get("label")
@@ -606,7 +609,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             node_ref = col.get("node")
             path = col.get("path")
             if isinstance(label, str) and isinstance(data, dict):
-                columns.append({"label": label, "data": data})
+                columns.append(Column.model_validate({"label": label, "data": data}))
                 continue
             if isinstance(label, str) and isinstance(node_ref, str):
                 if path is None and not isinstance(graph_dict.get(node_ref), InputOp):
@@ -639,19 +642,19 @@ class _LLMBuilder(_EmbeddingBuilder):
             )
         if not columns:
             raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
-        messages: list[dict[str, str]] = []
-        for system_msg in llm_op.system_messages or []:
-            messages.append({"role": "system", "content": system_msg})
-        messages.append({"role": "user", "content": llm_op.rowwise_template})
-        return {
-            "type": "dataframe",
-            "columns": columns,
-            "messages": messages,
-        }, dependencies
+        messages = [
+            Message(role="system", content=system_msg)
+            for system_msg in llm_op.system_messages or []
+        ]
+        messages.append(Message(role="user", content=llm_op.rowwise_template))
+        return (
+            DataFrame(type="dataframe", columns=columns, messages=messages),
+            dependencies,
+        )
 
     def _attach_rowwise_seed(
         self,
-        data_spec: dict[str, Any],
+        data_spec: DataFrame,
         *,
         llm_op_id: str,
         llm_op: LLMChatOp,
@@ -696,16 +699,16 @@ class _LLMBuilder(_EmbeddingBuilder):
             )
         if node_ref not in dependencies:
             dependencies.append(node_ref)
-        data_spec["seeds"] = {
-            "node": node_ref,
-            "path": self._op_output(upstream).read(
+        data_spec.seeds = NodeRead(
+            node=node_ref,
+            path=self._op_output(upstream).read(
                 path, f"LLMChatOp {llm_op_id} rowwise_seed"
             ),
-        }
+        )
 
     @staticmethod
     def _inline_seed_values(
-        data_spec: dict[str, Any],
+        data_spec: DataFrame,
         *,
         llm_op_id: str,
         values: list[str] | None,
@@ -723,43 +726,25 @@ class _LLMBuilder(_EmbeddingBuilder):
                 f"LLMChatOp {llm_op_id} rowwise_seed references a literal source"
                 f" with drill path '{path}'; a literal seed source takes no path"
             )
-        data_spec["seeds"] = [_literal_seed(value, llm_op_id) for value in values]
+        data_spec.seeds = [_literal_seed(value, llm_op_id) for value in values]
 
     def _aggregate_data_spec(
         self,
         *,
         llm_op_id: str,
         llm_op: LLMChatOp,
-        template_spec: dict[str, Any],
+        template_spec: GraphTemplate,
         upstream_llm_ids: list[str],
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         dsl_to_runtime: dict[str, list[str]] | None,
-    ) -> tuple[dict[str, Any], list[str]]:
+    ) -> tuple[GraphTemplateData, list[str]]:
         """Build the graph_template data_spec for an aggregate LLMChatOp,
         shared by the local and API paths."""
-        base_columns = template_spec.get("columns", [])
-        if not isinstance(base_columns, list):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} aggregate template columns must be a list"
-            )
-        format_options = template_spec.get("options", {}).get("format", {})
-        if not isinstance(format_options, dict):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} aggregate template format options must be a"
-                " dict"
-            )
-        base_messages = format_options.get("messages", [])
-        if not isinstance(base_messages, list):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} aggregate template messages must be a list"
-            )
-        base_steps = format_options.get("steps", [])
-        if not isinstance(base_steps, list):
-            raise ValueError(
-                f"LLMChatOp {llm_op_id} aggregate template steps must be a list"
-            )
-        table_columns: list[dict[str, Any]] = []
+        base_columns = template_spec.columns
+        base_messages = template_spec.options.format.messages
+        base_steps = template_spec.options.format.steps or []
+        table_columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.aggregate_table or []:
             label = col.get("label")
@@ -787,49 +772,33 @@ class _LLMBuilder(_EmbeddingBuilder):
                 graph_dict.get(node_ref), InputOp
             ):
                 dependencies.append(node_ref)
-        for dep in self._collect_graph_template_dependencies(template_spec):
+        for dep in self._collect_graph_template_dependencies(
+            template_spec.model_dump(exclude_none=True)
+        ):
             if dep not in dependencies:
                 dependencies.append(dep)
 
-        merged_columns = [*base_columns]
-        merged_columns.append(
-            {
-                "label": "df",
-                "data": {
-                    "type": "dataframe",
-                    "columns": table_columns,
-                },
-            }
-        )
+        merged_columns = [
+            *base_columns,
+            Column(
+                label="df",
+                data=DataFrame(type="dataframe", columns=table_columns),
+            ),
+        ]
         merged_column_labels = {
-            col.get("label")
-            for col in merged_columns
-            if isinstance(col, dict) and isinstance(col.get("label"), str)
+            col.label for col in merged_columns if col.label is not None
         }
-        rendered_steps: list[dict[str, Any]] = []
+        rendered_steps: list[FormatStep] = []
         for step in base_steps:
-            if not isinstance(step, dict):
-                raise ValueError(
-                    f"LLMChatOp {llm_op_id} aggregate format step must be an object"
-                )
-            step_template = step.get("template")
-            step_arguments = step.get("arguments", [])
-            if not isinstance(step_arguments, list):
-                raise ValueError(
-                    f"LLMChatOp {llm_op_id} aggregate format step arguments must be"
-                    " a list"
-                )
-            arguments = [*step_arguments]
+            arguments = step.arguments.copy()
             existing_labels = {
-                arg.get("label")
-                for arg in arguments
-                if isinstance(arg, dict) and isinstance(arg.get("label"), str)
+                arg.label for arg in arguments if isinstance(arg, FormatArgument)
             }
-            if isinstance(step_template, str):
+            if step.template is not None:
                 placeholder_labels = {
                     match.group(1)
                     for match in re.finditer(
-                        r"\{([A-Za-z_][A-Za-z0-9_]*)\}", step_template
+                        r"\{([A-Za-z_][A-Za-z0-9_]*)\}", step.template
                     )
                 }
                 for label in sorted(placeholder_labels):
@@ -837,21 +806,22 @@ class _LLMBuilder(_EmbeddingBuilder):
                         continue
                     if label not in merged_column_labels:
                         continue
-                    arguments.append({"label": label, "value": label})
-            rendered_steps.append({**step, "arguments": arguments})
+                    arguments.append(FormatArgument(label=label, value=label))
+            rendered_steps.append(step.model_copy(update={"arguments": arguments}))
 
-        format_payload: dict[str, Any] = {"messages": base_messages}
-        if rendered_steps:
-            format_payload["steps"] = rendered_steps
-        aggregate_template_spec: dict[str, Any] = {
-            "name": "format",
-            "columns": merged_columns,
-            "options": {"format": format_payload},
-        }
-        data_spec: dict[str, Any] = {
-            "type": "graph_template",
-            "template": aggregate_template_spec,
-        }
+        data_spec = GraphTemplateData(
+            type="graph_template",
+            template=GraphTemplate(
+                name="format",
+                columns=merged_columns,
+                options=TemplateOptions(
+                    format=FormatConfig(
+                        messages=base_messages,
+                        steps=rendered_steps or None,
+                    )
+                ),
+            ),
+        )
         return data_spec, dependencies
 
     def _build_api_rowwise_op(
@@ -898,7 +868,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         llm_op_id: str,
         llm_op: LLMChatOp,
         api_config: ApiConfig,
-        template_spec: dict[str, Any],
+        template_spec: GraphTemplate,
         upstream_llm_ids: list[str],
         output_spec: dict[str, Any] | None,
         condition: dict[str, str] | None,
@@ -981,12 +951,12 @@ class _LLMBuilder(_EmbeddingBuilder):
         dsl_to_runtime: dict[str, list[str]] | None = None,
         runtime_nodes: dict[str, RuntimeOp] | None = None,
         api_mode: bool = False,
-    ) -> tuple[list[str], dict[str, Any]]:
+    ) -> tuple[list[str], GraphTemplate]:
         target_llm_op = graph_dict[llm_op_id]
         assert isinstance(target_llm_op, LLMOp), "Target op must be an LLMOp"
         upstream_llm_ids: set[str] = set()
 
-        columns: dict[str, dict[str, Any]] = {}
+        columns: dict[str, Column] = {}
         steps: dict[
             str, tuple[str, Sequence[str | dict[str, str] | list[dict[str, str]]], bool]
         ] = {}
@@ -1036,18 +1006,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                                     " so the history cannot be reconstructed. Use a"
                                     " literal prior prompt, or keep this op local."
                                 )
-                            columns[f"{op.id}_context"] = {
-                                "data": {"type": "list", "items": prior},
-                            }
+                            columns[f"{op.id}_context"] = Column(
+                                data=ListData(items=prior)
+                            )
                         else:
-                            columns[f"{op.id}_context"] = {
-                                "node": op.id,
-                                "path": "items.metadata.prompt",
-                            }
-                    columns[f"{op.id}_output"] = {
-                        "node": op.id,
-                        "path": output.path,
-                    }
+                            columns[f"{op.id}_context"] = Column(
+                                node=op.id, path="items.metadata.prompt"
+                            )
+                    columns[f"{op.id}_output"] = Column(node=op.id, path=output.path)
 
                 if isinstance(op, LLMChatOp) and op.return_history:
                     ancestor_buffer[op.id] = [
@@ -1059,21 +1025,19 @@ class _LLMBuilder(_EmbeddingBuilder):
 
             elif isinstance(op, InputOp):
                 if op.id not in columns:
-                    columns[op.id] = {
-                        "data": {"type": "list", "items": inputs_dict[op.name]}
-                    }
+                    columns[op.id] = Column(data=ListData(items=inputs_dict[op.name]))
                     if len(inputs_dict[op.name]) > 1:
                         ancestor_row_counts[op.id] = len(inputs_dict[op.name])
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, DataOp):
                 if op.id not in columns:
-                    columns[op.id] = {"data": {"type": "list", "items": op.data}}
+                    columns[op.id] = Column(data=ListData(items=op.data))
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, DataRetrievalOp):
                 if op.id not in columns:
-                    columns[op.id] = {"node": op.id, "path": self._op_output(op).path}
+                    columns[op.id] = Column(node=op.id, path=self._op_output(op).path)
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, MessageOp):
@@ -1158,15 +1122,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                                     " for that input."
                                 )
                             label = f"ref_{op.id}_{k}"
-                            columns[label] = {
-                                "label": label,
-                                "data": {
-                                    "type": "list",
-                                    "items": self._project_input_field(
+                            columns[label] = Column(
+                                label=label,
+                                data=ListData(
+                                    items=self._project_input_field(
                                         values, field_path, upstream.name
-                                    ),
-                                },
-                            }
+                                    )
+                                ),
+                            )
                         else:
                             label = f"ref_{op.id}_{k}"
                             columns[label] = self._node_ref_column(
@@ -1208,14 +1171,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 def _resolve_literal_label(label: str) -> str | None:
                     col = columns.get(label)
                     if col is not None:
-                        data = col.get("data")
+                        data = col.data
                         if (
-                            isinstance(data, dict)
-                            and data.get("type") == "list"
-                            and isinstance(data.get("items"), list)
-                            and len(data["items"]) == 1
+                            isinstance(data, ListData)
+                            and isinstance(data.items, list)
+                            and len(data.items) == 1
                         ):
-                            return str(data["items"][0])
+                            return str(data.items[0])
                         return None
                     step = steps.get(label)
                     if step is None:
@@ -1250,12 +1212,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                     label = f"lambda_{op.id}"
                     # List-mode LambdaOps raise above, so this call is row-mode.
                     row_fn = cast(RowLambdaFn, op.fn)
-                    columns[label] = {
-                        "data": {
-                            "type": "list",
-                            "items": [str(row_fn(tuple(literal_args)))],
-                        }
-                    }
+                    columns[label] = Column(
+                        data=ListData(items=[str(row_fn(tuple(literal_args)))])
+                    )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:
                     if api_mode:
@@ -1315,7 +1274,12 @@ class _LLMBuilder(_EmbeddingBuilder):
             )
 
         columns_spec = [
-            {"label": label, **column_spec} for label, column_spec in columns.items()
+            (
+                column.model_copy(update={"label": label})
+                if column.label is None
+                else column
+            )
+            for label, column in columns.items()
         ]
         steps_spec = [
             {
@@ -1334,15 +1298,17 @@ class _LLMBuilder(_EmbeddingBuilder):
             for message in message_order
         ]
 
-        step_config: dict[str, Any] = {
-            "name": "format",
-            "columns": columns_spec,
-            "options": {
-                "format": {
-                    "steps": steps_spec,
-                    "messages": messages_spec,
-                }
-            },
-        }
+        step_config = GraphTemplate(
+            name="format",
+            columns=columns_spec,
+            options=TemplateOptions(
+                format=FormatConfig(
+                    steps=[FormatStep.model_validate(step) for step in steps_spec],
+                    messages=[
+                        Message.model_validate(message) for message in messages_spec
+                    ],
+                )
+            ),
+        )
 
         return list(upstream_llm_ids), step_config

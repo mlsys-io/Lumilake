@@ -1,12 +1,12 @@
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
@@ -15,6 +15,7 @@ from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
+from tests.support.data_specs import wire
 
 
 @pytest.fixture(autouse=True)
@@ -397,8 +398,8 @@ def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():
-        data_spec = node.data_spec
-        if isinstance(data_spec, dict) and data_spec.get("type") == "dataframe":
+        data_spec = wire(node)
+        if data_spec.get("type") == "dataframe":
             return data_spec["columns"]
     raise AssertionError("No dataframe node found")
 
@@ -540,18 +541,16 @@ def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> Non
 def _with_python_step(
     item: WorkflowItem, expected_s: float, timeout_s: float, row_count: int | None = 1
 ) -> WorkflowItem:
-    data_spec: dict[str, Any] = {
-        "expected_runtime_s": expected_s,
-        "timeout_s": timeout_s,
-    }
-    if row_count is not None:
-        data_spec["row_count"] = row_count
     step = RuntimeOp(
         node_id="sim",
-        task_type=python_step.TASK_TYPE,
+        task_type=PYTHON_TASK_TYPE,
         backend=python_step.BACKEND,
         model="",
-        data_spec=data_spec,
+        data_spec=PythonData(
+            expected_runtime_s=expected_s,
+            timeout_s=timeout_s,
+            row_count=row_count,
+        ),
         model_spec={},
         inference_spec={},
     )

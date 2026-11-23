@@ -3,6 +3,7 @@ import pytest
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _op(
@@ -11,7 +12,7 @@ def _op(
     data_spec: dict[str, object],
     deps: tuple[str, ...] = (),
 ) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type="inference",
         backend="vllm",
@@ -51,7 +52,7 @@ def _two_node_graph(path: str) -> RuntimeGraph:
                                 "path": path,
                             }
                         ],
-                        "options": {"format": {"template": "{x}"}},
+                        "options": {"format": {"messages": [{"content": "{x}"}]}},
                     },
                 },
                 deps=("n0",),
@@ -157,7 +158,7 @@ def test_shard_rewrite_fails_fast_on_misaligned_static_cardinalities(
                         "columns": [
                             {"label": "x", "node": "n0", "path": "items.output"}
                         ],
-                        "options": {"format": {"template": "{x}"}},
+                        "options": {"format": {"messages": [{"content": "{x}"}]}},
                     },
                 },
                 deps=("n0",),
@@ -174,7 +175,7 @@ def test_shard_rewrite_fails_fast_on_misaligned_static_cardinalities(
                         "columns": [
                             {"label": "x", "node": "n0", "path": "items.output"}
                         ],
-                        "options": {"format": {"template": "{x}"}},
+                        "options": {"format": {"messages": [{"content": "{x}"}]}},
                     },
                 },
                 deps=("n0", "n2"),
@@ -209,7 +210,7 @@ def test_shard_rewrite_allows_independent_non_sharded_branch_cardinality_mismatc
                         "columns": [
                             {"label": "x", "node": "n0", "path": "items.output"}
                         ],
-                        "options": {"format": {"template": "{x}"}},
+                        "options": {"format": {"messages": [{"content": "{x}"}]}},
                     },
                 },
                 deps=("n0",),
@@ -226,7 +227,7 @@ def test_shard_rewrite_allows_independent_non_sharded_branch_cardinality_mismatc
                         "columns": [
                             {"label": "x", "node": "n2", "path": "items.output"}
                         ],
-                        "options": {"format": {"template": "{x}"}},
+                        "options": {"format": {"messages": [{"content": "{x}"}]}},
                     },
                 },
                 deps=("n2",),
@@ -269,7 +270,9 @@ def test_shard_rewrite_pins_non_contracted_dependencies_to_single_workers(
                                 "data": {"type": "list", "items": ["left", "right"]},
                             },
                         ],
-                        "options": {"format": {"template": "{x}-{seed}"}},
+                        "options": {
+                            "format": {"messages": [{"content": "{x}-{seed}"}]}
+                        },
                     },
                 },
                 deps=("n3",),
@@ -296,7 +299,9 @@ def test_shard_rewrite_pins_non_contracted_dependencies_to_single_workers(
                                 "data": {"type": "list", "items": ["r0", "r1"]},
                             },
                         ],
-                        "options": {"format": {"template": "{a}:{b}:{seed}"}},
+                        "options": {
+                            "format": {"messages": [{"content": "{a}:{b}:{seed}"}]}
+                        },
                     },
                 },
                 deps=("n0", "n1"),

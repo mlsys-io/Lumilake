@@ -19,6 +19,7 @@ from lumilake_server.routes.jobs import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import data_profile_offload
+from tests.support.data_specs import wire
 
 
 def _llm_config(op_id: str) -> dict:
@@ -160,9 +161,9 @@ def test_forwarded_sql_param_resolves_from_round_input() -> None:
     )
     (node,) = task.payload.nodes.values()
     queries = data_profile_offload._build_sample_data_profile_queries(
-        template=node.data_spec["template"],
-        params=node.data_spec["params"],
-        constraints=node.data_spec.get("constraints"),
+        template=node.data_spec.template,
+        params=node.data_spec.params,
+        constraints=node.data_spec.constraints,
         num_samples=1,
         node_id=node.node_id,
     )
@@ -215,8 +216,8 @@ def test_forwarded_sql_param_is_literal_in_execution_graph() -> None:
         ]
         # The forwarded start_date is inlined as a literal value into the
         # template, with no node reference to a node missing from the graph.
-        assert "node" not in str(retrieval.data_spec["params"])
+        assert "node" not in str(wire(retrieval)["params"])
         assert any(
-            value in retrieval.data_spec["template"]
+            value in wire(retrieval)["template"]
             for value in ("2023-01-01T00:00:00Z", "2020-01-01T00:00:00Z")
         )

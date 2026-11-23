@@ -1,53 +1,19 @@
-"""Eligibility check accepts both retrieval shapes: bare ``type=sql|s3``
-(profile-graph nodes) and ``type=lumid, mode=sql|s3`` (runtime ops). If it
-misses either, /profile rows never reach scheduling."""
+"""A lumid retrieval in sql or s3 mode reaches HALO's plan-choice path."""
 
-from lumilake_server.runtime.optimizer.halo import _retrieval_is_data_profile_eligible
+import pytest
 
-
-def test_eligible_bare_sql() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "sql", "template": "x"}) is True
+from lumilake_server.runtime.optimizer.halo import HaloOptimizer
+from tests.support.data_specs import runtime_op
 
 
-def test_eligible_bare_s3() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "s3", "template": "x"}) is True
+@pytest.mark.parametrize(
+    ("mode", "eligible"), [("sql", True), ("s3", True), ("agent", False)]
+)
+def test_lumid_retrieval_eligibility_follows_its_mode(
+    mode: str, eligible: bool
+) -> None:
+    spec = {"type": "lumid", "mode": mode, "template": "..."}
+    op = runtime_op("n", "data_retrieval", "data_retrieval", "", spec, {}, {})
+    halo = HaloOptimizer.__new__(HaloOptimizer)
 
-
-def test_eligible_lumid_sql() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible(
-            {"type": "lumid", "mode": "sql", "template": "..."}
-        )
-        is True
-    )
-
-
-def test_eligible_lumid_s3() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible(
-            {"type": "lumid", "mode": "s3", "template": "..."}
-        )
-        is True
-    )
-
-
-def test_ineligible_lumid_agent() -> None:
-    """Agent mode doesn't go through HALO's plan-choice path."""
-    assert (
-        _retrieval_is_data_profile_eligible({"type": "lumid", "mode": "agent"}) is False
-    )
-
-
-def test_ineligible_lumid_unknown_mode() -> None:
-    assert (
-        _retrieval_is_data_profile_eligible({"type": "lumid", "mode": "something"})
-        is False
-    )
-
-
-def test_ineligible_lumid_missing_mode() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "lumid"}) is False
-
-
-def test_ineligible_unrelated_type() -> None:
-    assert _retrieval_is_data_profile_eligible({"type": "list"}) is False
+    assert halo._is_data_profile_candidate(op) is eligible

@@ -14,6 +14,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
+from lumilake_server.data_specs import S3ProfileData, SqlProfileData
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.utils.data_profile_offload import (
@@ -80,14 +81,14 @@ async def _is_cancelled(callback: CancellationCallback | None) -> bool:
 
 def _has_sql_data_profile_nodes(graph: RuntimeGraph) -> bool:
     for node_id in graph.node_order:
-        if graph.nodes[node_id].data_spec.get("type") == "sql":
+        if isinstance(graph.nodes[node_id].data_spec, SqlProfileData):
             return True
     return False
 
 
 def _has_s3_data_profile_nodes(graph: RuntimeGraph) -> bool:
     for node_id in graph.node_order:
-        if graph.nodes[node_id].data_spec.get("type") == "s3":
+        if isinstance(graph.nodes[node_id].data_spec, S3ProfileData):
             return True
     return False
 
@@ -153,28 +154,20 @@ def _extract_template_fields(template: str) -> set[str]:
 
 
 def _collect_s3_params(
-    data_spec: Mapping[str, Any],
+    data_spec: S3ProfileData,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """The literal values and node refs an S3 template's params bind."""
     literal_values: dict[str, list[str]] = {}
     node_refs: dict[str, str] = {}
-    params = data_spec.get("params")
-    if not isinstance(params, list):
-        return literal_values, node_refs
-    for item in params:
-        if not isinstance(item, Mapping):
+    for item in data_spec.params:
+        if not item.label:
             continue
-        label = item.get("label")
-        if not isinstance(label, str) or not label:
+        if item.data is not None:
+            if isinstance(item.data.items, list) and item.data.items:
+                literal_values[item.label] = [str(value) for value in item.data.items]
             continue
-        data = item.get("data")
-        if isinstance(data, Mapping) and data.get("type") == "list":
-            values = data.get("items")
-            if isinstance(values, list) and values:
-                literal_values[label] = [str(value) for value in values]
-            continue
-        node_id = item.get("node")
-        if isinstance(node_id, str) and node_id:
-            node_refs[label] = node_id
+        if item.node:
+            node_refs[item.label] = item.node
     return literal_values, node_refs
 
 
@@ -329,9 +322,9 @@ def _derive_s3_profile_for_graph(
 
     for node_id in graph.node_order:
         data_spec = graph.nodes[node_id].data_spec
-        if data_spec.get("type") != "s3":
+        if not isinstance(data_spec, S3ProfileData):
             continue
-        template = data_spec.get("template")
+        template = data_spec.template
         if not isinstance(template, str):
             raise RuntimeError(
                 f"S3 data profile requires template for node '{node_id}'"
@@ -387,13 +380,13 @@ def _derive_s3_profile_for_graph(
                     input_driven_fields.add(field)
                     continue
                 ref_spec = ref_node.data_spec
-                if ref_spec.get("type") == "sql":
+                if isinstance(ref_spec, SqlProfileData):
                     sql_nodes.add(ref_node_id)
                 else:
                     # Concrete runtime node whose spec isn't SQL — modeling
                     # error. Record the offender for a clear error message.
                     invalid_refs[field] = (
-                        f"{ref_node_id} (type={ref_spec.get('type')!r})"
+                        f"{ref_node_id} (spec={type(ref_spec).__name__!r})"
                     )
             if invalid_refs:
                 pairs = ", ".join(
@@ -492,9 +485,9 @@ def _extract_required_s3_folders(graph: RuntimeGraph) -> list[str]:
     folders: set[str] = set()
     for node_id in graph.node_order:
         data_spec = graph.nodes[node_id].data_spec
-        if data_spec.get("type") != "s3":
+        if not isinstance(data_spec, S3ProfileData):
             continue
-        template = data_spec.get("template")
+        template = data_spec.template
         if not isinstance(template, str):
             continue
         template_path = _normalize_s3_template_path(template)

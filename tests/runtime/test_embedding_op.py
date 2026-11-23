@@ -19,6 +19,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from tests.support.data_specs import wire
 
 _MODEL = "BAAI/bge-small-en-v1.5"
 
@@ -48,7 +49,7 @@ def test_embedding_op_emits_embedding_task_spec() -> None:
     # The executor sets runner="pooling" internally; the op must not emit it.
     assert "runner" not in node.model_spec
     assert "runner" not in node.model_spec["vllm"]
-    assert node.data_spec == {
+    assert wire(node) == {
         "type": "list",
         "items": ["hello world", "second doc"],
     }
@@ -94,7 +95,7 @@ def test_embedding_op_from_input_placeholder() -> None:
     compiled = Graph.from_ops([output]).compile(Docs=["a", "b", "c"])
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
     assert node.task_type == "embedding"
-    assert node.data_spec == {"type": "list", "items": ["a", "b", "c"]}
+    assert wire(node) == {"type": "list", "items": ["a", "b", "c"]}
 
 
 def test_embedding_op_rejects_empty_input() -> None:
@@ -124,7 +125,7 @@ def test_embedding_op_builds_from_valid_input_values() -> None:
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
     assert node.task_type == "embedding"
     assert node.model_spec["vllm"]["convert"] == "embed"
-    assert node.data_spec == {"type": "list", "items": ["ok", "second"]}
+    assert wire(node) == {"type": "list", "items": ["ok", "second"]}
 
 
 def _worker_response() -> dict:
@@ -216,7 +217,10 @@ def test_embedding_op_yaml_end_to_end() -> None:
     node = embedding_nodes[0]
     assert node.model_spec["source"]["identifier"] == "BAAI/bge-small-en-v1.5"
     assert node.model_spec["vllm"]["convert"] == "embed"
-    assert node.data_spec == {"type": "list", "items": ["hello", "world"]}
+    assert wire(node) == {
+        "type": "list",
+        "items": ["hello", "world"],
+    }
 
 
 def test_embedding_op_yaml_requires_model() -> None:

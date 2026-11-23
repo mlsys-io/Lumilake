@@ -8,10 +8,11 @@ from lumilake_server.runtime.optimizer.topological_sort import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import runtime_op
 
 
 def _op(node_id: str, task_type: str, backend: str) -> RuntimeOp:
-    return RuntimeOp(
+    return runtime_op(
         node_id=node_id,
         task_type=task_type,
         backend=backend,

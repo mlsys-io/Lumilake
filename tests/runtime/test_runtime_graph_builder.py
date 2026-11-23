@@ -18,6 +18,7 @@ from lumilake_server.ops import (
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
+    MessageOp,
     Op,
     OpMessage,
     RowwiseMessages,
@@ -28,6 +29,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -83,7 +85,7 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     assert retrieval.id in runtime_graph.nodes
     assert llm.id in runtime_graph.nodes
     # Verify lumid wire format
-    ds = runtime_graph.nodes[retrieval.id].data_spec
+    ds = wire(runtime_graph.nodes[retrieval.id])
     assert ds["type"] == "lumid"
     assert ds["mode"] == "sql"
     assert ds["lumid_data_url"] == _LUMID_URL
@@ -111,7 +113,7 @@ def test_agent_retrieval_structural_column_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     llm_node = runtime_graph.nodes[llm.id]
-    columns = llm_node.data_spec["template"]["columns"]
+    columns = wire(llm_node)["template"]["columns"]
     retrieval_columns = [col for col in columns if col.get("node") == retrieval.id]
     assert retrieval_columns
     assert all(col.get("path") == "items.table" for col in retrieval_columns)
@@ -169,8 +171,8 @@ def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> No
     assert embedding_id in runtime_graph.nodes
     embedding = runtime_graph.nodes[embedding_id]
     assert embedding.task_type == "embedding"
-    assert embedding.data_spec["node"] == retrieval.id
-    assert embedding.data_spec["path"] == "items.content"
+    assert wire(embedding)["node"] == retrieval.id
+    assert wire(embedding)["path"] == "items.content"
     assert embedding.dependencies == (retrieval.id,)
 
 
@@ -221,9 +223,9 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     ]
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
     assert flatten.task_type == "python"
-    assert flatten.data_spec["mode"] == "flatten"
-    assert flatten.data_spec["template"] == "Summarize {Stock} with title {title}."
-    plan = flatten.data_spec["plan"]
+    assert wire(flatten)["mode"] == "flatten"
+    assert wire(flatten)["template"] == "Summarize {Stock} with title {title}."
+    plan = wire(flatten)["plan"]
     assert {
         "kind": "literal",
         "values": ["NVDA"],
@@ -240,7 +242,7 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 
     infer = runtime_graph.nodes[f"{vision.id}_infer"]
     assert infer.task_type == "inference"
-    infer_columns = infer.data_spec["template"]["columns"]
+    infer_columns = wire(infer)["template"]["columns"]
     assert infer_columns == [
         {
             "label": "prompt",
@@ -253,7 +255,7 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
             "path": "value.items.output",
         },
     ]
-    assert infer.data_spec["image_embedding"] == {
+    assert wire(infer)["image_embedding"] == {
         "node": f"{vision.id}_embedding",
         "path": "embedding_file",
     }
@@ -262,19 +264,19 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 
     regroup = runtime_graph.nodes[vision.id]
     assert regroup.task_type == "python"
-    assert regroup.data_spec["mode"] == "regroup"
-    assert regroup.data_spec["plan"][0] == {
+    assert wire(regroup)["mode"] == "regroup"
+    assert wire(regroup)["plan"][0] == {
         "kind": "stage",
         "node": f"{vision.id}_infer",
         "label": "outputs",
     }
-    assert regroup.data_spec["plan"][1] == {
+    assert wire(regroup)["plan"][1] == {
         "kind": "stage",
         "node": f"{vision.id}_flatten",
         "path": "row",
         "label": "rows",
     }
-    assert regroup.data_spec["plan"][2] == {
+    assert wire(regroup)["plan"][2] == {
         "kind": "stage",
         "node": news_s3.id,
         "path": "content",
@@ -325,7 +327,7 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
-    plan = flatten.data_spec["plan"]
+    plan = wire(flatten)["plan"]
     # The InputOp ref without a path binds as a literal column in the flatten
     # plan (one value per symbol).
     assert {
@@ -416,7 +418,7 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
         vision.id,
     ]
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
-    plan = flatten.data_spec["plan"]
+    plan = wire(flatten)["plan"]
     # The image source is the group boundary and is the first plan entry.
     assert plan[0] == {
         "kind": "stage",
@@ -433,7 +435,7 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
     } in plan
 
     regroup = runtime_graph.nodes[vision.id]
-    assert regroup.data_spec["plan"][2] == {
+    assert wire(regroup)["plan"][2] == {
         "kind": "stage",
         "node": news_s3.id,
         "path": "content",
@@ -519,7 +521,7 @@ def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
-    columns = runtime_graph.nodes[row_id].data_spec["columns"]
+    columns = wire(runtime_graph.nodes[row_id])["columns"]
     assert {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}} in (
         columns
     )
@@ -550,6 +552,35 @@ def test_local_aggregate_op_emits_condition() -> None:
         "node": "gate",
         "expr": "gate == 'on'",
     }
+
+
+def test_row_lambda_message_step_keeps_multi_message_arguments() -> None:
+    """A row Lambda fed by a multi-message op becomes an inline function step
+    whose argument is the whole message list, not a single string."""
+    stock = input_placeholder("Stock")
+    returner = LLMChatOp(
+        [OpMessage(role="user", content=stock)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+        return_history=True,
+    )
+    chat = MessageOp([OpMessage(role="user", content=returner)])
+
+    def join_contents(messages):
+        return "|".join(message["content"] for message in messages)
+
+    step = LambdaOp([chat], fn=join_contents)
+    consumer = LLMChatOp(
+        [OpMessage(role="user", content=step)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    compiled = Graph.from_ops([as_output("result", consumer)]).compile(Stock=["NVDA"])
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    (consumer_id,) = runtime_graph.dsl_to_runtime[consumer.id]
+    template = wire(runtime_graph.nodes[consumer_id])["template"]
+    (function_step,) = template["options"]["format"]["steps"]
+    (argument,) = function_step["arguments"]
+    assert [message["role"] for message in argument] == ["user", "assistant"]
 
 
 def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
@@ -624,7 +655,7 @@ def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
 
     upstream_id = next(nid for nid in runtime_graph.nodes if "Upstream" in nid)
     downstream_id = next(nid for nid in runtime_graph.nodes if "Downstream" in nid)
-    columns = runtime_graph.nodes[downstream_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[downstream_id])["template"]["columns"]
     upstream_columns = [col for col in columns if col.get("node") == upstream_id]
     assert any(col.get("path") == "items.output" for col in upstream_columns)
     assert all(col.get("path") != "items.metadata.prompt" for col in upstream_columns)
@@ -701,7 +732,7 @@ def test_plain_prompt_field_ref_binds_column_with_path() -> None:
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
     assert runtime_graph.nodes[code_id].task_type == "python"
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     assert any(
         col.get("node") == code_id and col.get("path") == "value.items.value.question"
         for col in columns
@@ -780,7 +811,7 @@ def test_plain_prompt_field_ref_emits_no_inline_function_step() -> None:
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
-    steps = runtime_graph.nodes[chain_id].data_spec["template"]["options"]["format"][
+    steps = wire(runtime_graph.nodes[chain_id])["template"]["options"]["format"][
         "steps"
     ]
     assert not any(step.get("function") and code_id in step["label"] for step in steps)
@@ -845,7 +876,7 @@ def test_plain_prompt_field_ref_from_input_projects_literal() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
 
 
@@ -908,7 +939,7 @@ def test_plain_prompt_field_ref_to_input_field_named_output() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
 
 
@@ -995,7 +1026,7 @@ def test_plain_prompt_field_ref_from_llm_structured_output_binds_column() -> Non
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     assert any(
         col.get("node") == parser_id and col.get("path", "").endswith(".population")
         for col in columns
@@ -1085,7 +1116,7 @@ def test_plain_prompt_item_output_field_ref_binds_single_output_segment() -> Non
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     assert any(
         col.get("node") == parser_id and col.get("path") == "items.output.population"
         for col in columns
@@ -1179,7 +1210,7 @@ def test_plain_prompt_mixed_field_and_whole_item_ref_same_node() -> None:
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = runtime_graph.nodes[chain_id].data_spec["template"]["columns"]
+    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
     # The field ref binds a column; the whole-item ref keeps the op traced.
     assert any(
         col.get("node") == parser_id and col.get("path") == "items.output.population"
@@ -1204,7 +1235,7 @@ def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
 
     embedding_id = f"{vision.id}_embedding"
     embedding = runtime_graph.nodes[embedding_id]
-    ds = embedding.data_spec
+    ds = wire(embedding)
     assert ds["type"] == "list"
     assert ds["lumid_cfg"] == {
         "lumid_data_url": _LUMID_URL,
@@ -1225,7 +1256,7 @@ def test_attach_lumid_cfg_not_injected_for_non_s3_list_inputs() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     llm_node = runtime_graph.nodes[llm.id]
-    ds = llm_node.data_spec
+    ds = wire(llm_node)
     assert "lumid_cfg" not in ds
     assert "s3_cfg" not in ds
 
@@ -1500,8 +1531,8 @@ def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     node = runtime_graph.nodes[emb.id]
-    assert node.data_spec["node"] == retrieval.id
-    assert node.data_spec["path"] == "items.table"
+    assert wire(node)["node"] == retrieval.id
+    assert wire(node)["path"] == "items.table"
 
 
 def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
@@ -1523,8 +1554,8 @@ def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     node = runtime_graph.nodes[img.id]
-    assert node.data_spec["node"] == retrieval.id
-    assert node.data_spec["path"] == "items.table"
+    assert wire(node)["node"] == retrieval.id
+    assert wire(node)["path"] == "items.table"
 
 
 def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
@@ -1546,10 +1577,13 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
 
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
 
-    assert node.data_spec["node"] == explode.id
-    assert node.data_spec["path"] == "value.items.output"
+    assert wire(node)["node"] == explode.id
+    assert wire(node)["path"] == "value.items.output"
     result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
-    assert _walk(result, node.data_spec["path"].split(".")) == ["NVDA", "AAPL"]
+    assert _walk(result, wire(node)["path"].split(".")) == [
+        "NVDA",
+        "AAPL",
+    ]
 
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
@@ -1593,8 +1627,8 @@ def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
 
     embedding_id = f"{vision.id}_embedding"
     embedding = runtime_graph.nodes[embedding_id]
-    assert embedding.data_spec["node"] == retrieval.id
-    assert embedding.data_spec["path"] == "items.table"
+    assert wire(embedding)["node"] == retrieval.id
+    assert wire(embedding)["path"] == "items.table"
 
 
 def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
@@ -1652,7 +1686,7 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
     )
     (llm_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_id]
-    template = node.data_spec["template"]
+    template = wire(node)["template"]
     columns = template["columns"]
     df_col = next(col for col in columns if col.get("label") == "df")
     assert df_col["data"]["type"] == "dataframe"
@@ -1679,7 +1713,7 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
 
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[row_id]
-    template = node.data_spec["template"]
+    template = wire(node)["template"]
     df_col = next(col for col in template["columns"] if col.get("label") == "df")
     table_columns = df_col["data"]["columns"]
     assert table_columns == [
@@ -1745,9 +1779,9 @@ def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
 
     shout_node = runtime_graph.nodes[shout.id]
     assert shout_node.task_type == "python"
-    assert shout_node.data_spec.get("mode", "row") == "row"
+    assert wire(shout_node).get("mode", "row") == "row"
     llm_node = runtime_graph.nodes[llm.id]
-    columns = llm_node.data_spec["columns"]
+    columns = wire(llm_node)["columns"]
     assert {
         "label": "r",
         "node": shout.id,
@@ -1775,7 +1809,7 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     shout_node = runtime_graph.nodes[shout.id]
     assert shout_node.task_type == "python"
     llm_node = runtime_graph.nodes[llm.id]
-    template = llm_node.data_spec["template"]
+    template = wire(llm_node)["template"]
     df_col = next(col for col in template["columns"] if col.get("label") == "df")
     table_columns = df_col["data"]["columns"]
     assert {
@@ -2004,7 +2038,7 @@ def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None
 
     assert terms.id in runtime_graph.nodes
     assert runtime_graph.nodes[terms.id].task_type == "python"
-    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    params = wire(runtime_graph.nodes[retrieval.id])["params"]
     (param,) = [p for p in params if p.get("label") == "q"]
     assert param["node"] == terms.id
     assert param["path"] == "value.items.output"
@@ -2036,7 +2070,7 @@ def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
 
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    params = runtime_graph.nodes[retrieval.id].data_spec["params"]
+    params = wire(runtime_graph.nodes[retrieval.id])["params"]
     (param,) = [p for p in params if p.get("label") == "q"]
     assert param["node"] == terms.id
     assert param["path"] == "value.items.value.field"
@@ -2147,7 +2181,7 @@ def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
         for nid, node in runtime_graph.nodes.items()
         if node.task_type == "inference"
     ]
-    columns = runtime_graph.nodes[llm_id].data_spec["columns"]
+    columns = wire(runtime_graph.nodes[llm_id])["columns"]
     title_col = next(col for col in columns if col["label"] == "title")
     # A multi-row input ref must be a grouped list with one projected value per
     # input row, in the same order as the other columns' groups, so each row's
@@ -2224,7 +2258,7 @@ def _rowwise_chat_columns(prompt_text: str, inputs: dict[str, list[str]]) -> lis
         for nid, node in runtime_graph.nodes.items()
         if node.task_type == "inference"
     ]
-    return runtime_graph.nodes[llm_id].data_spec["columns"]
+    return wire(runtime_graph.nodes[llm_id])["columns"]
 
 
 def test_rowwise_input_field_ref_single_row_projects_field() -> None:
@@ -2440,12 +2474,12 @@ def test_output_read_rules_match_the_old_predicates(case: str) -> None:
     if case == "aggregate_as_completion_prompt":
         # Accepted means the completion reads the aggregate chat's output, not
         # that it joins a python plan.
-        assert runtime_graph.nodes[consumer.id].data_spec["node"] == upstream.id
+        assert wire(runtime_graph.nodes[consumer.id])["node"] == upstream.id
         return
     entries = [
         entry
         for node in runtime_graph.nodes.values()
-        for entry in node.data_spec.get("plan", ())
+        for entry in wire(node).get("plan", ())
         if entry.get("node") == upstream.id
     ]
     assert entries
@@ -2469,7 +2503,7 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     ).compile(rows=["x"])
     graph = RuntimeGraphBuilder().build(compiled)
     (turn_id,) = graph.dsl_to_runtime[turn.id]
-    assert graph.nodes[turn_id].data_spec == {
+    assert wire(graph.nodes[turn_id]) == {
         "type": "list",
         "node": prompts.id,
         "path": "value.items.output",
@@ -2493,7 +2527,7 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     )
     bound = Graph.from_ops([as_output("result", literal)]).compile(rows=[conversation])
     node = RuntimeGraphBuilder().build(bound).nodes[literal.id]
-    assert node.data_spec["items"] == [json.loads(conversation)]
+    assert wire(node)["items"] == [json.loads(conversation)]
     assert not node.dependencies
 
 
