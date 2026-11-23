@@ -827,9 +827,7 @@ def _group_key(item: Mapping[str, Any], groups: NodeRecords | None) -> str | Non
 def _first_input(
     plan: RecordPlan, records: Mapping[str, NodeRecords]
 ) -> NodeRecords | None:
-    """The records of the op's own first input node, or ``None`` when it reads
-    no input node or that one produced no stored records. A join's first input
-    is the one ``JoinDescription.inputs`` names first."""
+    """The op's first input's records, or ``None`` with none stored."""
     nodes = plan.join_inputs or _input_nodes(plan)
     first = nodes[0] if nodes else None
     return None if first is None else records.get(first)
@@ -841,9 +839,7 @@ def _entry_node(entries: Sequence[ColumnPlanEntry], index: int) -> str | None:
 
 
 def join_input_nodes(op: RuntimeOp) -> list[str | None]:
-    """A join's inputs in ``JoinDescription.inputs`` order: the node each column
-    reads, ``None`` for the literal column a workflow input or data op fills.
-    Dependency order is not the join's own, since a literal column adds none."""
+    """A join's inputs in ``JoinDescription.inputs`` order, ``None`` for a literal."""
     spec = op.data_spec
     if not isinstance(spec, PythonData) or spec.join is None:
         return []
@@ -851,8 +847,7 @@ def join_input_nodes(op: RuntimeOp) -> list[str | None]:
 
 
 def join_attach_nodes(op: RuntimeOp) -> list[tuple[str | None, str | None, bool]]:
-    """Each join attach's value node and source node, and whether that source is
-    the first input."""
+    """Each join attach's value and source node, and whether it is the first input."""
     spec = op.data_spec
     if not isinstance(spec, PythonData) or spec.join is None:
         return []
@@ -1062,8 +1057,7 @@ def _join_indexes(
 
 
 def _join_looked_up_nodes(plan: RecordPlan) -> list[str]:
-    """The keyed inputs a join looks a row up in: every further input and every
-    attach source."""
+    """The keyed inputs a join looks a row up in: further inputs and attach sources."""
     nodes = plan.join_inputs or _input_nodes(plan)
     sources = [source for _, source, _ in plan.join_attaches]
     return [
@@ -1081,9 +1075,7 @@ def _join_inputs(
     round_number: int,
     value: Any,
 ) -> tuple[list[str], list[str]]:
-    """What one join row read: the first input at its position, each further
-    input at the row its index holds for the output row's ``by`` values, and
-    each attach's value and source row at the source row's own position."""
+    """What one join row read, its first input by position, the rest by their own."""
     nodes = plan.join_inputs or _input_nodes(plan)
     key = composite_key(value, plan.key_paths) if plan.key_paths else None
     digests: list[str] = []
@@ -1140,8 +1132,7 @@ def _attach_records(
     key: str | None,
     round_number: int,
 ) -> list[tuple[str, str]]:
-    """What one join row read through its attaches: each attach's value and its
-    source row, both at the source row's own record."""
+    """What one join row read through its attaches, at the source row's record."""
     found: list[tuple[str, str]] = []
     for value_node, source_node, first_source in plan.join_attaches:
         source = None if source_node is None else records.get(source_node)
@@ -1182,9 +1173,7 @@ def _attach_value_position(
     values: NodeRecords | None,
     source_position: int | None,
 ) -> int | None:
-    """The position of the attach value paired with one source row: a value per
-    source row pairs by position, and a value per live row skips the marked
-    rows before it."""
+    """The attach value paired with one source row, by position or among live rows."""
     if source is None or values is None or source_position is None:
         return None
     rows = source.values
@@ -1484,9 +1473,7 @@ def read_back_records(
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
 ) -> dict[str, NodeRecords]:
-    """Finished values shaped as a consumer reads the store's own records, keyed
-    as the writer keys them: a keyed retrieval by its declared column, a 1:1 op
-    by its input's position."""
+    """Finished values keyed the way the writer keys the store's own records."""
     order = runtime_graph.topological_order()
     plans = _resolve_plans(runtime_graph, order)
     records, _ = _collect_node_records(
@@ -1609,8 +1596,7 @@ def _key_marked_join_rows(
 
 
 def _join_row_paths(plan: RecordPlan) -> list[str]:
-    """The paths that address a join's rows: its ``row_key`` when it has one,
-    else its ``by``."""
+    """The paths that address a join's rows: its ``row_key``, else its ``by``."""
     return plan.row_key_paths or plan.key_paths
 
 
