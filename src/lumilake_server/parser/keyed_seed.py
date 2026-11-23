@@ -29,14 +29,14 @@ SEED_MODULUS = 2**31
 
 def read_key_seed(op_id: str, op_kind: str, field: str, entry: Any) -> KeySeed:
     """One op entry's key form, naming the op and field in the error."""
-    return validate_fields(KeySeed, entry, f"{op_kind} '{op_id}'", {field: ""})
+    return validate_fields(KeySeed, entry, f"{op_kind} '{op_id}' {field}")
 
 
 def read_seed_spec(op_id: str, op_kind: str, field: str, entry: Any) -> SeedSpec:
     """One op entry's seed in either form, naming the op and field in the error."""
     if isinstance(entry, dict) and "key" in entry:
         return read_key_seed(op_id, op_kind, field, entry)
-    return validate_fields(ColumnSeed, entry, f"{op_kind} '{op_id}'", {field: ""})
+    return validate_fields(ColumnSeed, entry, f"{op_kind} '{op_id}' {field}")
 
 
 _SEED_FN = """\

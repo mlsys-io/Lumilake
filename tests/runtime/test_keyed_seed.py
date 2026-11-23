@@ -187,7 +187,7 @@ def test_a_duplicate_key_fails_unless_paired() -> None:
     yaml_parser.check_keyed_seed_duplicates(payload, {})
     payload["ops"][1]["rowwise_seed"]["pairing"] = "paired"
     with pytest.raises(
-        ValueError, match="Answer': pairing: Input should be 'unique' or 'shared'"
+        ValueError, match="Answer' rowwise_seed: pairing: Input should be 'unique'"
     ):
         _graph(payload)
 
