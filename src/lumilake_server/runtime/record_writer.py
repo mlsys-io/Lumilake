@@ -1284,10 +1284,10 @@ def _key_path(
 
 def _one_to_one(op: RuntimeOp) -> bool:
     """Whether the op maps each input row to exactly one output row: a
-    row-mode Lambda, or a scalar model op. A list-mode or reduce op consumes
-    its whole input."""
+    row-mode or parse Lambda, or a scalar model op. A list-mode or reduce op
+    consumes its whole input."""
     if op.task_type == _LAMBDA_TASK_TYPE:
-        return _mode_of(op) in ("row", None)
+        return _mode_of(op) in ("row", "parse", None)
     return _mode_of(op) not in {"list", "reduce", "pairs", "regroup"}
 
 

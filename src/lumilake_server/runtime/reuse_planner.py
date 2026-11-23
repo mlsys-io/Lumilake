@@ -278,8 +278,9 @@ class ReusePlanner:
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
+        seeded = _seeded_records(plan, decision)
         for position, record in enumerate(records):
-            draw = _planned_realization(plan, records, position, source)
+            draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
                 return "no realization", None
             input_digests, input_value_digests = position_inputs(
@@ -555,10 +556,37 @@ _WRAPPED_TASKS = frozenset({"python", "inference"})
 stores unwrapped."""
 
 
-def _wrapped(op: RuntimeOp) -> bool:
-    """Whether the producer's items carry their value under ``output``, so a
-    served item is the stored value wrapped again."""
-    return op.task_type in _WRAPPED_TASKS
+def _wrapped(op: RuntimeOp) -> str | None:
+    """How a producer's items carry their value for a served read: ``output``
+    for an item that holds the value alone, ``text`` for a row step's item,
+    which also holds the typed value under ``value``, or ``None`` with no
+    wrapping."""
+    if _typed_row_step(op):
+        return "text"
+    return "output" if op.task_type in _WRAPPED_TASKS else None
+
+
+def _served_value(text: Any) -> Any:
+    """The typed value a row step wrote as text: JSON object or array text
+    becomes the value it holds, anything else stays the text."""
+    if not isinstance(text, str):
+        return text
+    try:
+        decoded = json.loads(text)
+    except ValueError:
+        return text
+    return decoded if isinstance(decoded, (dict, list)) else text
+
+
+def _typed_row_step(op: RuntimeOp) -> bool:
+    """Whether the producer is a python step that emits one item per row, with
+    the text under ``output`` and the typed value under ``value``."""
+    spec = op.data_spec
+    return (
+        op.task_type == PYTHON_TASK_TYPE
+        and isinstance(spec, PythonData)
+        and spec.mode in (None, "row")
+    )
 
 
 def _plan_column(
@@ -588,16 +616,28 @@ def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
 def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
-    wrapped: bool,
+    wrapped: bool | str | None,
 ) -> list[Any] | None:
-    """A hit producer's column for a python step; ``None`` if it cannot be rebuilt."""
+    """The column a python step reads from a hit producer, built as the worker
+    builds it, or ``None`` when the stored form cannot rebuild those items.
+
+    A producer whose items carry their value under ``output`` stores each value
+    without it, so the items a live read sees are the stored values wrapped
+    again. A row step's item carries the text under ``output`` and the typed
+    value under ``value``, and its readers read either."""
     if entry.grouped:
         return None
-    items = [
-        {"output": item} if wrapped else item
-        for values in served_lists(entries)
-        for item in values
-    ]
+    items: list[Any] = []
+    for values in served_lists(entries):
+        for item in values:
+            if wrapped == "text":
+                items.append(
+                    {"output": _output_text(item), "value": _served_value(item)}
+                )
+            elif wrapped:
+                items.append({"output": item})
+            else:
+                items.append(item)
     try:
         return items_column(
             entry.model_dump(exclude_none=True, exclude={"values"}),
@@ -782,11 +822,38 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
+def _seeded_records(plan: RecordPlan, decision: ReusePlan) -> dict[str, NodeRecords]:
+    """The planned records a node-bound seed column reads, shaped as the writer
+    reads a finished row step's items: the seed node is a python row step, so it
+    is answered or dispatched before this op decides."""
+    seeds = data_spec_dict(plan.op).get("seeds")
+    if not isinstance(seeds, Mapping):
+        return {}
+    node = seeds.get("node")
+    if not isinstance(node, str):
+        return {}
+    entries = decision.hits.get(node)
+    if entries is None or entries[0].address.record is None:
+        return {}
+    return {
+        node: NodeRecords(
+            keyed=True,
+            values=[entry.value for entry in entries],
+            keys=[entry.address.record for entry in entries],
+            items=[
+                {"output": _output_text(entry.value), "value": entry.value}
+                for entry in entries
+            ],
+        )
+    }
+
+
 def _planned_realization(
     plan: RecordPlan,
     records: list[str | None],
     position: int,
     source: RecordSource,
+    seeded: Mapping[str, NodeRecords],
 ) -> RecordRealization | None:
     """The realization the record at ``position`` keys with, or ``None`` when a
     draw no seed reproduces enters it. The writer draws each record from its own
@@ -799,7 +866,7 @@ def _planned_realization(
         values=[],
         keys=records if plan.keyed else [],
     )
-    item = realization(plan, node_records, {}, position, source, unversioned=False)
+    item = realization(plan, node_records, seeded, position, source, unversioned=False)
     if item.production is not None:
         return None
     return RecordRealization(seed=item.seed, attempt=item.attempt)
