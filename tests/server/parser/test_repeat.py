@@ -26,9 +26,9 @@ def _router(source: str, router_id: str = "Status", indent: str = "      ") -> s
 
 def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
     return (
-        f"{indent}- {{id: {chat_id}, op: LLMChatOp, inputs: [{source}], "
-        "config: {model: m}, messages: [{role: user, content: x}], "
-        f"rowwise_template: x, rowwise_columns: [{{label: p, node: {source}}}]}}\n"
+        f"{indent}- {{id: {chat_id}, op: LLMChatOp, inputs: [{source}], config:"
+        " {model: m}, messages: [{role: user, content: x}],"
+        f" rowwise_template: x, rowwise_columns: [{{label: p, node: {source}}}]}}\n"
     )
 
 
@@ -99,6 +99,23 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     assert output["_inputs"] == [lambdas[-1]["_id"]]
     compiled = Graph.from_json(graph).compile(Start=["seed"])
     assert len(list(compiled.iter_ops(LambdaOp))) == 6
+
+
+def test_a_body_chat_op_draws_a_different_seed_each_iteration() -> None:
+    step = (
+        "      - {id: Ask, op: LLMChatOp, inputs: [$in], "
+        "config: {model: m, seed: 7}, messages: [{role: user, content: x}]}\n"
+    )
+    ops = _repeat("2", "Start", "Ask", step)
+    seeds = [
+        op["config"]["seed"] for op in _graph(ops).values() if op["_op"] == "LLMChatOp"
+    ]
+    assert len(seeds) == 2 and seeds[0] != seeds[1]
+    assert all(0 <= seed < 2**63 for seed in seeds)
+    repeat_seeds = _graph(ops)
+    assert [
+        op["config"]["seed"] for op in repeat_seeds.values() if op["_op"] == "LLMChatOp"
+    ] == seeds
 
 
 def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:

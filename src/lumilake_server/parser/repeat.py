@@ -4,6 +4,7 @@
 before any id is registered, so one declared op exists per iteration.
 """
 
+import hashlib
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
@@ -13,6 +14,7 @@ from lumilake_server.ops.spec_validation import validate_fields
 REPEAT_OP = "RepeatOp"
 INPUT_REF = "$in"
 _MAX_UNROLLED = 1000
+_SEED_MODULUS = 2**63
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
 
 
@@ -168,7 +170,8 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
                 (spec.at(index, name), spec.id) for name in spec.written_ids
             )
             iterations[spec.id].extend(
-                {**copy, "id": iteration[copy["id"]]} for copy in spec.body
+                _iteration_copy(copy, iteration[copy["id"]], index)
+                for copy in spec.body
             )
 
     unrolled: list[Any] = []
@@ -188,6 +191,31 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         )
 
     return unrolled, bind
+
+
+def _iteration_copy(entry: dict[str, Any], new_id: str, index: int) -> dict[str, Any]:
+    """``entry`` as iteration ``index`` runs it: its new id, and a literal
+    ``config.seed`` redrawn from that seed and the iteration."""
+    copy = {**entry, "id": new_id}
+    config = entry.get("config")
+    if not isinstance(config, dict):
+        return copy
+    seed = config.get("seed")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        return copy
+    copy["config"] = {**config, "seed": _iteration_seed(seed, index)}
+    return copy
+
+
+def _iteration_seed(seed: int, index: int) -> int:
+    """The seed iteration ``index`` draws, derived from the body's own seed.
+
+    Two iterations of one body never share a seed, so a retry whose prompt is
+    unchanged still draws a different answer.
+    """
+    payload = f"{seed}:{index}".encode()
+    digest = hashlib.blake2b(payload, digest_size=8).digest()
+    return int.from_bytes(digest, "big") % _SEED_MODULUS
 
 
 def _router_branch_ids(ops: list[Any]) -> set[str]:
