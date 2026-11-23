@@ -16,7 +16,6 @@ from lumilake_server.ops.seed_spec import (
     ColumnSeed,
     KeySeed,
     Pairing,
-    SeedSpec,
 )
 from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.parser.common import make_id
@@ -32,7 +31,9 @@ def read_key_seed(op_id: str, op_kind: str, field: str, entry: Any) -> KeySeed:
     return validate_fields(KeySeed, entry, f"{op_kind} '{op_id}' {field}")
 
 
-def read_seed_spec(op_id: str, op_kind: str, field: str, entry: Any) -> SeedSpec:
+def read_seed_spec(
+    op_id: str, op_kind: str, field: str, entry: Any
+) -> ColumnSeed | KeySeed:
     """One op entry's seed in either form, naming the op and field in the error."""
     if isinstance(entry, dict) and "key" in entry:
         return read_key_seed(op_id, op_kind, field, entry)

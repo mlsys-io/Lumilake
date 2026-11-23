@@ -99,12 +99,12 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         seed = op.seed
         if seed is None:
             return plan
-        seed_node = seed.column.node
+        seed_node = seed.node
         if seed_node not in ctx.graph_dict:
             raise ValueError(
                 f"LambdaOp '{op.id}' seed references unknown node '{seed_node}'"
             )
-        path = seed.column.path
+        path = seed.path
         for index, entry in enumerate(plan):
             if entry.node != seed_node:
                 continue
