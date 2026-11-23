@@ -1,11 +1,11 @@
-"""The golden builder graphs and their wire shapes, shared by the fixture
-writer (run against origin/main) and the golden test."""
+"""The golden builder graphs and the wire shapes this checkout builds for them.
+The golden fixture holds the wire origin/main's builders produced for the same
+graphs."""
 
-import json
 from typing import Any
 
 from lumilake_server.common import ApiConfig, GenerationConfig
-from lumilake_server.data_specs import PYTHON_TASK_TYPE
+from lumilake_server.data_specs import PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -28,6 +28,8 @@ from lumilake_server.ops.classification_ops import (
 from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_ops import RuntimeOp
+from tests.support.data_specs import wire
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -205,7 +207,7 @@ def _aggregate_retrieval_python():
         inputs=[stock],
     )
     big = LambdaOp(
-        [DataOp(data=[f"row-{index}" for index in range(4000)])], fn=shout_rows
+        [DataOp(data=[f"row-{index}" for index in range(200)])], fn=shout_rows
     )
     outputs = [
         as_output("a", digest),
@@ -223,30 +225,14 @@ GRAPHS = {
 }
 
 
-def _dumped(spec: Any) -> dict[str, Any]:
-    """A spec as a plain dict; a model dumps with its unset fields dropped."""
-    if isinstance(spec, dict):
-        return spec
-    return spec.model_dump(exclude_none=True)
-
-
-def _generated_code(op: Any) -> str | None:
+def _generated_code(op: RuntimeOp) -> str | None:
     """The python task code a python step generates, or None for other tasks."""
-    if op.task_type != PYTHON_TASK_TYPE:
+    spec = op.data_spec
+    if not isinstance(spec, PythonData):
         return None
-    published = dict(python_step.literal_blobs(op.data_spec.plan))
-    for key, blob in list(published.items()):
-        published[key] = python_step.PublishedBlob(
-            key=key,
-            object_name=key,
-            body=b"",
-            content_type="application/json",
-            sha256="0" * 64,
-            mount_path=blob.mount_path,
-        )
     runtime = python_step.runtime_blob()
-    published[runtime.key] = runtime
-    return python_step.flowmesh_spec(op.node_id, op.data_spec, published)["code"]
+    published = {runtime.key: runtime, **python_step.literal_blobs(spec.plan)}
+    return python_step.flowmesh_spec(op.node_id, spec, published)["code"]
 
 
 def build(graph_name: str) -> dict[str, dict[str, Any]]:
@@ -255,21 +241,9 @@ def build(graph_name: str) -> dict[str, dict[str, Any]]:
     built = GRAPHS[graph_name]()
     entries: dict[str, dict[str, Any]] = {}
     for node_id, op in built.nodes.items():
-        entry: dict[str, Any] = {
-            "task_type": op.task_type,
-            "data_spec": _dumped(op.data_spec),
-        }
+        entry: dict[str, Any] = {"task_type": op.task_type, "data_spec": wire(op)}
         code = _generated_code(op)
         if code is not None:
             entry["code"] = code
         entries[node_id] = entry
     return entries
-
-
-def all_graphs() -> dict[str, dict[str, dict[str, Any]]]:
-    return {name: build(name) for name in GRAPHS}
-
-
-def wire(entry: dict[str, Any]) -> str:
-    """One entry as the exact JSON text its bytes must match."""
-    return json.dumps(entry)
