@@ -16,7 +16,7 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import ColumnPlanEntry, PythonData
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import (
     child_key,
@@ -180,6 +180,8 @@ class RecordPlan:
         key_path: str | None,
         key_paths: list[str],
         row_key_paths: list[str],
+        join_inputs: Sequence[str | None] | None,
+        join_attaches: Sequence[tuple[str | None, str | None, bool]] | None,
         column: str | None,
         groups_keyed: bool,
         expand_source: str | None,
@@ -191,6 +193,8 @@ class RecordPlan:
         self.key_path = key_path
         self.key_paths = key_paths
         self.row_key_paths = row_key_paths
+        self.join_inputs = tuple(join_inputs or ())
+        self.join_attaches = tuple(join_attaches or ())
         self.column = column
         self.groups_keyed = groups_keyed
         self.expand_source = expand_source
@@ -824,9 +828,42 @@ def _first_input(
     plan: RecordPlan, records: Mapping[str, NodeRecords]
 ) -> NodeRecords | None:
     """The records of the op's own first input node, or ``None`` when it reads
-    no input node or that one produced no stored records."""
-    nodes = _input_nodes(plan)
-    return None if not nodes else records.get(nodes[0])
+    no input node or that one produced no stored records. A join's first input
+    is the one ``JoinDescription.inputs`` names first."""
+    nodes = plan.join_inputs or _input_nodes(plan)
+    first = nodes[0] if nodes else None
+    return None if first is None else records.get(first)
+
+
+def _entry_node(entries: Sequence[ColumnPlanEntry], index: int) -> str | None:
+    """The node one plan index reads, or ``None`` for a literal entry."""
+    return entries[index].node if 0 <= index < len(entries) else None
+
+
+def join_input_nodes(op: RuntimeOp) -> list[str | None]:
+    """A join's inputs in ``JoinDescription.inputs`` order: the node each column
+    reads, ``None`` for the literal column a workflow input or data op fills.
+    Dependency order is not the join's own, since a literal column adds none."""
+    spec = op.data_spec
+    if not isinstance(spec, PythonData) or spec.join is None:
+        return []
+    return [_entry_node(spec.plan, index) for index in spec.join.inputs]
+
+
+def join_attach_nodes(op: RuntimeOp) -> list[tuple[str | None, str | None, bool]]:
+    """Each join attach's value node and source node, and whether that source is
+    the first input."""
+    spec = op.data_spec
+    if not isinstance(spec, PythonData) or spec.join is None:
+        return []
+    return [
+        (
+            _entry_node(spec.plan, value_index),
+            _entry_node(spec.plan, source_index),
+            first,
+        )
+        for _, value_index, source_index, first in spec.join.attach
+    ]
 
 
 def position_inputs(
@@ -1011,7 +1048,7 @@ def _join_indexes(
     """For each keyed further input, the position of the first row carrying each
     ``by`` key."""
     indexes: dict[str, dict[str, int]] = {}
-    for node in _input_nodes(plan)[1:]:
+    for node in _join_looked_up_nodes(plan):
         produced = records.get(node)
         if produced is None or not produced.keyed:
             continue
@@ -1024,6 +1061,18 @@ def _join_indexes(
     return indexes
 
 
+def _join_looked_up_nodes(plan: RecordPlan) -> list[str]:
+    """The keyed inputs a join looks a row up in: every further input and every
+    attach source."""
+    nodes = plan.join_inputs or _input_nodes(plan)
+    sources = [source for _, source, _ in plan.join_attaches]
+    return [
+        node
+        for node in [*(nodes[1:]), *sources]
+        if node is not None and node not in nodes[:1]
+    ]
+
+
 def _join_inputs(
     plan: RecordPlan,
     records: Mapping[str, NodeRecords],
@@ -1032,32 +1081,122 @@ def _join_inputs(
     round_number: int,
     value: Any,
 ) -> tuple[list[str], list[str]]:
-    """What one join row read: the first input at its position and each further
-    input at the row its index holds for the output row's ``by`` values."""
-    nodes = _input_nodes(plan)
+    """What one join row read: the first input at its position, each further
+    input at the row its index holds for the output row's ``by`` values, and
+    each attach's value and source row at the source row's own position."""
+    nodes = plan.join_inputs or _input_nodes(plan)
     key = composite_key(value, plan.key_paths) if plan.key_paths else None
     digests: list[str] = []
     values: list[str] = []
-    for offset, node in enumerate(nodes):
-        produced = records.get(node)
-        if produced is None:
-            side = _input_values(plan.op, node)
-            digests.append(digest_of({"node": node, "values": side}))
-            values.append(digest_of(side))
-            continue
-        if offset == 0 or not produced.keyed:
-            found = [produced.identity_at(position, round_number)]
-        else:
-            found = _joined_records(produced, indexes[node], key, round_number)
-        for record in found:
-            if record is None:
-                continue
-            digests.append(record[0])
-            values.append(record[1])
+    found = _join_input_records(
+        plan, records, indexes, nodes, position, key, round_number
+    )
+    for record in found:
+        digests.append(record[0])
+        values.append(record[1])
+    for pair in _attach_records(plan, records, indexes, position, key, round_number):
+        digests.append(pair[0])
+        values.append(pair[1])
     for row in _literal_rows_at(plan, key):
         digests.append(digest_of({"values": [row]}))
         values.append(digest_of(row))
     return digests, values
+
+
+def _join_input_records(
+    plan: RecordPlan,
+    records: Mapping[str, NodeRecords],
+    indexes: Mapping[str, Mapping[str, int]],
+    nodes: Sequence[str | None],
+    position: int,
+    key: str | None,
+    round_number: int,
+) -> list[tuple[str, str]]:
+    """The records one join row read from its inputs, in the join's own order."""
+    found: list[tuple[str, str]] = []
+    for offset, node in enumerate(nodes):
+        if node is None:
+            # A literal column's rows are named once, by its own list.
+            continue
+        produced = records.get(node)
+        if produced is None:
+            side = _input_values(plan.op, node)
+            found.append((digest_of({"node": node, "values": side}), digest_of(side)))
+            continue
+        records_at = (
+            [produced.identity_at(position, round_number)]
+            if offset == 0 or not produced.keyed
+            else _joined_records(produced, indexes.get(node, {}), key, round_number)
+        )
+        found.extend(record for record in records_at if record is not None)
+    return found
+
+
+def _attach_records(
+    plan: RecordPlan,
+    records: Mapping[str, NodeRecords],
+    indexes: Mapping[str, Mapping[str, int]],
+    position: int,
+    key: str | None,
+    round_number: int,
+) -> list[tuple[str, str]]:
+    """What one join row read through its attaches: each attach's value and its
+    source row, both at the source row's own record."""
+    found: list[tuple[str, str]] = []
+    for value_node, source_node, first_source in plan.join_attaches:
+        source = None if source_node is None else records.get(source_node)
+        values = None if value_node is None else records.get(value_node)
+        source_position = _attach_source_position(
+            source, indexes.get(source_node or "", {}), position, key, first_source
+        )
+        if source is not None and source_position is not None:
+            record = source.identity_at(source_position, round_number)
+            if record is not None:
+                found.append(record)
+        value_position = _attach_value_position(source, values, source_position)
+        if values is None or value_position is None:
+            continue
+        record = values.identity_at(value_position, round_number)
+        if record is not None:
+            found.append(record)
+    return found
+
+
+def _attach_source_position(
+    source: NodeRecords | None,
+    index: Mapping[str, int],
+    position: int,
+    key: str | None,
+    first_source: bool,
+) -> int | None:
+    """The position of the source row one output row's attach came from."""
+    if source is None:
+        return None
+    if first_source or not source.keyed:
+        return position if position < len(source.values) else None
+    return None if key is None else index.get(key)
+
+
+def _attach_value_position(
+    source: NodeRecords | None,
+    values: NodeRecords | None,
+    source_position: int | None,
+) -> int | None:
+    """The position of the attach value paired with one source row: a value per
+    source row pairs by position, and a value per live row skips the marked
+    rows before it."""
+    if source is None or values is None or source_position is None:
+        return None
+    rows = source.values
+    if len(values.values) == len(rows):
+        return source_position
+    live = [index for index, row in enumerate(rows) if not _is_marker_row(row)]
+    return None if source_position not in live else live.index(source_position)
+
+
+def _is_marker_row(row: Any) -> bool:
+    """Whether a stored row is a failed record's marker."""
+    return is_marker(row) or is_marker(_decoded(row))
 
 
 def _joined_records(
@@ -1229,6 +1368,8 @@ def _resolve_plans(
             key_path=_key_path(runtime_graph, node_id, plans),
             key_paths=join_key_paths(data_spec_dict(op)),
             row_key_paths=join_row_key_paths(data_spec_dict(op)),
+            join_inputs=join_input_nodes(op),
+            join_attaches=join_attach_nodes(op),
             column=retrieval_key_column(op.data_spec),
             groups_keyed=_groups_keyed(op),
             expand_source=_mode_source(runtime_graph, node_id, plans),

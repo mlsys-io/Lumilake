@@ -50,6 +50,30 @@ ops:
 outputs: [{name: merged, ref: M}]
 """
 
+_LITERAL_FIRST = """\
+name: literal-first
+inputs: {Cases: %s, Docs: %s}
+ops:
+  - {id: Labels, op: LambdaOp, inputs: [Docs], mode: row, fn_name: read,
+     key: {node: Docs, path: id}, code: "lambda c: json.loads(c[0])"}
+  - {id: M, op: JoinOp, inputs: [Cases, Labels], by: id}
+outputs: [{name: merged, ref: M}]
+"""
+
+_ATTACHED = """\
+name: attached
+inputs: {Docs: %s, Src: %s}
+ops:
+  - {id: D, op: LambdaOp, inputs: [Docs], mode: row, fn_name: read,
+     code: "lambda c: json.loads(c[0])"}
+  - {id: S, op: LambdaOp, inputs: [Src], mode: row, fn_name: read,
+     key: {node: Src, path: id}, code: "lambda c: json.loads(c[0])"}
+  - {id: N, op: LambdaOp, inputs: [S], mode: row, fn_name: note,
+     key: {node: S, path: id}, code: "lambda c: 'n'"}
+  - {id: M, op: JoinOp, inputs: [D, S, N], by: id, attach: {note: N}}
+outputs: [{name: merged, ref: M}]
+"""
+
 _UNKEYED = """\
 name: unkeyed
 ops:
@@ -286,6 +310,54 @@ async def test_a_join_reads_each_further_input_at_its_own_join_key() -> None:
         "req-2",
     )
     assert after['["N1","b"]'].input_digests[1] == further["r9"].digest
+
+
+@pytest.mark.asyncio
+async def test_a_joins_first_input_is_the_one_its_columns_name_first() -> None:
+    """A workflow input is a literal column, not a dependency: the join still
+    reads its first input at the row's position and each further input at its
+    own key, so a row order that differs does not swap the two."""
+    cases = [_rows_text([{"id": 1}])]
+    labels = [{"id": 2, "label": "b"}, {"id": 1, "label": "a"}]
+    merged = [{"id": 1, "label": "a"}]
+    entries = await _records_of(
+        _graph(_LITERAL_FIRST % (cases[0], _rows_text(labels))),
+        {"Labels": _items(*labels), "M": _items(*merged)},
+        "M",
+    )
+    label_entries = await _records_of(
+        _graph(_LITERAL_FIRST % (cases[0], _rows_text(labels))),
+        {"Labels": _items(*labels)},
+        "Labels",
+    )
+    assert entries["1"].input_digests[0] == label_entries["1"].digest
+    assert label_entries["2"].digest not in entries["1"].input_digests
+
+
+@pytest.mark.asyncio
+async def test_an_attach_reads_its_value_at_the_source_rows_key() -> None:
+    """An attach names the value record of the source row it filled: a further
+    source row is looked up by its own record key, never by the join's ``by``
+    (the value row need not carry it) and never every source record."""
+    docs = [{"id": 1}, {"id": 2}]
+    source = [{"id": 2, "note": "n2"}, {"id": 1, "note": "n1"}]
+    merged = [{"id": 1, "note": "n1"}, {"id": 2, "note": "n2"}]
+    graph = _graph(_ATTACHED % (_rows_text(docs), _rows_text(source)))
+    entries = await _records_of(
+        graph,
+        {
+            "D": _items(*docs),
+            "S": _items(*source),
+            "N": _items("n", "n"),
+            "M": _items(*merged),
+        },
+        "M",
+    )
+    stored = await _records_of(
+        graph, {"S": _items(*source), "N": _items("n", "n")}, "N"
+    )
+    assert entries["1"].input_digests[-1] == stored["1"].digest
+    assert entries["2"].input_digests[-1] == stored["2"].digest
 
 
 @pytest.mark.asyncio
