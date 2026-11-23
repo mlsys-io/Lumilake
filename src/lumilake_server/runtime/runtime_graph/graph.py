@@ -173,8 +173,7 @@ class RuntimeGraph:
         ]
 
     def list_lambda_cardinality_nodes(self) -> set[str]:
-        """Node ids that emit one whole-list value per run: whole-result
-        Lambdas and their dependents, up to a row-mode python step."""
+        """Node ids emitting one whole-list value: whole-result Lambdas, dependents."""
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
@@ -238,8 +237,7 @@ class RuntimeGraph:
         return set(node.dependencies)
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
-        """Node ids whose list column binds a whole-result ``LambdaOp`` one hop
-        away, which FlowMesh runs once per element of the whole list."""
+        """Node ids whose list column binds a whole-result ``LambdaOp`` one hop away."""
         reads: dict[str, str | None] = {}
         for node_id, node in self.nodes.items():
             data_spec = node.data_spec

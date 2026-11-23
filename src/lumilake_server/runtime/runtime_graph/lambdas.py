@@ -210,10 +210,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _lower_row_lambda(
         self, op: LambdaOp, ctx: LoweringContext
     ) -> LoweringResult | None:
-        """Lower a row-mode LambdaOp to its own python step when no LLM inlined
-        it: one that is an output, that nothing reached, that has an image, or
-        that a runtime node references. An expand or reduce mode one always
-        gets its own step."""
+        """Lower a row LambdaOp to its own step when an LLM did not inline it."""
         if op.takes_whole_columns:
             return None
         referenced = self._referenced_row_lambdas(ctx)
