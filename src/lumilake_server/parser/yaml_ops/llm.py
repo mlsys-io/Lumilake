@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from lumilake_server.parser.common import make_id
+from lumilake_server.parser.keyed_seed import read_seed
 
 from .common import (
     EmitContext,
@@ -328,24 +329,16 @@ def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     generated row function, named like every other implicit op, that reads the
     row's key."""
     entry = ctx.entry
-    seed = entry.fields.get("rowwise_seed")
-    if seed is None:
+    field = entry.fields.get("rowwise_seed")
+    if field is None:
         return
-    if not isinstance(seed, dict):
-        raise ValueError(f"LLMChatOp '{entry.id}' rowwise_seed must be a mapping")
-    key = seed.get("key")
-    if key is not None:
-        emit_keyed_seed(op_dict, ctx, seed, "rowwise_seed", "LLMChatOp")
+    spec = read_seed(entry.id, "LLMChatOp", "rowwise_seed", field)
+    if spec.key is not None:
+        emit_keyed_seed(op_dict, ctx, spec, "rowwise_seed", "LLMChatOp")
         return
-    node_ref = seed.get("node")
-    path = seed.get("path", "")
-    if not isinstance(node_ref, str) or not isinstance(path, str):
-        raise ValueError(
-            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path,"
-            " or a key"
-        )
-    node_id = seed_input_id(entry.id, node_ref, ctx, "LLMChatOp")
-    op_dict["rowwise_seed"] = {"node": node_id, "path": path}
+    column = spec.column
+    node_id = seed_input_id(entry.id, column.node, ctx, "LLMChatOp")
+    op_dict["rowwise_seed"] = {"node": node_id, "path": column.path}
     if node_id not in op_dict["_inputs"]:
         op_dict["_inputs"].append(node_id)
 
