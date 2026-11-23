@@ -34,7 +34,8 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
-# The seed reaches the function as its second argument.
+# A seeded function takes each row's seed as its second argument, so only a
+# mode that calls it once per row carries one.
 SEED_MODES = ("row", "expand")
 CLEARS_KEY = "_clears_markers"
 """The private serialized key for ``LambdaOp.clears_markers``."""
@@ -98,11 +99,8 @@ class LambdaSpec(BaseModel):
 
     @model_validator(mode="after")
     def _seed_needs_a_per_row_mode(self) -> Self:
-        if self.seed is not None and self.mode not in SEED_MODES:
-            raise ValueError(
-                f"seed is available in modes {SEED_MODES}, where the function"
-                f" runs once per row (got mode {self.mode!r})"
-            )
+        if self.seed is not None:
+            check_seed_mode(self.mode)
         return self
 
     @model_validator(mode="after")
@@ -131,13 +129,15 @@ def build_lambda_spec(
     return validate_fields(LambdaSpec, fields, where, names)
 
 
-def check_seed_mode(mode: LambdaMode, where: str) -> None:
+def check_seed_mode(mode: LambdaMode, where: str = "") -> None:
     """Refuse a seed on a mode whose function does not run once per row."""
-    if mode not in SEED_MODES:
-        raise ValueError(
-            f"{where}: seed is available in modes {SEED_MODES}, where the"
-            f" function runs once per row (got mode {mode!r})"
-        )
+    if mode in SEED_MODES:
+        return
+    detail = (
+        f"seed is available in modes {SEED_MODES}, where the function runs once"
+        f" per row (got mode {mode!r})"
+    )
+    raise ValueError(f"{where}: {detail}" if where else detail)
 
 
 def _serialize_fn(fn: Callable[..., Any]) -> str:

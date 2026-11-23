@@ -1092,8 +1092,7 @@ async def test_dynamic_api_planner_drives_two_rounds(
 async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
     app: FastAPI, job_routes: Any
 ) -> None:
-    """The proposer's opening round draws over an empty subgraph, so the first
-    subgraph it emits runs as round 1 and a keyed seed in it draws with 1."""
+    """The proposer's first emitted subgraph runs as round 1."""
     sample = {
         "id": "Sample",
         "op": "LambdaOp",

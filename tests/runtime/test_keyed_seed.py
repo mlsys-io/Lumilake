@@ -32,7 +32,7 @@ _ANSWER: dict[str, Any] = {
     "rowwise_columns": [
         {"label": "question", "node": "Cases", "path": "items.output.question"}
     ],
-    "rowwise_seed": {"key": dict(_KEY), "pairing": "shared"},
+    "rowwise_seed": {"key": _KEY, "pairing": "shared"},
 }
 
 
@@ -116,7 +116,7 @@ def test_a_repeated_key_is_refused_unless_paired() -> None:
     assert [fn(("c1",)), fn(("c2",))] == documented_seed(
         ["c1", "c2"], op_id="Answer{{round}}", round_number=2
     )
-    repeated = {**_ANSWER, "rowwise_seed": {"key": dict(_KEY)}}
+    repeated = {**_ANSWER, "rowwise_seed": {"key": _KEY}}
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
         _round_build({"ops": [repeated]}, results)
     repeated["rowwise_seed"] = {"key": {"node": "Symbols", "path": "items.output"}}
@@ -126,7 +126,7 @@ def test_a_repeated_key_is_refused_unless_paired() -> None:
     literal["ops"][1]["rowwise_seed"].pop("pairing")
     with pytest.raises(ValueError, match="Answer' .*rows 0 and 2 share the key"):
         yaml_parser.check_keyed_seed_duplicates(literal, {})
-    literal["ops"][1]["rowwise_seed"] = {"key": dict(_KEY), "pairing": "paired"}
+    literal["ops"][1]["rowwise_seed"] = {"key": _KEY, "pairing": "paired"}
     with pytest.raises(
         ValueError, match="Answer' rowwise_seed: pairing: Input should be 'unique'"
     ):
@@ -157,7 +157,7 @@ def test_a_native_graph_builds_each_seed_form_through_its_model() -> None:
     native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
     chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
     cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
-    keyed = {**native[chat_id], "rowwise_seed": {"key": dict(_KEY, node=cases_id)}}
+    keyed = {**native[chat_id], "rowwise_seed": {"key": {**_KEY, "node": cases_id}}}
     out = rewrite_native_keys({**native, chat_id: keyed}, job_seed=7)
     assert out[f"{chat_id}__seed"]["mode"] == "row"
     # The graph is built in insertion order, so the seed op comes first.
@@ -183,7 +183,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     draw: dict[str, Any] = {"id": "Draw", "op": "LambdaOp", "inputs": ["Cases"]}
     draw["fn_name"] = "draw"
     draw["code"] = "def draw(row, seed):\n    return '%d' % seed\n"
-    draw["seed"] = {"key": dict(_KEY)}
+    draw["seed"] = {"key": _KEY}
     cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
     payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
