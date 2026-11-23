@@ -542,7 +542,7 @@ def _run_inlined(body: str, row: str) -> str:
     payload = payload.replace(shout + "          return greeting.upper()", body)
     nodes = _build(payload).nodes.values()
     reply = next(n for n in nodes if n.task_type == "inference")
-    steps = reply.data_spec["template"]["options"]["format"]["steps"]
+    steps = wire(reply)["template"]["options"]["format"]["steps"]
     function = next(s["function"] for s in steps if s.get("function"))
     local: dict[str, Any] = {}
     safe = {n: getattr(builtins, n) for n in lambda_runtime._SAFE_BUILTIN_BASE_NAMES}

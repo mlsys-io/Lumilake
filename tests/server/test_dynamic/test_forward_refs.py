@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from lumilake_server.data_specs import PythonData
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -591,11 +592,11 @@ def test_forward_grouped_list_materializer_parses_through_yaml_parser(
     )
     (node,) = [n for n in graph.nodes.values() if n.task_type == "python"]
     d = node.data_spec
+    assert isinstance(d, PythonData)
+    assert d.fn_name is not None and d.code is not None and d.mode is not None
     mount = tmp_path / "runtime.py"
     mount.write_bytes(python_step.runtime_blob().body)
-    code = python_step.wrapper_source(
-        node.node_id, d["fn_name"], d["code"], d["plan"], d["mode"]
-    )
+    code = python_step.wrapper_source(node.node_id, d.fn_name, d.code, d.plan, d.mode)
     namespace: dict[str, Any] = {}
     exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
     items = namespace["main"]({})["items"]
