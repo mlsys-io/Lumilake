@@ -84,18 +84,11 @@ Set `store: true` at the top level of a YAML document, beside `graph` in a nativ
 
 ## Reusing stored records (`reuse:`)
 
-Set `reuse: true` beside `store: true` at the top level of a YAML document, or
-beside `graph` in a native payload, to keep what an earlier storing run already
-computed; without `store: true` the submit is refused with 422. An op is kept
-only when every one of its records is stored: one missing record reruns the
-whole op, and its consumers with it.
+Set `reuse: true` beside `store: true` at the top level of a YAML document, or beside `graph` in a native payload, to keep what an earlier storing run already computed; without `store: true` the submit is refused with 422. An op is kept only when every one of its records is stored: one missing record reruns the whole op, and its consumers with it.
 
-Only python, chat, classification and embedding ops are served, and an output
-only from a keyed row op or a list-mode Lambda; a dynamic round's outputs always
-rerun.
+Only python, chat, classification and embedding ops are served, and an output only from a keyed row op or a list-mode Lambda; a dynamic round's outputs always rerun.
 
-A job records one decision per op, `hit` or `miss` with the first reason it
-missed; see [`docs/API.md`](API.md).
+A job records one decision per op, `hit` or `miss` with the first reason it missed; see [`docs/API.md`](API.md).
 
 ## n8n code-node notes
 

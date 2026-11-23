@@ -208,6 +208,89 @@ async def test_a_chat_op_hits_on_its_record_keys(
 
 
 @pytest.mark.asyncio
+async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
+    """A row step's stored value rebuilds as its item: the text under ``output``
+    and the typed value under ``value``, so a reader of a field there gets it."""
+    storage = InMemoryJobStorage()
+    await _run(storage, _WORKFLOW, {"Mark": _ROWS["Mark"]}, "req-1")
+    graph = _runtime_graph(_WORKFLOW)
+    join = _node(graph, "Join")
+    spec = graph.nodes[join].data_spec
+    assert isinstance(spec, PythonData)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(
+            update={"plan": [spec.plan[0].model_copy(update={"path": "value.text"})]}
+        ),
+    )
+    plan, dispatched = _planner(storage).plan(
+        runtime_graph=graph, round_number=0, job_id="req-2"
+    )
+    assert _decisions(plan)["Mark"] == ("hit", None)
+    rewritten = dispatched.nodes[join].data_spec
+    assert isinstance(rewritten, PythonData)
+    assert rewritten.plan[0].values == ["ONE", "TWO"]
+
+
+def _seeded_graph() -> Any:
+    """The keyed workflow's middle op as a chat drawing each row's node-bound
+    seed from the keyed row step before it."""
+    graph = _runtime_graph(_FOUR_OPS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        dependencies=(),
+        task_type="inference",
+        data_spec=parse_data_spec(
+            "inference",
+            {
+                "type": "dataframe",
+                "columns": [
+                    {
+                        "label": "q",
+                        "data": {
+                            "type": "list",
+                            "items": [json.dumps(row) for row in _BASE_ROWS],
+                        },
+                    }
+                ],
+                "messages": [{"role": "user", "content": "{q}"}],
+                "seeds": {"node": mark, "path": "value.items.value.seed"},
+            },
+        ),
+        inference_spec={"temperature": 0},
+        model_spec={},
+    )
+    return graph
+
+
+@pytest.mark.asyncio
+async def test_a_node_bound_seed_answers_a_chat_op_under_reuse() -> None:
+    """A chat sampling from a keyed seed node walks that node's planned records,
+    so an unchanged rerun hits."""
+    rows = [{"id": "a", "q": "one", "seed": 7}, {"id": "b", "q": "two", "seed": 9}]
+    graph = _seeded_graph()
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    storage = InMemoryJobStorage()
+    await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
+        job_id="req-1",
+        member_job_ids=["req-1"],
+        round_number=0,
+        runtime_graph=graph,
+        node_task_map={mark: "task-mark", join: "task-join"},
+        task_worker={},
+        results={
+            "task-mark": {"items": [{"output": r, "value": r} for r in rows]},
+            "task-join": {"items": [{"output": t} for t in ("A", "B")]},
+        },
+    )
+    plan, _ = _planner(storage).plan(
+        runtime_graph=graph, round_number=0, job_id="req-2"
+    )
+    assert _decisions(plan)["Join"] == ("hit", None)
+
+
+@pytest.mark.asyncio
 async def test_an_all_hit_request_dispatches_no_task(
     monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
 ) -> None:

@@ -550,10 +550,10 @@ def _dispatch_workflow_to_graph_specs(
     this to keep DSL ids stable across slices of the same parent
     workflow, which the multi-batch data-profile path depends on.
 
-    ``cleared_ids`` names the native ops a server-built graph such as a
-    dynamic round's drops markers on, from the ids its own expansion returned.
-    That key is set on exactly those ops; any other graph declaring it is
-    refused, because a router's expansion is its only source.
+    ``cleared_ids`` names the native ops a server-built graph such as a dynamic round's
+    drops markers on, from the ids its own expansion returned. That key is set on
+    exactly those ops; any other graph declaring it is refused, because a router's
+    expansion is its only source.
     """
     if workflow_format == "n8n":
         payload = {
