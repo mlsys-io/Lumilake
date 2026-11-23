@@ -34,8 +34,7 @@ class JoinSpec(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _dotted_paths(cls, data: Any) -> Any:
-        """Take each key as its paths: one dotted field name, or a list of them
-        for a composite key."""
+        """Take each key as its paths: one dotted field name, or several."""
         if not isinstance(data, dict):
             return data
         paths_by_field = data.copy()
@@ -66,8 +65,7 @@ class JoinSpec(BaseModel):
 
     @model_validator(mode="after")
     def _row_key_names_every_by_path(self) -> Self:
-        """The first-input record key, refused unless it names every ``by``
-        path."""
+        """The first-input record key, refused unless it names every ``by``."""
         if self.row_key is not None:
             missing = [path for path in self.by if path not in self.row_key]
             if missing:
@@ -128,8 +126,7 @@ class JoinOp(Op):
 
     @property
     def row_key(self) -> list[str] | None:
-        """The record key of the first input's rows, when it holds several per
-        key."""
+        """The record key of the first input's rows, when several share a key."""
         return self.spec.row_key
 
     @property
