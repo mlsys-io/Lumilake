@@ -177,10 +177,9 @@ class _RetrievalBuilder(_LLMBuilder):
                     values = inputs_dict.get(upstream.name)
                     if values is None:
                         raise ValueError(
-                            f"DataRetrievalOp '{op_id}' template param "
-                            f"{param.label!r} references InputOp "
-                            f"{upstream.name!r} but no values were supplied "
-                            "for that input."
+                            f"DataRetrievalOp '{op_id}' template param {param.label!r}"
+                            f" references InputOp {upstream.name!r} but no values were"
+                            " supplied for that input."
                         )
                     path = param.path
                     # InputOps never materialize a runtime envelope, so a
@@ -189,13 +188,11 @@ class _RetrievalBuilder(_LLMBuilder):
                     # inlined verbatim; ``path`` must be absent / empty.
                     if path not in (None, ""):
                         raise ValueError(
-                            f"DataRetrievalOp '{op_id}' template param "
-                            f"{param.label!r} references InputOp "
-                            f"{upstream.name!r} with drill path {path!r}; "
-                            "InputOp-derived params cannot be drilled — "
-                            "wrap record-shaped inputs in an upstream op "
-                            "that exposes the target field, or drop the "
-                            "``path`` for scalar inputs."
+                            f"DataRetrievalOp '{op_id}' template param {param.label!r}"
+                            f" references InputOp {upstream.name!r} with drill path"
+                            f" {path!r}; InputOp-derived params cannot be drilled —"
+                            " wrap record-shaped inputs in an upstream op that exposes"
+                            " the target field, or drop the ``path`` for scalar inputs."
                         )
                     literal_param = RetrievalParam(
                         label=param.label, data=ListData(items=list(values))
@@ -210,13 +207,12 @@ class _RetrievalBuilder(_LLMBuilder):
                     if row_count is not None and row_count > 1:
                         if not output.one_item_per_row:
                             raise ValueError(
-                                f"DataRetrievalOp '{op_id}' template param "
-                                f"{param.label!r} references '{param.node}', which"
-                                " produces multiple rows but not one output item"
-                                " per row; only a plain local LLMChatOp or an"
-                                " LLMCompletionOp binds row-wise to a retrieval"
-                                " param, so this would silently drop every row"
-                                " but the first."
+                                f"DataRetrievalOp '{op_id}' template param"
+                                f" {param.label!r} references '{param.node}', which"
+                                " produces multiple rows but not one output item per"
+                                " row; only a plain local LLMChatOp or an"
+                                " LLMCompletionOp binds row-wise to a retrieval param,"
+                                " so this would silently drop every row but the first."
                             )
                         param_row_counts[str(param.label)] = row_count
                 if isinstance(upstream, LambdaOp):
