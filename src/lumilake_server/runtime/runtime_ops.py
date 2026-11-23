@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -79,7 +79,7 @@ class RuntimeOp:
         ).model_dump(exclude_none=True)
 
     @classmethod
-    def from_schema(cls, node_id: str, schema: RuntimeOpSchema) -> "RuntimeOp":
+    def from_schema(cls, node_id: str, schema: RuntimeOpSchema) -> Self:
         """Build the op from its serialized schema, validating its data spec."""
         return cls(
             node_id=node_id,
@@ -99,7 +99,7 @@ class RuntimeOp:
         )
 
     @classmethod
-    def deserialize(cls, node_id: str, payload: Mapping[str, Any]) -> "RuntimeOp":
+    def deserialize(cls, node_id: str, payload: Mapping[str, Any]) -> Self:
         return cls.from_schema(node_id, RuntimeOpSchema.model_validate(payload))
 
     def to_flowmesh_node(self) -> dict[str, Any]:

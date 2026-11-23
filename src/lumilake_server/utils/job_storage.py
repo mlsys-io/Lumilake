@@ -30,6 +30,23 @@ def _normalize_payload(value: Any) -> Any:
     return value
 
 
+class JobSummary(BaseModel):
+    job_id: str
+    org_id: str
+    user_id: str
+    status: Literal["pending", "running", "completed", "failed", "cancelled"]
+    submitted_at: dt.datetime
+    started_at: dt.datetime | None = None
+    finished_at: dt.datetime | None = None
+    optimization_seconds: float | None = None
+    selection_seconds: float | None = None
+    clustering_seconds: float | None = None
+    error: str | None = None
+    parent_job_id: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class JobStorage:
     def __init__(self) -> None:
         self.logger = logging.getLogger("JobStorage")
@@ -99,27 +116,8 @@ class JobStorage:
     ) -> tuple[list[dict[str, Any]], int]:
         raise NotImplementedError
 
-    def iter_summaries(
-        self, statuses: set[str] | None = None
-    ) -> Iterable["JobSummary"]:
+    def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
         raise NotImplementedError
-
-
-class JobSummary(BaseModel):
-    job_id: str
-    org_id: str
-    user_id: str
-    status: Literal["pending", "running", "completed", "failed", "cancelled"]
-    submitted_at: dt.datetime
-    started_at: dt.datetime | None = None
-    finished_at: dt.datetime | None = None
-    optimization_seconds: float | None = None
-    selection_seconds: float | None = None
-    clustering_seconds: float | None = None
-    error: str | None = None
-    parent_job_id: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
 
 
 def _summary_from_payload(data: dict[str, Any]) -> JobSummary:

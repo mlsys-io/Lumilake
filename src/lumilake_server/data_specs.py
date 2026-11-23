@@ -90,22 +90,25 @@ class TemplateOptions(DataSpecModel):
     format: FormatConfig
 
 
-class Column(DataSpecModel):
-    """One labelled column: a nested table, a literal list or an upstream read."""
-
-    label: str | None = None
-    data: "DataFrame | ListData | None" = None
-    node: str | None = None
-    path: str | None = None
+type ColumnList = list[Column]
 
 
 class DataFrame(DataSpecModel):
     """A rowwise table with one column per value and the messages its rows render."""
 
     type: Literal["dataframe"]
-    columns: list[Column] = Field(default_factory=list)
+    columns: ColumnList = Field(default_factory=list)
     messages: list[Message] | None = None
     seeds: list[int | None] | NodeRead | None = None
+
+
+class Column(DataSpecModel):
+    """One labelled column: a nested table, a literal list or an upstream read."""
+
+    label: str | None = None
+    data: DataFrame | ListData | None = None
+    node: str | None = None
+    path: str | None = None
 
 
 class GraphTemplate(DataSpecModel):

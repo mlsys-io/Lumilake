@@ -133,7 +133,7 @@ def _serialize_fn(fn: Callable[..., Any]) -> str:
             # in repr() as backrefs.
             replacement: str = repr(var_value)
 
-            def _replace(_m: "re.Match[str]", r: str = replacement) -> str:
+            def _replace(_m: re.Match[str], r: str = replacement) -> str:
                 return r
 
             fn_serialized = re.sub(pattern, _replace, fn_serialized)
@@ -218,7 +218,7 @@ class FormatOp(FunctionalOp):
         return serialized
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "FormatOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         format_args = [other_ops[arg] for arg in data["format_args"]]
         format_kwargs = {k: other_ops[v] for k, v in data["format_kwargs"].items()}
         op = cls(data["template"], *format_args, **format_kwargs)
@@ -312,7 +312,7 @@ class LambdaOp(Op):
         return data
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LambdaOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         spec = build_lambda_spec(data, f"LambdaOp '{data.get('_id', '?')}'")
         try:
             fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
