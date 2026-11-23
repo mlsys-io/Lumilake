@@ -207,11 +207,7 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
 def expand_routers(
     ops: list[dict[str, Any]], copied: frozenset[str] = frozenset()
 ) -> tuple[list[dict[str, Any]], frozenset[str]]:
-    """Expand each router into per-branch lambdas; return the ops and cleared ids.
-
-    ``copied`` holds the ids of routers an unrolled repeat copied, whose
-    unrolled ids may be dotted.
-    """
+    """Expand each router into per-branch lambdas; ``copied`` ids may be dotted."""
     expanded: list[dict[str, Any]] = []
     cleared: set[str] = set()
     for entry in ops:
