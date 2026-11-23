@@ -8,6 +8,8 @@ import hashlib
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
+from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError
+
 from lumilake_server.ops.router_ops import ROUTER_OP, RouterSpec
 from lumilake_server.ops.spec_validation import validate_fields
 
@@ -16,6 +18,14 @@ INPUT_REF = "$in"
 _MAX_UNROLLED = 1000
 _SEED_MODULUS = 2**63
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
+
+
+class _BodyConfig(BaseModel):
+    """The part of a body entry's ``config`` the unroll reads."""
+
+    model_config = ConfigDict(extra="allow")
+
+    seed: StrictInt | None = None
 
 
 class _Repeat(NamedTuple):
@@ -194,25 +204,24 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
 
 
 def _iteration_copy(entry: dict[str, Any], new_id: str, index: int) -> dict[str, Any]:
-    """``entry`` as iteration ``index`` runs it: its new id, and a literal
-    ``config.seed`` redrawn from that seed and the iteration."""
+    """``entry`` as iteration ``index`` runs it, its literal seed redrawn."""
     copy = {**entry, "id": new_id}
-    config = entry.get("config")
-    if not isinstance(config, dict):
-        return copy
-    seed = config.get("seed")
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        return copy
-    copy["config"] = {**config, "seed": _iteration_seed(seed, index)}
+    seed = _literal_seed(entry.get("config"))
+    if seed is not None:
+        copy["config"] = {**copy["config"], "seed": _iteration_seed(seed, index)}
     return copy
 
 
-def _iteration_seed(seed: int, index: int) -> int:
-    """The seed iteration ``index`` draws, derived from the body's own seed.
+def _literal_seed(config: Any) -> int | None:
+    """The literal seed ``config`` carries, or None for an absent or non-integer one."""
+    try:
+        return _BodyConfig.model_validate(config).seed
+    except ValidationError:
+        return None
 
-    Two iterations of one body never share a seed, so a retry whose prompt is
-    unchanged still draws a different answer.
-    """
+
+def _iteration_seed(seed: int, index: int) -> int:
+    """The seed iteration ``index`` draws: a digest of the body's seed and index."""
     payload = f"{seed}:{index}".encode()
     digest = hashlib.blake2b(payload, digest_size=8).digest()
     return int.from_bytes(digest, "big") % _SEED_MODULUS
@@ -224,9 +233,7 @@ def _router_branch_ids(ops: list[Any]) -> set[str]:
     for entry in ops:
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
             continue
-        router = validate_fields(
-            RouterSpec, entry, f"RouterOp '{entry.get('id', '?')}'"
-        )
+        router = validate_fields(RouterSpec, entry, f"RouterOp '{_entry_id(entry)}'")
         branches.update(f"{router.id}.{branch}" for branch in router.branches)
     return branches
 

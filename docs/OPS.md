@@ -22,8 +22,6 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `JoinOp` | Merge keyed row columns and 1:1 outputs back onto the rows they came from. |
 | `RepeatOp` | Run an op body a fixed number of times; the parser unrolls it into ordinary nodes. |
 
-A body entry's literal `config.seed` is redrawn per iteration from that seed and the iteration number, so two iterations never share a draw; a keyed (row-derived) seed in a body keeps its same value each iteration.
-
 ## YAML Use
 
 YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` are generated from the top-level `inputs:` and `outputs:` blocks; do not declare them manually in YAML.
