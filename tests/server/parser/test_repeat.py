@@ -27,8 +27,8 @@ def _router(source: str, router_id: str = "Status", indent: str = "      ") -> s
 def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
     return (
         f"{indent}- {{id: {chat_id}, op: LLMChatOp, inputs: [{source}], config:"
-        " {model: m}, messages: [{role: user, content: x}],"
-        f" rowwise_template: x, rowwise_columns: [{{label: p, node: {source}}}]}}\n"
+        f" {{model: m}}, messages: [{{role: user, content: x}}], rowwise_template: x,"
+        f" rowwise_columns: [{{label: p, node: {source}}}]}}\n"
     )
 
 
@@ -103,8 +103,8 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
 
 def test_a_body_chat_op_draws_a_different_seed_each_iteration() -> None:
     step = (
-        "      - {id: Ask, op: LLMChatOp, inputs: [$in], "
-        "config: {model: m, seed: 7}, messages: [{role: user, content: x}]}\n"
+        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m, seed: 7}, "
+        "messages: [{role: user, content: x}]}\n"
     )
     ops = _repeat("2", "Start", "Ask", step)
     seeds = [
