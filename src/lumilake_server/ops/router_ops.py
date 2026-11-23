@@ -99,8 +99,7 @@ class RouterRuleSpec(BaseModel):
 
 
 class RouterSpec(BaseModel):
-    """A router entry: one source, ordered rules, a default branch, and whether
-    an ``error`` branch collects failed records."""
+    """A router entry: one source, ordered rules, a default branch and an error flag."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -157,11 +156,6 @@ class RouterSpec(BaseModel):
         declared."""
         ordered = (self.default_branch, *(rule.branch for rule in self.rules))
         return (*ordered, ERROR_BRANCH) if self.error_branch else ordered
-
-    @classmethod
-    def from_entry(cls, entry: dict[str, Any]) -> Self:
-        """Validate a raw YAML router entry, naming the op in the error."""
-        return validate_fields(cls, entry, f"RouterOp '{entry.get('id', '?')}'")
 
 
 def branch_lambda_code(router: RouterSpec, branch: str) -> str:
@@ -242,7 +236,9 @@ def expand_routers(
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
             expanded.append(entry)
             continue
-        router = RouterSpec.from_entry(entry)
+        router = validate_fields(
+            RouterSpec, entry, f"RouterOp '{entry.get('id', '?')}'"
+        )
         for branch in router.branches:
             expanded.append(
                 {

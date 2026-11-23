@@ -23,7 +23,6 @@ from lumilake_server.ops.spec_validation import validate_fields
 PARSE_OP = "ParseOp"
 MARKER: Literal["marker", "raw"] = "marker"
 FLAGS = "ism"
-_FLAG_VALUES = set(FLAGS)
 
 
 class ParseSpec(BaseModel):
@@ -47,7 +46,7 @@ class ParseSpec(BaseModel):
     @field_validator("flags")
     @classmethod
     def _flag_letters(cls, value: str | None) -> str | None:
-        if value is not None and set(value) - _FLAG_VALUES:
+        if value is not None and set(value) - set(FLAGS):
             raise ValueError(f"must be a string of {list(FLAGS)}")
         return value
 
@@ -56,7 +55,7 @@ class ParseSpec(BaseModel):
         if self.format == "json":
             if self.pattern is not None:
                 raise ValueError("takes 'pattern' only with format: regex")
-            if self.flags is not None:
+            if self.flags:
                 raise ValueError("takes 'flags' only with format: regex")
             return self
         if self.require is not None:
@@ -113,13 +112,7 @@ class ParseOp(FunctionalOp):
     @property
     def parse_spec(self) -> ParseDescription:
         """The parse step's description of this op."""
-        return ParseDescription(
-            format=self.spec.format,
-            on_fail=self.spec.on_fail,
-            pattern=self.spec.pattern,
-            require=self.spec.require,
-            flags=self.spec.flags,
-        )
+        return ParseDescription.model_validate(self.spec.model_dump())
 
     def _serialize(self) -> dict[str, Any]:
         return self.spec.model_dump(exclude_none=True)
@@ -127,7 +120,7 @@ class ParseOp(FunctionalOp):
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "ParseOp":
         fields = {key: value for key, value in data.items() if not key.startswith("_")}
-        spec = build_parse_spec(fields, f"ParseOp '{data.get('_id', '?')}'")
+        spec = build_parse_spec(fields, f"ParseOp '{data['_id']}'")
         return cls([other_ops[inp] for inp in data["_inputs"]], spec)
 
 

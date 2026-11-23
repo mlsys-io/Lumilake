@@ -135,7 +135,7 @@ class JoinOp(Op):
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "JoinOp":
-        spec = build_join_spec(data, f"JoinOp '{data.get('_id', '?')}'")
+        spec = build_join_spec(data, f"JoinOp '{data['_id']}'")
         joined = [_built_before(other_ops, name, "input") for name in data["_inputs"]]
         attach = {
             field: _built_before(other_ops, op_id, f"attach field {field!r}")

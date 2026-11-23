@@ -345,7 +345,7 @@ class LambdaOp(Op):
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LambdaOp":
-        spec = build_lambda_spec(data, f"LambdaOp '{data.get('_id', '?')}'")
+        spec = build_lambda_spec(data, f"LambdaOp '{data['_id']}'")
         try:
             fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
         except ValueError as exc:

@@ -14,7 +14,7 @@ from lumilake_server.dynamic.template import (
     stop_export,
     validate_template,
 )
-from lumilake_server.ops.router_ops import RouterSpec, expand_routers
+from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.utils.lambda_runtime import materialize
 
@@ -85,9 +85,9 @@ def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
     for row in (*rows, *field):
         assert _branch_rows(_router(), "route.patient", [json.dumps(row)]) == [row]
     rule = [{"branch": "error", "match": "equals", "value": "1"}]
-    RouterSpec.from_entry(_router(rules=rule))
+    expand_routers([_router(rules=rule)])
     with pytest.raises(ValueError, match="error"):
-        RouterSpec.from_entry(_router(rules=rule, error_branch=True))
+        expand_routers([_router(rules=rule, error_branch=True)])
 
 
 _EMPTY_RULE: list[dict[str, Any]] = [{"branch": "no_ret", "match": "empty"}]
@@ -104,7 +104,7 @@ _EMPTY_ROWS: list[tuple[str, Any]] = [
 def test_an_empty_rule_refuses_a_value() -> None:
     rule = {"branch": "no_ret", "match": "empty", "value": "x"}
     with pytest.raises(ValueError, match="branch 'no_ret'.*takes no value"):
-        RouterSpec.from_entry(_router(rules=[rule]))
+        expand_routers([_router(rules=[rule])])
 
 
 def test_an_empty_rule_routes_null_blank_and_empty_containers_only() -> None:
@@ -124,12 +124,12 @@ def test_a_row_missing_an_empty_rule_path_fails_naming_the_part() -> None:
 
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
     with pytest.raises(ValueError, match="default branch"):
-        RouterSpec.from_entry(_router(default_branch="diagnose"))
+        expand_routers([_router(default_branch="diagnose")])
     with pytest.raises(ValueError, match="exactly one input"):
-        RouterSpec.from_entry(_router(inputs=[]))
+        expand_routers([_router(inputs=[])])
     twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
     with pytest.raises(ValueError, match="branches must be unique"):
-        RouterSpec.from_entry(_router(rules=twin))
+        expand_routers([_router(rules=twin)])
 
 
 def test_router_expands_before_the_graph_is_built() -> None:
