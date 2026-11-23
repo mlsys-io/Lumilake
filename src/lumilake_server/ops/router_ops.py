@@ -21,6 +21,7 @@ from pydantic import (
     model_validator,
 )
 
+from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
 
 ROUTER_OP = "RouterOp"
@@ -159,8 +160,8 @@ class RouterSpec(BaseModel):
 
     @classmethod
     def from_entry(cls, entry: dict[str, Any]) -> Self:
-        """Validate a raw YAML router entry."""
-        return cls.model_validate(entry)
+        """Validate a raw YAML router entry, naming the op in the error."""
+        return validate_fields(cls, entry, f"RouterOp '{entry.get('id', '?')}'")
 
 
 def branch_lambda_code(router: RouterSpec, branch: str) -> str:
