@@ -1235,8 +1235,8 @@ class _LLMBuilder(_EmbeddingBuilder):
                 if can_evaluate:
                     label = f"lambda_{op.id}"
                     # List-mode LambdaOps raise above, so this call is row-mode.
-                    # A row step decodes its values, so these literals are
-                    # decoded here to match.
+                    # A row step decodes its values, so these literals are decoded here
+                    # to match.
                     row_fn = cast(RowLambdaFn, op.fn)
                     row = tuple(lambda_task_helpers.decode(v) for v in literal_args)
                     columns[label] = Column(
@@ -1273,13 +1273,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                     if not code:
                         raise ValueError(
                             f"LambdaOp '{op.id}': the source of its function"
-                            " cannot be read, so it cannot be inlined into the"
-                            " LLM that consumes it. Define it with a top-level"
-                            " def and pass its code, or make it a workflow output"
-                            " so it runs as its own python task"
+                            " cannot be read, so it cannot be inlined into the LLM that"
+                            " consumes it. Define it with a top-level def and pass its"
+                            " code, or make it a workflow output so it runs as its own"
+                            " python task"
                         )
-                    # Inlined steps run in the FlowMesh worker's safe_eval
-                    # namespace, stricter than a standalone python task.
+                    # Inlined steps run in the FlowMesh worker's safe_eval namespace,
+                    # which is stricter than a standalone python task.
                     try:
                         lambda_runtime.validate_inline_source(
                             code,

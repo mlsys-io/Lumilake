@@ -102,8 +102,8 @@ NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
 
-# The same decode as ``lambda_task_helpers``, in the form FlowMesh's inline
-# namespace can evaluate; a test pins the two decoders to agree.
+# The same decode as ``lambda_task_helpers``, in the form FlowMesh's inline namespace
+# can evaluate; a test pins the two decoders to agree.
 DECODER_SOURCE = """\
 def _serialized_table(value):
     if isinstance(value, str):
@@ -168,13 +168,7 @@ def _top_level_bindings(code: str) -> set[str]:
 
 
 def inline_lambda_source(code: str, fn_name: str) -> str:
-    """The function step source for a row-mode LambdaOp an LLM inlines.
-
-    A wrapper decodes each row argument first, so the op's function sees what
-    a standalone step gives it. The op's code stays at top level, byte for
-    byte; a ``global`` line keeps its names out of the wrapper's locals, which
-    hold only the wrapper.
-    """
+    """The function step source a row-mode LambdaOp inlines into an LLM."""
     src = code.strip()
     tree = _parse(src)
     if isinstance(tree, ast.Expression):
@@ -196,9 +190,7 @@ def inline_lambda_source(code: str, fn_name: str) -> str:
 
 
 def callable_source(fn: Callable[..., Any], code: str) -> str:
-    """The function source behind an SDK callable, or ``""`` when it cannot be
-    read. ``dill`` captures the statement that bound an SDK lambda, so the
-    lambda's own text is recovered when the statement holds exactly one."""
+    """The function source behind an SDK callable, or ``""`` when unreadable."""
     stripped = code.strip()
     if fn.__name__ != "<lambda>":
         return stripped
@@ -375,15 +367,7 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
-    """Check source for a LambdaOp the FlowMesh worker evaluates inline.
-
-    A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
-    which FlowMesh materializes in its own restricted namespace: no
-    ``__import__``, and it calls the first name the generated wrapper binds.
-    The wrapper decodes each row and then calls the op's own function, so code
-    that a standalone LambdaOp accepts but that namespace cannot run is
-    rejected here, at submit, with the reason.
-    """
+    """Check source for a LambdaOp the FlowMesh worker evaluates inline."""
     name = validate_source(code, fn_name)
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
@@ -417,27 +401,26 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
     if annotated is not None:
         raise ValueError(
             f"it references {annotated!r}, which a LambdaOp that feeds an"
-            " LLM cannot use inline: the FlowMesh worker's namespace has no"
-            " Message or ops, and a def evaluates its annotations there."
-            " Annotate with builtin types, or move this logic to a LambdaOp"
-            " that runs as its own python task"
+            " LLM cannot use inline: the FlowMesh worker's namespace has no Message or"
+            " ops, and a def evaluates its annotations there. Annotate with builtin"
+            " types, or move this logic to a LambdaOp that runs as its own python task"
         )
     if any(isinstance(stmt, ast.AnnAssign) for stmt in tree.body):
         raise ValueError(
             "it annotates a top-level assignment, which a LambdaOp that feeds an"
-            " LLM cannot use inline: the generated wrapper runs the code as a"
-            " module, whose annotations land in the namespace before its"
-            " function does. Assign without an annotation, or move this logic to"
-            " a LambdaOp that runs as its own python task"
+            " LLM cannot use inline: the generated wrapper runs the code as a module,"
+            " whose annotations land in the namespace before its function does. Assign"
+            " without an annotation, or move this logic to a LambdaOp that runs as its"
+            " own python task"
         )
     top_level = _top_level_bindings(code)
     collisions = sorted(top_level & _INLINE_WRAPPER_NAMES)
     if collisions:
         raise ValueError(
-            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an LLM"
-            " cannot use inline: its function step embeds a generated wrapper"
-            " that already binds that name. Rename the binding or move this"
-            " logic to a LambdaOp that runs as its own python task"
+            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an"
+            " LLM cannot use inline: its function step embeds a generated wrapper that"
+            " already binds that name. Rename the binding or move this logic to a"
+            " LambdaOp that runs as its own python task"
         )
     return name
 
