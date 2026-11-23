@@ -198,7 +198,7 @@ def _literal(
     join: JoinOp,
     column: InputOp | DataOp,
     ctx: LoweringContext,
-    plan: list[dict[str, Any]],
+    plan: list[ColumnPlanEntry],
 ) -> int:
     """The plan index reading a literal column's values, one per row."""
     if isinstance(column, InputOp):
@@ -209,5 +209,5 @@ def _literal(
             )
     else:
         values = column.data.copy()
-    plan.append({"kind": "literal", "values": values})
+    plan.append(ColumnPlanEntry(kind="literal", values=values))
     return len(plan) - 1

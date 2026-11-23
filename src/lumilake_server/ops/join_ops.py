@@ -26,24 +26,35 @@ class JoinSpec(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    by: list[StrictStr] = Field(min_length=1)
-    row_key: list[StrictStr] | None = Field(default=None, min_length=1)
+    by: list[StrictStr]
+    row_key: list[StrictStr] | None = None
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
-    @field_validator("by", "row_key", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _dotted_paths(cls, value: Any) -> Any:
-        """Take the key as its paths: one dotted field name, or a list of them
+    def _dotted_paths(cls, data: Any) -> Any:
+        """Take each key as its paths: one dotted field name, or a list of them
         for a composite key."""
-        if value is None:
-            return None
-        paths = [value] if isinstance(value, str) else value
-        if not isinstance(paths, list) or not all(
-            isinstance(path, str) and _PATH_RE.match(path) for path in paths
-        ):
-            raise ValueError("must be a dotted field name or a list of them")
-        return paths
+        if not isinstance(data, dict):
+            return data
+        paths_by_field = data.copy()
+        for field in ("by", "row_key"):
+            value = data.get(field)
+            if value is None and field == "row_key":
+                continue
+            paths = [value] if isinstance(value, str) else value
+            if not isinstance(paths, list) or not paths:
+                raise ValueError(
+                    f"requires '{field}', a dotted field name or a list of them"
+                )
+            for path in paths:
+                if not isinstance(path, str) or not _PATH_RE.match(path):
+                    raise ValueError(
+                        f"{field} must be dotted field names, got {path!r}"
+                    )
+            paths_by_field[field] = paths
+        return paths_by_field
 
     @field_validator("attach")
     @classmethod
