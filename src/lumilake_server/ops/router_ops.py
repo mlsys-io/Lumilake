@@ -9,15 +9,23 @@ carries its own row decoder and ``path`` walk.
 """
 
 import re
-from dataclasses import dataclass
-from typing import Any, Self
+from typing import Any, Literal, Self
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
 
 ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
 
-_MATCHES = ("contains", "equals", "empty")
 _NAME_RE = re.compile(r"^\w+$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 
@@ -49,26 +57,34 @@ _DECODER = """\
 """
 
 
-@dataclass(frozen=True)
-class RouterRule:
+class RouterRuleSpec(BaseModel):
     """One ordered branch rule: rows whose value matches it take that branch."""
 
-    branch: str
-    match: str
-    value: str | None = None
+    model_config = ConfigDict(extra="ignore")
 
-    def __post_init__(self) -> None:
-        if not _NAME_RE.match(self.branch):
-            raise ValueError(
-                f"RouterRule branch must be letters, digits or underscores, got "
-                f"{self.branch!r}"
-            )
-        if self.match not in _MATCHES:
-            raise ValueError(
-                f"RouterRule match must be one of {_MATCHES}, got {self.match!r}"
-            )
-        if self.match != "empty" and not self.value:
-            raise ValueError("RouterRule requires a non-empty string value")
+    branch: StrictStr
+    match: Literal["contains", "equals", "empty"]
+    value: StrictStr | None = None
+
+    @field_validator("branch")
+    @classmethod
+    def _branch_name(cls, value: str) -> str:
+        if not _NAME_RE.match(value):
+            raise ValueError(f"must be letters, digits or underscores, got {value!r}")
+        return value
+
+    @model_validator(mode="after")
+    def _match_value(self) -> Self:
+        if self.match == "empty":
+            if self.value is not None:
+                raise ValueError(
+                    f"branch {self.branch!r} matches 'empty' and takes no value,"
+                    f" got {self.value!r}"
+                )
+            return self
+        if not self.value:
+            raise ValueError("requires a non-empty string value")
+        return self
 
     def matches(self) -> str:
         """The Python expression this rule's match test renders to."""
@@ -81,42 +97,58 @@ class RouterRule:
         )
 
 
-@dataclass(frozen=True)
-class RouterOp:
-    """A validated router entry: one source, ordered rules, a default branch,
-    and whether an ``error`` branch collects failed records."""
+class RouterSpec(BaseModel):
+    """A router entry: one source, ordered rules, a default branch, and whether
+    an ``error`` branch collects failed records."""
 
-    id: str
-    inputs: list[str]
-    path: list[str]
-    default_branch: str
-    rules: list[RouterRule]
-    error_branch: bool = False
+    model_config = ConfigDict(extra="ignore")
 
-    def __post_init__(self) -> None:
-        if not _NAME_RE.match(self.id):
-            raise ValueError(
-                f"RouterOp id must be letters, digits or underscores, got {self.id!r}"
-            )
+    id: StrictStr
+    inputs: list[StrictStr]
+    path: list[StrictStr] = Field(default_factory=list)
+    default_branch: StrictStr
+    rules: list[RouterRuleSpec]
+    error_branch: StrictBool = False
+
+    @field_validator("id", "default_branch")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        if not _NAME_RE.match(value):
+            raise ValueError(f"must be letters, digits or underscores, got {value!r}")
+        return value
+
+    @field_validator("path", mode="before")
+    @classmethod
+    def _dotted_path(cls, value: Any) -> Any:
+        """Take the tested field as parts, from one dotted name."""
+        if value is None:
+            return []
+        if not isinstance(value, str) or not _PATH_RE.match(value):
+            raise ValueError(f"must be a dotted field name, got {value!r}")
+        return value.split(".")
+
+    @model_validator(mode="after")
+    def _branches(self) -> Self:
         if len(self.inputs) != 1:
-            raise ValueError(
-                f"RouterOp {self.id!r} takes exactly one input, got {len(self.inputs)}"
-            )
+            raise ValueError(f"takes exactly one input, got {len(self.inputs)}")
         if not self.rules:
-            raise ValueError(f"RouterOp {self.id!r} rules must not be empty")
-        if not _NAME_RE.match(self.default_branch):
+            raise ValueError("rules must not be empty")
+        names = [rule.branch for rule in self.rules]
+        if len(set(names)) != len(names):
+            raise ValueError("rule branches must be unique")
+        if self.default_branch in names:
             raise ValueError(
-                f"RouterOp {self.id!r} default_branch must be letters, digits or "
-                f"underscores, got {self.default_branch!r}"
+                f"rules already name the default branch {self.default_branch!r};"
+                " a default catches what no rule matched"
             )
-        branches = [rule.branch for rule in self.rules]
-        if len(set(branches)) != len(branches):
-            raise ValueError(f"RouterOp {self.id!r} rule branches must be unique")
-        if self.default_branch in branches:
+        if self.error_branch and (
+            ERROR_BRANCH in names or self.default_branch == ERROR_BRANCH
+        ):
             raise ValueError(
-                f"RouterOp {self.id!r} rules already name the default branch "
-                f"{self.default_branch!r}; a default catches what no rule matched"
+                f"must not name {ERROR_BRANCH!r} as a rule branch or the default"
+                " branch; its declared error branch receives failed records"
             )
+        return self
 
     @property
     def branches(self) -> tuple[str, ...]:
@@ -128,78 +160,10 @@ class RouterOp:
     @classmethod
     def from_entry(cls, entry: dict[str, Any]) -> Self:
         """Validate a raw YAML router entry."""
-        router_id = entry.get("id")
-        if not isinstance(router_id, str) or not router_id:
-            raise ValueError("RouterOp requires a non-empty id")
-        raw_inputs = entry.get("inputs")
-        if not isinstance(raw_inputs, list) or not all(
-            isinstance(ref, str) for ref in raw_inputs
-        ):
-            raise ValueError(f"RouterOp {router_id!r} inputs must be a list of ids")
-        raw_path = entry.get("path")
-        if raw_path is None:
-            path: list[str] = []
-        elif isinstance(raw_path, str) and _PATH_RE.match(raw_path):
-            path = raw_path.split(".")
-        else:
-            raise ValueError(
-                f"RouterOp {router_id!r} path must be a dotted field name, got "
-                f"{raw_path!r}"
-            )
-        raw_rules = entry.get("rules")
-        if not isinstance(raw_rules, list):
-            raise ValueError(f"RouterOp {router_id!r} rules must be a list")
-        rules: list[RouterRule] = []
-        for raw_rule in raw_rules:
-            if not isinstance(raw_rule, dict):
-                raise ValueError(f"RouterOp {router_id!r} rules must be mappings")
-            branch = raw_rule.get("branch")
-            match = raw_rule.get("match")
-            value = raw_rule.get("value")
-            if match == "empty" and value is not None:
-                raise ValueError(
-                    f"RouterOp {router_id!r} branch {branch!r} matches 'empty'"
-                    f" and takes no value, got {value!r}"
-                )
-            if not (
-                isinstance(branch, str)
-                and isinstance(match, str)
-                and (match == "empty" or isinstance(value, str))
-            ):
-                raise ValueError(
-                    f"RouterOp {router_id!r} rules require string branch, match "
-                    f"and value, got {raw_rule!r}"
-                )
-            rules.append(RouterRule(branch, match, value))
-        default_branch = entry.get("default_branch")
-        if not isinstance(default_branch, str):
-            raise ValueError(f"RouterOp {router_id!r} requires a default_branch")
-        error_branch = entry.get("error_branch", False)
-        if not isinstance(error_branch, bool):
-            raise ValueError(
-                f"RouterOp {router_id!r} error_branch must be a boolean, got"
-                f" {error_branch!r}"
-            )
-        if error_branch and (
-            ERROR_BRANCH in [rule.branch for rule in rules]
-            or default_branch == ERROR_BRANCH
-        ):
-            raise ValueError(
-                f"RouterOp {router_id!r} must not name {ERROR_BRANCH!r} as a rule"
-                " branch or the default branch; its declared error branch receives"
-                " failed records"
-            )
-        return cls(
-            router_id,
-            raw_inputs,
-            path,
-            default_branch,
-            rules,
-            error_branch=error_branch,
-        )
+        return cls.model_validate(entry)
 
 
-def branch_lambda_code(router: RouterOp, branch: str) -> str:
+def branch_lambda_code(router: RouterSpec, branch: str) -> str:
     """The list-mode LambdaOp source selecting ``branch``'s rows from ``router``:
     a declared ``error`` branch keeps exactly the failed records, and every other
     branch keeps the rows its own rule matches and no earlier rule matches; the
@@ -277,7 +241,7 @@ def expand_routers(
         if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
             expanded.append(entry)
             continue
-        router = RouterOp.from_entry(entry)
+        router = RouterSpec.from_entry(entry)
         for branch in router.branches:
             expanded.append(
                 {
