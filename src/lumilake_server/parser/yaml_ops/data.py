@@ -41,8 +41,8 @@ def _resolve_param_nodes(
             continue
         if param.node not in user_id_to_internal:
             raise ValueError(
-                f"DataRetrievalOp '{entry_id}' data_spec.params[{i}].node "
-                f"references unknown input/op id '{param.node}'"
+                f"DataRetrievalOp '{entry_id}' data_spec.params[{i}].node references "
+                f"unknown input/op id '{param.node}'"
             )
         params.append(
             param.model_copy(update={"node": user_id_to_internal[param.node]})
