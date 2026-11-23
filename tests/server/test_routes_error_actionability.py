@@ -258,6 +258,50 @@ async def test_unsupported_workflow_format_returns_422(app: FastAPI) -> None:
 
 
 @pytest.mark.anyio
+async def test_submitted_n8n_workflow_records_the_default_seed(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """An n8n submission names no seed, so the job records the default one."""
+    workflow = {
+        "nodes": [
+            {
+                "parameters": {},
+                "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+                "name": "Input",
+                "id": "input-node",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {"pythonCode": "return 'hi'"},
+                "type": "n8n-nodes-base.code",
+                "name": "Code",
+                "id": "code-node",
+                "typeVersion": 1,
+            },
+        ],
+        "connections": {
+            "Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}
+        },
+    }
+    body = _submit_body()
+    body["data"][0]["workflow"] = json.dumps(workflow)
+    body["data"][0]["inputs"] = {"Input": ["hello"]}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={
+                "Authorization": "Bearer token",
+                "Workflow-Format": "n8n",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+    assert record.seed == 0
+
+
+@pytest.mark.anyio
 async def test_native_key_form_is_refused_with_422_naming_the_op(
     app: FastAPI,
 ) -> None:

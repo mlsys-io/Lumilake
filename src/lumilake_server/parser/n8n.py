@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .common import make_id as _make_id
+from .common import read_workflow_seed
 from .n8n_nodes import shared
 from .n8n_nodes.constants import N8N_CHAT_TRIGGER, N8N_MODEL_SPEC
 from .n8n_nodes.entries import OpContext
@@ -61,6 +62,9 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         ...
       ]
     }
+
+    Every graph carries a job seed like a YAML document does; an n8n export
+    names none, so it defaults to 0.
     """
     graphs = payload.get("graphs")
     if not isinstance(graphs, list):
@@ -83,6 +87,7 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         graph_specs[graph_name] = {
             "graph": compiled.graph,
             "inputs": compiled.inputs,
+            "seed": read_workflow_seed(item, f"graph '{graph_name}'"),
         }
 
     return graph_specs
