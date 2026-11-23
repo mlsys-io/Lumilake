@@ -134,21 +134,20 @@ def test_a_repeated_key_is_refused_unless_paired() -> None:
 
 
 def test_the_key_form_is_refused() -> None:
-    """A row with no key or a null key fails; a seed that fits no field is refused."""
-    for cell, message in [
-        ({"question": "q"}, "has no row key in .*case_id"),
-        ({"case_id": None}, "has a null row key in .*case_id"),
-        # A literal ``%s`` in the op id is escaped before the value placeholder.
-        ({"question": "q"}, "50%sale' has no row key"),
-    ]:
-        payload = _payload()
-        payload["ops"][1]["id"] = "50%sale" if "%" in message else "Answer"
+    """A row with no key or a null key fails, as does a seed that fits no field."""
+    bad, null = _payload(), _payload()
+    bad["ops"][1]["id"] = "50%sale"
+    for payload, cell, message in (
+        (_payload(), {"question": "q"}, "has no row key in .*case_id"),
+        (null, {"case_id": None}, "has a null row key in .*case_id"),
+        (bad, {"question": "q"}, "50%sale' has no row key"),
+    ):
         with pytest.raises(ValueError, match=message):
             _generated(payload)((json.dumps(cell),))
-    payloads = [_payload() for _ in range(2)]
-    payloads[0]["ops"][1].pop("rowwise_template")
-    payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
-    for payload, match in zip(payloads, ["rowwise_template", "API"]):
+    missing, api = _payload(), _payload()
+    missing["ops"][1].pop("rowwise_template")
+    api["ops"][1]["config"]["api"] = {"url": "x"}
+    for payload, match in ((missing, "rowwise"), (api, "API")):
         with pytest.raises(ValueError, match=match):
             _graph(payload)
 
@@ -188,9 +187,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
     payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
-    (seed_id,) = [
-        op_id for op_id, op in spec.items() if op.get("fn_name") == SEED_FN_NAME
-    ]
+    seed_id = next(k for k, v in spec.items() if v.get("fn_name") == SEED_FN_NAME)
     draw_id = make_id("yaml_workflow", "lambda", "Draw")
     assert spec[draw_id]["seed"] == {"node": seed_id, "path": "items.output"}
     with pytest.raises(ValueError, match="seed is available in modes"):
