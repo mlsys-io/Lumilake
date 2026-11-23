@@ -290,9 +290,9 @@ _PARTED = {0: _rows(_A, _B, _C), 1: _rows(_B), 2: _cells(1), 3: _rows(_B)}
 @pytest.mark.parametrize(
     "ops, upstream, expected",
     [
-        # A marked row keeps its slot: in the first input the row is the marker,
-        # in a further input the key's output is. A composite key reads each path,
-        # so a marked row whose path reaches a marker has no key to be placed by.
+        # A marked row keeps its slot: in the first input the row is the marker, in a
+        # further input the key's output is. A composite key reads each path, so a
+        # marked row whose path reaches a marker has no key to be placed by.
         (_DIAG, {0: _rows(_A, _MARK, _B), 1: _rows(_B)}, [_A, _MARK, _B]),
         (_COMPOSITE, {0: _rows(_META), 1: _rows({**_META, "s": _MARK})}, [_MARK]),
         # A composite key keeps rows that share its first field apart.

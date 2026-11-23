@@ -70,8 +70,8 @@ class JoinSpec(BaseModel):
             missing = [path for path in self.by if path not in self.row_key]
             if missing:
                 raise ValueError(
-                    f"row_key must name every by path, got {self.row_key!r}"
-                    f" without {missing!r}"
+                    f"row_key must name every by path, got {self.row_key!r} without"
+                    f" {missing!r}"
                 )
         return self
 
