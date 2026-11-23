@@ -29,7 +29,13 @@ from lumilake.log import (
     log_on_exception_async,
 )
 from lumilake_server.common import project_input_values
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    InputRefSpec,
+    ListData,
+    PythonData,
+    RetrievalParam,
+)
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -87,7 +93,6 @@ from lumilake_server.runtime.worker_capability import (
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_spec import InputRefSpec, RetrievalParam
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
@@ -109,6 +114,28 @@ def _owner_input_ref(
         return InputRefSpec.model_validate(ref)
     except ValidationError as exc:
         raise ValueError(f"Invalid input_ref for '{label}' in {group_context}") from exc
+
+
+def _list_items(data: ListData | dict[str, Any]) -> list[Any] | None:
+    """The literal items of a retrieval param's or rowwise column's list."""
+    items = data.items if isinstance(data, ListData) else data.get("items")
+    return items if isinstance(items, list) else None
+
+
+def _set_list_items(data: ListData | dict[str, Any], items: list[Any]) -> None:
+    """Replace a list source's literal items."""
+    if isinstance(data, ListData):
+        data.items = items
+    else:
+        data["items"] = items
+
+
+def _mark_grouped(data: ListData | dict[str, Any]) -> None:
+    """Mark a rewritten list as one projected value per input row."""
+    if isinstance(data, ListData):
+        data.grouped = True
+    else:
+        data["grouped"] = True
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -1747,7 +1774,9 @@ class LumilakeServer:
     def _iter_input_bound_list_specs(
         graph: Graph,
     ) -> Generator[
-        tuple[str, dict[str, Any], RetrievalParam | dict[str, Any]], None, None
+        tuple[str, ListData | dict[str, Any], RetrievalParam | dict[str, Any]],
+        None,
+        None,
     ]:
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
@@ -1756,9 +1785,7 @@ class LumilakeServer:
                     data = param.data
                     if label is None or data is None:
                         continue
-                    data_type = data.get("type")
-                    items = data.get("items")
-                    if data_type != "list" or not isinstance(items, list):
+                    if data.type != "list" or not isinstance(data.items, list):
                         continue
                     yield label, data, param
             if isinstance(op, LLMChatOp):
@@ -1871,8 +1898,8 @@ class LumilakeServer:
                 continue
             if _owner_input_ref(owner, label, group_context) is not None:
                 continue
-            items = data["items"]
-            if not isinstance(items, list):
+            items = _list_items(data)
+            if items is None:
                 continue
             matched_keys = [
                 key for key, values in first_slice_inputs.items() if items == values
@@ -1898,11 +1925,11 @@ class LumilakeServer:
                     input_ref.path,
                     input_ref.key,
                 )
-                data["items"] = list(projected)
+                _set_list_items(data, list(projected))
                 if len(replacement) > 1:
-                    data["grouped"] = True
+                    _mark_grouped(data)
             else:
-                data["items"] = list(replacement)
+                _set_list_items(data, list(replacement))
             rewrite_hits[rewrite_target_key] += 1
 
         for key, hit_count in rewrite_hits.items():
@@ -1923,8 +1950,8 @@ class LumilakeServer:
             validation_target_key = _rewrite_target_key(label, input_ref)
             if validation_target_key is None:
                 continue
-            items = data["items"]
-            if not isinstance(items, list):
+            items = _list_items(data)
+            if items is None:
                 raise ValueError(
                     "Rewritten field is no longer a list for "
                     f"key='{label}' in {group_context}"

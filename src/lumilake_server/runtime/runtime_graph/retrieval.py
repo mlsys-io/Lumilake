@@ -30,11 +30,6 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
-from lumilake_server.utils.retrieval_spec import (
-    ROWS_KEY,
-    ROWS_ONE,
-    RetrievalParam,
-)
 
 
 def _default_sql_sampler(query: str) -> list[Any]:

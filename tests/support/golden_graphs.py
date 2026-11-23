@@ -2,10 +2,10 @@
 The golden fixture holds the wire origin/main's builders produced for the same
 graphs."""
 
-from typing import Any
+from typing import Any, Literal
 
 from lumilake_server.common import ApiConfig, GenerationConfig
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PythonData, RetrievalParam
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -29,6 +29,7 @@ from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 from tests.support.data_specs import wire
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
@@ -53,8 +54,10 @@ def _config(model: str = MODEL) -> GenerationConfig:
     return GenerationConfig(model=model)
 
 
-def _lumid_spec(mode: str, template: str, params: list) -> dict[str, Any]:
-    return {"type": "lumid", "mode": mode, "template": template, "params": params}
+def _lumid_spec(
+    mode: Literal["sql", "s3", "agent"], template: str, params: list
+) -> RetrievalSpec:
+    return RetrievalSpec(type="lumid", mode=mode, template=template, params=params)
 
 
 def explode_rows(items):
@@ -196,14 +199,14 @@ def _aggregate_retrieval_python():
         ],
     )
     agent = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the revenue for {symbol}",
-            "params": [{"label": "symbol", "node": stock.id}],
-            "schema_scope": "finance",
-            "max_steps": 4,
-        },
+        data_spec=RetrievalSpec(
+            type="lumid",
+            mode="agent",
+            description="Find the revenue for {symbol}",
+            params=[RetrievalParam(label="symbol", node=stock.id)],
+            schema_scope="finance",
+            max_steps=4,
+        ),
         inputs=[stock],
     )
     big = LambdaOp(

@@ -124,9 +124,8 @@ def _find_sql_symbol_items(compiled_graph: Graph) -> list[str]:
                 continue
             if data is None:
                 continue
-            items = data.get("items")
-            if isinstance(items, list):
-                return list(items)
+            if isinstance(data.items, list):
+                return list(data.items)
     raise AssertionError("Failed to locate SQL symbol param list in merged graph")
 
 

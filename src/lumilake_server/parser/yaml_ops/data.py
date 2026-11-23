@@ -3,7 +3,8 @@
 from collections.abc import Mapping
 from typing import Any
 
-from lumilake_server.utils.retrieval_spec import RetrievalParam, RetrievalSpec
+from lumilake_server.data_specs import RetrievalParam
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 from .common import EmitContext
 

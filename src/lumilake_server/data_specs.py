@@ -145,6 +145,15 @@ class PythonData(DataSpecModel):
     cache: bool | None = None
 
 
+class InputRefSpec(DataSpecModel):
+    """The input key and ref path a projected literal list came from."""
+
+    model_config = ConfigDict(extra="allow")
+
+    key: str
+    path: str | None = None
+
+
 class RetrievalParam(DataSpecModel):
     """One retrieval placeholder bound to a literal list or an upstream read,
     carrying any other key the user wrote for the worker."""
@@ -155,6 +164,7 @@ class RetrievalParam(DataSpecModel):
     data: ListData | None = None
     node: str | None = None
     path: str | None = None
+    input_ref: InputRefSpec | None = None
 
 
 class RetrievalData(DataSpecModel):

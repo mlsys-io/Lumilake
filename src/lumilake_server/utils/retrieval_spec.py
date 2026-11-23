@@ -6,15 +6,13 @@ may return several rows from one parameter row must declare one, or declare
 """
 
 import re
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 import sqlparse
 from pydantic import (
-    BaseModel,
     ConfigDict,
     StrictBool,
     StrictInt,
-    StrictStr,
     ValidationError,
     ValidationInfo,
     field_validator,
@@ -22,6 +20,8 @@ from pydantic import (
 )
 from sqlparse.sql import Parenthesis, Token, TokenList
 from sqlparse.tokens import Comment, Keyword, Punctuation
+
+from lumilake_server.data_specs import RetrievalData
 
 ROWS_ONE = "one"
 
@@ -34,46 +34,31 @@ _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 _CHECK_ROW_ORDER = "check_row_order"
 
 
-class InputRefSpec(BaseModel):
-    """The input key and ref path a projected literal list came from."""
+class RetrievalSpec(RetrievalData):
+    """The user-authored ``data_spec`` of a ``DataRetrievalOp``, with its
+    row-order rule and any other key the user wrote for the worker."""
 
     model_config = ConfigDict(extra="allow")
 
-    key: StrictStr
-    path: StrictStr | None = None
-
-
-class RetrievalParam(BaseModel):
-    """One template slot: a literal ``data`` list or an upstream ``node``."""
-
-    model_config = ConfigDict(extra="allow")
-
-    label: StrictStr | None = None
-    node: StrictStr | None = None
-    path: StrictStr | None = None
-    data: dict[StrictStr, Any] | None = None
-    input_ref: InputRefSpec | None = None
-
-
-class RetrievalSpec(BaseModel):
-    """The ``data_spec`` block of a ``DataRetrievalOp``."""
-
-    model_config = ConfigDict(extra="allow")
-
-    type: Literal["lumid"]
-    mode: Literal["sql", "s3", "agent"]
-    rows: Literal["one"] | None = None
-    template: StrictStr | None = None
-    description: StrictStr | None = None
-    params: list[RetrievalParam] = []
-    table: StrictStr | None = None
-    output_format: StrictStr | None = None
-    encoding: StrictStr | None = None
-    schema_scope: StrictStr | None = None
-    max_steps: StrictInt | None = None
-    model: StrictStr | None = None
-    verify: StrictBool | None = None
     sample_value: Any = None
+    verify: StrictBool | None = None
+    max_steps: StrictInt | None = None
+
+    @field_validator(
+        "template",
+        "description",
+        "table",
+        "output_format",
+        "encoding",
+        "schema_scope",
+        "model",
+        mode="before",
+    )
+    @classmethod
+    def _user_string(cls, value: Any) -> Any:
+        if value is None or isinstance(value, str):
+            return value
+        raise ValueError("must be a string")
 
     @field_validator("rows", mode="before")
     @classmethod

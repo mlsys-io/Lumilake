@@ -9,6 +9,7 @@ from support.retrieval import retrieval_op
 from lumilake import envs
 from lumilake.envs import _positive_float
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import RetrievalParam
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     FormatOp,
@@ -24,7 +25,6 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
-from lumilake_server.utils.retrieval_spec import RetrievalParam
 from tests.support.data_specs import wire
 
 
