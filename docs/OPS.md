@@ -27,7 +27,7 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 
 ### DataRetrievalOp
 
-`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or `agent` mode. Item position is item identity downstream, so a retrieval must define the order its rows come back in:
+`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or `agent` mode. Downstream ops pair rows by position: a row step matches each output to the row it read, a join attaches 1:1 outputs by position, and `input_batch_size` splits rows into slices by position. A result in no defined order could pair different rows on each run, so a retrieval defines the order its rows come back in:
 
 - A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` when a lookup returns at most one row per parameter row. Submit refuses a query with neither, naming the op; only the outer query of the last statement counts.
 - The `ORDER BY` breaks ties on a column no two returned rows share, such as the primary key. Submit reads the template only, so the author keeps ties unique.
