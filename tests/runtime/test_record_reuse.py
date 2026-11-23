@@ -9,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData, parse_data_spec
+from lumilake_server.data_specs import (
+    ColumnPlanEntry,
+    DataFrame,
+    NodeRead,
+    PythonData,
+    parse_data_spec,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.record_store import (
@@ -209,19 +215,17 @@ async def test_a_chat_op_hits_on_its_record_keys(
 
 @pytest.mark.asyncio
 async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
-    """A row step's stored value rebuilds as its item: the text under ``output``
-    and the typed value under ``value``, so a reader of a field there gets it."""
+    """A row step's stored value rebuilds as its item, so a reader of a field
+    under ``value`` gets it."""
     storage = InMemoryJobStorage()
     await _run(storage, _WORKFLOW, {"Mark": _ROWS["Mark"]}, "req-1")
     graph = _runtime_graph(_WORKFLOW)
     join = _node(graph, "Join")
     spec = graph.nodes[join].data_spec
     assert isinstance(spec, PythonData)
+    path = spec.plan[0].model_copy(update={"path": "value.text"})
     graph.nodes[join] = replace(
-        graph.nodes[join],
-        data_spec=spec.model_copy(
-            update={"plan": [spec.plan[0].model_copy(update={"path": "value.text"})]}
-        ),
+        graph.nodes[join], data_spec=spec.model_copy(update={"plan": [path]})
     )
     plan, dispatched = _planner(storage).plan(
         runtime_graph=graph, round_number=0, job_id="req-2"
@@ -230,38 +234,6 @@ async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
     rewritten = dispatched.nodes[join].data_spec
     assert isinstance(rewritten, PythonData)
     assert rewritten.plan[0].values == ["ONE", "TWO"]
-
-
-def _seeded_graph() -> Any:
-    """The keyed workflow's middle op as a chat drawing each row's node-bound
-    seed from the keyed row step before it."""
-    graph = _runtime_graph(_FOUR_OPS)
-    join, mark = _node(graph, "Join"), _node(graph, "Mark")
-    graph.nodes[join] = replace(
-        graph.nodes[join],
-        dependencies=(),
-        task_type="inference",
-        data_spec=parse_data_spec(
-            "inference",
-            {
-                "type": "dataframe",
-                "columns": [
-                    {
-                        "label": "q",
-                        "data": {
-                            "type": "list",
-                            "items": [json.dumps(row) for row in _BASE_ROWS],
-                        },
-                    }
-                ],
-                "messages": [{"role": "user", "content": "{q}"}],
-                "seeds": {"node": mark, "path": "value.items.value.seed"},
-            },
-        ),
-        inference_spec={"temperature": 0},
-        model_spec={},
-    )
-    return graph
 
 
 @pytest.mark.asyncio
@@ -288,6 +260,22 @@ async def test_a_node_bound_seed_answers_a_chat_op_under_reuse() -> None:
         runtime_graph=graph, round_number=0, job_id="req-2"
     )
     assert _decisions(plan)["Join"] == ("hit", None)
+
+
+def _seeded_graph() -> Any:
+    """The keyed workflow's middle op as a chat drawing each row's node-bound
+    seed from the keyed row step before it."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    spec = graph.nodes[join].data_spec
+    assert isinstance(spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(
+            update={"seeds": NodeRead(node=mark, path="value.items.value.seed")}
+        ),
+    )
+    return graph
 
 
 @pytest.mark.asyncio
