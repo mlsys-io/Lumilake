@@ -197,7 +197,10 @@ def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> 
         task_type="python",
         backend="python",
         model="",
-        data_spec={"mode": "row"},
+        data_spec={
+            "mode": "row",
+            "plan": [{"kind": "stage", "node": lambda_id}],
+        },
         model_spec={},
         inference_spec={},
         dependencies=(lambda_id,),

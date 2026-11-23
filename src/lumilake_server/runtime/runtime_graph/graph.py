@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
+    DataFrame,
     ListData,
     PythonData,
     parse_data_spec,
@@ -202,8 +203,9 @@ class RuntimeGraph:
         seeds = {
             node_id
             for node_id, node in self.nodes.items()
-            if node.task_type == python_step.TASK_TYPE
-            and node.data_spec.get("mode") == "list"
+            if node.task_type == PYTHON_TASK_TYPE
+            and isinstance(node.data_spec, PythonData)
+            and node.data_spec.mode == "list"
         }
         reached: set[str] = set()
         for node_id in self.node_order:
@@ -220,17 +222,19 @@ class RuntimeGraph:
     def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
         """The node ids a node reads, or ``None`` when it also reads a literal
         value such as the job's input rows."""
-        plan = node.data_spec.get("plan")
-        if not isinstance(plan, list):
-            if node.data_spec.get("type") == "dataframe" and any(
-                isinstance(column, dict) and "data" in column
-                for column in node.data_spec.get("columns") or ()
-            ):
-                return None
-            return set(node.dependencies)
-        if any(entry["kind"] != "stage" for entry in plan):
+        data_spec = node.data_spec
+        if isinstance(data_spec, PythonData):
+            reads: set[str] = set()
+            for entry in data_spec.plan:
+                if entry.kind != "stage" or entry.node is None:
+                    return None
+                reads.add(entry.node)
+            return reads
+        if isinstance(data_spec, DataFrame) and any(
+            column.data is not None for column in data_spec.columns
+        ):
             return None
-        return {entry["node"] for entry in plan}
+        return set(node.dependencies)
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
         """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
