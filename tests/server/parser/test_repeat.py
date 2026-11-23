@@ -171,6 +171,7 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
             _repeat(body=_op("A.B", "[$in]", "      ")), "may not contain '.'"
         ),
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
+        pytest.param(_repeat(output="Status", body=_router("$in")), "is a body router"),
         pytest.param(
             _repeat(
                 output="Ask",
@@ -188,6 +189,11 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         ),
         pytest.param(_op("After", "[$in]") + _repeat(), r"may not read '\$in'"),
         pytest.param(_repeat() + _op("After", "[Second]"), r"a body id of 'R'"),
+        pytest.param(
+            _repeat(output="B", body=_router("$in") + _op("B", "[$in]", "      "))
+            + _op("After", "[Status.fail]"),
+            "a body id of 'R'",
+        ),
         pytest.param(
             _repeat(
                 body=_op("First", "[R]", "      ") + _op("Second", "[First]", "      ")

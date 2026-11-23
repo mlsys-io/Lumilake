@@ -140,6 +140,15 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
                     "outside the repeat"
                 )
             owner[body_id] = spec.id
+        if spec.output_ref in spec.branches:
+            branches = ", ".join(
+                f"'{spec.output_ref}.{branch}'"
+                for branch in spec.branches[spec.output_ref]
+            )
+            raise ValueError(
+                f"RepeatOp '{spec.id}' output '{spec.output_ref}' is a body router; "
+                f"name its branch, one of {branches}"
+            )
         if spec.output_ref not in spec.body_ids:
             raise ValueError(
                 f"RepeatOp '{spec.id}' output '{spec.output_ref}' is not one of its "
@@ -213,6 +222,8 @@ def _iteration_copy(
 ) -> dict[str, Any]:
     """``entry`` as iteration ``index`` of ``repeat_id`` runs it."""
     copy = {**entry, "id": new_id}
+    if copy.get("op") == ROUTER_OP:
+        copy["copied"] = True
     seed = _literal_seed(entry, repeat_id)
     if seed is None:
         return copy
