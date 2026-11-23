@@ -15,6 +15,7 @@ from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
+from tests.support.data_specs import wire
 
 _ROWS = [
     {"case_id": c, "question": q} for c, q in [("c1", "q1"), ("c2", "q2"), ("c1", "q3")]
@@ -51,12 +52,12 @@ def _graph(payload: dict[str, Any]) -> Any:
 
 def _seed_node(payload: dict[str, Any]) -> Any:
     nodes = _graph(payload).nodes.values()
-    return next(n for n in nodes if n.data_spec.get("fn_name") == SEED_FN_NAME)
+    return next(n for n in nodes if wire(n).get("fn_name") == SEED_FN_NAME)
 
 
 def _generated(payload: dict[str, Any]) -> Any:
     node = _seed_node(payload)
-    return lambda_runtime.materialize(node.data_spec["code"], SEED_FN_NAME)
+    return lambda_runtime.materialize(wire(node)["code"], SEED_FN_NAME)
 
 
 def _documented_seed(
@@ -117,7 +118,7 @@ def test_a_keyed_seed_reads_the_chat_op() -> None:
     assert graph.list_lambda_cardinality_nodes() == set()
     chat = next(n for n in graph.nodes.values() if n.task_type == "inference")
     seed_id = _seed_node(_payload()).node_id
-    assert chat.data_spec["seeds"] == {"node": seed_id, "path": "value.items.value"}
+    assert wire(chat)["seeds"] == {"node": seed_id, "path": "value.items.value"}
 
 
 def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
@@ -267,4 +268,4 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     with pytest.raises(ValueError, match="exactly 2 parameters"):
         _graph({"ops": [cases, {**draw, "code": "lambda row: row[0]"}]})
     draw_node = _graph(payload).nodes[make_id("yaml_workflow", "lambda", "Draw")]
-    assert [e.get("role") for e in draw_node.data_spec["plan"]] == [None, "seed"]
+    assert [e.get("role") for e in wire(draw_node)["plan"]] == [None, "seed"]

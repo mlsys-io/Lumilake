@@ -508,7 +508,7 @@ def test_wrapper_refuses_a_seed_it_cannot_use(
     code = "def draw(i, seed):\n    return ['%d' % seed]\n"
     if mode == "row":
         code = "def draw(i, seed):\n    return '%d' % seed\n"
-    plan: python_step.ColumnPlan = [{"kind": "literal", "values": ["a", "b"]}]
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a", "b"]}]
     plan.append({"kind": "literal", "values": values, "role": "seed"})
     with pytest.raises(ValueError, match=message):
         _run_wrapper(code, plan, {}, mode=mode, seeded=True)
@@ -523,7 +523,7 @@ def test_wrapper_passes_a_marked_row_through_unseeded(mode: str) -> None:
     code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
     if mode == "expand":
         code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
-    plan: python_step.ColumnPlan = [
+    plan: list[dict[str, Any]] = [
         {"kind": "literal", "values": ["a", json.dumps(marker)]},
         {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
     ]
@@ -537,7 +537,7 @@ def test_wrapper_takes_one_seed_for_one_row(mode: str) -> None:
     code = "def draw(i, seed):\n    return '%d' % seed\n"
     if mode == "expand":
         code = "def draw(i, seed):\n    return ['%d' % seed]\n"
-    plan: python_step.ColumnPlan = [
+    plan: list[dict[str, Any]] = [
         {"kind": "literal", "values": ["a"]},
         {"kind": "literal", "values": ["7"], "role": "seed"},
     ]

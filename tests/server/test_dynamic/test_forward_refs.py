@@ -880,12 +880,12 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     graph = RuntimeGraphBuilder().build(
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
-    node = next(n for n in graph.nodes.values() if n.data_spec.get("fn_name") == "draw")
-    seed_entry = next(e for e in node.data_spec["plan"] if e.get("role") == "seed")
+    node = next(n for n in graph.nodes.values() if wire(n).get("fn_name") == "draw")
+    seed_entry = next(e for e in wire(node)["plan"] if e.get("role") == "seed")
     seed_fn = next(
-        n for n in graph.nodes.values() if n.data_spec.get("fn_name") == SEED_FN_NAME
+        n for n in graph.nodes.values() if wire(n).get("fn_name") == SEED_FN_NAME
     )
-    fn = lambda_runtime.materialize(seed_fn.data_spec["code"], SEED_FN_NAME)
+    fn = lambda_runtime.materialize(wire(seed_fn)["code"], SEED_FN_NAME)
 
     def documented(key: str) -> int:
         text = json.dumps(
