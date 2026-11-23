@@ -12,7 +12,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Collection
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
@@ -544,10 +544,10 @@ def _dispatch_workflow_to_graph_specs(
     this to keep DSL ids stable across slices of the same parent
     workflow, which the multi-batch data-profile path depends on.
 
-    ``cleared_ids`` names the native ops a server-built graph such as a
-    dynamic round's drops markers on, from the ids its own expansion returned.
-    That key is set on exactly those ops; any other graph declaring it is
-    refused, because a router's expansion is its only source.
+    ``cleared_ids`` names the native ops a server-built graph such as a dynamic round's
+    drops markers on, from the ids its own expansion returned. That key is set on
+    exactly those ops; any other graph declaring it is refused, because a router's
+    expansion is its only source.
     """
     if workflow_format == "n8n":
         payload = {
@@ -952,7 +952,7 @@ class JobSubmitItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobSubmitItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
@@ -1022,7 +1022,7 @@ class JobPreviewItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobPreviewItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
@@ -1876,8 +1876,8 @@ async def _submit_dynamic_child(
     """Create and dispatch one dynamic round as a child job, returning its id.
 
     The caller must check the child record's status after this returns,
-    because ``_run_job`` swallows failures. ``cleared_ids`` names the native
-    ops this round's own expansion set the marker-clearing flag on.
+    because ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this
+    round's own expansion set the marker-clearing flag on.
     """
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
