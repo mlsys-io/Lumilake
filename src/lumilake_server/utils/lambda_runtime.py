@@ -338,12 +338,11 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
                 said = (
                     f"binds {binding!r} at module level"
                     if binding is not None
-                    else f"has a module-level {_inline_statement_kind(extra)}"
-                    " statement"
+                    else f"has a module-level {_inline_statement_kind(extra)} statement"
                 )
                 raise ValueError(
-                    f"it {said}, but the inline function must be the last"
-                    " statement of its source; move it inside the function"
+                    f"it {said}, but the inline function must be the last statement of"
+                    " its source; move it inside the function"
                 )
             return name
         break
