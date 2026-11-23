@@ -41,8 +41,8 @@ class RetrievalSpec(RetrievalData):
     def _rows_sql_only(self) -> Self:
         if self.rows is not None and self.mode != "sql":
             raise ValueError(
-                "'rows' is declared only on a mode: sql retrieval "
-                f"(got mode {self.mode!r})"
+                "'rows' is declared only on a mode: sql retrieval (got mode"
+                f" {self.mode!r})"
             )
         return self
 
@@ -57,11 +57,10 @@ class RetrievalSpec(RetrievalData):
         ):
             return self
         raise ValueError(
-            "a mode: sql retrieval returns rows in no defined order without a "
-            "top-level ORDER BY. End the query with an ORDER BY that breaks ties (for "
-            "example on the primary key), declare 'rows: one' when each parameter row "
-            "returns at most one row, or declare 'rows: table' when the whole result "
-            "is one value"
+            "a mode: sql retrieval returns rows in no defined order without a top-level"
+            " ORDER BY. End the query with an ORDER BY that breaks ties (for example on"
+            " the primary key), declare 'rows: one' when each parameter row returns at"
+            " most one row, or declare 'rows: table' when the whole result is one value"
         )
 
     @classmethod

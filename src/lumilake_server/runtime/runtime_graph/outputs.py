@@ -82,9 +82,9 @@ class OpOutput:
         if not self.whole_result or not _drills_index(declared, self.path):
             return
         raise ValueError(
-            f"{consumer} reads '{declared}' from op '{self.node}', which"
-            " declares its whole result as one value; read the whole value or"
-            " one of its columns instead."
+            f"{consumer} reads '{declared}' from op '{self.node}', which declares its"
+            " whole result as one value; read the whole value or one of its columns"
+            " instead."
         )
 
     def read(self, declared: str, consumer: str) -> str:

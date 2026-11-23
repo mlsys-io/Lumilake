@@ -101,14 +101,13 @@ def test_rows_is_declared_only_on_a_sql_retrieval() -> None:
 
 def _reader_graph(path: str, mode: str = "sql") -> RuntimeGraph:
     doc = (
-        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
-        '  - id: "Retrieve"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        f"    data_spec:\n      type: lumid\n      mode: {mode}\n      rows: table\n"
-        '      template: "SELECT close FROM t"\n  - id: "Read"\n'
-        "    op: LLMChatOp\n    inputs: [Retrieve]\n    config: {model: m}\n"
-        '    messages: [{role: user, content: "close"}]\n'
-        '    rowwise_template: "Read {close}"\n'
-        f'    rowwise_columns: [{{label: close, node: Retrieve, path: "{path}"}}]\n'
+        'name: order\ninputs:\n  Stock: [NVDA]\nops:\n  - id: "Retrieve"\n    op:'
+        " DataRetrievalOp\n    inputs: [Stock]\n    data_spec:\n      type: lumid\n    "
+        f'  mode: {mode}\n      rows: table\n      template: "SELECT close FROM t"\n  -'
+        ' id: "Read"\n    op: LLMChatOp\n    inputs: [Retrieve]\n    config: {model:'
+        ' m}\n    messages: [{role: user, content: "close"}]\n    rowwise_template:'
+        ' "Read {close}"\n    rowwise_columns: [{label: close, node: Retrieve, path:'
+        f' "{path}"}}]\n'
     )
     graph = Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
     return RuntimeGraphBuilder().build(graph.compile(Stock=["NVDA"]))
