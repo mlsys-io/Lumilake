@@ -4,6 +4,8 @@ from typing import Any, ClassVar
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
+from lumilake_server.ops.seed_spec import ColumnSeed
+from lumilake_server.ops.spec_validation import validate_fields
 
 
 @dataclass(frozen=True)
@@ -265,7 +267,10 @@ class LLMChatOp(LLMOp):
         seed: RowwiseSeed | None = None
         seed_op: Op | None = None
         if seed_data is not None:
-            seed = RowwiseSeed(seed_data["node"], seed_data.get("path", ""))
+            column_seed = validate_fields(
+                ColumnSeed, seed_data, f"LLMChatOp '{data['_id']}' rowwise_seed"
+            )
+            seed = RowwiseSeed(column_seed.node, column_seed.path)
             seed_op = other_ops.get(seed.node)
             if seed_op is None:
                 raise ValueError(
