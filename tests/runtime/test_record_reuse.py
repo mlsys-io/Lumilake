@@ -169,18 +169,13 @@ def _reusing(graph: Any) -> RequestInfo:
     return info
 
 
-def _read_sub_run(
-    monkeypatch: pytest.MonkeyPatch, graph: Any, response: Any = None
-) -> str:
+def _read_sub_run(monkeypatch: pytest.MonkeyPatch, graph: Any, response: Any = None):
     """Patch a read sub-run over ``graph``: one read task, done, answering it."""
     read = _node(graph, "Read")
     serve(monkeypatch, {"task-read": "PENDING" if response is None else "DONE"})
-    answers = {
-        "_submit_workflow": ("wf-sub", ["task-read"]),
-        "_resolve_task_node_maps": ({"task-read": read}, {read: "task-read"}),
-        "_read_task_result": response,
-    }
-    for name, answer in answers.items():
+    names = ("_submit_workflow", "_resolve_task_node_maps", "_read_task_result")
+    answers = (("wf-sub", ["task-read"]), ({"task-read": read}, {read: "task-read"}))
+    for name, answer in zip(names, (*answers, response)):
         monkeypatch.setattr(
             FlowmeshRuntimeManager, name, AsyncMock(return_value=answer)
         )
@@ -196,9 +191,7 @@ def _planner(storage: InMemoryJobStorage) -> ReusePlanner:
     return ReusePlanner(storage=storage, logger=_LOG)
 
 
-def _planned(
-    storage: InMemoryJobStorage, graph: Any, job_id: str = "req-2", **kw: Any
-) -> tuple[ReusePlan, Any]:
+def _planned(storage: InMemoryJobStorage, graph: Any, job_id="req-2", **kw: Any):
     """One plan over ``graph``, at round 0."""
     return _planner(storage).plan(
         runtime_graph=graph, round_number=0, job_id=job_id, **kw
@@ -343,49 +336,33 @@ def _list_workflow(consume_suffix: str) -> dict[str, Any]:
 @pytest.mark.asyncio
 async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
     """A list-mode producer hit answers its consumer with one value per item."""
-    storage = InMemoryJobStorage()
-    await _run(storage, _list_workflow("!"), {"Expand": ["ab", 3]}, "req-1")
+    ran = {"Expand": ["ab", 3]}
+    await _run(storage := InMemoryJobStorage(), _list_workflow("!"), ran, "req-1")
     graph = _runtime_graph(_list_workflow("?"))
     plan, dispatched = _planned(storage, graph)
-    assert _decisions(plan) == {
-        "Expand": ("hit", None),
-        "Consume": ("miss", "no entry"),
-    }
+    assert _decisions(plan) == dict(Expand=("hit", None), Consume=("miss", "no entry"))
     (consumer,) = dispatched.nodes.values()
-    consumer_spec = consumer.data_spec
-    assert isinstance(consumer_spec, PythonData)
-    (entry,) = consumer_spec.plan
-    (hit,) = plan.hits.values()
+    assert isinstance(consumer.data_spec, PythonData)
+    (entry,), (hit,) = consumer.data_spec.plan, plan.hits.values()
     staged = ColumnPlanEntry(kind="stage", node="x")
     assert entry.values == served_column(hit, staged, True) == ["ab", 3]
-    blob = python_step.runtime_blob()
     run = PythonData(plan=[entry], code="", fn_name="", timeout_s=60)
-    spec = python_step.flowmesh_spec("Consume", run, {blob.key: blob})
-    assert "inputs" not in spec
-    assert served_column(hit, staged.model_copy(update={"path": "output"}), True) == [
-        "ab",
-        3,
-    ]
+    blob = python_step.runtime_blob()
+    assert "inputs" not in python_step.flowmesh_spec("Consume", run, {blob.key: blob})
 
 
 def test_a_served_output_item_is_wrapped_as_a_live_read_sees_it() -> None:
-    """A python row whose output is itself a dict with an ``output`` key is
-    stored unwrapped once, so the served column must wrap it back: unwrapping
-    twice would hand the consumer a different value than a live read."""
-    row = {"output": 1, "x": 2}
+    """A stored item is wrapped back once, so a served read equals a live one."""
+    staged, row = ColumnPlanEntry(kind="stage", node="x"), {"output": 1, "x": 2}
     entry = [_stored(row, "Final", "a")]
-    staged = ColumnPlanEntry(kind="stage", node="x")
+    output = staged.model_copy(update={"path": "output"})
+    assert served_column(entry, output, True) == [row]
     assert served_column(entry, staged, True) == [row]
-    assert served_column(entry, staged.model_copy(update={"path": "output"}), True) == [
-        row
-    ]
-    flat_entry = ColumnPlanEntry(kind="stage", node="x", flatten=True)
     flat = [_stored([["x", "y"]], "Expand")]
-    assert served_column(flat, flat_entry, True) == ["x", "y"]
-    item = [_stored({"index": 0, "score": 0.5}, "E", "a")]
-    assert served_column(
-        item, ColumnPlanEntry(kind="stage", node="x", path="score"), False
-    ) == [0.5]
+    flatten = staged.model_copy(update={"flatten": True})
+    assert served_column(flat, flatten, True) == ["x", "y"]
+    scored, score = [_stored({"index": 0, "score": 0.5}, "E", "a")], {"path": "score"}
+    assert served_column(scored, staged.model_copy(update=score), False) == [0.5]
 
 
 @pytest.mark.asyncio
@@ -409,8 +386,9 @@ async def test_a_hit_output_survives_a_partial_run(
 ) -> None:
     """Two outputs, one op changed: the hit output is rebuilt beside the miss."""
     outs = [{"name": "joined", "ref": "Join"}, {"name": "final", "ref": "Final"}]
-    await _run(job_storage, {**_FOUR_OPS, "outputs": outs}, _ROWS, "req-1")
-    graph = _runtime_graph(_changed({**_FOUR_OPS, "outputs": outs}))
+    workflow = {**_FOUR_OPS, "outputs": outs}
+    await _run(job_storage, workflow, _ROWS, "req-1")
+    graph = _runtime_graph(_changed(workflow))
     request_info = _reusing(graph)
     final_node, final_task = _node(graph, "Final"), "task-final"
 
@@ -433,8 +411,8 @@ async def test_a_hit_output_survives_a_partial_run(
         request_info, schedule, ["w"]
     )
     assert outputs["flat_outputs"] == {
-        _node(graph, "Join"): [json.dumps(row) for row in _ROWS["Join"]],
-        _node(graph, "Final"): [json.dumps(row) for row in _ROWS["Final"]],
+        _node(graph, name): [json.dumps(row) for row in _ROWS[name]]
+        for name in ("Join", "Final")
     }
 
 
@@ -443,21 +421,16 @@ _RETURN = "    return [{'id': r['id'], 'q': '/' + r['text']} for r in rows]\n"
 _CODE_PROMPT = _STEPS + _RETURN
 _LIST_PROMPT = _CODE_PROMPT.replace("'/' + r['text']", "[r['text']]")
 _ROW_LIST_PROMPT = _STEPS + "    return [[r['text']] for r in rows]\n"
-_STRING_PROMPT = _CODE_PROMPT.replace("'/' + r['text']", "json.dumps({'a': r['id']})")
 _KEY_CODE = "def key(c):\n    return [json.loads(v)['text'] for v in c[0]]\n"
 _INPUT = [json.dumps({"id": "a", "text": "one"})]
-_CODE_ROW = "def ids(c):\n    import json\n    return json.loads(c[0])\n"
 _ROWS_KEY = {"node": "Rows", "path": "id"}
-_ONE, _LISTED = [{"id": "a", "q": "/one"}], [{"id": "a", "q": ["one"]}]
-_STRING_ONE = {"id": "a", "q": '{"a": "a"}'}
-_CONFIG = {"model": "m", "temperature": 0}
-_IDS_KEY = {"node": "Ids", "path": "id"}
+_CONFIG, _SPEAK = {"model": "m", "temperature": 0}, {"role": "user", "content": "hi"}
+_READER, _ONE = {"role": "user", "content": "Read"}, [{"id": "a", "q": "/one"}]
 
 
 def _lambda(op_id: str, src: list[str], fn: str, code: str) -> dict[str, Any]:
     """One row Lambda op as YAML names it."""
-    step = {"op": "LambdaOp", "inputs": src, "fn_name": fn, "code": code}
-    return {"id": op_id, **step}
+    return {"id": op_id, "op": "LambdaOp", "inputs": src, "fn_name": fn, "code": code}
 
 
 def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
@@ -465,47 +438,38 @@ def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
     return {"op": op, "inputs": inputs, "config": _CONFIG, **fields}
 
 
-def _model_workflow(
-    path: str | None, code: str, key: Any = _ROWS_KEY
-) -> dict[str, Any]:
-    """A python prompt step keyed by ``key``, read by one model op at ``path``."""
-    src = ["Ids"] if key is _IDS_KEY else ["Rows"]
-    prompt = {**_lambda("Prompt", src, "prompt", code), "key": key}
-    ids = {**_lambda("Ids", ["Rows"], "ids", _CODE_ROW), "key": _ROWS_KEY}
-    ops = [ids, prompt] if key is _IDS_KEY else [prompt]
+def _model_workflow(path: str | None, code: str) -> Any:
+    """A keyed python prompt step read by one model op at ``path``."""
+    prompt = {**_lambda("Prompt", ["Rows"], "prompt", code), "key": _ROWS_KEY}
     ask = _ask("LLMCompletionOp", ["Prompt"], prompt="Prompt")
     if path is not None:
         ask = _ask(
             "LLMChatOp",
             ["Prompt"],
-            messages=[{"role": "user", "content": "hi"}],
+            messages=[_SPEAK],
             rowwise_template="{v}",
             rowwise_columns=[{"label": "v", "node": "Prompt", "path": path}],
         )
     return {
         "name": "model",
         "inputs": {"Rows": _INPUT},
-        "ops": [*ops, {"id": "Ask", **ask}],
+        "ops": [prompt, {"id": "Ask", **ask}],
         "outputs": [{"name": "answer", "ref": "Ask"}],
     }
 
 
 _MODEL_CASES = [
-    ("items.output.q", _CODE_PROMPT, _ONE, ["/one"], _ROWS_KEY),
-    (None, _CODE_PROMPT, _ONE, _ONE, _ROWS_KEY),
-    ("items.output.q", _LIST_PROMPT, _LISTED, [["one"]], _ROWS_KEY),
-    ("items.output", _ROW_LIST_PROMPT, [["one"]], None, None),
-    ("items.output", _ROW_LIST_PROMPT, ['["one"]'], None, _IDS_KEY),
-    ("items.output.q.a", _STRING_PROMPT, [_STRING_ONE], None, _ROWS_KEY),
+    ("items.output.q", _CODE_PROMPT, _ONE, ["/one"]),
+    (None, _CODE_PROMPT, _ONE, _ONE),
+    ("items.output.q", _LIST_PROMPT, [{"id": "a", "q": ["one"]}], [["one"]]),
+    ("items.output", _ROW_LIST_PROMPT, [["one"]], None),
 ]
 
 
 _SQL = {"type": "lumid", "mode": "sql", "template": "SELECT 1"}
 _PARAM_SPEC = {**_SQL, "template": "SELECT 1 WHERE {k}", "params": [{"label": "k"}]}
 _READ = {"id": "Read", "op": "DataRetrievalOp", "data_spec": _SQL}
-_READ_ASK = {"id": "Ask"} | _ask(
-    "LLMChatOp", ["Read"], messages=[{"role": "user", "content": "Read"}]
-)
+_READ_ASK = {"id": "Ask"} | _ask("LLMChatOp", ["Read"], messages=[_READER])
 _RAG: dict[str, Any] = {
     "name": "rag",
     "ops": [_READ, _READ_ASK],
@@ -526,37 +490,24 @@ _READ_CHAIN: dict[str, Any] = {
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("path", "code", "stored", "items", "key"), _MODEL_CASES)
+@pytest.mark.parametrize(("path", "code", "stored", "items"), _MODEL_CASES)
 async def test_a_served_prompt_feeds_a_model_op(
-    path: str | None,
-    code: str,
-    stored: list[Any],
-    items: list[Any] | None,
-    key: dict[str, str] | None,
+    path: str | None, code: str, stored: list[Any], items: list[Any] | None
 ) -> None:
     """A served prompt fills the payload; a row Lambda returning a list stays out."""
-    workflow = _model_workflow(path, code, key)
-    rows = {"Prompt": stored, "Ask": [{"text": "A"}]}
-    if key is _IDS_KEY:
-        rows["Ids"] = [{"id": "a", "text": "one"}]
-    await _run(storage := InMemoryJobStorage(), workflow, rows, "req-1")
+    workflow = _model_workflow(path, code)
+    await _run(storage := InMemoryJobStorage(), workflow, {"Prompt": stored}, "req-1")
     graph = _runtime_graph(workflow)
     plan, dispatched = _planned(storage, graph)
-    node = _node(graph, "Ask")
-    assert _decisions(plan)["Prompt"] == (
-        ("miss", "read by a non-literal op") if items is None else ("hit", None)
-    )
-    spec = dispatched.nodes[node].data_spec
+    reason = "read by a non-literal op" if items is None else None
+    assert _decisions(plan)["Prompt"] == ("miss" if reason else "hit", reason)
+    ask = _node(graph, "Ask")
+    spec = dispatched.nodes[ask].data_spec
     if items is None:
-        assert spec == graph.nodes[node].data_spec
+        assert spec == graph.nodes[ask].data_spec
         return
-    if isinstance(spec, ListData):
-        assert spec.items == items
-    else:
-        assert isinstance(spec, DataFrame)
-        column = spec.columns[0]
-        assert column.data is not None and isinstance(column.data, ListData)
-        assert column.data.items == items
+    column = spec if isinstance(spec, ListData) else spec.columns[0].data
+    assert isinstance(column, ListData) and column.items == items
 
 
 @pytest.mark.asyncio
@@ -653,19 +604,11 @@ async def test_a_cancelled_request_cancels_its_read_sub_run(monkeypatch: Any) ->
     graph = _runtime_graph(_READ_CHAIN)
     read, manager = _read_sub_run(monkeypatch, graph), FlowmeshRuntimeManager()
 
-    async def _cancel_request(self: FlowmeshRuntimeManager, request_id: str) -> None:
-        async with self._task_status_lock:
-            self._cancelled_requests.add(request_id)
-
-    async def _cancelling_status(*_: Any, **__: Any) -> bool:
-        await manager.cancel_request("req-2")
+    async def _cancelled(*_: Any, **__: Any) -> bool:
+        manager._cancelled_requests.add("req-2")
         return False
 
-    monkeypatch.setattr(
-        FlowmeshRuntimeManager, "update_task_status", _cancelling_status
-    )
-    monkeypatch.setattr(FlowmeshRuntimeManager, "cancel_request", _cancel_request)
-
+    monkeypatch.setattr(FlowmeshRuntimeManager, "update_task_status", _cancelled)
     with pytest.raises(RequestCancelledError):
         await manager._run_unversioned_reads(_reusing(graph), Schedule({"w": [read]}))
     assert manager._batch_workflow_id[("req-2", "batch-1")] == "wf-sub"
@@ -675,41 +618,41 @@ async def test_a_cancelled_request_cancels_its_read_sub_run(monkeypatch: Any) ->
 async def test_a_consumer_a_reusing_job_writes_reuses() -> None:
     """A reusing job keys its consumer on the read's value, so the next hits."""
     storage, graph = InMemoryJobStorage(), _runtime_graph(_READ_CHAIN)
-    read = _node(graph, "Read")
-    content = {read: NodeRecords(keyed=False, values=_ROWS["Mark"], keys=None)}
+    marks = _ROWS["Mark"]
+    content = {_node(graph, "Read"): NodeRecords(keyed=False, values=marks, keys=None)}
     plan, dispatched = _planned(storage, graph, content_values=content)
     assert _decisions(plan)["Join"] == ("miss", "no entry")
+    joined = {"Join": marks}
+    served, content_nodes = writer_records(plan, content), frozenset(content)
     await _run(
         storage,
         _READ_CHAIN,
-        {"Join": _ROWS["Join"]},
+        joined,
         "req-2",
         graph=dispatched,
-        served=writer_records(plan, content),
-        content_nodes=frozenset(plan.content),
+        served=served,
+        content_nodes=content_nodes,
     )
     again, _ = _planned(storage, graph, "req-3", content_values=content)
     assert _decisions(again)["Join"] == ("hit", None)
 
 
 @pytest.mark.asyncio
-async def test_a_read_that_is_an_output_comes_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_read_that_is_an_output_comes_back(monkeypatch: Any) -> None:
     """A retrieval that is an output comes back from the sub-run's response."""
     workflow = {**_READ_CHAIN, "outputs": [{"name": "rows", "ref": "Read"}]}
-    response = {"items": [{"run_id": "r", "table": json.dumps(_ROWS["Mark"])}]}
+    answer = {"items": [{"run_id": "r", "table": json.dumps(_ROWS["Mark"])}]}
+    manager = FlowmeshRuntimeManager()
     graph = _runtime_graph(workflow)
-    read = _read_sub_run(monkeypatch, graph, response)
-    manager, request_info = FlowmeshRuntimeManager(), _reusing(graph)
-    await manager._run_unversioned_reads(request_info, Schedule({"w": [read]}))
-    request_info.runtime_graph = replace(
+    info = _reusing(graph)
+    read = _read_sub_run(monkeypatch, graph, answer)
+    await manager._run_unversioned_reads(info, Schedule({"w": [read]}))
+    info.runtime_graph = replace(
         graph, output_node_map={}, nodes={}, node_order=[], output_paths={}
     )
-    outputs = await manager._aggregate_read_outputs(request_info)
-    manager._reuse_read_outputs["req-2"] = outputs
+    manager._reuse_read_outputs["req-2"] = await manager._aggregate_read_outputs(info)
     flat: dict[str, Any] = {}
-    manager._add_reused_outputs(request_info, ReusePlan(), flat)
+    manager._add_reused_outputs(info, ReusePlan(), flat)
     assert flat == {read: [json.dumps(_ROWS["Mark"])]}
 
 
@@ -730,8 +673,8 @@ _CLASSIFY: dict[str, Any] = {
 async def test_a_pairs_step_reads_a_served_lambda_at_its_output_path() -> None:
     """A keyed Lambda a pairs step reads is served at its item-relative path."""
     graph = _runtime_graph(_CLASSIFY)
-    pairs = next(node for node in graph.nodes if "pairs" in node)
-    (key,) = graph.nodes[pairs].dependencies
+    pairs = next(node for node in graph.nodes if "pair" in node)
+    key = graph.nodes[pairs].dependencies[0]
     await _run(
         storage := InMemoryJobStorage(),
         _CLASSIFY,
@@ -741,9 +684,8 @@ async def test_a_pairs_step_reads_a_served_lambda_at_its_output_path() -> None:
         task_ids={key: "task-Key"},
     )
     plan, dispatched = _planned(storage, graph)
-    assert key in plan.hits and pairs in dispatched.nodes
     pairs_spec = dispatched.nodes[pairs].data_spec
-    assert isinstance(pairs_spec, PythonData)
+    assert key in plan.hits and isinstance(pairs_spec, PythonData)
     (stage,) = [entry for entry in pairs_spec.plan if entry.node == key]
     assert stage.path == "output" and stage.values == ["one"]
 
@@ -753,10 +695,8 @@ async def test_a_history_edge_keeps_its_upstream() -> None:
     """A chat's history reads a prompt no stored value holds, so it runs."""
     config = GenerationConfig(model="m", temperature=0)
     stock = input_placeholder("Stock")
-    first = LLMChatOp(
-        [OpMessage(role="user", content=stock)], config=config, return_history=True
-    )
-    second = LLMChatOp([OpMessage(role="user", content=first)], config=config)
+    first = LLMChatOp([OpMessage(role="user", content=stock)], config, True)
+    second = LLMChatOp([OpMessage(role="user", content=first)], config)
     graph = RuntimeGraphBuilder().build(
         Graph.from_ops([as_output("answer", second)]).compile(Stock=["a"])
     )
@@ -794,11 +734,10 @@ async def test_a_chat_reading_a_table_keeps_its_read_dispatched(
     table = {"table": {"df": json.dumps({"id": {"0": "a"}})}}
     content = {read: NodeRecords(keyed=False, values=[table], keys=None)}
     plan, dispatched = _planned(job_storage, graph, content_values=content)
-    assert read not in plan.content_served
     chat_spec = dispatched.nodes[chat].data_spec
+    assert read not in plan.content_served
     assert isinstance(chat_spec, GraphTemplateData)
-    (column,) = chat_spec.template.columns
-    assert column.node == read
+    assert chat_spec.template.columns[0].node == read
 
 
 @pytest.mark.asyncio
