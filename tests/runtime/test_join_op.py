@@ -268,7 +268,7 @@ def test_join_keys_on_every_field_of_a_composite_key(tmp_path: Path) -> None:
     """Rows sharing the first key field stay distinct under a composite key."""
     node = _join_node(_merge("State, Route.diagnose", by="[case_id, text]"))
     repeated = {"case_id": "b", "text": "another row"}
-    same = [dict(_ROWS[1], extra=1), dict(repeated, extra=2)]
+    same = [{**_ROWS[1], "extra": 1}, {**repeated, "extra": 2}]
     out = _run(
         tmp_path, node, {0: [{"output": [*_ROWS, repeated]}], 1: [{"output": same}]}
     )
