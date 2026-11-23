@@ -91,9 +91,7 @@ def stop_export(template: DriverTemplate, round_number: int) -> str:
 
 
 def archive_result_items(decoded: list[Any]) -> list[Any]:
-    """Flatten a decoded archive value into the whole result items it holds: a
-    whole-result export archives its items one level down from where the stop
-    count and a later round's forwarding read them."""
+    """Flatten a decoded whole-result export into the items it holds one level down."""
     items: list[Any] = []
     for value in decoded:
         if isinstance(value, list):
@@ -188,9 +186,7 @@ def validate_template(
     *,
     max_nodes_per_round: int,
 ) -> None:
-    """Validate a template at submit: render rounds 1-3, validate each against
-    the nodes the earlier rounds registered, and require the stop export to be
-    a row list that round exported."""
+    """Validate a template at submit: rounds 1-3's nodes and a row-list stop export."""
     plans = {number: plan_for_round(template, number) for number in (1, 2, 3)}
     _require_export(plans[1], stop_export(template, 2), 1)
     _require_export(plans[2], stop_export(template, 3), 2)

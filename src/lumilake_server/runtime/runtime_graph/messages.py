@@ -133,8 +133,7 @@ class _MessagesBuilder(_DerivedBuilder):
 
 
 def _producer_kind_supported(upstream: Op) -> bool:
-    """Whether the op is a producer the chat op reads by node id: a whole-list
-    producer, or a data retrieval."""
+    """Whether a chat op reads the op by node id: a whole-list producer or retrieval."""
     if isinstance(upstream, (DataRetrievalOp, JoinOp)):
         return True
     return isinstance(upstream, LambdaOp) and upstream.takes_whole_columns

@@ -143,8 +143,7 @@ class ColumnPlanEntry(DataSpecModel):
 
 
 class JoinDescription(DataSpecModel):
-    """A lowered join: its key path, the plan indexes of its row columns, and
-    each attach field's value and source plan index."""
+    """A lowered join: key path, row-column plan indexes, attach values and sources."""
 
     node: str
     by: list[str]

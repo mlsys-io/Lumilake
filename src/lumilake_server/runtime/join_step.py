@@ -1,7 +1,6 @@
 """Standalone join step: merge row columns and 1:1 outputs onto keyed rows.
 
-The generated task carries its whole description in ``_JOIN``, so its source
-holds no user code.
+The whole description rides in ``_JOIN``, so its source holds no user code.
 """
 
 import json

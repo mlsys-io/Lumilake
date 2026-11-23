@@ -1,5 +1,4 @@
-"""``JoinOp``: merge keyed row columns and 1:1 outputs onto the rows they came
-from."""
+"""``JoinOp``: merge keyed row columns and 1:1 outputs onto the rows they came from."""
 
 import re
 from typing import Any, Literal, Self
@@ -55,8 +54,7 @@ def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
 
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
-    """A keyed join: one row per first-input row, further inputs merged by
-    ``by``, and ``attach`` outputs joined to the rows they were computed from."""
+    """A keyed join: first-input rows, others merged by ``by``, attaches joined back."""
 
     column_indices: list[int]
     attach_indices: dict[str, int]
