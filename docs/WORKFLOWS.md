@@ -55,8 +55,7 @@ ops:
 
 Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
-`LLMChatOp` supports output validation and local beam search; see
-[`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+`LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
 ### Shared functions (`functions:` and `uses:`)
 
@@ -78,9 +77,7 @@ A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where only a module 
 
 ## n8n code-node notes
 
-An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its
-`parameters.pythonCode` is the function source, and its `notes` field carries
-Lumilake annotations as a JSON object with kebab-case keys:
+An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its `parameters.pythonCode` is the function source, and its `notes` field carries Lumilake annotations as a JSON object with kebab-case keys:
 
 | Notes key | Type | Meaning |
 |---|---|---|
@@ -95,23 +92,13 @@ Lumilake annotations as a JSON object with kebab-case keys:
 | `cache` | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 | `sample-value` | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
-A Code node with an `image` always runs as its own standalone `python` task.
-`expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
+A Code node with an `image` always runs as its own standalone `python` task. `expected-runtime-s` is planning-only and never reaches the FlowMesh task spec.
 
-In an n8n `chainLlm` prompt, a reference like `{{ $('Node').item.<field> }}`
-renders that node's item field (nested traversal works, e.g.
-`item.output.<field>` or `item.json.<field>`). A field reference to a row-mode
-Code node runs that node as a standalone `python` task and binds the field as a
-column; a field reference to a workflow input projects the field server-side;
-a field reference to an upstream LLM's structured output binds the field
-column. A whole-item reference (`item`, `item.json` or `item.output` with no
-field) keeps the item as a whole.
+In an n8n `chainLlm` prompt, a reference like `{{ $('Node').item.<field> }}` renders that node's item field (nested traversal works, e.g. `item.output.<field>` or `item.json.<field>`). A field reference to a row-mode Code node runs that node as a standalone `python` task and binds the field as a column; a field reference to a workflow input projects the field server-side; a field reference to an upstream LLM's structured output binds the field column. A whole-item reference (`item`, `item.json` or `item.output` with no field) keeps the item as a whole.
 
 ## Output projection (`path:`)
 
-`outputs[]` entries accept an optional `path:` selector that picks which field
-of the upstream op's result items to emit. The shape is `items.<field>` for a
-single-level field, or `items.<field>.<sub>...` for nested traversal:
+`outputs[]` entries accept an optional `path:` selector that picks which field of the upstream op's result items to emit. The shape is `items.<field>` for a single-level field, or `items.<field>.<sub>...` for nested traversal:
 
 ```yaml
 outputs:
@@ -129,19 +116,11 @@ outputs:
     path: items.metadata.prompt   # nested traversal works for dict-shaped fields
 ```
 
-When omitted, the path defaults are mode-derived:
-`items.table` for `mode: sql`, `items.content` for `mode: s3`,
-`items.table` for `mode: agent` (the agent replays a generated SQL/retrieval
-plan and emits rows), and `items.output` for LLM-op outputs.
+When omitted, the path defaults are mode-derived: `items.table` for `mode: sql`, `items.content` for `mode: s3`, `items.table` for `mode: agent` (the agent replays a generated SQL/retrieval plan and emits rows), and `items.output` for LLM-op outputs.
 
-For DataFrame-shaped fields (e.g. `items.table` from SQL retrievals which
-arrive as JSON-encoded DataFrames), the walker decodes the string once and
-continues traversal — so `items.table.symbol` projects the `symbol` column.
+For DataFrame-shaped fields (e.g. `items.table` from SQL retrievals which arrive as JSON-encoded DataFrames), the walker decodes the string once and continues traversal — so `items.table.symbol` projects the `symbol` column.
 
-The path `items` (exactly, with no field) selects the whole result item rather
-than one field of it. Dynamic workflows use it to archive each leaf and each
-`export`ed op so later rounds can read any field of the stored item; see
-[`docs/SDK.md`](SDK.md#dynamic-workflows).
+The path `items` (exactly, with no field) selects the whole result item rather than one field of it. Dynamic workflows use it to archive each leaf and each `export`ed op so later rounds can read any field of the stored item; see [`docs/SDK.md`](SDK.md#dynamic-workflows).
 
 > **n8n note.** n8n-imported workflows do **not** support the `path:`
 > selector — n8n's UI has no equivalent annotation. They fall back to the
@@ -172,9 +151,7 @@ When live sampling is enabled, preflight routes a bounded `LIMIT N` query throug
 
 ## Examples
 
-Runnable examples live in `examples/templates/`. Each is shipped as a
-YAML + n8n pair; see `docs/E2E_DEMO.md` for the full reproduction
-recipe (data plane, demo dataset, deploy).
+Runnable examples live in `examples/templates/`. Each is shipped as a YAML + n8n pair; see `docs/E2E_DEMO.md` for the full reproduction recipe (data plane, demo dataset, deploy).
 
 - `examples/templates/yaml/trading-agent.yaml` + `examples/templates/n8n/trading-agent.json`
 - `examples/templates/yaml/agent-retrieval.yaml` + `examples/templates/n8n/agent-retrieval.json`

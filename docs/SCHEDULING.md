@@ -1,31 +1,18 @@
 # Scheduling for Dynamic Jobs
 
-How Lumilake orders and dispatches work, and why dynamic (chain) jobs need more
-than the item-count round-robin the scheduler started with. This is a design
-document: it describes the mechanism and the reasoning behind it, not a delivery
-plan.
+How Lumilake orders and dispatches work, and why dynamic (chain) jobs need more than the item-count round-robin the scheduler started with. This is a design document: it describes the mechanism and the reasoning behind it, not a delivery plan.
 
-For control-plane topology, the package map and the storage model, see
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md). For the operation classes a workload
-is built from, see [`docs/OPS.md`](OPS.md). For the settings named here, see
-[`docs/ENV.md`](ENV.md).
+For control-plane topology, the package map and the storage model, see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md). For the operation classes a workload is built from, see [`docs/OPS.md`](OPS.md). For the settings named here, see [`docs/ENV.md`](ENV.md).
 
 ## 1. Scope
 
-Covered: the chain model and why it is hard, how dispatch decides what runs,
-what causes idle workers, how fair share is measured, where cost estimation
-belongs, and what is decided versus still open.
+Covered: the chain model and why it is hard, how dispatch decides what runs, what causes idle workers, how fair share is measured, where cost estimation belongs, and what is decided versus still open.
 
-Not covered: intra-graph placement. That is HALO's job and runs *after* a batch
-is chosen — see `runtime/optimizer/`.
+Not covered: intra-graph placement. That is HALO's job and runs *after* a batch is chosen — see `runtime/optimizer/`.
 
 ## 2. The chain model
 
-A dynamic workflow turns a job into a **chain**. The parent job owns the run;
-each round is planned by an LLM, submitted as a child job, awaited, and the next
-round is planned from the result. The loop ends when the planner returns a stop
-plan or the round cap is reached, so **chain length is not known up front** — the
-planner decides at runtime.
+A dynamic workflow turns a job into a **chain**. The parent job owns the run; each round is planned by an LLM, submitted as a child job, awaited, and the next round is planned from the result. The loop ends when the planner returns a stop plan or the round cap is reached, so **chain length is not known up front** — the planner decides at runtime.
 
 ```text
  t ----------------------------------------------------------------->
@@ -41,29 +28,17 @@ planner decides at runtime.
 
 Two consequences drive the rest of this document.
 
-**A chain pays one queueing delay per round.** Rounds are awaited back to back
-with no sleep, so the gap between them is queueing, not planner think-time. A
-chain of *R* rounds queues *R* times, and end-to-end chain latency is the sum of
-those waits plus execution. Latency variance compounds with chain length.
+**A chain pays one queueing delay per round.** Rounds are awaited back to back with no sleep, so the gap between them is queueing, not planner think-time. A chain of *R* rounds queues *R* times, and end-to-end chain latency is the sum of those waits plus execution. Latency variance compounds with chain length.
 
-**Each round looks like a cold arrival.** A round enters the queue as a fresh
-child job with its own enqueue timestamp and a zeroed miss counter.
-`LumilakeRequestConfig` carries `chain_id` and `chain_round` so the scheduler can
-tell round 7 of 8 from a first-time submission; without lineage the two are
-indistinguishable.
+**Each round looks like a cold arrival.** A round enters the queue as a fresh child job with its own enqueue timestamp and a zeroed miss counter. `LumilakeRequestConfig` carries `chain_id` and `chain_round` so the scheduler can tell round 7 of 8 from a first-time submission; without lineage the two are indistinguishable.
 
-The unit the user cares about is the **chain**, not the round. The objective this
-design optimises for is p95 end-to-end chain latency.
+The unit the user cares about is the **chain**, not the round. The objective this design optimises for is p95 end-to-end chain latency.
 
 ## 3. Dispatch: capacity first, then selection
 
-The scheduler is a single loop. The ordering decision lives in
-`PriorityJobManager` (`runtime/job_manager/priority_queue.py`); the dispatch
-decision lives in `LumilakeServer._scheduler_loop` (`runtime/server.py`).
+The scheduler is a single loop. The ordering decision lives in `PriorityJobManager` (`runtime/job_manager/priority_queue.py`); the dispatch decision lives in `LumilakeServer._scheduler_loop` (`runtime/server.py`).
 
-The load-bearing property is that **selection sees capacity before it chooses**,
-and that dispatch never blocks. Choosing a batch and only then discovering no
-worker can run it parks the one loop that could have dispatched something else.
+The load-bearing property is that **selection sees capacity before it chooses**, and that dispatch never blocks. Choosing a batch and only then discovering no worker can run it parks the one loop that could have dispatched something else.
 
 ```text
 BEFORE - selection before capacity, one blocking loop
@@ -107,48 +82,19 @@ commit the reservation, dispatch on a task, continue
 
 Five details matter.
 
-**Waiting is edge-triggered on capacity.** `_wait_capacity` waits on a capacity
-release signal with a bounded fallback, never on "the queue is non-empty". The
-queue being non-empty is exactly the state the loop is already in, so waiting on
-it returns instantly and spins. Worker release is centralised in
-`_release_workers`, which sets that signal.
+**Waiting is edge-triggered on capacity.** `_wait_capacity` waits on a capacity release signal with a bounded fallback, never on "the queue is non-empty". The queue being non-empty is exactly the state the loop is already in, so waiting on it returns instantly and spins. Worker release is centralised in `_release_workers`, which sets that signal.
 
-**Claiming is a single non-blocking attempt.** `_try_claim_workers` takes the
-capacity snapshot and either claims a group or returns nothing. It never polls.
+**Claiming is a single non-blocking attempt.** `_try_claim_workers` takes the capacity snapshot and either claims a group or returns nothing. It never polls.
 
-**Offering is continuous up to the dispatch depth.** The snapshot counts a
-worker as free while its in-flight batch count is below
-`LUMILAKE_DISPATCH_QUEUE_DEPTH` (default `1`), so with a higher value the next
-batch is planned onto the worker while the current one runs. FlowMesh runs the
-queued task after the running one, and the CPU work of the next batch overlaps
-the GPU work of the current batch instead of waiting for the whole batch to
-drain. A worker held by another batch keeps being offered even while FlowMesh
-reports it busy: the committed workers the snapshot adds back are kept only
-while FlowMesh lists them idle or busy and their cordon is off, because on a
-committed worker that is stopping, unavailable or cordoned the task pin can be
-lifted and the task run on another worker. A worker idle at that moment comes
-from FlowMesh's idle list, which does not filter on the cordon. A worker
-carrying no batch is offered ahead of one that already carries a batch, so the
-work goes to free capacity whenever there is any.
+**Offering is continuous up to the dispatch depth.** The snapshot counts a worker as free while its in-flight batch count is below `LUMILAKE_DISPATCH_QUEUE_DEPTH` (default `1`), so with a higher value the next batch is planned onto the worker while the current one runs. FlowMesh runs the queued task after the running one, and the CPU work of the next batch overlaps the GPU work of the current batch instead of waiting for the whole batch to drain. A worker held by another batch keeps being offered even while FlowMesh reports it busy: the committed workers the snapshot adds back are kept only while FlowMesh lists them idle or busy and their cordon is off, because on a committed worker that is stopping, unavailable or cordoned the task pin can be lifted and the task run on another worker. A worker idle at that moment comes from FlowMesh's idle list, which does not filter on the cordon. A worker carrying no batch is offered ahead of one that already carries a batch, so the work goes to free capacity whenever there is any.
 
-**Depth buys overlap with queueing latency.** The job manager still selects one
-batch per pass, so the depth does not change which job's batch is picked. It
-changes where an admitted batch waits: FlowMesh runs the tasks pinned to a
-worker in queue order, so a job that arrives after a long job has filled the
-depth is admitted at the next release, as before, and then runs behind up to
-depth − 1 of the long job's batches. The same holds for a higher-priority job.
+**Depth buys overlap with queueing latency.** The job manager still selects one batch per pass, so the depth does not change which job's batch is picked. It changes where an admitted batch waits: FlowMesh runs the tasks pinned to a worker in queue order, so a job that arrives after a long job has filled the depth is admitted at the next release, as before, and then runs behind up to depth − 1 of the long job's batches. The same holds for a higher-priority job.
 
-**Capacity denial is not policy denial.** `abort_reservation` takes an
-`AbortReason`. Only a *policy* denial advances an item's miss counter. If
-capacity pressure inflated that counter, sustained pressure would trip starvation
-pinning and re-force the same unrunnable partition — capacity pressure would
-corrupt the fairness signal into a thrash loop.
+**Capacity denial is not policy denial.** `abort_reservation` takes an `AbortReason`. Only a *policy* denial advances an item's miss counter. If capacity pressure inflated that counter, sustained pressure would trip starvation pinning and re-force the same unrunnable partition — capacity pressure would corrupt the fairness signal into a thrash loop.
 
 ## 4. Partitioning and eligibility
 
-A FlowMesh dispatch cannot span principals, bearer tokens, optimizer types or
-hardware shapes, so the queue is keyed by a partition tuple. GPU-ness is part of
-that key.
+A FlowMesh dispatch cannot span principals, bearer tokens, optimizer types or hardware shapes, so the queue is keyed by a partition tuple. GPU-ness is part of that key.
 
 ```text
 queue, keyed by (principal, token, optimizer, hardware, requires_gpu)
@@ -166,47 +112,25 @@ queue, keyed by (principal, token, optimizer, hardware, requires_gpu)
     gpu=no   needs a CPU group  ->  eligible,   selected
 ```
 
-`requires_gpu` is computed once, where the graphs are already in hand, and
-carried on the work item. The job manager never imports the runtime manager's
-GPU predicate: duplicating it would let the scheduler's view drift from the
-dispatcher's, and importing it would couple `BaseJobManager` to a concrete
-runtime.
+`requires_gpu` is computed once, where the graphs are already in hand, and carried on the work item. The job manager never imports the runtime manager's GPU predicate: duplicating it would let the scheduler's view drift from the dispatcher's, and importing it would couple `BaseJobManager` to a concrete runtime.
 
-Including it in the key is what keeps a GPU item from making a CPU-only sibling
-unschedulable. Eligibility is computed per partition, so without the split one
-GPU item would suppress every CPU item sharing its principal, token, optimizer
-and hardware — reintroducing head-of-line blocking inside the partition.
+Including it in the key is what keeps a GPU item from making a CPU-only sibling unschedulable. Eligibility is computed per partition, so without the split one GPU item would suppress every CPU item sharing its principal, token, optimizer and hardware — reintroducing head-of-line blocking inside the partition.
 
-The split is conditional on the capacity-aware-selection lever
-(`LUMILAKE_CAPACITY_AWARE_SELECTION`). With the lever on (default) the key
-carries `requires_gpu`, so CPU and GPU items in the same class land in separate
-partitions. With the lever off the key drops `requires_gpu`, so those items
-share a partition and head-of-line blocking applies within it — the lever
-controls both the partition key and the capacity filter.
+The split is conditional on the capacity-aware-selection lever (`LUMILAKE_CAPACITY_AWARE_SELECTION`). With the lever on (default) the key carries `requires_gpu`, so CPU and GPU items in the same class land in separate partitions. With the lever off the key drops `requires_gpu`, so those items share a partition and head-of-line blocking applies within it — the lever controls both the partition key and the capacity filter.
 
-That has a cost, stated plainly: CPU-only and GPU-requiring items that would
-otherwise share a partition can no longer co-batch, which loses some affinity.
-Correct eligibility was judged worth more than that co-batching.
+That has a cost, stated plainly: CPU-only and GPU-requiring items that would otherwise share a partition can no longer co-batch, which loses some affinity. Correct eligibility was judged worth more than that co-batching.
 
-Eligibility also accounts for hardware, not just class. `FreeCapacity`
-(`runtime/capacity.py`) searches the whole free set for workers meeting the
-request. Selection and claim share one helper — if selection counted only the
-first few workers while claim searched all of them, selection would declare a
-partition unrunnable while a usable worker sat idle.
+Eligibility also accounts for hardware, not just class. `FreeCapacity` (`runtime/capacity.py`) searches the whole free set for workers meeting the request. Selection and claim share one helper — if selection counted only the first few workers while claim searched all of them, selection would declare a partition unrunnable while a usable worker sat idle.
 
-Starvation pinning still applies, but only over partitions that are eligible.
-Pinning an item that cannot run would produce an undispatchable anchor.
+Starvation pinning still applies, but only over partitions that are eligible. Pinning an item that cannot run would produce an undispatchable anchor.
 
 ### GPU memory fractions
 
-A node runs only on a GPU worker whose owned memory fraction
-(`gpu_memory_fraction`) is at least the fraction its engine reserves
-(`gpu_memory_utilization`); a whole-device worker takes any value.
+A node runs only on a GPU worker whose owned memory fraction (`gpu_memory_fraction`) is at least the fraction its engine reserves (`gpu_memory_utilization`); a whole-device worker takes any value.
 
 ## 5. What still causes idle workers
 
-A bubble is idle worker time while the queue holds an item that worker could
-have served. Idle time with only GPU work queued and no GPU free is not a bubble.
+A bubble is idle worker time while the queue holds an item that worker could have served. Idle time with only GPU work queued and no GPU free is not a bubble.
 
 | Cause | Status |
 |---|---|
@@ -218,117 +142,24 @@ have served. Idle time with only GPU work queued and no GPU free is not a bubble
 | **Whole-worker exclusivity** | **open** |
 | **Static worker-group sizes** | **open** |
 
-The two open ones share a root. A worker is claimed as a whole and its group is
-a fixed size, while `HardwareRequirements` is a four-dimensional vector.
-A job needing two of a worker's eight GPUs still claims the whole worker, and a
-group of four cannot be assembled from three free workers whose combined capacity
-would suffice. Vector capacity and demand-sized groups would recover that, at the
-cost of a substantially more complex claim path.
+The two open ones share a root. A worker is claimed as a whole and its group is a fixed size, while `HardwareRequirements` is a four-dimensional vector. A job needing two of a worker's eight GPUs still claims the whole worker, and a group of four cannot be assembled from three free workers whose combined capacity would suffice. Vector capacity and demand-sized groups would recover that, at the cost of a substantially more complex claim path.
 
 ## 6. Scheduling policies
 
-`LUMILAKE_SCHEDULER_POLICY` selects the policy. Policies are registered in
-`SCHEDULING_POLICIES` (mirroring the optimizer's `OPTIMIZER_TYPES`): a new
-policy is a `BaseSchedulingPolicy` subclass plus one registry entry, resolved
-by `create_scheduling_policy`. The interface takes the candidate *set* and
-returns the batch subset, so a policy can score sets rather than individual
-items — batch execution cost is not separable over its members (a model swap
-is charged once per distinct model in the batch, not per item).
+`LUMILAKE_SCHEDULER_POLICY` selects the policy. Policies are registered in `SCHEDULING_POLICIES` (mirroring the optimizer's `OPTIMIZER_TYPES`): a new policy is a `BaseSchedulingPolicy` subclass plus one registry entry, resolved by `create_scheduling_policy`. The interface takes the candidate *set* and returns the batch subset, so a policy can score sets rather than individual items — batch execution cost is not separable over its members (a model swap is charged once per distinct model in the batch, not per item).
 
-The policy selects the batch unless a candidate is starved, and does nothing
-else. The job manager picks the anchor partition and builds its candidate pool
-round-robin across users. When a candidate is starved (at
-`LUMILAKE_STARVATION_LIMIT` misses), the batch is filled by the job manager's
-starvation path: starved items first (oldest first), then affinity clustering
-pinned around them, and the policy is not consulted. Otherwise the job manager
-calls the policy's `select_batch` with the whole candidate pool and the batch
-size. Commit, miss counting, and everything downstream (HALO, dispatch) are
-the same under every policy.
+The policy selects the batch unless a candidate is starved, and does nothing else. The job manager picks the anchor partition and builds its candidate pool round-robin across users. When a candidate is starved (at `LUMILAKE_STARVATION_LIMIT` misses), the batch is filled by the job manager's starvation path: starved items first (oldest first), then affinity clustering pinned around them, and the policy is not consulted. Otherwise the job manager calls the policy's `select_batch` with the whole candidate pool and the batch size. Commit, miss counting, and everything downstream (HALO, dispatch) are the same under every policy.
 
-Each policy returns at most `batch_size` ids, a subset of the candidates, and
-may use only the queued items, their graphs, and what has already run — never
-the future. The policies:
+Each policy returns at most `batch_size` ids, a subset of the candidates, and may use only the queued items, their graphs, and what has already run — never the future. The policies:
 
-- **`default`**: affinity clustering with per-user round-robin fairness. It
-  clusters the candidates by a distance over base models, system-prompt tokens
-  and graph size, and picks the batch-sized subset with the lowest average
-  intra-batch distance. It then keeps one item per user in round-robin order
-  (that user's affinity pick when it has one), and fills the rest of the batch
-  in affinity order, then candidate order.
+- **`default`**: affinity clustering with per-user round-robin fairness. It clusters the candidates by a distance over base models, system-prompt tokens and graph size, and picks the batch-sized subset with the lowest average intra-batch distance. It then keeps one item per user in round-robin order (that user's affinity pick when it has one), and fills the rest of the batch in affinity order, then candidate order.
 - **`fifo`**: enqueue order (`enqueued_at`, then `workflow_id`).
-- **`spt`**: smallest `estimate_area` first; items without an estimate after
-  all estimated ones; ties by enqueue order.
-- **`lpt`**: largest `estimate_area` first; items without an estimate after
-  all estimated ones; ties by enqueue order.
-- **`plas`**: program-level least attained service (Autellix). Keyed by the
-  item's chain (`chain_id`, else the request id), lowest attained service
-  first; ties by enqueue order. Each committed item charges its `estimate_area`
-  to the chain.
-- **`cohort_pack`**: dispatches units of chains cut from template-pure
-  cohorts. Slices are grouped by chain, round and template (the request's
-  template hash: the workflow without its inputs), so a group never mixes
-  templates. The *cohort* of a ready template and round `r` is the chains ready
-  on it plus every chain whose last committed round is `r - 1`, whose committed
-  template history matches theirs, and which is not itself ready on another
-  template or round (a round-0 cohort has no mates). A mate counts with the
-  size of the largest batch its last committed round went out in (a round
-  dispatched in several batches counts as its widest batch). There is no time
-  bound, and Lumilake has no end-of-chain signal, so a chain that has ended keeps
-  counting as a mate: a unit waiting for it goes after more than `patience`
-  misses, or at once when no complete unit is ready (the anchor then falls back
-  to any unit).
-  On every selection the cohort is cut into balanced *units* of whole chains,
-  in chain order, aiming at `ceil(S / B)` units for `S` cohort slices and batch
-  size `B`; the cut never divides a chain between units, and a chain wider than
-  `B` is a unit alone. A unit is complete when every chain cut into it is ready.
-  The anchor unit is template-pure. Units are recomputed, not remembered:
-  chains batched together usually arrive together and so are cut together
-  again, but a chain that joins the cohort later can change the cut. A dispatch
-  never exceeds the batch size, so an anchor unit with more than `B` slices
-  goes out over several dispatches: this one takes its first `B` slices (its
-  members in cut order, each group's slices by enqueue time, slice index and
-  workflow id) and the rest stays queued for later selections.
-  The anchor is the complete unit whose slices have the highest miss count,
-  oldest first among ties; an incomplete unit passed over more than `patience`
-  dispatches goes first instead: the one passed over most, then the lexically
-  smallest chain id (a longer id ranks ahead of an id it extends), then the
-  oldest. The global `LUMILAKE_STARVATION_LIMIT` overrides every policy once a
-  candidate reaches it, so the effective release threshold is the smaller of
-  `patience + 1` policy-level misses and that limit; set the limit above
-  `patience` to let units wait for their mates as configured.
-  Unless the unit is spread over lanes (below), the remaining room is filled by
-  considering up to three whole ready rounds of any unit, of other templates
-  too, and keeping the set with the lowest estimated time per slice, if it is
-  strictly lower than the unit alone (ties: break the fewest other units, then
-  take the rounds with the lowest total enqueue-order rank). With no fixed or
-  mixing cost and `beta` `>= 1`, merging never lowers the time per slice, so the
-  batch stays template-pure; with `beta < 1` the economy of scale alone can make
-  merging pay. The batch-cost model (the `fixed_seconds`, `mix_seconds`, `beta`,
-  `area_to_seconds` and `batch_size` args) converts the fixed and mixing costs
-  to slice units with the per-slice `estimate_area` of the anchor unit's first
-  round (an item the cost model cannot estimate counts as area `1`), then
-  compares candidate batches by slice count, so slices count as equally costly.
-  When the free-lane count is known, the unit's batch may be cut so the rest
-  goes out on lanes that would otherwise idle (the free lanes minus one per
-  other ready unit), while the model says each extra batch saves at least
-  `gamma` times the lane-time it costs; that batch is not filled. The
-  free-lane count is the number of whole dispatches the free workers can serve
-  for the anchor partition: workers (those meeting its hardware, when the
-  capacity snapshot carries worker profiles) divided by the worker group size
-  of each class it claims (a CPU-only partition claims a CPU group; a GPU
-  partition a GPU and a CPU group; a configured CPU group of zero still claims
-  one CPU worker when the work has a `data_retrieval`, `api` or `python` node),
-  taking the smallest; `0` when no class is claimed. When the candidates need a
-  capability-gated task type, the CPU side is also bounded by the eligible CPU
-  workers advertising every such type (the union over the anchor partition's
-  candidates, a conservative bound), and the count is `0` without worker
-  profiles. `reserve_batch` passes it only when it receives the free capacity,
-  which the server does while `LUMILAKE_CAPACITY_AWARE_SELECTION` is on (its
-  default); with it off the policy does not spread.
+- **`spt`**: smallest `estimate_area` first; items without an estimate after all estimated ones; ties by enqueue order.
+- **`lpt`**: largest `estimate_area` first; items without an estimate after all estimated ones; ties by enqueue order.
+- **`plas`**: program-level least attained service (Autellix). Keyed by the item's chain (`chain_id`, else the request id), lowest attained service first; ties by enqueue order. Each committed item charges its `estimate_area` to the chain.
+- **`cohort_pack`**: dispatches units of chains cut from template-pure cohorts. Slices are grouped by chain, round and template (the request's template hash: the workflow without its inputs), so a group never mixes templates. The *cohort* of a ready template and round `r` is the chains ready on it plus every chain whose last committed round is `r - 1`, whose committed template history matches theirs, and which is not itself ready on another template or round (a round-0 cohort has no mates). A mate counts with the size of the largest batch its last committed round went out in (a round dispatched in several batches counts as its widest batch). There is no time bound, and Lumilake has no end-of-chain signal, so a chain that has ended keeps counting as a mate: a unit waiting for it goes after more than `patience` misses, or at once when no complete unit is ready (the anchor then falls back to any unit). On every selection the cohort is cut into balanced *units* of whole chains, in chain order, aiming at `ceil(S / B)` units for `S` cohort slices and batch size `B`; the cut never divides a chain between units, and a chain wider than `B` is a unit alone. A unit is complete when every chain cut into it is ready. The anchor unit is template-pure. Units are recomputed, not remembered: chains batched together usually arrive together and so are cut together again, but a chain that joins the cohort later can change the cut. A dispatch never exceeds the batch size, so an anchor unit with more than `B` slices goes out over several dispatches: this one takes its first `B` slices (its members in cut order, each group's slices by enqueue time, slice index and workflow id) and the rest stays queued for later selections. The anchor is the complete unit whose slices have the highest miss count, oldest first among ties; an incomplete unit passed over more than `patience` dispatches goes first instead: the one passed over most, then the lexically smallest chain id (a longer id ranks ahead of an id it extends), then the oldest. The global `LUMILAKE_STARVATION_LIMIT` overrides every policy once a candidate reaches it, so the effective release threshold is the smaller of `patience + 1` policy-level misses and that limit; set the limit above `patience` to let units wait for their mates as configured. Unless the unit is spread over lanes (below), the remaining room is filled by considering up to three whole ready rounds of any unit, of other templates too, and keeping the set with the lowest estimated time per slice, if it is strictly lower than the unit alone (ties: break the fewest other units, then take the rounds with the lowest total enqueue-order rank). With no fixed or mixing cost and `beta` `>= 1`, merging never lowers the time per slice, so the batch stays template-pure; with `beta < 1` the economy of scale alone can make merging pay. The batch-cost model (the `fixed_seconds`, `mix_seconds`, `beta`, `area_to_seconds` and `batch_size` args) converts the fixed and mixing costs to slice units with the per-slice `estimate_area` of the anchor unit's first round (an item the cost model cannot estimate counts as area `1`), then compares candidate batches by slice count, so slices count as equally costly. When the free-lane count is known, the unit's batch may be cut so the rest goes out on lanes that would otherwise idle (the free lanes minus one per other ready unit), while the model says each extra batch saves at least `gamma` times the lane-time it costs; that batch is not filled. The free-lane count is the number of whole dispatches the free workers can serve for the anchor partition: workers (those meeting its hardware, when the capacity snapshot carries worker profiles) divided by the worker group size of each class it claims (a CPU-only partition claims a CPU group; a GPU partition a GPU and a CPU group; a configured CPU group of zero still claims one CPU worker when the work has a `data_retrieval`, `api` or `python` node), taking the smallest; `0` when no class is claimed. When the candidates need a capability-gated task type, the CPU side is also bounded by the eligible CPU workers advertising every such type (the union over the anchor partition's candidates, a conservative bound), and the count is `0` without worker profiles. `reserve_batch` passes it only when it receives the free capacity, which the server does while `LUMILAKE_CAPACITY_AWARE_SELECTION` is on (its default); with it off the policy does not spread.
 
-  `cohort_pack` takes these keys in `LUMILAKE_SCHEDULER_CUSTOM_ARGS` (a JSON
-  object, e.g. `{"patience": 3, "gamma": 0.5}`); an unknown key or a value
-  outside its constraint fails server startup:
+  `cohort_pack` takes these keys in `LUMILAKE_SCHEDULER_CUSTOM_ARGS` (a JSON object, e.g. `{"patience": 3, "gamma": 0.5}`); an unknown key or a value outside its constraint fails server startup:
 
   | Key | Meaning | Constraint | Default |
   |-----|---------|------------|---------|
@@ -340,24 +171,13 @@ the future. The policies:
   | `batch_size` | Reference batch size of the economy-of-scale factor and of the spreading rule (distinct from the dispatch batch size `B`). | `> 0` | `10` |
   | `patience` | An incomplete unit whose slices have been passed over more than this many dispatches stops waiting for its missing mates and goes first. A chain that has ended keeps counting as a mate, so a unit waiting for it goes after more than this many misses, or at once when no complete unit is ready. | `>= 0` | `8` |
 
-The size-based policies (`spt`, `lpt`) and the attained-service policy
-(`plas`) use the analytic cost model of §7. `estimate_area` is a predicted
-critical-path estimate charged at commit time; it is never reconciled against
-observed duration, so a persistently wrong estimate distorts the ordering.
-The ordering is **partition-local**: it orders items within a partition the
-outer round-robin already selected, so it cannot rebalance across principals
-or lanes.
+The size-based policies (`spt`, `lpt`) and the attained-service policy (`plas`) use the analytic cost model of §7. `estimate_area` is a predicted critical-path estimate charged at commit time; it is never reconciled against observed duration, so a persistently wrong estimate distorts the ordering. The ordering is **partition-local**: it orders items within a partition the outer round-robin already selected, so it cannot rebalance across principals or lanes.
 
 ## 7. Where cost estimation belongs
 
-HALO already estimates execution cost, but it does so *inside* the optimizer,
-downstream of selection, and it minimises makespan **within** a batch. Nothing
-optimised **across** batches. Selection needs a different quantity — how much
-resource-area an item will consume — to rank items before a batch exists.
+HALO already estimates execution cost, but it does so *inside* the optimizer, downstream of selection, and it minimises makespan **within** a batch. Nothing optimised **across** batches. Selection needs a different quantity — how much resource-area an item will consume — to rank items before a batch exists.
 
-`runtime/job_manager/cost.py` computes that, and it calls HALO's own GPU cost
-function rather than introducing a second estimator. Two cost models that
-disagree would be worse than one imperfect one.
+`runtime/job_manager/cost.py` computes that, and it calls HALO's own GPU cost function rather than introducing a second estimator. Two cost models that disagree would be worse than one imperfect one.
 
 ```text
    graph ops --> per-op duration        --+
@@ -370,29 +190,17 @@ disagree would be worse than one imperfect one.
                                             area = path * share
 ```
 
-Estimates are **analytic and hyperparameter-first**. There is no trace corpus, so
-nothing here fits or learns; every coefficient is a named setting with a reasoned
-default. That is a deliberate trade: the estimates are coarser than HALO's own —
-which derives input counts per node where this uses a configured default — in
-exchange for having no dependency on data that does not exist yet. Calibrating
-the coefficients against measured durations is the obvious later step, and
-requires a corpus first.
+Estimates are **analytic and hyperparameter-first**. There is no trace corpus, so nothing here fits or learns; every coefficient is a named setting with a reasoned default. That is a deliberate trade: the estimates are coarser than HALO's own — which derives input counts per node where this uses a configured default — in exchange for having no dependency on data that does not exist yet. Calibrating the coefficients against measured durations is the obvious later step, and requires a corpus first.
 
 ### HALO model sizing
 
-HALO needs each GPU model's parameter count. It takes it from the `MODEL_SIZE`
-catalog, then the model-name suffix (`7B`, `560M`), then the model's
-safetensors headers (local Hugging Face cache, else the Hub). If none gives a
-size, planning fails with an error naming the model.
+HALO needs each GPU model's parameter count. It takes it from the `MODEL_SIZE` catalog, then the model-name suffix (`7B`, `560M`), then the model's safetensors headers (local Hugging Face cache, else the Hub). If none gives a size, planning fails with an error naming the model.
 
 ## 8. Scheduling under unknown chain length
 
-Classical size-based policies need *p*, the service requirement. SRPT and WSPT
-both assume it is known. For a chain it is not: remaining service depends on how
-many more rounds the planner will request, which is decided at runtime.
+Classical size-based policies need *p*, the service requirement. SRPT and WSPT both assume it is known. For a chain it is not: remaining service depends on how many more rounds the planner will request, which is decided at runtime.
 
-**Whether chain-aware ordering can help at all depends on the shape of the
-chain-length prior**, not on the scheduler:
+**Whether chain-aware ordering can help at all depends on the shape of the chain-length prior**, not on the scheduler:
 
 | Prior | Hazard rate | What size-aware ordering buys |
 |---|---|---|
@@ -400,15 +208,9 @@ chain-length prior**, not on the scheduler:
 | Decreasing hazard (long chains tend to continue) | decreasing | Least-attained-service ordering wins. |
 | Increasing hazard (chains converge toward a cap) | increasing | SRPT-like ordering wins. |
 
-Geometric is the natural no-data prior, because the planner appears to make an
-independent stop decision each round. If that prior holds, chain-aware ordering
-is provably worthless and the honest result is a negative one. Any claim that it
-helps rests on the distribution being non-memoryless — which only measurement can
-establish.
+Geometric is the natural no-data prior, because the planner appears to make an independent stop decision each round. If that prior holds, chain-aware ordering is provably worthless and the honest result is a negative one. Any claim that it helps rests on the distribution being non-memoryless — which only measurement can establish.
 
-This is why none of the policies of §6 is a bandit policy. A Gittins-index
-policy is the principled form *when a distribution is known*; none is, so none
-is claimed.
+This is why none of the policies of §6 is a bandit policy. A Gittins-index policy is the principled form *when a distribution is known*; none is, so none is claimed.
 
 ## 9. Design decisions
 
@@ -422,12 +224,7 @@ is claimed.
 
 ## 10. Open questions
 
-- **Is the chain-length prior memoryless?** Per §8 this decides whether
-  chain-aware ordering has any value at all. Unanswerable without measurement.
-- **Dominant share against which denominator?** Cluster capacity shifts as
-  workers join and leave; the share needs a defined snapshot or a smoothed
-  estimate.
-- **One share pool or two?** DRF handles mixed demand in principle, but a cluster
-  whose GPU workers are the scarce resource may want GPU-denominated fairness
-  specifically.
+- **Is the chain-length prior memoryless?** Per §8 this decides whether chain-aware ordering has any value at all. Unanswerable without measurement.
+- **Dominant share against which denominator?** Cluster capacity shifts as workers join and leave; the share needs a defined snapshot or a smoothed estimate.
+- **One share pool or two?** DRF handles mixed demand in principle, but a cluster whose GPU workers are the scarce resource may want GPU-denominated fairness specifically.
 - **Whole-worker exclusivity** (§5) — worth the complexity of vector capacity?
