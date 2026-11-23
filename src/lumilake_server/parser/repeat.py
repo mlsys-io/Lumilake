@@ -240,8 +240,8 @@ def _literal_seed(entry: dict[str, Any], repeat_id: str) -> int | None:
     if isinstance(seed, int) and not isinstance(seed, bool):
         return seed
     raise ValueError(
-        f"RepeatOp '{repeat_id}' body entry '{entry['id']}' has a 'config.seed' that"
-        f" is not an integer: {seed!r}"
+        f"RepeatOp '{repeat_id}' body entry '{entry['id']}' has a 'config.seed' that is"
+        f" not an integer: {seed!r}"
     )
 
 
