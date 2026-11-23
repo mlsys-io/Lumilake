@@ -267,17 +267,40 @@ def validate_source(code: str, fn_name: str | None = None) -> str:
     return _check_def(target)
 
 
-def validate_inline_source(code: str, fn_name: str | None = None) -> str:
-    """Check source for a LambdaOp the FlowMesh worker evaluates inline.
+def _inline_statement_binding(stmt: ast.stmt) -> str | None:
+    """The name ``stmt`` first binds at module level, if any."""
+    table = symtable.symtable(ast.unparse(stmt), _SOURCE_NAME, "exec")
+    bound = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    }
+    bound_names: list[tuple[int, int, str]] = []
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        else:
+            continue
+        if name in bound:
+            bound_names.append((node.lineno, node.col_offset, name))
+    return min(bound_names)[2] if bound_names else None
 
-    A LambdaOp that feeds an LLM becomes a ``graph_template`` function step,
-    which the FlowMesh worker materializes in its own restricted namespace: no
-    ``__import__``, and it calls the first name the code binds at top level.
-    So the ``def`` named ``fn_name`` must be the first top-level statement,
-    with only a module docstring allowed before it. Code that a standalone
-    LambdaOp accepts but that namespace cannot run is rejected here, at
-    submit, with the reason.
-    """
+
+def _inline_statement_kind(stmt: ast.stmt) -> str:
+    """A short name for the kind of statement ``stmt`` is."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return "function definition"
+    if isinstance(stmt, ast.ClassDef):
+        return "class definition"
+    if isinstance(stmt, ast.Expr):
+        return "expression"
+    return type(stmt).__name__.lower()
+
+
+def validate_inline_source(code: str, fn_name: str | None = None) -> str:
+    """Check source for a LambdaOp the FlowMesh worker evaluates inline."""
     name = validate_source(code, fn_name)
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
@@ -304,10 +327,23 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    for stmt in tree.body:
+    for index, stmt in enumerate(tree.body):
         if _is_docstring(stmt):
             continue
         if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
+            for extra in tree.body[index + 1 :]:
+                if _is_docstring(extra):
+                    continue
+                binding = _inline_statement_binding(extra)
+                said = (
+                    f"binds {binding!r} at module level"
+                    if binding is not None
+                    else f"has a module-level {_inline_statement_kind(extra)} statement"
+                )
+                raise ValueError(
+                    f"it {said}, but the inline function must be the last statement of"
+                    " its source; move it inside the function"
+                )
             return name
         break
     raise ValueError(

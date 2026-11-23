@@ -200,7 +200,7 @@ ops:
 
 ### LambdaOp
 
-`LambdaOp` runs a Python function you submit as source: `code` holds the source and `fn_name` names the top-level function to call. The source may define imports, constants and helpers before that function; for a `lambda` expression `fn_name` is only a label. The function takes one tuple with a value per entry in `inputs:`, in that order.
+`LambdaOp` runs a Python function you submit as source: `code` holds the source and `fn_name` names the top-level function to call. The source may define imports, constants and helpers before that function; for a `lambda` expression `fn_name` is only a label. The function takes one tuple with a value per entry in `inputs:`, in that order. A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in `uses:`; see [`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
 
 ```yaml
 inputs:
@@ -249,7 +249,7 @@ outputs:
 #### Where the function runs
 
 - **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The code may import nothing, and `fn_name` must be its first definition; submit refuses code that breaks either rule. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
+- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import` and gives a module-level name no scope, so the `def` named by `fn_name` must be the last statement of its source, with only a module docstring before or after it; submit refuses an import or any statement after it, a shared `uses:` block and a trailing helper included. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
 - **API-mode `LLMChatOp`**: cannot read a `LambdaOp`, since the request body carries no function step; the build fails naming the step. Make the Lambda a workflow output, or use a non-API chat.
 
 The Lumilake server never runs submitted code: it only parses the source, and a Lambda whose inputs are all literal is not folded into a constant. A function passed as a Python callable through the SDK (`LambdaOp(fn=...)`) is the caller's own code and may run in process; its source is serialized with `dill.source.getsource`, with captured closure values written in.
