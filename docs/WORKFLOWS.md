@@ -80,32 +80,17 @@ A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where the code may i
 
 ## Per-record store (`store:`)
 
-Set `store: true` at the top level of a YAML document, beside `graph` in a native
-payload, or at the top level of a dynamic workflow beside `type: dynamic`. It
-defaults to off, and a dynamic workflow's every round writes its records. An op's
-`key` is in [`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's
-chain with `GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
+Set `store: true` at the top level of a YAML document, beside `graph` in a native payload, or at the top level of a dynamic workflow beside `type: dynamic`. It defaults to off, and a dynamic workflow's every round writes its records. An op's `key` is in [`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's chain with `GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
 
 ## Reusing stored records (`reuse:`)
 
-Set `reuse: true` beside `store: true` at the top level of a YAML document, or
-beside `graph` in a native payload, to keep what an earlier storing run already
-computed; without `store: true` the submit is refused with 422. An op is kept
-only when every one of its records is stored: one missing record reruns the
-whole op, and its consumers with it.
+Set `reuse: true` beside `store: true` at the top level of a YAML document, or beside `graph` in a native payload, to keep what an earlier storing run already computed; without `store: true` the submit is refused with 422. An op is kept only when every one of its records is stored: one missing record reruns the whole op, and its consumers with it.
 
-A python step, chat, classification or embedding op is kept when the store
-holds every one of its records. A kept op's consumers read its stored values,
-and a request the store answers in full submits nothing. A kept output is
-rebuilt from those records, and a chat, completion or dynamic round output runs
-instead.
+A python step, chat, classification or embedding op is kept when the store holds every one of its records. A kept op's consumers read its stored values, and a request the store answers in full submits nothing. A kept output is rebuilt from those records, and a chat, completion or dynamic round output runs instead. An output is kept only from a keyed row op or a list-mode Lambda, and a dynamic round's outputs always rerun.
 
-A retrieval re-runs, so its consumers hit while its rows are unchanged; a
-retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a
-model op that reads a retrieval keeps that retrieval dispatched.
+A retrieval re-runs, so its consumers hit while its rows are unchanged; a retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a model op that reads a retrieval keeps that retrieval dispatched.
 
-A job records one decision per op, `hit` or `miss` with the first reason it
-missed; see [`docs/API.md`](API.md).
+A job records one decision per op, `hit` or `miss` with the first reason it missed; see [`docs/API.md`](API.md).
 
 ## n8n code-node notes
 
