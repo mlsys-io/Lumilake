@@ -342,9 +342,11 @@ def _compile_workflow(
 
     inputs = _validate_inputs(inputs_block)
     functions = parse_functions(spec.get("functions"))
-    ops_block, unroll = unroll_repeats(ops_block, set(inputs))
-    expanded, cleared = expand_routers(ops_block)
+    unrolled = unroll_repeats(ops_block, set(inputs))
+    expanded, cleared = expand_routers(unrolled.ops)
     cleared = cleared | frozenset(cleared_ids)
+    seed_templates = {**unrolled.template_ids, **(template_ids or {})}
+    seed_rounds = unrolled.rounds
     op_entries = [
         _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(expanded)
     ]
@@ -389,7 +391,7 @@ def _compile_workflow(
     while pending:
         progress = False
         for user_id, entry in list(pending.items()):
-            refs = unroll(user_id_to_internal, f"op '{user_id}'", user_id)
+            refs = unrolled.bind(user_id_to_internal, f"op '{user_id}'", user_id)
             missing = [ref for ref in entry.inputs if ref not in refs]
             if missing:
                 raise ValueError(f"op '{user_id}' references unknown id(s): {missing}")
@@ -403,7 +405,8 @@ def _compile_workflow(
                 graph_ops,
                 job_seed,
                 round_number=round_number,
-                template_ids=template_ids,
+                template_ids=seed_templates,
+                rounds=seed_rounds,
             )
             if user_id in cleared:
                 op_dict[CLEARS_KEY] = True
@@ -419,7 +422,7 @@ def _compile_workflow(
     # 3. OutputOps.
     for out in output_entries:
         where = f"output '{out.name}'"
-        refs = unroll(user_id_to_internal, where, where)
+        refs = unrolled.bind(user_id_to_internal, where, where)
         if out.ref not in refs:
             raise ValueError(f"output '{out.name}' references unknown id '{out.ref}'")
         op_id = _make_id(scope, "output", out.name)
@@ -506,6 +509,7 @@ def _build_op_dict(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    rounds: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -525,6 +529,7 @@ def _build_op_dict(
         job_seed=job_seed,
         round_number=round_number,
         template_ids=template_ids or {},
+        rounds=rounds or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict

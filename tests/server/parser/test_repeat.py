@@ -106,16 +106,27 @@ def test_a_body_chat_op_draws_a_different_seed_each_iteration() -> None:
         "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m, seed: 7}, "
         "messages: [{role: user, content: x}]}\n"
     )
-    ops = _repeat("2", "Start", "Ask", step)
-    seeds = [
-        op["config"]["seed"] for op in _graph(ops).values() if op["_op"] == "LLMChatOp"
-    ]
-    assert len(seeds) == 2 and seeds[0] != seeds[1]
-    assert all(0 <= seed < 2**63 for seed in seeds)
-    repeat_seeds = _graph(ops)
-    assert [
-        op["config"]["seed"] for op in repeat_seeds.values() if op["_op"] == "LLMChatOp"
-    ] == seeds
+
+    def seeds() -> list[int]:
+        graph = _graph(_repeat("2", "Start", "Ask", step))
+        return [o["config"]["seed"] for o in graph.values() if o["_op"] == "LLMChatOp"]
+
+    drawn = seeds()
+    assert len(drawn) == 2 and drawn[0] != drawn[1]
+    assert all(0 <= seed < 2**31 for seed in drawn) and seeds() == drawn
+
+
+def test_a_body_keyed_seed_draws_its_iteration_round_from_the_body_id() -> None:
+    body = (
+        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m}, "
+        "messages: [{role: user, content: x}], rowwise_template: x, rowwise_columns: "
+        "[{label: p, node: $in}], rowwise_seed: {key: {node: $in, path: "
+        "items.output.value}, pairing: shared}}\n"
+    )
+    graph = _graph(_repeat("2", "Start", "Ask", body))
+    draws = [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
+    assert len(draws) == 2 and "[0, 'Ask', 1, value]" in draws[0]
+    assert "[0, 'Ask', 2, value]" in draws[1]
 
 
 def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:
@@ -160,6 +171,14 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
             _repeat(body=_op("A.B", "[$in]", "      ")), "may not contain '.'"
         ),
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
+        pytest.param(
+            _repeat(
+                output="Ask",
+                body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: "
+                "{model: m, seed: '7'}, messages: [{role: user, content: x}]}\n",
+            ),
+            "not an integer",
+        ),
         pytest.param(_repeat(source="Nowhere"), "is unknown"),
         pytest.param(_repeat(source=""), "requires a non-empty 'input'"),
         pytest.param(_repeat(source="$in"), r"\$in"),

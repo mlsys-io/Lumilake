@@ -31,6 +31,7 @@ class EmitContext:
     job_seed: int = 0
     round_number: int | None = None
     template_ids: dict[str, str] = field(default_factory=dict)
+    rounds: dict[str, int] = field(default_factory=dict)
 
 
 Emitter = Callable[[dict[str, Any], EmitContext], None]
@@ -103,12 +104,13 @@ def emit_keyed_seed(
         entry.fields.get("config", {}),
     )
     node_id = seed_input_id(entry.id, node_ref, ctx, op_kind)
+    round_number = ctx.rounds.get(entry.id, ctx.round_number)
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,
         path,
         ctx.job_seed,
-        ctx.round_number,
+        round_number,
         op_kind,
         template_id=ctx.template_ids.get(entry.id, entry.id),
         scope=ctx.scope,

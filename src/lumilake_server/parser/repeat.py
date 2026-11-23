@@ -4,28 +4,17 @@
 before any id is registered, so one declared op exists per iteration.
 """
 
-import hashlib
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError
-
 from lumilake_server.ops.router_ops import ROUTER_OP, RouterSpec
 from lumilake_server.ops.spec_validation import validate_fields
+from lumilake_server.parser.keyed_seed import keyed_seed
 
 REPEAT_OP = "RepeatOp"
 INPUT_REF = "$in"
 _MAX_UNROLLED = 1000
-_SEED_MODULUS = 2**63
 _FIELDS = frozenset({"id", "op", "times", "input", "output", "body"})
-
-
-class _BodyConfig(BaseModel):
-    """The part of a body entry's ``config`` the unroll reads."""
-
-    model_config = ConfigDict(extra="allow")
-
-    seed: StrictInt | None = None
 
 
 class _Repeat(NamedTuple):
@@ -109,12 +98,22 @@ class _Scoped(Mapping[str, str]):
 References = Callable[[Mapping[str, str], str, str], _Scoped]
 
 
-def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], References]:
+class Unrolled(NamedTuple):
+    """The unrolled ops, their reference binder and each copy's seed identity."""
+
+    ops: list[Any]
+    bind: References
+    template_ids: dict[str, str]
+    rounds: dict[str, int]
+
+
+def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
     """Replace every ``RepeatOp`` entry with its unrolled iterations.
 
     ``known_ids`` holds the workflow input names, which a repeat's ``input``
-    may name. Repeats are unrolled in dependency order. The returned callable
-    binds a parser id map to one referring op.
+    may name. Repeats are unrolled in dependency order. The returned binder
+    takes a parser id map to one referring op. Each copy keeps the seed
+    identity of the body entry and one-based round it runs as.
     """
     plain = {
         _entry_id(entry)
@@ -168,6 +167,8 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
     frames: dict[str, dict[str, str]] = {}
     frame_owner: dict[str, str] = {}
     iterations: dict[str, list[Any]] = {}
+    template_ids: dict[str, str] = {}
+    rounds: dict[str, int] = {}
     for spec in ordered:
         iterations[spec.id] = []
         for index in range(1, spec.times + 1):
@@ -179,10 +180,14 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
             frame_owner.update(
                 (spec.at(index, name), spec.id) for name in spec.written_ids
             )
-            iterations[spec.id].extend(
-                _iteration_copy(copy, iteration[copy["id"]], index)
+            copies = [
+                _iteration_copy(copy, iteration[copy["id"]], spec.id, index)
                 for copy in spec.body
-            )
+            ]
+            for body, copy in zip(spec.body, copies):
+                template_ids[copy["id"]] = body["id"]
+                rounds[copy["id"]] = index
+            iterations[spec.id].extend(copies)
 
     unrolled: list[Any] = []
     for entry in ops:
@@ -200,31 +205,38 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
             frame_owner.get(referrer),
         )
 
-    return unrolled, bind
+    return Unrolled(unrolled, bind, template_ids, rounds)
 
 
-def _iteration_copy(entry: dict[str, Any], new_id: str, index: int) -> dict[str, Any]:
-    """``entry`` as iteration ``index`` runs it, its literal seed redrawn."""
+def _iteration_copy(
+    entry: dict[str, Any], new_id: str, repeat_id: str, index: int
+) -> dict[str, Any]:
+    """``entry`` as iteration ``index`` of ``repeat_id`` runs it."""
     copy = {**entry, "id": new_id}
-    seed = _literal_seed(entry.get("config"))
-    if seed is not None:
-        copy["config"] = {**copy["config"], "seed": _iteration_seed(seed, index)}
-    return copy
+    seed = _literal_seed(entry, repeat_id)
+    if seed is None:
+        return copy
+    redrawn = _iteration_seed(seed, entry["id"], index)
+    return {**copy, "config": {**entry["config"], "seed": redrawn}}
 
 
-def _literal_seed(config: Any) -> int | None:
-    """The literal seed ``config`` carries, or None for an absent or non-integer one."""
-    try:
-        return _BodyConfig.model_validate(config).seed
-    except ValidationError:
+def _literal_seed(entry: dict[str, Any], repeat_id: str) -> int | None:
+    """The literal seed ``entry`` carries, or None when its config has none."""
+    config = entry.get("config")
+    if not isinstance(config, dict) or "seed" not in config:
         return None
+    seed = config["seed"]
+    if isinstance(seed, int) and not isinstance(seed, bool):
+        return seed
+    raise ValueError(
+        f"RepeatOp '{repeat_id}' body entry '{entry['id']}' has a 'config.seed' "
+        f"that is not an integer: {seed!r}"
+    )
 
 
-def _iteration_seed(seed: int, index: int) -> int:
-    """The seed iteration ``index`` draws: a digest of the body's seed and index."""
-    payload = f"{seed}:{index}".encode()
-    digest = hashlib.blake2b(payload, digest_size=8).digest()
-    return int.from_bytes(digest, "big") % _SEED_MODULUS
+def _iteration_seed(seed: int, body_id: str, index: int) -> int:
+    """The seed iteration ``index`` of body entry ``body_id`` draws."""
+    return keyed_seed(seed, body_id, index, "")
 
 
 def _router_branch_ids(ops: list[Any]) -> set[str]:
