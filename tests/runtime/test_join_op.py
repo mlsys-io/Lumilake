@@ -73,8 +73,8 @@ def _parse(ops: str) -> dict[str, Any]:
 def _merge(inputs: str, rest: str = "") -> str:
     """A join over ``inputs`` keyed by ``case_id``, followed by ``rest``."""
     return (
-        f"  - id: Merge\n    op: JoinOp\n    inputs: [{inputs}]\n"
-        f"    by: case_id\n{rest}"
+        f"  - id: Merge\n    op: JoinOp\n    inputs: [{inputs}]\n    by:"
+        f" case_id\n{rest}"
     )
 
 
@@ -199,9 +199,8 @@ def test_join_refuses_an_attach_whose_row_source_is_not_one_node() -> None:
 def test_join_refuses_a_format_op_as_an_attach_target() -> None:
     """A format op is a row source only as a hop on a chain, never a target."""
     ops = (
-        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}",'
-        " format_args: [State]}\n"
-        + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
+        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}", format_args:'
+        " [State]}\n" + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
     )
     with pytest.raises(ValueError, match="attach field 'prompt' reading .*hop on a"):
         _join_node(ops)
@@ -335,6 +334,6 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
     )
     (column,) = ask.data_spec.columns
     assert column.node == merge.node_id
-    # A join's per-row fields sit under the python envelope, as a list
-    # Lambda's do, not at the declared path.
+    # A join's per-row fields sit under the python envelope, as a list Lambda's do, not
+    # at the declared path.
     assert column.path == "value.items.output.text"

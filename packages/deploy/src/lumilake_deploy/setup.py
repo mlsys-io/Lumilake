@@ -42,13 +42,6 @@ class SetupOptions:
     background: bool = False
 
 
-@dataclass
-class _InfraLayout:
-    """Snapshot of infra decisions derived from ``.env``."""
-
-    deploy_fm: bool
-
-
 def load_project_env(project_root: Path) -> None:
     """Refresh :mod:`lumilake.envs` from this deploy root's ``.env``.
 
@@ -63,7 +56,14 @@ def load_project_env(project_root: Path) -> None:
         importlib.reload(envs)
 
 
-def _check_port_collisions(project_root: Path, layout: "_InfraLayout") -> None:
+@dataclass
+class _InfraLayout:
+    """Snapshot of infra decisions derived from ``.env``."""
+
+    deploy_fm: bool
+
+
+def _check_port_collisions(project_root: Path, layout: _InfraLayout) -> None:
     """Pre-flight: surface any host-port conflicts before docker compose starts."""
     ports: dict[str, int] = {
         server_container(read_stack_name(project_root)): int(

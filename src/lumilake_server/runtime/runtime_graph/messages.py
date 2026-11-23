@@ -73,9 +73,9 @@ class _MessagesBuilder(_DerivedBuilder):
             )
         if not _producer_kind_supported(upstream):
             raise ValueError(
-                f"{consumer} reads '{node}' ({type(upstream).__name__});"
-                " a messages column reads a list-mode LambdaOp, a join, a data"
-                " retrieval or a literal input"
+                f"{consumer} reads '{node}' ({type(upstream).__name__}); a messages"
+                " column reads a list-mode LambdaOp, a join, a data retrieval or a"
+                " literal input"
             )
         runtime_ids = ctx.dsl_to_runtime.get(node)
         if isinstance(upstream, JoinOp):
