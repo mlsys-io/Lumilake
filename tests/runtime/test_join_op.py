@@ -273,13 +273,13 @@ _PARTED = {0: _rows(_A, _B, _C), 1: _rows(_B), 2: _cells(1), 3: _rows(_B)}
 @pytest.mark.parametrize(
     "ops, upstream, expected",
     [
-        # A marked row keeps its slot: in the first input the row is the marker,
-        # in a further input the key's output is.
+        # A marked row keeps its slot: in the first input the row is the marker, in a
+        # further input the key's output is.
         (_DIAG, {0: _rows(_A, _MARK, _B), 1: _rows(_B)}, [_A, _MARK, _B]),
-        # A marked attach value marks its paired key, whether the value column
-        # covers the live source rows only or every source row. An attach whose
-        # values cannot be paired one per row fails the job, as does a live
-        # row whose key field is null.
+        # A marked attach value marks its paired key, whether the value column covers
+        # the live source rows only or every source row. An attach whose values cannot
+        # be paired one per row fails the job, as does a live row whose key field is
+        # null.
         (_ATTACH, _LIVE, [{**_A, "reply": "hi"}, _MARK]),
         (_ATTACH, _GAPPED, [{**_A, "reply": "hi"}, _MARK, {**_C, "reply": "bye"}]),
         (_ATTACH, {0: _rows(_A, _C), 1: _cells("hi")}, "values attached but"),

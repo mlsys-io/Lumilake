@@ -123,8 +123,8 @@ def parse_yaml_payload(
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
-        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round
-            that re-parses its own expansion keeps the flag on those branches.
+        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round that
+            re-parses its own expansion keeps the flag on those branches.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict}}``,

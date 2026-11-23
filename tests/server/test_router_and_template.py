@@ -78,8 +78,8 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
 
 
 def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
-    # Only an object whose sole key is `_fail` is a marker, and `error` is a
-    # branch name only when the op declares the branch.
+    # Only an object whose sole key is `_fail` is a marker, and `error` is a branch name
+    # only when the op declares the branch.
     rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
     field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
     for row in (*rows, *field):

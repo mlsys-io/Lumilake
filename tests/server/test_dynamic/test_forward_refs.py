@@ -313,8 +313,8 @@ def test_admit_subgraph_forwards_export_to_validation():
 
 
 def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
-    # A round names the clearing ops from its own expansion; another graph
-    # declaring the key is refused.
+    # A round names the clearing ops from its own expansion; another graph declaring the
+    # key is refused.
     native = {
         "L": {
             "_id": "L",
@@ -482,9 +482,9 @@ def test_forward_per_row_explicit_reference_aligns_items_to_rows():
 
 
 def test_forward_per_row_splits_one_item_holding_the_whole_list():
-    # A template round forwards its export as one item whose output is the list
-    # the list-mode export returned, so a later round reads its rows one each;
-    # a one-row run keeps a one-element list as that row's value.
+    # A template round forwards its export as one item whose output is the list the
+    # list-mode export returned, so a later round reads its rows one each; a one-row run
+    # keeps a one-element list as that row's value.
     lister_id = "l1"
     configs = {lister_id: {"id": lister_id, "op": "LambdaOp", "inputs": []}}
     subgraph = _three_row_subgraph(lister_id)
