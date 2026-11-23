@@ -15,7 +15,6 @@ from pydantic import (
     StrictInt,
     ValidationError,
     ValidationInfo,
-    field_validator,
     model_validator,
 )
 from sqlparse.sql import Parenthesis, Token, TokenList
@@ -24,8 +23,6 @@ from sqlparse.tokens import Comment, Keyword, Punctuation
 from lumilake_server.data_specs import RetrievalData
 
 ROWS_ONE = "one"
-
-ROWS_KEY = "rows"
 
 _ORDER_BY = "ORDER BY"
 
@@ -44,36 +41,11 @@ class RetrievalSpec(RetrievalData):
     verify: StrictBool | None = None
     max_steps: StrictInt | None = None
 
-    @field_validator(
-        "template",
-        "description",
-        "table",
-        "output_format",
-        "encoding",
-        "schema_scope",
-        "model",
-        mode="before",
-    )
-    @classmethod
-    def _user_string(cls, value: Any) -> Any:
-        if value is None or isinstance(value, str):
-            return value
-        raise ValueError("must be a string")
-
-    @field_validator("rows", mode="before")
-    @classmethod
-    def _rows_one(cls, value: Any) -> Any:
-        if value is not None and value != ROWS_ONE:
-            raise ValueError(
-                f"'{ROWS_KEY}' must be '{ROWS_ONE}' when declared (got {value!r})"
-            )
-        return value
-
     @model_validator(mode="after")
     def _row_order(self, info: ValidationInfo) -> Self:
         if not (info.context or {}).get(_CHECK_ROW_ORDER):
             return self
-        if self.mode != "sql" or self.rows == ROWS_ONE or self.template is None:
+        if self.mode != "sql" or self.rows is not None or self.template is None:
             return self
         if sql_has_top_level_order_by(self.template):
             return self

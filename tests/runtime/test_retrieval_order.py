@@ -63,7 +63,7 @@ def test_the_refusals_name_the_library_entry_and_the_field() -> None:
 
 
 def test_rows_one_checks_its_bound() -> None:
-    with pytest.raises(ValueError, match="'rows' must be 'one'"):
+    with pytest.raises(ValueError, match="rows: Input should be 'one'"):
         _graph("SELECT a FROM t", "      rows: all\n")
     runtime = RuntimeGraphBuilder().build(
         _graph("SELECT a FROM t", "      rows: one\n").compile(Stock=["NVDA"])
