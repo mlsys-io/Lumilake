@@ -95,6 +95,7 @@ from lumilake_server.hooks.security import (
 from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.ops.util_ops import CLEARS_KEY
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.parser.common import read_workflow_seed
 from lumilake_server.parser.keyed_seed import rewrite_native_keys
 from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
@@ -637,34 +638,32 @@ def _dispatch_workflow_to_graph_specs(
 
 
 def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
-    """A native workflow's ops, with a bare graph's ``seed`` taken out."""
+    """A native workflow's ops, with the workflow-level ``seed`` taken out of a
+    bare graph."""
     if "graph" in workflow_payload:
         return workflow_payload["graph"]
-    if "seed" not in workflow_payload:
-        return workflow_payload
-    ops = workflow_payload.copy()
-    del ops["seed"]
+    ops = {op_id: op for op_id, op in workflow_payload.items() if op_id != "seed"}
     return ops
 
 
 def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
     """A native payload's job seed."""
-    value = workflow_payload.get("seed", 0)
-    if isinstance(value, bool) or not isinstance(value, int):
+    try:
+        return read_workflow_seed(workflow_payload, "workflow")
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"workflow 'seed' must be an integer, got {value!r}",
-        )
-    return value
+            detail=str(exc),
+        ) from exc
 
 
 def _submitted_job_seed(
     graph_specs: dict[str, dict[str, Any]], dynamic_spec: DynamicSpec | None
 ) -> int:
-    """The job seed to record: the dynamic spec's, else the workflow's."""
+    """The job seed to record: the dynamic spec's, else the workflows'."""
     if dynamic_spec is not None:
         return dynamic_spec.seed
-    seeds = {spec.get("seed", 0) for spec in graph_specs.values()}
+    seeds = {spec["seed"] for spec in graph_specs.values()}
     if len(seeds) > 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
