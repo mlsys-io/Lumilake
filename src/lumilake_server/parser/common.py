@@ -14,7 +14,7 @@ import hashlib
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, StrictInt
 
 from lumilake_server.ops.spec_validation import validate_fields
 
@@ -24,14 +24,7 @@ class WorkflowSeed(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    seed: int = 0
-
-    @field_validator("seed", mode="before")
-    @classmethod
-    def _integer(cls, value: Any) -> Any:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"must be an integer, got {value!r}")
-        return value
+    seed: StrictInt = 0
 
 
 def read_workflow_seed(document: Any, where: str) -> int:

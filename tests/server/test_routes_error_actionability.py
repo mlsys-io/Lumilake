@@ -324,7 +324,7 @@ async def test_native_key_form_is_refused_with_422_naming_the_op(
             ({"graph": {"chat": chat, "cases": cases}}, "LLMChatOp 'chat'"),
             (
                 {"graph": {"cases": cases}, "seed": "7"},
-                "seed: must be an integer, got '7'",
+                "seed: Input should be a valid integer",
             ),
         ]:
             body["data"][0]["workflow"] = json.dumps(graph)
