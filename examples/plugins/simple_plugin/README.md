@@ -41,8 +41,7 @@ To make the example optimizer the cluster-wide default:
 LUMILAKE_DEFAULT_OPTIMIZER=simple
 ```
 
-Per-job submissions can also pass `"optimizer": "simple"` to opt in
-without changing the server default.
+Per-job submissions can also pass `"optimizer": "simple"` to opt in without changing the server default.
 
 Authenticate requests with one of the demo tokens:
 

@@ -71,10 +71,7 @@ ops:
 
 ### FormatOp
 
-`FormatOp` interpolates upstream op outputs into a Python `str.format`
-template. `format_kwargs` maps each `{name}` placeholder in `template`
-to the user-facing id of an upstream op (or workflow input). Listing the
-referenced ids in `inputs:` keeps the DAG wiring explicit.
+`FormatOp` interpolates upstream op outputs into a Python `str.format` template. `format_kwargs` maps each `{name}` placeholder in `template` to the user-facing id of an upstream op (or workflow input). Listing the referenced ids in `inputs:` keeps the DAG wiring explicit.
 
 ```yaml
 inputs:
@@ -93,29 +90,13 @@ outputs:
     ref: "Prompt"
 ```
 
-`format_args` is the positional variant: each id resolves to a `{0}`,
-`{1}`, ... placeholder. Use `format_kwargs` for named placeholders and
-`format_args` for positional ones; the two may be combined.
+`format_args` is the positional variant: each id resolves to a `{0}`, `{1}`, ... placeholder. Use `format_kwargs` for named placeholders and `format_args` for positional ones; the two may be combined.
 
 ### EmbeddingOp
 
-`EmbeddingOp` embeds text with a FlowMesh-served embedding model and
-returns one vector per input text. `config.model` is the embedding model
-id; the optional `gpu_memory_utilization` / `tensor_parallel_size` config
-fields are passed through to the vLLM engine. `input` references the
-upstream op (or workflow input) whose text is embedded — declare a
-`DataOp` for literal text, or point at an `InputOp` / upstream op output.
-Wire the reference into `inputs:` to keep the DAG explicit.
+`EmbeddingOp` embeds text with a FlowMesh-served embedding model and returns one vector per input text. `config.model` is the embedding model id; the optional `gpu_memory_utilization` / `tensor_parallel_size` config fields are passed through to the vLLM engine. `input` references the upstream op (or workflow input) whose text is embedded — declare a `DataOp` for literal text, or point at an `InputOp` / upstream op output. Wire the reference into `inputs:` to keep the DAG explicit.
 
-The op dispatches a FlowMesh `embedding` task whose `model.vllm.convert`
-is `embed`; that routes the task to the vLLM embedding executor. Vectors
-are returned as an artifact, not inline: the response carries `model`,
-`embedding_file` (`embeddings.safetensors`, tensor key `embeddings`,
-shape `[count, dim]` float32, row-aligned to the input texts), and a
-`usage` block whose `num_requests` / `embedding_dim` give the row count
-and vector dimension. The op surfaces the archived embedding artifact ref
-the same way `ImageGenerationOp` surfaces produced images; a consumer
-that needs raw vectors loads `embeddings.safetensors`.
+The op dispatches a FlowMesh `embedding` task whose `model.vllm.convert` is `embed`; that routes the task to the vLLM embedding executor. Vectors are returned as an artifact, not inline: the response carries `model`, `embedding_file` (`embeddings.safetensors`, tensor key `embeddings`, shape `[count, dim]` float32, row-aligned to the input texts), and a `usage` block whose `num_requests` / `embedding_dim` give the row count and vector dimension. The op surfaces the archived embedding artifact ref the same way `ImageGenerationOp` surfaces produced images; a consumer that needs raw vectors loads `embeddings.safetensors`.
 
 ```yaml
 inputs:
@@ -134,36 +115,13 @@ outputs:
     ref: "Embed"
 ```
 
-The `vectors` output is a per-row list — one entry per input text, not an
-inline list of floats. Every entry carries its `row` index, the `model`,
-and a reference to the shared `embeddings.safetensors` artifact; row `i`
-is the embedding of input text `i`. A downstream op therefore receives
-`slice_length` per-row vector inputs (one embedding per input doc), and a
-consumer needing raw floats loads `embeddings.safetensors` and indexes by
-`row`.
+The `vectors` output is a per-row list — one entry per input text, not an inline list of floats. Every entry carries its `row` index, the `model`, and a reference to the shared `embeddings.safetensors` artifact; row `i` is the embedding of input text `i`. A downstream op therefore receives `slice_length` per-row vector inputs (one embedding per input doc), and a consumer needing raw floats loads `embeddings.safetensors` and indexes by `row`.
 
 ### ClassificationOp
 
-`ClassificationOp` classifies query/candidate pairs with a FlowMesh
-`classification` task and returns one `items[]` entry per pair, carrying the
-pair's `index` and the classifier's output.
-`config` is required and supplies `model` and `backend` (`vllm` or
-`transformers`); the optional `vllm` mapping is passed to the vLLM engine. A
-vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid
-probability; setting `config.vllm.apply_sigmoid: false` reports the raw logit
-instead. A Transformers node uses its single-label sequence-classification
-path.
+`ClassificationOp` classifies query/candidate pairs with a FlowMesh `classification` task and returns one `items[]` entry per pair, carrying the pair's `index` and the classifier's output. `config` is required and supplies `model` and `backend` (`vllm` or `transformers`); the optional `vllm` mapping is passed to the vLLM engine. A vLLM node uses `model.vllm.convert: classify` and reports the head's sigmoid probability; setting `config.vllm.apply_sigmoid: false` reports the raw logit instead. A Transformers node uses its single-label sequence-classification path.
 
-Literal queries and candidates lower to a non-empty `data.items` list of
-`{text, text_pair}` mappings, the query as `text`. A single literal query
-broadcasts across the candidates; otherwise the two lists must have equal
-lengths. When either side comes from an upstream op, Lumilake first runs the
-internal `pairs` Python step, which broadcasts a single query or rejects
-unequal lengths, then passes its `value.items` list to the classification
-task. Empty query or candidate inputs, empty candidate lists, and mismatched
-literal pair counts of a graph built from YAML raise with the
-`ClassificationOp` id in the message; the Python constructor raises before an
-id exists.
+Literal queries and candidates lower to a non-empty `data.items` list of `{text, text_pair}` mappings, the query as `text`. A single literal query broadcasts across the candidates; otherwise the two lists must have equal lengths. When either side comes from an upstream op, Lumilake first runs the internal `pairs` Python step, which broadcasts a single query or rejects unequal lengths, then passes its `value.items` list to the classification task. Empty query or candidate inputs, empty candidate lists, and mismatched literal pair counts of a graph built from YAML raise with the `ClassificationOp` id in the message; the Python constructor raises before an id exists.
 
 ```yaml
 inputs:
@@ -187,45 +145,17 @@ outputs:
 
 ### HttpFetchOp
 
-`HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query`
-input. The `{query}` placeholder must appear in `url`, `params`, or a POST
-`body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The
-API executor URL-encodes a `{{prompt}}` in a URL and passes `params` to
-`httpx`, so query values in `params` use the same form encoding as
-`requests`.
-`config.headers` carries the request headers, including credentials such as
-an API key: keep credentials there rather than in `url`, `params`, or `body`,
-which are archived as written. `config.timeout_sec`, `config.retries` (at
-most 10), and `config.max_concurrency` bound the request. Headers are sent as
-written, and every header value is redacted in the archived graph. Each input
-row produces one output row. `config.request_delay_sec` spaces actual request
-starts, including retries.
+`HttpFetchOp` dispatches one FlowMesh `api` request per row of its `query` input. The `{query}` placeholder must appear in `url`, `params`, or a POST `body`; the runtime converts it to FlowMesh's `{{prompt}}` placeholder. The API executor URL-encodes a `{{prompt}}` in a URL and passes `params` to `httpx`, so query values in `params` use the same form encoding as `requests`. `config.headers` carries the request headers, including credentials such as an API key: keep credentials there rather than in `url`, `params`, or `body`, which are archived as written. `config.timeout_sec`, `config.retries` (at most 10), and `config.max_concurrency` bound the request. Headers are sent as written, and every header value is redacted in the archived graph. Each input row produces one output row. `config.request_delay_sec` spaces actual request starts, including retries.
 
-With `config.fail_open: true`, a failed fetch yields an error row whose content
-is null and whose error carries the failure text, instead of failing the task.
+With `config.fail_open: true`, a failed fetch yields an error row whose content is null and whose error carries the failure text, instead of failing the task.
 
 ### LLMChatOp output enforcement and beam search
 
-`config.output_enforcement` validates generated text for both API-backed and
-local `LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex` and
-`max_attempts` (default `1`, maximum `10`). Retry mode leaves decoding untouched
-and re-asks only the rows that failed. A local deterministic decode is not
-retried: beam search and `temperature: 0` produce the same text again, so the
-vLLM worker runs one attempt and still records the outcome. Constrained mode
-asks local vLLM inference to constrain decoding to the requested format, so it
-is not available for API ops.
+`config.output_enforcement` validates generated text for both API-backed and local `LLMChatOp` runs. Set exactly one of `json_schema` or `text_regex` and `max_attempts` (default `1`, maximum `10`). Retry mode leaves decoding untouched and re-asks only the rows that failed. A local deterministic decode is not retried: beam search and `temperature: 0` produce the same text again, so the vLLM worker runs one attempt and still records the outcome. Constrained mode asks local vLLM inference to constrain decoding to the requested format, so it is not available for API ops.
 
-FlowMesh records each row's attempts and validation outcome in the task result;
-the Lumilake job output carries the final text only.
+FlowMesh records each row's attempts and validation outcome in the task result; the Lumilake job output carries the final text only.
 
-`config.num_beams` selects local beam search when it is greater than `1`. The
-highest-scoring sequence is returned, and API-backed ops reject the setting.
-`max_tokens` is the per-prompt ceiling. The beam path does not implement `stop`,
-`stop_token_ids`, `n`, `logprobs`, `min_tokens`, `presence_penalty`,
-`frequency_penalty`, `bad_words` or `seed`, so a non-default value for any of
-them fails at dispatch. A `repetition_penalty` other than `1.0` also fails
-unless `extra_sampling_params.renormalize_logits` is `true`, which ranks beams
-the way Transformers `generate` does.
+`config.num_beams` selects local beam search when it is greater than `1`. The highest-scoring sequence is returned, and API-backed ops reject the setting. `max_tokens` is the per-prompt ceiling. The beam path does not implement `stop`, `stop_token_ids`, `n`, `logprobs`, `min_tokens`, `presence_penalty`, `frequency_penalty`, `bad_words` or `seed`, so a non-default value for any of them fails at dispatch. A `repetition_penalty` other than `1.0` also fails unless `extra_sampling_params.renormalize_logits` is `true`, which ranks beams the way Transformers `generate` does.
 
 ```yaml
 ops:
@@ -245,11 +175,7 @@ ops:
 
 ### LLMChatOp via external API
 
-By default `LLMChatOp` runs against a locally-loaded model (vLLM /
-transformers) on a FlowMesh worker. Setting `config.api` routes the op to
-an external LLM API endpoint instead: the runtime builds a FlowMesh `api`
-task whose body is an OpenAI-style `{model, messages, ...samplers}` chat
-completion request, and the worker's `api_executor` performs the HTTP call.
+By default `LLMChatOp` runs against a locally-loaded model (vLLM / transformers) on a FlowMesh worker. Setting `config.api` routes the op to an external LLM API endpoint instead: the runtime builds a FlowMesh `api` task whose body is an OpenAI-style `{model, messages, ...samplers}` chat completion request, and the worker's `api_executor` performs the HTTP call.
 
 ```yaml
 ops:
@@ -264,111 +190,23 @@ ops:
       max_tokens: 256
 ```
 
-`config.api.url` is optional and defaults to `LUMILAKE_API_DEFAULT_URL`,
-whose own default is the serving endpoint
-`https://lum.id/llm/v1/chat/completions`. An operator can point every
-API-mode op that leaves the URL unset at a local OpenAI-compatible endpoint
-by setting `LUMILAKE_API_DEFAULT_URL`; an explicit `config.api.url` always
-wins over it. `config.model` is required in both
-local and API mode — `config.api` is a backend switch and does not relax the
-model requirement, so the workflow spec reads the same either way. The request
-model resolves from `config.api.model`, then the top-level `config.model`.
-Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into
-the request body.
+`config.api.url` is optional and defaults to `LUMILAKE_API_DEFAULT_URL`, whose own default is the serving endpoint `https://lum.id/llm/v1/chat/completions`. An operator can point every API-mode op that leaves the URL unset at a local OpenAI-compatible endpoint by setting `LUMILAKE_API_DEFAULT_URL`; an explicit `config.api.url` always wins over it. `config.model` is required in both local and API mode — `config.api` is a backend switch and does not relax the model requirement, so the workflow spec reads the same either way. The request model resolves from `config.api.model`, then the top-level `config.model`. Sampler fields on `config` (e.g. `max_tokens`, `temperature`) are merged into the request body.
 
-`config.api.timeout_sec` sets the per-request timeout for the API call,
-in seconds. When set, it is emitted into the FlowMesh `api` task spec and
-overrides the executor's default; when unset, no timeout key is emitted and
-the executor's own default applies. Use it for long-running extractions over
-large documents, which can exceed the executor's default.
+`config.api.timeout_sec` sets the per-request timeout for the API call, in seconds. When set, it is emitted into the FlowMesh `api` task spec and overrides the executor's default; when unset, no timeout key is emitted and the executor's own default applies. Use it for long-running extractions over large documents, which can exceed the executor's default.
 
-`config.api.concurrency` sets the number of in-flight requests for the API
-task. It must be a positive integer no greater than 8, the cap FlowMesh
-sets; when unset, FlowMesh uses 8.
+`config.api.concurrency` sets the number of in-flight requests for the API task. It must be a positive integer no greater than 8, the cap FlowMesh sets; when unset, FlowMesh uses 8.
 
-The credential is resolved server-side, not supplied by the caller. If
-`config.api.url`'s origin is on the trusted-origin allowlist (the default
-`https://lum.id`, the origin of `LUMILAKE_API_DEFAULT_URL`, and everything
-listed in `LUMILAKE_API_TRUSTED_ORIGINS`), the server
-attaches `Authorization: Bearer <LUMILAKE_RUNTIME_TOKEN>` itself; for any
-other origin the caller must set `config.api.authorization` explicitly, or
-the request is rejected before dispatch. This header does become part of
-the FlowMesh task spec that is actually submitted for execution — it is not
-kept out of the spec — but it is redacted (replaced with `***REDACTED***`)
-before the job is archived or an error body is logged.
+The credential is resolved server-side, not supplied by the caller. If `config.api.url`'s origin is on the trusted-origin allowlist (the default `https://lum.id`, the origin of `LUMILAKE_API_DEFAULT_URL`, and everything listed in `LUMILAKE_API_TRUSTED_ORIGINS`), the server attaches `Authorization: Bearer <LUMILAKE_RUNTIME_TOKEN>` itself; for any other origin the caller must set `config.api.authorization` explicitly, or the request is rejected before dispatch. This header does become part of the FlowMesh task spec that is actually submitted for execution — it is not kept out of the spec — but it is redacted (replaced with `***REDACTED***`) before the job is archived or an error body is logged.
 
-A message may also reference an upstream node's runtime output — the same
-way the local backend does, via `inputs:` plus that op's id in `messages:`
-(directly for a non-`LLMChatOp` upstream such as `DataRetrievalOp`, or
-through `FormatOp` when relaying another `LLMChatOp`'s output) — and API
-mode is not restricted to literal, build-time content. Such a reference
-renders as a FlowMesh `${node.path}` dispatch-time
-placeholder instead of a literal value: FlowMesh's dispatcher resolves it
-against the referenced node's real result immediately before the `api`
-executor runs, and the referenced node is added to this op's FlowMesh
-dependencies so dispatch waits for it. An upstream `LLMChatOp` (local or
-API-backed) renders as its text output; an upstream `DataRetrievalOp`
-renders per its mode (e.g. `sql` renders the retrieved table). A reference
-is always single-valued: an upstream `LLMChatOp` that produces multiple
-rows — whether by fanning out into several row-aligned nodes (see below)
-or by emitting several rows from a single node (a local rowwise op) —
-cannot be referenced this way; building the graph rejects it up front,
-since only this op's own message columns can carry that per-row
-alignment. The one exception is an API-mode consumer of an API-mode
-upstream: both are dispatched as `api` tasks, so the consumer fans out
-one node per upstream row, each referencing its own upstream row node
-(`${<row>.text}`) and declaring every upstream row node as a dependency.
-This includes an API rowwise upstream, which fans out into one node per
-row and is consumed per-row like any other fanned API upstream. Any other
-multi-row shape — a local consumer, a local upstream, a local rowwise
-upstream, or a `return_history` upstream — still fails closed at build
-time, because API mode cannot carry per-row alignment (or reconstruct
-per-row history) for it. An upstream `LLMChatOp` with `return_history`
-enabled is referenced the same way whether it ran locally or against an
-API: an API result carries no `metadata.prompt`, so the runtime inlines
-the literal prior prompt (the user message that was sent) at build time;
-a runtime-derived prior prompt cannot be reconstructed and fails closed.
+A message may also reference an upstream node's runtime output — the same way the local backend does, via `inputs:` plus that op's id in `messages:` (directly for a non-`LLMChatOp` upstream such as `DataRetrievalOp`, or through `FormatOp` when relaying another `LLMChatOp`'s output) — and API mode is not restricted to literal, build-time content. Such a reference renders as a FlowMesh `${node.path}` dispatch-time placeholder instead of a literal value: FlowMesh's dispatcher resolves it against the referenced node's real result immediately before the `api` executor runs, and the referenced node is added to this op's FlowMesh dependencies so dispatch waits for it. An upstream `LLMChatOp` (local or API-backed) renders as its text output; an upstream `DataRetrievalOp` renders per its mode (e.g. `sql` renders the retrieved table). A reference is always single-valued: an upstream `LLMChatOp` that produces multiple rows — whether by fanning out into several row-aligned nodes (see below) or by emitting several rows from a single node (a local rowwise op) — cannot be referenced this way; building the graph rejects it up front, since only this op's own message columns can carry that per-row alignment. The one exception is an API-mode consumer of an API-mode upstream: both are dispatched as `api` tasks, so the consumer fans out one node per upstream row, each referencing its own upstream row node (`${<row>.text}`) and declaring every upstream row node as a dependency. This includes an API rowwise upstream, which fans out into one node per row and is consumed per-row like any other fanned API upstream. Any other multi-row shape — a local consumer, a local upstream, a local rowwise upstream, or a `return_history` upstream — still fails closed at build time, because API mode cannot carry per-row alignment (or reconstruct per-row history) for it. An upstream `LLMChatOp` with `return_history` enabled is referenced the same way whether it ran locally or against an API: an API result carries no `metadata.prompt`, so the runtime inlines the literal prior prompt (the user message that was sent) at build time; a runtime-derived prior prompt cannot be reconstructed and fails closed.
 
-When a message's literal content resolves to a multi-row input column
-(e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api`
-task per row instead of one aggregate call: row 0 keeps the op's own id,
-and row `i` (`i >= 1`) runs as `<op id>__row<i>`, each with that row's
-value substituted into the message content and each mapped back to the
-same declared output. Rows dispatch and complete independently, but
-within a single FlowMesh workflow request the failure semantics are
-all-or-nothing: if any row's task fails, that workflow request fails
-and no partial per-row results are returned for it, even for rows that
-already completed successfully. Lumilake then cancels that FlowMesh
-workflow, so its tasks still pending or running stop holding workers; the
-same happens when the request times out or fails for any other reason
-after FlowMesh accepted it.
+When a message's literal content resolves to a multi-row input column (e.g. `Stock: ["NVDA", "AAPL"]`), the op fans out into one FlowMesh `api` task per row instead of one aggregate call: row 0 keeps the op's own id, and row `i` (`i >= 1`) runs as `<op id>__row<i>`, each with that row's value substituted into the message content and each mapped back to the same declared output. Rows dispatch and complete independently, but within a single FlowMesh workflow request the failure semantics are all-or-nothing: if any row's task fails, that workflow request fails and no partial per-row results are returned for it, even for rows that already completed successfully. Lumilake then cancels that FlowMesh workflow, so its tasks still pending or running stop holding workers; the same happens when the request times out or fails for any other reason after FlowMesh accepted it.
 
-This guarantee holds per FlowMesh workflow request, not per job. A
-job's input rows can be split across multiple `input_batch_size`
-slices, each dispatched as its own independent workflow request; one
-slice's failure does not roll back another slice's already-merged
-results. The job's final response mixes the failed slice's rows (empty
-output plus an error entry) with the other slice's real per-row
-values.
+This guarantee holds per FlowMesh workflow request, not per job. A job's input rows can be split across multiple `input_batch_size` slices, each dispatched as its own independent workflow request; one slice's failure does not roll back another slice's already-merged results. The job's final response mixes the failed slice's rows (empty output plus an error entry) with the other slice's real per-row values.
 
-A local `LLMChatOp` with a `rowwise_template` runs one generation per input
-row. When it is the workflow output, its per-row results are returned as one
-output value per input row (FlowMesh groups them back into one item per table
-internally; the runtime flattens that back to per-row values at aggregation).
+A local `LLMChatOp` with a `rowwise_template` runs one generation per input row. When it is the workflow output, its per-row results are returned as one output value per input row (FlowMesh groups them back into one item per table internally; the runtime flattens that back to per-row values at aggregation).
 
-An optional `rowwise_seed` binds a per-row sampling seed. It takes the same
-`{node, path}` shape as a rowwise column and must resolve to one integer (or
-null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`,
-so each row's generation carries its own seed on a vLLM worker. A null entry
-keeps the op's own `seed` for that row. `rowwise_seed` requires
-`rowwise_template`, is rejected with `num_beams > 1` and in API mode, and its
-producer must emit one integer per row: a `LambdaOp`, a local per-row
-`LLMChatOp` with `structural_outputs` that holds an integer field, or a
-literal input. A retrieval, an API LLM, or any op that groups rows emits one
-list per group instead, a completion op emits text, and a chat op without
-`structural_outputs` emits text, so all of them are refused at build time.
-The seed's producer must be listed in the op's `inputs:`; a literal input's
-values are inlined as the seed list and take no `path`.
+An optional `rowwise_seed` binds a per-row sampling seed. It takes the same `{node, path}` shape as a rowwise column and must resolve to one integer (or null) per row; the runtime passes the column to FlowMesh as `spec.data.seeds`, so each row's generation carries its own seed on a vLLM worker. A null entry keeps the op's own `seed` for that row. `rowwise_seed` requires `rowwise_template`, is rejected with `num_beams > 1` and in API mode, and its producer must emit one integer per row: a `LambdaOp`, a local per-row `LLMChatOp` with `structural_outputs` that holds an integer field, or a literal input. A retrieval, an API LLM, or any op that groups rows emits one list per group instead, a completion op emits text, and a chat op without `structural_outputs` emits text, so all of them are refused at build time. The seed's producer must be listed in the op's `inputs:`; a literal input's values are inlined as the seed list and take no `path`.
 
 ```yaml
 - id: Answer
@@ -381,30 +219,13 @@ values are inlined as the seed list and take no `path`.
   rowwise_seed: {node: Seeds, path: items.output.seed}
 ```
 
-When every upstream column a per-row chat reads is empty, FlowMesh completes
-the task with an empty result without dispatching a worker.
+When every upstream column a per-row chat reads is empty, FlowMesh completes the task with an empty result without dispatching a worker.
 
-A `rowwise_messages` column replaces the rendered prompt with each row's whole
-conversation: `node` names the op whose output holds one message list per row,
-and `path` drills into that output (the whole output when omitted). Only
-`LLMChatOp` accepts it, it takes no `messages`, `system_messages`,
-`return_history`, `rowwise_template`, `rowwise_columns`, `aggregate_table` or
-`condition`, and its node must be listed in `inputs:`. The node is a
-list-mode `LambdaOp`, a data retrieval, or a literal input whose values
-are JSON message lists and which takes no `path`. Use it when the number
-of turns varies between rows.
+A `rowwise_messages` column replaces the rendered prompt with each row's whole conversation: `node` names the op whose output holds one message list per row, and `path` drills into that output (the whole output when omitted). Only `LLMChatOp` accepts it, it takes no `messages`, `system_messages`, `return_history`, `rowwise_template`, `rowwise_columns`, `aggregate_table` or `condition`, and its node must be listed in `inputs:`. The node is a list-mode `LambdaOp`, a data retrieval, or a literal input whose values are JSON message lists and which takes no `path`. Use it when the number of turns varies between rows.
 
 ### LLMCompletionOp
 
-`LLMCompletionOp` generates from rendered string prompts without the model
-chat template. `prompt` references a workflow input, a `LambdaOp`, or a local
-LLM op that produces one prompt string per row; render a templated prompt with
-a `LambdaOp`. Use it when the prompt already carries the model's own chat
-control tokens. Sampling fields are the same as `LLMChatOp`'s.
-`config.api` and `config.chat_template_kwargs` are not accepted: the task never
-applies a chat template, so both would have no effect. The same holds for a
-prompt read from an upstream op: when that op's output column is empty the task
-completes with an empty result without dispatching a worker.
+`LLMCompletionOp` generates from rendered string prompts without the model chat template. `prompt` references a workflow input, a `LambdaOp`, or a local LLM op that produces one prompt string per row; render a templated prompt with a `LambdaOp`. Use it when the prompt already carries the model's own chat control tokens. Sampling fields are the same as `LLMChatOp`'s. `config.api` and `config.chat_template_kwargs` are not accepted: the task never applies a chat template, so both would have no effect. The same holds for a prompt read from an upstream op: when that op's output column is empty the task completes with an empty result without dispatching a worker.
 
 ```yaml
 ops:
@@ -419,26 +240,11 @@ ops:
 
 ### LLMVisionOp
 
-`LLMVisionOp` runs vision-language generation over images. When it declares a
-`rowwise_template` and its `image_source` is a `DataRetrievalOp`, the runtime
-compiles it as a flat per-row VLM: one `flatten` python step renders one prompt
-per image (row-major across all symbols), one `embedding` task embeds every
-image, one `inference` task runs the model over the flat prompts, and a
-`regroup` python step groups the outputs back to one item per symbol. Downstream
-readers see the VLM's outputs grouped one list per symbol, read at
-`value.items.output`. The image source defines the per-symbol groups (one prompt
-per image); any other retrieval column must have the same per-symbol counts.
+`LLMVisionOp` runs vision-language generation over images. When it declares a `rowwise_template` and its `image_source` is a `DataRetrievalOp`, the runtime compiles it as a flat per-row VLM: one `flatten` python step renders one prompt per image (row-major across all symbols), one `embedding` task embeds every image, one `inference` task runs the model over the flat prompts, and a `regroup` python step groups the outputs back to one item per symbol. Downstream readers see the VLM's outputs grouped one list per symbol, read at `value.items.output`. The image source defines the per-symbol groups (one prompt per image); any other retrieval column must have the same per-symbol counts.
 
 ### LambdaOp
 
-`LambdaOp` runs a serialized Python function against the listed
-upstream values. YAML carries the function as source code (`code`) plus
-a `fn_name`. The function must accept the input tuple in the same
-order as `inputs:` and return a string. For `def` source, `fn_name` names the
-top-level function to call; imports, constants and helper functions may come
-before it, and a name the code references without binding, importing or
-defining is rejected at submit if the namespace does not provide it. For a
-`lambda` expression `fn_name` is only a label.
+`LambdaOp` runs a serialized Python function against the listed upstream values. YAML carries the function as source code (`code`) plus a `fn_name`. The function must accept the input tuple in the same order as `inputs:` and return a string. For `def` source, `fn_name` names the top-level function to call; imports, constants and helper functions may come before it, and a name the code references without binding, importing or defining is rejected at submit if the namespace does not provide it. For a `lambda` expression `fn_name` is only a label.
 
 ```yaml
 inputs:
@@ -461,109 +267,23 @@ outputs:
 
 Where the function runs depends on what reads it:
 
-- **An output, or read only by other `LambdaOp`s** (as above): compiled to its
-  own FlowMesh `python` task. This is the isolated path for submitted code: the
-  code runs in a per-task container with no network, as an unprivileged user,
-  and the Lumilake server never executes it. Its inputs may be LLM or
-  data-retrieval ops, other `LambdaOp`s, workflow inputs or literal data; the
-  function is applied once per row (length-1 inputs broadcast) and the step
-  emits `items[].output` like any other items-producing op. The step is placed
-  only on a CPU worker that advertises the `python` task type (a Docker-backed
-  worker on a FlowMesh version that supports it). While every such worker is
-  busy the batch waits for capacity; with no such worker in the cluster the
-  schedule fails before dispatch. Lumilake mounts the shared Lambda runtime
-  from a content-addressed blob and uploads literal payloads above 1 KiB once
-  per digest as mounted JSON. Smaller literals stay inline. The generated stub
-  holds only the op id, user code, function name, and plan; the worker fetches
-  blobs through `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`).
-  The code may `import` any module the task image provides (the default image
-  carries the standard library, numpy and pandas), at module level or in the
-  function body; only relative imports are rejected at submit. A `LambdaOp` with
-  an `image` always runs as its own standalone `python` task. If the function
-  raises, the job's error names the step and the exception, for example `Output
-  task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh
-  task as a template function step, and evaluated by the FlowMesh worker that
-  runs the task. This is not a Lumilake-provided isolation boundary; use the
-  standalone form above for code that should run in its own container. The
-  worker's namespace has no `import`, and it calls the first name the code
-  binds, so here the code must not import anything and `fn_name` must be the
-  first definition; code that breaks either rule is rejected at submit. If a
-  runtime node (such as a data-retrieval op) also reads the same
-  `LambdaOp`, it is additionally compiled to its own standalone `python` task so
-  that node can reference its output; the LLM still inlines it, so the function
-  is evaluated once per reader.
-- **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The
-  server does not run `LambdaOp` code to render an API request body, and the
-  request body cannot carry a function step, so the build fails with an error
-  naming the step. Make the `LambdaOp` a workflow output, or use a non-API
-  `LLMChatOp`.
+- **An output, or read only by other `LambdaOp`s** (as above): compiled to its own FlowMesh `python` task. This is the isolated path for submitted code: the code runs in a per-task container with no network, as an unprivileged user, and the Lumilake server never executes it. Its inputs may be LLM or data-retrieval ops, other `LambdaOp`s, workflow inputs or literal data; the function is applied once per row (length-1 inputs broadcast) and the step emits `items[].output` like any other items-producing op. The step is placed only on a CPU worker that advertises the `python` task type (a Docker-backed worker on a FlowMesh version that supports it). While every such worker is busy the batch waits for capacity; with no such worker in the cluster the schedule fails before dispatch. Lumilake mounts the shared Lambda runtime from a content-addressed blob and uploads literal payloads above 1 KiB once per digest as mounted JSON. Smaller literals stay inline. The generated stub holds only the op id, user code, function name, and plan; the worker fetches blobs through `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`). The code may `import` any module the task image provides (the default image carries the standard library, numpy and pandas), at module level or in the function body; only relative imports are rejected at submit. A `LambdaOp` with an `image` always runs as its own standalone `python` task. If the function raises, the job's error names the step and the exception, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
+- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh task as a template function step, and evaluated by the FlowMesh worker that runs the task. This is not a Lumilake-provided isolation boundary; use the standalone form above for code that should run in its own container. The worker's namespace has no `import`, and it calls the first name the code binds, so here the code must not import anything and `fn_name` must be the first definition; code that breaks either rule is rejected at submit. If a runtime node (such as a data-retrieval op) also reads the same `LambdaOp`, it is additionally compiled to its own standalone `python` task so that node can reference its output; the LLM still inlines it, so the function is evaluated once per reader.
+- **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The server does not run `LambdaOp` code to render an API request body, and the request body cannot carry a function step, so the build fails with an error naming the step. Make the `LambdaOp` a workflow output, or use a non-API `LLMChatOp`.
 
-A `LambdaOp` may declare `mode: list`. The function then receives each input as
-its whole list and returns a list of JSON values; the standalone `python` task
-emits one item per element in order, so each element is one group downstream,
-read at `value.items.output`. A list-mode `LambdaOp` is read through a node
-column (`rowwise_columns` / `aggregate_table`), not through an LLM message
-chain.
+A `LambdaOp` may declare `mode: list`. The function then receives each input as its whole list and returns a list of JSON values; the standalone `python` task emits one item per element in order, so each element is one group downstream, read at `value.items.output`. A list-mode `LambdaOp` is read through a node column (`rowwise_columns` / `aggregate_table`), not through an LLM message chain.
 
-An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an
-`ImageGenerationOp` content whose list column binds a list-mode `LambdaOp`
-directly runs once per element, so it produces one whole-list value holding
-every answer, embedded row or image, not one value per row. A node that reads
-the whole column as one value, such as an `aggregate_table` chat, already
-answers once per run, so its answer is the output value as it is. A per-element
-node two or more hops from the list-mode `LambdaOp` is not folded, and its
-several values fail the run's slice merge.
+An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an `ImageGenerationOp` content whose list column binds a list-mode `LambdaOp` directly runs once per element, so it produces one whole-list value holding every answer, embedded row or image, not one value per row. A node that reads the whole column as one value, such as an `aggregate_table` chat, already answers once per run, so its answer is the output value as it is. A per-element node two or more hops from the list-mode `LambdaOp` is not folded, and its several values fail the run's slice merge.
 
-A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one
-value per input row: the row-wise LLM groups its per-row outputs back into one
-item internally, and the standalone `python` step flattens that grouped item
-back to one value per row before the function sees its whole-list input.
+A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one value per input row: the row-wise LLM groups its per-row outputs back into one item internally, and the standalone `python` step flattens that grouped item back to one value per row before the function sees its whole-list input.
 
-`mode: aligned` is the same calling convention as `list` (whole columns in, a
-list out, read at `value.items.output`), with one added guarantee: the function
-returns exactly one value per input row, and the standalone task raises if the
-returned list's length does not match the row count. Because its output is
-row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run
-value, so its dependents keep one item per row and can be split across slices.
-In both `row` and `aligned` mode, inputs with unequal multi-row counts are
-rejected at submit: every multi-row input must carry the same number of rows.
+`mode: aligned` is the same calling convention as `list` (whole columns in, a list out, read at `value.items.output`), with one added guarantee: the function returns exactly one value per input row, and the standalone task raises if the returned list's length does not match the row count. Because its output is row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run value, so its dependents keep one item per row and can be split across slices. In both `row` and `aligned` mode, inputs with unequal multi-row counts are rejected at submit: every multi-row input must carry the same number of rows.
 
-A list-mode `LambdaOp` runs once over the whole input lists of one run, so its
-single whole-list result cannot be partitioned per slice. A submission whose
-`input_batch_size` would split a list-mode `LambdaOp` output across more than
-one slice is rejected at submit with a message naming the output and the fix
-(submit one input value per job, or raise `input_batch_size` so the whole input
-set runs in a single slice). A row-mode step below a list-mode `LambdaOp`
-keeps its input's cardinality, one value per element the Lambda returned, and
-submit refuses to split it across slices too.
+A list-mode `LambdaOp` runs once over the whole input lists of one run, so its single whole-list result cannot be partitioned per slice. A submission whose `input_batch_size` would split a list-mode `LambdaOp` output across more than one slice is rejected at submit with a message naming the output and the fix (submit one input value per job, or raise `input_batch_size` so the whole input set runs in a single slice). A row-mode step below a list-mode `LambdaOp` keeps its input's cardinality, one value per element the Lambda returned, and submit refuses to split it across slices too.
 
-The server never executes submitted `LambdaOp` code in its own process or in a
-child of it. Submitted source is only parsed (it must be a lambda, or source
-that defines a one-parameter `def` named `fn_name`), and a `LambdaOp` whose inputs are
-all literal is not folded into a constant when its code was submitted. Code
-authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a
-real callable, as used by library callers of the graph builder) is the caller's
-own trusted code and may be called in-process.
+The server never executes submitted `LambdaOp` code in its own process or in a child of it. Submitted source is only parsed (it must be a lambda, or source that defines a one-parameter `def` named `fn_name`), and a `LambdaOp` whose inputs are all literal is not folded into a constant when its code was submitted. Code authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a real callable, as used by library callers of the graph builder) is the caller's own trusted code and may be called in-process.
 
-In every location the function sees the same base namespace: a small set of
-builtins (`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`,
-`sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`,
-`map`, `filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`,
-`np` and `pd`. The standalone namespace additionally has the built-in exception
-classes user code reasonably raises or catches (`Exception`, `ArithmeticError`,
-`AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`,
-`NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`,
-`TypeError`, `ValueError`, `ZeroDivisionError`); the inline namespace has no
-exception classes, so inline code that references one is rejected at submit. The
-standalone task embeds the same materializer the server validates against. This
-namespace fixes which names resolve; it is **not** a security boundary. In the
-standalone task the container is the boundary, which is why that task allows
-importing any module the image provides; `np` / `pd` resolve only if the task
-image provides them. A name the code references that the namespace does not
-provide (and that is not bound, imported or defined in the code) is rejected at
-submit with the name and the fix, instead of failing with `NameError` when the
-task runs.
+In every location the function sees the same base namespace: a small set of builtins (`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`, `np` and `pd`. The standalone namespace additionally has the built-in exception classes user code reasonably raises or catches (`Exception`, `ArithmeticError`, `AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`, `NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`, `TypeError`, `ValueError`, `ZeroDivisionError`); the inline namespace has no exception classes, so inline code that references one is rejected at submit. The standalone task embeds the same materializer the server validates against. This namespace fixes which names resolve; it is **not** a security boundary. In the standalone task the container is the boundary, which is why that task allows importing any module the image provides; `np` / `pd` resolve only if the task image provides them. A name the code references that the namespace does not provide (and that is not bound, imported or defined in the code) is rejected at submit with the name and the fix, instead of failing with `NameError` when the task runs.
 
 Optional per-op limits for the standalone `python` task:
 
@@ -576,33 +296,15 @@ Optional per-op limits for the standalone `python` task:
 | `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 | `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
-The limits apply only to the standalone `python` task; they have no effect on a
-`LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as
-its own standalone `python` task and may set `timeout_s` up to FlowMesh's
-3600 s cap; without an `image` the cap stays at 600 s.
+The limits apply only to the standalone `python` task; they have no effect on a `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as its own standalone `python` task and may set `timeout_s` up to FlowMesh's 3600 s cap; without an `image` the cap stays at 600 s.
 
-`expected_runtime_s` is a planning hint only: it is seconds per input row of
-the task, and HALO uses it to estimate the step's run time. It is never
-enforced as a limit. When a job's input slices are coalesced into one
-workflow, the step runs their rows in sequence, so Lumilake coalesces only as
-many slices as keep the step's expected run time within its `timeout_s`; the
-rest run as separate copies of the workflow in the same batch. A slice whose
-row count cannot be known before it runs is never coalesced. `cache` is also
-opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it.
-`sample_value` is never executed: it only supplies a representative value so
-data-profile preflight can resolve a placeholder whose upstream is this
-`LambdaOp`.
+`expected_runtime_s` is a planning hint only: it is seconds per input row of the task, and HALO uses it to estimate the step's run time. It is never enforced as a limit. When a job's input slices are coalesced into one workflow, the step runs their rows in sequence, so Lumilake coalesces only as many slices as keep the step's expected run time within its `timeout_s`; the rest run as separate copies of the workflow in the same batch. A slice whose row count cannot be known before it runs is never coalesced. `cache` is also opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it. `sample_value` is never executed: it only supplies a representative value so data-profile preflight can resolve a placeholder whose upstream is this `LambdaOp`.
 
-For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)`
-serializes the function automatically via `dill.source.getsource` — see
-`src/lumilake_server/ops/util_ops.py` for the closure-capture rules.
+For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)` serializes the function automatically via `dill.source.getsource` — see `src/lumilake_server/ops/util_ops.py` for the closure-capture rules.
 
 ### RouterOp
 
-`RouterOp` partitions one source op's rows into named branches, one ordinary
-node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The
-first rule that matches wins; `match` is `contains` or `equals`, optional
-`path` selects the field tested, and `default_branch` keeps unmatched rows.
+`RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains` or `equals`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows.
 
 ```yaml
 ops:
