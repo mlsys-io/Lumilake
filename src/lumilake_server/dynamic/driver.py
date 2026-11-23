@@ -848,9 +848,9 @@ def validate_emitted_subgraph(
             continue
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
-                f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp, DataRetrievalOp, LambdaOp"
-                " or JoinOp"
+                f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be"
+                " archived; every leaf must be an LLMOp, DataRetrievalOp, LambdaOp or"
+                " JoinOp"
             )
 
 

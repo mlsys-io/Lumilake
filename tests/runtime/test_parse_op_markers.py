@@ -197,8 +197,8 @@ def test_a_model_op_reading_marked_values_is_refused(
 
 
 def test_a_router_branch_clears_markers_only_where_its_own_expansion_set_it() -> None:
-    # The flag is set on the branches a router's expansion produced, so a user
-    # graph cannot declare it: its own ids never appear in the parser's set.
+    # The flag is set on the branches a router's expansion produced, so a user graph
+    # cannot declare it: its own ids never appear in the parser's set.
     values = {"Answer": ['{"a": 1}']}
     router = _router(inputs=["L"], error_branch=True)
     ops = [_parse(format="json"), _lower(), router, _model_reading("R.ok")]
@@ -257,8 +257,8 @@ def test_a_list_lambda_emits_every_value_of_a_returned_generator(
     [
         ("def f(items):\n    return items[0]\n", False),
         (
-            "def f(items):\n    return items[0][:1] +"
-            " [{'_fail': {'op': 'X', 'reason': 'new'}}]\n",
+            "def f(items):\n    return items[0][:1] + [{'_fail': {'op': 'X', 'reason':"
+            " 'new'}}]\n",
             True,
         ),
     ],
@@ -267,9 +267,8 @@ def test_a_list_lambda_emits_every_value_of_a_returned_generator(
 def test_a_router_error_branch_passes_its_markers_and_refuses_a_new_one(
     tail_code: str, refused: bool, tmp_path: Path
 ) -> None:
-    # The router's list lambda re-encodes each row, so the error branch gets
-    # JSON text and passes on its own decoded copy; a marker it builds itself
-    # is refused.
+    # The router's list lambda re-encodes each row, so the error branch gets JSON text
+    # and passes on its own decoded copy; a marker it builds itself is refused.
     tail = _lower(inputs=["R.error"], mode="list", code=tail_code)
     ops = [_parse(format="json"), _router(error_branch=True), tail]
     if refused:
@@ -326,8 +325,9 @@ _EXPAND_UNITS: dict[str, Any] = {
     "inputs": ["Answer"],
     "mode": "expand",
     "fn_name": "units",
-    "code": "def units(row):\n"
-    "    return [u for u in row[0]['units'].split(',') if u]\n",
+    "code": (
+        "def units(row):\n    return [u for u in row[0]['units'].split(',') if u]\n"
+    ),
 }
 
 _EXPAND_UNITS = _lower(
@@ -382,8 +382,8 @@ def test_an_expand_that_fails_an_empty_parent_is_a_marker_source() -> None:
 @pytest.mark.parametrize(
     "op, answers, expected",
     [
-        # A row whose key cannot be read is its own group and emits its marker,
-        # whether the row is the marker or its key path reaches one.
+        # A row whose key cannot be read is its own group and emits its marker, whether
+        # the row is the marker or its key path reaches one.
         (
             _reduce("fail_group"),
             ["bad", json.dumps({"unit": json.loads(_MARKED)}), '{"unit": "u"}'],
@@ -393,8 +393,8 @@ def test_an_expand_that_fails_an_empty_parent_is_a_marker_source() -> None:
         (_reduce("fail_group"), [_MARKED_KEY], ["no JSON object"]),
         (_reduce("drop_failed"), [_MARKED_KEY, '{"unit": "u"}'], [1]),
         (_reduce("drop_failed"), [_MARKED_KEY], ["empty group"]),
-        # An expand emits one tombstone for a marked parent at child zero, and
-        # every item names its parent and child.
+        # An expand emits one tombstone for a marked parent at child zero, and every
+        # item names its parent and child.
         (
             {**_EXPAND_UNITS, "inputs": ["P"]},
             ['{"units": "a,b"}', "bad"],
