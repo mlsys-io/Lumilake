@@ -29,6 +29,7 @@ from lumilake_server.parser.n8n_nodes.constants import N8N_CHAT_TRIGGER, N8N_COD
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import JobRecord, JobStatus
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.reuse_planner import OpDecision
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -93,6 +94,9 @@ class _FakeRuntimeServer:
         return LumilakeResponse(outputs={})
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
+        return []
+
+    def reuse_decisions_for_request(self, job_id: str) -> list[OpDecision]:
         return []
 
     def optimization_seconds_for_request(self, job_id: str) -> float:

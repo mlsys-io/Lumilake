@@ -20,6 +20,7 @@ from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.reuse_planner import OpDecision
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -94,6 +95,9 @@ class _FakeRuntimeServer:
         return LumilakeResponse(outputs={})
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
+        return []
+
+    def reuse_decisions_for_request(self, job_id: str) -> list[OpDecision]:
         return []
 
     def optimization_seconds_for_request(self, job_id: str) -> float:

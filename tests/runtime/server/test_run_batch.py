@@ -1061,10 +1061,12 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
         *,
         items: list[dict[str, Any]],
         history: list[dict[str, str]] | None = None,
+        answered: list[dict[str, str]] | None = None,
     ) -> None:
         super().__init__()
         self._items = items
         self._history = history
+        self._answered = answered
 
     async def process_request(
         self,
@@ -1073,6 +1075,15 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
         worker_ids: list[str],
         data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
+        if self._answered is not None:
+            (node,) = request_info.output_node_map
+            request_info.runtime_graph = RuntimeGraph(
+                nodes={}, node_order=[], output_node_map={}
+            )
+            return {
+                "flat_outputs": {node: [json.dumps(self._answered)]},
+                "chat_histories": {},
+            }
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
         histories: dict[str, list[list[dict[str, str]]]] = {}
@@ -1561,6 +1572,37 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     assert len(observations) == 1
     assert json.loads(observations[0]) == whole_list
     assert resp.chat_histories["shared"]["observations"] == [history]
+
+
+@pytest.mark.asyncio
+async def test_a_store_answered_list_lambda_output_keeps_its_whole_list_shape(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A list-mode output a store answers in full leaves the graph, so the demux
+    keeps the cardinality the merged graph declared before the plan."""
+    whole_list = [{"fid": "f1"}, {"fid": "f2"}]
+    server = server_factory()
+    server.runtime_manager = _ListLambdaRuntimeManager(items=[], answered=whole_list)
+    workflows = [
+        make_workflow(
+            workflow_id="wf-list",
+            request_id="req-list",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=2,
+            total_length=2,
+        )
+    ]
+    (handler,) = attach_request_states(server, workflows).values()
+    merge = SimpleNamespace(_coalesce_rewrite_hits={})
+    monkeypatch.setattr(server, "_merge_group_compiled_graph", lambda items: merge)
+    _install_list_lambda_build_and_schedule(server, "observations")
+    await server._run_batch(["worker-1"], make_batch(workflows))
+
+    assert handler.results[0].outputs["shared"]["observations"] == [
+        json.dumps(whole_list)
+    ]
 
 
 @pytest.mark.asyncio

@@ -745,7 +745,13 @@ def flowmesh_spec(
     spec["blobs"] = [_blob_entry(runtime)] + [
         _blob_entry(blob) for blob in literal_mounts
     ]
-    stages = list(dict.fromkeys(entry.node for entry in plan if entry.kind == "stage"))
+    stages = list(
+        dict.fromkeys(
+            entry.node
+            for entry in plan
+            if entry.kind == "stage" and entry.values is None
+        )
+    )
     if stages:
         spec["inputs"] = [{"stage": stage} for stage in stages]
     if data_spec.memory_mb is not None:

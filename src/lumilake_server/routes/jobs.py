@@ -116,6 +116,7 @@ from lumilake_server.runtime.record_lineage import (
     build_lineage_payload,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
+from lumilake_server.runtime.reuse_planner import OpDecision
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
@@ -129,6 +130,7 @@ from lumilake_server.schemas.progress import (
     ProgressStep,
     WorkflowUsage,
 )
+from lumilake_server.schemas.record import RecordFlags
 from lumilake_server.utils.data_profile_offload import (
     build_request_data_profile_tasks,
     data_profile_registry,
@@ -675,19 +677,21 @@ def _submitted_job_seed(
     return seeds.pop() if seeds else 0
 
 
-def _workflow_store_flag(workflow_payload: Any, graph_name: str) -> bool:
-    """Whether the workflow asks for its records to be stored."""
+def _workflow_flags(workflow_payload: Any, graph_name: str) -> RecordFlags:
+    """The record-store flags a workflow sets at its top level, off unless set.
+
+    The flags sit at the top level of a YAML document or beside ``graph`` in a
+    native payload. Only a mapping carries flags; the parser reports any other
+    payload."""
     if not isinstance(workflow_payload, dict):
-        return False
-    flag = workflow_payload.get("store")
-    if flag is None:
-        return False
-    if not isinstance(flag, bool):
+        return RecordFlags()
+    try:
+        return RecordFlags.model_validate(workflow_payload)
+    except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"workflow '{graph_name}' field 'store' must be a boolean",
-        )
-    return flag
+            detail=f"workflow '{graph_name}': {_format_validation_errors(exc)}",
+        ) from exc
 
 
 @dataclass
@@ -716,6 +720,9 @@ class JobRecord:
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
     store: bool = False
+    reuse: bool = False
+    reuse_decisions: list[OpDecision] = field(default_factory=list)
+    """The reuse plan's per-op decisions, empty when the job did not reuse."""
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -725,6 +732,9 @@ class JobRecord:
             self.result = LumilakeResponse.model_validate(self.result)
         self.workflow_dispatches = [
             WorkflowDispatch.model_validate(row) for row in self.workflow_dispatches
+        ]
+        self.reuse_decisions = [
+            OpDecision.model_validate(row) for row in self.reuse_decisions
         ]
         normalized: dict[str, IOLocation] = {}
         for key, loc in self.output_location.items():
@@ -790,6 +800,14 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "Raw per-workflow scheduler dispatch rows, one per actual dispatch."
+        ),
+    )
+    reuse_decisions: list[OpDecision] = Field(
+        default_factory=list,
+        description=(
+            "One hit-or-miss decision per op when the job asked to reuse the"
+            " record store, each with the first reason a miss ran; empty"
+            " otherwise."
         ),
     )
 
@@ -880,7 +898,7 @@ def _format_validation_errors(exc: ValidationError) -> str:
     parts: list[str] = []
     for err in exc.errors():
         loc = ".".join(str(part) for part in err["loc"])
-        parts.append(f"{loc}: {err['msg']}")
+        parts.append(f"{loc}: {err['msg']}" if loc else err["msg"])
     return "; ".join(parts)
 
 
@@ -1893,6 +1911,7 @@ async def _submit_dynamic_child(
     one_slice: bool = False,
     cleared_ids: Collection[str] = (),
     store_records: bool = False,
+    reuse_records: bool = False,
     semantic_round: int | None = None,
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
@@ -1986,6 +2005,7 @@ async def _submit_dynamic_child(
         progress=JobProgress(),
         parent_job_id=parent_job_id,
         store=store_records,
+        reuse=reuse_records,
     )
     async with jobs_lock:
         parent_record = jobs.get(parent_job_id)
@@ -2021,6 +2041,7 @@ async def _submit_dynamic_child(
             chain_id=parent_job_id,
             chain_round=semantic_round,
             store=store_records,
+            reuse=reuse_records,
         )
     )
     try:
@@ -2349,6 +2370,7 @@ async def _run_dynamic_job(
                     job_timeout=spec.driver.job_timeout,
                     cleared_ids=round_build.cleared_native_ids,
                     store_records=record.store,
+                    reuse_records=record.reuse,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2676,6 +2698,7 @@ async def _run_template_job(
                     one_slice=True,
                     cleared_ids=round_build.cleared_native_ids,
                     store_records=record.store,
+                    reuse_records=record.reuse,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2857,6 +2880,7 @@ async def _run_job(
     chain_id: str | None = None,
     chain_round: int = 0,
     store: bool = False,
+    reuse: bool = False,
 ) -> None:
     set_trace_id(trace_id)
     server = LumilakeServer.get_started_instance()
@@ -2921,6 +2945,7 @@ async def _run_job(
                 chain_id=chain_id,
                 chain_round=chain_round,
                 store=store,
+                reuse=reuse,
             ),
             workflow_slices=workflow_slices,
         )
@@ -2936,6 +2961,7 @@ async def _run_job(
         )
         artifact_uris = _collect_artifact_uris(stored_payload)
         validated_result = LumilakeResponse.model_validate(stored_payload)
+        reuse_decisions = server.reuse_decisions_for_request(job_id)
         try:
             optimization_seconds = server.optimization_seconds_for_request(job_id)
         except Exception:
@@ -2961,6 +2987,7 @@ async def _run_job(
             else:
                 record.result = validated_result
                 record.trace_ids = list(trace_ids)
+                record.reuse_decisions = reuse_decisions
                 if optimization_seconds is not None:
                     record.optimization_seconds = optimization_seconds
                 if selection_seconds is not None:
@@ -3638,6 +3665,7 @@ async def submit_job(
     seen_public_names: set[str] = set()
     dynamic_spec: DynamicSpec | None = None
     store_records = False
+    reuse_records = False
     for idx, entry in enumerate(entries):
         dynamic_output_location: dict[str, Any] | None = None
         workflow_payload = _decode_workflow_body(entry.workflow, workflow_format, idx)
@@ -3654,6 +3682,7 @@ async def submit_job(
         if is_dynamic:
             dynamic_spec = _decode_dynamic_spec(entry.workflow, idx)
             store_records = store_records or dynamic_spec.store
+            reuse_records = reuse_records or dynamic_spec.reuse
             workflow_payload, dynamic_output_location = _render_dynamic_round0(
                 dynamic_spec
             )
@@ -3665,7 +3694,9 @@ async def submit_job(
                 detail=f"duplicate workflow name: {name}",
             )
         seen_public_names.add(name)
-        store_records = store_records or _workflow_store_flag(workflow_payload, name)
+        flags = _workflow_flags(workflow_payload, name)
+        store_records = store_records or flags.store
+        reuse_records = reuse_records or flags.reuse
         inputs: dict[str, list[str]] = {}
         output_location = _effective_dynamic_output_location(
             dynamic_output_location, entry.output_location
@@ -3811,6 +3842,7 @@ async def submit_job(
         user_id=principal.external_id,
         progress=JobProgress(),
         store=store_records,
+        reuse=reuse_records,
     )
 
     async with jobs_lock:
@@ -3858,6 +3890,7 @@ async def submit_job(
                 hardware,
                 graphs,
                 store=record.store,
+                reuse=record.reuse,
             )
         )
     request.app.state.background_tasks.add(task)

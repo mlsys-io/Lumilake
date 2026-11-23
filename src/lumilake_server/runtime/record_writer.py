@@ -73,13 +73,17 @@ class NodeRecords:
         keyed: bool,
         values: list[Any],
         keys: list[str | None] | None,
-        items: list[Any],
+        items: list[Any] | None = None,
+        entries: list[RecordEntry] | None = None,
     ) -> None:
         self.keyed = keyed
         self.values = values
         self.keys = keys
-        self.items = items
+        self.items: list[Any] = [] if items is None else items
         self.digests: dict[tuple[str | None, int], tuple[str, str | None]] = {}
+        self.entries: list[RecordEntry] = entries if entries is not None else []
+        """The entries this node's records were read from, when no task wrote
+        them: a reuse plan's served entries, listed in the job's index."""
 
     def value_at(self, position: int) -> Any:
         """The value of the record at ``position``; a node's unkeyed record is
@@ -170,16 +174,21 @@ class RecordWriter:
         member_store: Mapping[str, bool] | None = None,
         member_rounds: Mapping[str, int] | None = None,
         node_owners: Mapping[str, set[str]] | None = None,
+        served: Mapping[str, NodeRecords] | None = None,
     ) -> int:
-        """Write the records of every node this batch produced and return how
-        many. Only a member job that asked for the store indexes an entry."""
-        if not self._enabled or not results:
+        """Write the records of every node this batch produced and return how many.
+
+        ``served`` holds the records a reuse plan answered without a task; they
+        enter each storing member's index too."""
+        if not self._enabled:
             return 0
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
         records = _collect_node_records(
             runtime_graph, plans, order, node_task_map, results, self.logger
         )
+        for node_id, served_records_of_node in (served or {}).items():
+            records.setdefault(node_id, served_records_of_node)
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
@@ -198,8 +207,8 @@ class RecordWriter:
             )
             if not storing:
                 continue
-            if _reads_unversioned(plan) or any(
-                node in unversioned for node in _input_nodes(plan)
+            if reads_unversioned(plan) or any(
+                node in unversioned for node in input_nodes(plan)
             ):
                 unversioned.add(node_id)
             versions = EffectVersions(unversioned=node_id in unversioned)
@@ -247,7 +256,39 @@ class RecordWriter:
                 ", ".join(sorted(indexed)),
                 round_number,
             )
+        await self._index_served(
+            member_job_ids,
+            served or {},
+            store=store,
+            rounds=rounds_of,
+            owners=owners_of,
+        )
         return len(entries)
+
+    async def _index_served(
+        self,
+        member_job_ids: list[str],
+        served: Mapping[str, NodeRecords],
+        *,
+        store: Mapping[str, bool],
+        rounds: Mapping[str, int],
+        owners: Mapping[str, set[str]],
+    ) -> None:
+        """List the entries a reuse plan served in each storing member's index."""
+        for node_id, node_records in served.items():
+            if not node_records.entries:
+                continue
+            members = _storing_owners(
+                node_id, member_job_ids, store=store, owners=owners
+            )
+            for member in members:
+                await self._write_index(
+                    member,
+                    [
+                        (entry, rounds.get(member, entry.address.round))
+                        for entry in node_records.entries
+                    ],
+                )
 
     def _save_entry_once(self, entry: RecordEntry) -> None:
         """Write an entry unless its object already exists. Best effort: a
@@ -283,10 +324,10 @@ class RecordWriter:
             if failed and not is_marker(value):
                 value = _decoded(value)
             value_hash = None if failed else digest_of(value)
-            input_digests, input_values = _position_inputs(
+            input_digests, input_value_digests = position_inputs(
                 inputs, position, keyed=plan.keyed
             )
-            realization = _realization(
+            draw = realization(
                 plan,
                 node_records,
                 records,
@@ -299,8 +340,8 @@ class RecordWriter:
                 spec_digest=plan.spec_digest,
                 address=address,
                 input_digests=input_digests,
-                input_values=input_values,
-                realization=realization,
+                input_values=input_value_digests,
+                realization=draw,
                 versions=versions,
             )
             node_records.digests[record, source.round] = (digest, value_hash)
@@ -312,8 +353,8 @@ class RecordWriter:
                     value=redact_sensitive(value),
                     value_digest=value_hash,
                     input_digests=input_digests,
-                    input_values=input_values,
-                    realization=realization,
+                    input_values=input_value_digests,
+                    realization=draw,
                     versions=versions,
                     source=source,
                     written_at=time.time(),
@@ -407,7 +448,7 @@ def _members_by_round(
     return sorted((member_round, members) for member_round, members in grouped.items())
 
 
-def _position_inputs(
+def position_inputs(
     inputs: Sequence[RecordInput], position: int, *, keyed: bool
 ) -> tuple[list[str], list[str]]:
     """What one record read, in its inputs' declared order: at its position for
@@ -436,7 +477,7 @@ def _record_inputs(
     """The inputs a node reads, in its declared order, at ``round_number``, each
     literal rows list included at the row's position."""
     inputs: list[RecordInput] = []
-    for node in _input_nodes(plan):
+    for node in input_nodes(plan):
         produced = records.get(node)
         if produced is not None:
             positions = range(len(produced.values)) if produced.keyed else range(1)
@@ -450,7 +491,7 @@ def _record_inputs(
                 )
             )
             continue
-        values = _input_values(plan.op, node)
+        values = input_values(plan.op, node)
         inputs.append(
             RecordInput(
                 keyed=False,
@@ -459,7 +500,7 @@ def _record_inputs(
                 ],
             )
         )
-    for rows in _literal_rows(plan):
+    for rows in literal_rows(plan):
         inputs.append(
             RecordInput(
                 keyed=True,
@@ -471,7 +512,7 @@ def _record_inputs(
     return inputs
 
 
-def _literal_rows(plan: RecordPlan) -> list[list[Any]]:
+def literal_rows(plan: RecordPlan) -> list[list[Any]]:
     """Every literal rows list the op carries: its python plan's literal
     entries, then the lists its data spec holds outside a plan."""
     return [entry["values"] for entry in _literal_entries(plan)] + literal_lists(
@@ -493,18 +534,18 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
     ]
 
 
-def _input_nodes(plan: RecordPlan) -> list[str]:
+def input_nodes(plan: RecordPlan) -> list[str]:
     """The nodes a node reads, in its declared order."""
     return list(plan.op.dependencies)
 
 
-def _reads_unversioned(plan: RecordPlan) -> bool:
-    """The op reads a source that records no snapshot, so its record carries a
-    unique production."""
+def reads_unversioned(plan: RecordPlan) -> bool:
+    """A retrieval or fetch reads a source that records no snapshot, so its
+    value is not reusable and neither is anything computed from it."""
     return plan.op.task_type in _UNVERSIONED_TASKS
 
 
-def _realization(
+def realization(
     plan: RecordPlan,
     node_records: NodeRecords,
     records: Mapping[str, NodeRecords],
@@ -571,22 +612,25 @@ def _resolve_plans(
 ) -> dict[str, RecordPlan]:
     """Resolve every node's plan, deriving a 1:1 node's key from its keyed
     input in dependency order."""
-    names = _logical_names(runtime_graph)
+    names = logical_names(runtime_graph)
     plans: dict[str, RecordPlan] = {}
     for node_id in order:
         op = runtime_graph.nodes[node_id]
         plans[node_id] = RecordPlan(
             op=op,
             op_name=names.get(node_id, node_id),
-            key_path=_key_path(runtime_graph, node_id, plans),
+            key_path=key_path(runtime_graph, node_id, plans),
             logical_names=names,
         )
     return plans
 
 
-def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
-    """Each runtime node's op name, so every address and spec digest carries
-    the op name alone, free of job ids, prefixes, slice suffixes and scopes."""
+def logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
+    """Each runtime node's op name, so no record address or spec digest carries
+    a job id, a prefix, a slice suffix or a graph scope.
+
+    A node takes the name its workflow declares; a node whose op the workflow
+    did not name (an implicit step, a lowering helper) takes its DSL op id."""
     names: dict[str, str] = {}
     for op_name, node_ids in runtime_graph.dsl_to_runtime.items():
         for node_id in node_ids:
@@ -594,7 +638,7 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
     return names
 
 
-def _key_path(
+def key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
 ) -> str | None:
     """A node's record-key path: the one its op declares, else the path of the
@@ -621,17 +665,18 @@ def _one_to_one(op: RuntimeOp) -> bool:
 def _keyed_input(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
 ) -> str | None:
-    """The single keyed node a 1:1 node reads, if it reads exactly one."""
+    """The single keyed node a 1:1 node reads, if it reads exactly one; a
+    dependency this batch did not plan is a served record."""
     op = runtime_graph.nodes[node_id]
     if not _one_to_one(op):
         return None
-    keyed = [node for node in op.dependencies if plans[node].keyed]
+    keyed = [node for node in op.dependencies if node in plans and plans[node].keyed]
     if len(keyed) != 1:
         return None
     return keyed[0]
 
 
-def _input_values(op: RuntimeOp, node: str) -> Any:
+def input_values(op: RuntimeOp, node: str) -> Any:
     """The spec side of an input read from a node that produced no stored
     records (a literal, an input op, a node outside the stored graph)."""
     spec = data_spec_dict(op)
@@ -722,7 +767,7 @@ def _declared_rows(
     its lists holds ``count`` rows that all carry a key at ``path``."""
     matching = [
         rows
-        for rows in _literal_rows(plan)
+        for rows in literal_rows(plan)
         if len(rows) == count and all(row_key(row, path) is not None for row in rows)
     ]
     if len(matching) > 1:

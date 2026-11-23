@@ -66,6 +66,11 @@ class RequestInfo:
     """The semantic round this batch's ops belong to, ``0`` for a standalone
     job."""
 
+    reuse_records: bool = False
+    """Whether a member job asked to reuse the store."""
+    member_reuse: dict[str, bool] = field(default_factory=dict)
+    """Whether each member job asked for reuse, keyed by job id."""
+
     # These are to be set and modified by the optimizer and processor
     runtime_graph: RuntimeGraph = field(init=False)
     data_profile_graph: RuntimeGraph = field(init=False)

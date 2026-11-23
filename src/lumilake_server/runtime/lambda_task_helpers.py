@@ -280,12 +280,13 @@ def _rows(
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], read: Callable[[Any], Any]
 ) -> list[Any]:
+    if "values" in entry:
+        if "path" in entry:
+            return entry["values"]
+        return [read(v) for v in entry["values"]]
     if entry["kind"] == "literal":
-        if "file" in entry:
-            with open(entry["file"], encoding="utf-8") as fh:
-                values = json.load(fh)
-        else:
-            values = entry["values"]
+        with open(entry["file"], encoding="utf-8") as fh:
+            values = json.load(fh)
         return [read(v) for v in values]
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
@@ -297,11 +298,22 @@ def _column(
         items = [{"output": result["text"]}]
     if not isinstance(items, list):
         raise ValueError(f"upstream {entry['node']!r} produced no items")
+    return items_column(entry, items, read, entry["node"])
+
+
+def items_column(
+    entry: dict[str, Any],
+    items: list[Any],
+    read: Callable[[Any], Any],
+    node: str,
+) -> list[Any]:
+    """One upstream item list as the entry declares it: a field of every item,
+    the entry's flattened values, or one output per item."""
     path = entry.get("path")
     if path:
         parts = path.split(".")
         return [
-            _walk_path(i, parts, f"{entry['node']} item {idx} path {path}")
+            _walk_path(i, parts, f"{node} item {idx} path {path}")
             for idx, i in enumerate(items)
         ]
     if entry.get("flatten"):

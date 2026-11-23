@@ -19,6 +19,7 @@ from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes import trace as trace_routes
 from lumilake_server.runtime.optimizer import create_optimizer
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.reuse_planner import OpDecision
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -84,6 +85,9 @@ class _FakeRuntimeServer:
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
         return [f"trace-{job_id}"]
+
+    def reuse_decisions_for_request(self, job_id: str) -> list[OpDecision]:
+        return []
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.01

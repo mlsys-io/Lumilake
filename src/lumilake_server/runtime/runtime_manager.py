@@ -46,8 +46,14 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
-from lumilake_server.runtime.record_writer import RecordWriter
+from lumilake_server.runtime.record_writer import NodeRecords, RecordWriter
 from lumilake_server.runtime.request import RequestInfo
+from lumilake_server.runtime.reuse_planner import (
+    ReusePlan,
+    ReusePlanner,
+    rebuilt_output,
+    served_records,
+)
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     Roles,
@@ -69,6 +75,15 @@ class DispatchCredentials:
 
     runtime_token: str | None = None
     api_credential: str | None = None
+
+
+def _batch_reuses_as_one(request_info: RequestInfo) -> bool:
+    """Whether every member of the batch asked for reuse under one round."""
+    if not request_info.member_reuse:
+        return request_info.reuse_records
+    return all(request_info.member_reuse.values()) and (
+        len(set(request_info.member_rounds.values())) <= 1
+    )
 
 
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
@@ -1492,6 +1507,12 @@ class FlowmeshRuntimeManager:
 
         self.logger.info(f"Submitting request {request_info.request_id} to Flowmesh.")
 
+        reuse_plan: ReusePlan | None = None
+        if request_info.reuse_records:
+            reuse_plan = await self._plan_reuse(request_info, schedule)
+            if reuse_plan is not None and not request_info.runtime_graph.nodes:
+                return await self._reused_outputs(request_info, reuse_plan)
+
         # Build task spec from the runtime graph.
         task_spec, output_node_indices, flowmesh_to_raw = await self._build_task_spec(
             request_info,
@@ -1832,19 +1853,83 @@ class FlowmeshRuntimeManager:
                 prompts[output_op_id] = output_prompts
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
-        if request_info.store_records and stored_responses:
+        if reuse_plan is not None:
+            for node_id in reuse_plan.outputs:
+                if node_id in reuse_plan.hits:
+                    flat_outputs[node_id] = rebuilt_output(reuse_plan, node_id)
+        if request_info.store_records and (reuse_plan is not None or stored_responses):
             await self._write_records(
                 request_info,
                 runtime_graph=request_info.runtime_graph,
                 node_task_map=node_task_map,
                 workflow_id=workflow_id,
                 results=stored_responses,
+                served=None if reuse_plan is None else served_records(reuse_plan),
             )
         return {
             "flat_outputs": flat_outputs,
             "chat_histories": prompts,
             "task_node_map": dict(raw_task_node_map),
+            "reuse_decisions": [] if reuse_plan is None else reuse_plan.decisions,
         }
+
+    async def _reused_outputs(
+        self, request_info: RequestInfo, plan: ReusePlan
+    ) -> dict[str, Any]:
+        """The batch result of a request the store answered in full."""
+        flat_outputs: dict[str, Any] = {}
+        for node_id in plan.outputs:
+            if node_id in plan.hits:
+                flat_outputs[node_id] = rebuilt_output(plan, node_id)
+        if request_info.store_records:
+            await self._write_records(
+                request_info,
+                runtime_graph=request_info.runtime_graph,
+                node_task_map={},
+                workflow_id="",
+                results={},
+                served=served_records(plan),
+            )
+        self.logger.info(
+            "Record reuse answered request %s from the store with no dispatch",
+            request_info.request_id,
+        )
+        return {
+            "flat_outputs": flat_outputs,
+            "chat_histories": {},
+            "task_node_map": {},
+            "reuse_decisions": plan.decisions,
+        }
+
+    async def _plan_reuse(
+        self, request_info: RequestInfo, schedule: Schedule
+    ) -> ReusePlan | None:
+        """Answer the batch from the store and dispatch only what it missed; a
+        failure keeps the job's full run."""
+        if not _batch_reuses_as_one(request_info):
+            return None
+        try:
+            plan, planned_graph = await asyncio.to_thread(
+                ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
+                runtime_graph=request_info.runtime_graph,
+                round_number=request_info.round_number,
+                job_id=request_info.request_id,
+            )
+        except (ArchiveError, ValueError) as exc:
+            self.logger.warning(
+                "Record reuse plan failed for job %s (%s); running the full job",
+                request_info.request_id,
+                exc,
+            )
+            return None
+        request_info.runtime_graph = planned_graph
+        hits = plan.hits
+        schedule.worker_assignment = {
+            worker: kept
+            for worker, nodes in schedule.worker_assignment.items()
+            if (kept := [node for node in nodes if node not in hits])
+        }
+        return plan
 
     async def _write_records(
         self,
@@ -1854,6 +1939,7 @@ class FlowmeshRuntimeManager:
         node_task_map: Mapping[str, str],
         workflow_id: str,
         results: Mapping[str, Any],
+        served: Mapping[str, NodeRecords] | None = None,
     ) -> None:
         """Write this batch's records once; an archive or keying error is
         logged and the job continues."""
@@ -1876,6 +1962,7 @@ class FlowmeshRuntimeManager:
                 member_store=request_info.member_store,
                 member_rounds=request_info.member_rounds,
                 node_owners=request_info.task_owner_members,
+                served=served,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(

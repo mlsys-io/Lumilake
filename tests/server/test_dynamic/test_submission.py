@@ -27,6 +27,7 @@ from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.ops import LambdaOp, OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
+from lumilake_server.runtime.reuse_planner import OpDecision
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
@@ -253,6 +254,9 @@ class _FakeRuntimeServer:
 
     def trace_ids_for_request(self, job_id: str) -> list[str]:
         return list(self._traces.get(job_id, []))
+
+    def reuse_decisions_for_request(self, job_id: str) -> list[OpDecision]:
+        return []
 
     def optimization_seconds_for_request(self, job_id: str) -> float:
         return 0.0
@@ -1704,3 +1708,34 @@ async def test_dynamic_spec_store_flag_reaches_the_job(
         for sl in fake_server.workflow_slices_calls
         for meta in sl.values()
     } == {"round_1", "round_2"}
+
+
+@pytest.mark.anyio
+async def test_reuse_flag_requires_store_and_reaches_the_job(
+    app: FastAPI, job_routes: Any
+) -> None:
+    """`reuse: true` rides the dynamic spec to the job and its round children;
+    reusing without storing is refused."""
+    headers = {"Authorization": "Bearer token", "Workflow-Format": "yaml"}
+    inputs = _MULTI_SYMBOL_BODY_INPUTS.copy()
+
+    def _body(flags: str) -> dict[str, Any]:
+        body = _submit_body(
+            _TEMPLATE_DYNAMIC_YAML.replace("type: dynamic", f"type: dynamic\n{flags}")
+        )
+        body["data"][0]["inputs"] = inputs
+        return body
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/jobs", json=_body("store: true\nreuse: true"), headers=headers
+        )
+        refused = await client.post("/jobs", json=_body("reuse: true"), headers=headers)
+    assert resp.status_code == 200, resp.text
+    await _run_background(app)
+    record = job_routes.jobs[resp.json()["data"]["job_id"]]
+    assert (record.store, record.reuse) == (True, True)
+    assert all(job_routes.jobs[child].reuse for child in record.child_job_ids)
+    assert refused.status_code == 422 and "reuse" in refused.text

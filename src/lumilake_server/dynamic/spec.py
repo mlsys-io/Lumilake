@@ -22,6 +22,7 @@ from pydantic import (
 )
 
 from lumilake_server.dynamic.template import DriverTemplate
+from lumilake_server.schemas.record import RecordFlags
 
 
 class DriverApi(BaseModel):
@@ -77,7 +78,7 @@ class DriverSettings(BaseModel):
         return value
 
 
-class DynamicSpec(BaseModel):
+class DynamicSpec(RecordFlags):
     """Top-level dynamic workflow spec."""
 
     model_config = ConfigDict(extra="forbid")
@@ -86,8 +87,6 @@ class DynamicSpec(BaseModel):
     name: StrictStr | None = None
     seed: StrictInt = 0
     goal: StrictStr
-    store: bool = False
-    """Whether each round writes its records to the per-record store."""
     driver: DriverSettings
     library: dict[StrictStr, dict[StrictStr, Any]] | None = None
 
