@@ -114,7 +114,7 @@ class ParseOp(FunctionalOp):
         return self.spec.model_dump(exclude_none=True)
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "ParseOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         fields = {key: value for key, value in data.items() if not key.startswith("_")}
         spec = build_parse_spec(fields, f"ParseOp '{data['_id']}'")
         return cls([other_ops[inp] for inp in data["_inputs"]], spec)
