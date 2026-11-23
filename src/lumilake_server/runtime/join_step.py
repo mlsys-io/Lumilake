@@ -155,9 +155,7 @@ def _keyed(rows, where):
 
 
 def _pairs(values, rows, live, where):
-    """An attach column paired with its source rows by position, as (value, row,
-    key, position), or ``None`` when its length matches neither every source row
-    nor only the live rows."""
+    """An attach column's source rows paired by position, or ``None``."""
     if len(values) == len(rows):
         keys = (_key_of(row, where) for row in rows)
         return [
@@ -270,10 +268,7 @@ def main(inputs):
 
 
 def _row_keys(rows, where):
-    """The first input's rows as (record, key, row) with their markers. A live
-    row's record is its row_key value, unique in the input: a duplicate fails the
-    job. A marked row takes a private slot at its position. Its by key is
-    ``None`` when it cannot be read."""
+    """The first input's rows as (record, key, row), markers kept in place."""
     taken = set()
     keyed = []
     marked = {{}}
@@ -296,8 +291,7 @@ def _row_keys(rows, where):
 
 
 def _record_of(row, where):
-    """A row's record key: its row_key paths as one JSON value, or ``None``
-    when a path is missing, null or reaches a marker."""
+    """A row's record key as one JSON value, or ``None`` when it has none."""
     values = [_value(row, path) for path in _ROW_KEY]
     if any(value is None for value in values):
         return None
@@ -306,8 +300,7 @@ def _record_of(row, where):
 
 
 def _broadcast(inputs):
-    """Join with a row_key: every first-input row keeps its own output row, and
-    every further input's row reaches each of them through its by key."""
+    """Join with a row_key: every first-input row keeps its own output row."""
     indexes = _JOIN["inputs"]
     columns = [_column(_PLAN[index], inputs, _decoded_cell) for index in indexes]
     first = _where(_PLAN[indexes[0]])
@@ -326,8 +319,8 @@ def _broadcast(inputs):
                 marked[record] = more_marked[key]
                 continue
             if key not in more:
-                # Only a row this input lacks a key for becomes a marker; under
-                # null_fill its fields are simply left out.
+                # A row this input lacks a key for is a marker under fail_row
+                # and simply misses the fields under null_fill.
                 if _ON_MISSING == "fail_row":
                     marked[record] = _failed("key %s is missing from %r" % (key, where))
                 continue
@@ -354,9 +347,7 @@ def _broadcast(inputs):
 def _attach_broadcast(
     keyed, marked, name, source_index, first_source, values, rows, where
 ):
-    """Merge one attach field's values onto the output rows their source rows
-    reach: every row of its by key. A source row of the first input is the
-    output row at its position."""
+    """Merge one attach field's values onto every output row of its by key."""
     by_key = {{}}
     for position, (_, key, _) in enumerate(keyed):
         by_key.setdefault(key, []).append(position)
