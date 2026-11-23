@@ -1,10 +1,4 @@
-"""Deriving a per-row seed from a row key.
-
-The key form of ``rowwise_seed`` (or a Lambda op's ``seed``) names a column
-holding each row's key; the parser adds a generated row-mode ``LambdaOp`` over
-it that returns one seed per row. Repeated keys are refused unless the form
-declares ``pairing: shared``.
-"""
+"""Deriving a per-row seed from a row key, through a generated row LambdaOp."""
 
 import json
 from typing import Any

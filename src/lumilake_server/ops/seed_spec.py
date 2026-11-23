@@ -1,9 +1,4 @@
-"""The two shapes a user-supplied seed takes.
-
-A seed is either a column holding one value per row, or a key whose every row's
-value derives a seed; the parser expands the key form into a generated row
-function.
-"""
+"""The two shapes a user-supplied seed takes: a column, or a per-row key."""
 
 from typing import Literal
 
