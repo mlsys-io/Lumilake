@@ -20,11 +20,10 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
 def _graph(template: str, extra: str = "") -> Graph:
     template = template.replace("\n", "\\n")
     doc = (
-        "name: order\ninputs:\n  Stock: [NVDA]\nops:\n"
-        '  - id: "Retrieve"\n    op: DataRetrievalOp\n    inputs: [Stock]\n'
-        f"    data_spec:\n      type: lumid\n      mode: sql\n{extra}"
-        f'      template: "{template}"\n'
-        '      params:\n        - label: symbol\n          node: "Stock"\n'
+        'name: order\ninputs:\n  Stock: [NVDA]\nops:\n  - id: "Retrieve"\n    op:'
+        " DataRetrievalOp\n    inputs: [Stock]\n    data_spec:\n      type: lumid\n    "
+        f'  mode: sql\n{extra}      template: "{template}"\n      params:\n        -'
+        ' label: symbol\n          node: "Stock"\n'
     )
     return Graph.from_json(parse_yaml_payload(doc)["order"]["graph"])
 

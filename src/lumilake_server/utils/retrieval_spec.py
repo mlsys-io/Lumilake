@@ -46,10 +46,10 @@ class RetrievalSpec(RetrievalData):
         ):
             return self
         raise ValueError(
-            "a mode: sql retrieval returns rows in no defined order without a "
-            "top-level ORDER BY. End the query with an ORDER BY that breaks ties (for "
-            "example on the primary key), or declare 'rows: one' when each parameter "
-            "row returns at most one row"
+            "a mode: sql retrieval returns rows in no defined order without a top-level"
+            " ORDER BY. End the query with an ORDER BY that breaks ties (for example on"
+            " the primary key), or declare 'rows: one' when each parameter row returns"
+            " at most one row"
         )
 
     @classmethod
