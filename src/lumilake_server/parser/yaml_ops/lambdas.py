@@ -2,8 +2,7 @@
 
 from typing import Any
 
-from lumilake_server.ops.seed_spec import KeySeed
-from lumilake_server.ops.util_ops import build_lambda_spec
+from lumilake_server.ops.util_ops import build_lambda_spec, check_seed_mode
 from lumilake_server.parser.keyed_seed import read_key_seed
 
 from .common import EmitContext, emit_keyed_seed
@@ -12,6 +11,9 @@ from .common import EmitContext, emit_keyed_seed
 def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     entry = ctx.entry
     seed = entry.fields.get("seed")
+    key_seed = (
+        None if seed is None else read_key_seed(entry.id, "LambdaOp", "seed", seed)
+    )
     spec = build_lambda_spec(
         {
             "fn_name": entry.fields.get("fn_name"),
@@ -25,14 +27,11 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "cache": entry.fields.get("cache"),
             "on_fail": entry.fields.get("on_fail"),
             "on_empty": entry.fields.get("on_empty"),
-            "seed": (
-                None
-                if seed is None
-                else read_key_seed(entry.id, "LambdaOp", "seed", seed)
-            ),
         },
         f"LambdaOp '{entry.id}'",
     )
+    if seed is not None:
+        check_seed_mode(spec.mode, f"LambdaOp '{entry.id}'")
     op_dict.update(spec.model_dump(by_alias=True, exclude_none=True))
-    if isinstance(spec.seed, KeySeed):
-        emit_keyed_seed(op_dict, ctx, spec.seed, "seed", "LambdaOp")
+    if key_seed is not None:
+        emit_keyed_seed(op_dict, ctx, key_seed, "seed", "LambdaOp")

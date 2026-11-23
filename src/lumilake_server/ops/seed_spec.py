@@ -30,11 +30,6 @@ class ColumnSeed(BaseModel):
     node: StrictStr
     path: StrictStr = ""
 
-    @property
-    def column(self) -> SeedKey:
-        """The column this seed reads each row's value from."""
-        return SeedKey(node=self.node, path=self.path)
-
 
 class KeySeed(BaseModel):
     """A seed derived from each row's key, shared or one per key."""
@@ -43,11 +38,3 @@ class KeySeed(BaseModel):
 
     key: SeedKey
     pairing: Pairing = PAIRINGS[0]
-
-    @property
-    def column(self) -> SeedKey:
-        """The column this form reads each row's key from."""
-        return self.key
-
-
-SeedSpec = ColumnSeed | KeySeed
