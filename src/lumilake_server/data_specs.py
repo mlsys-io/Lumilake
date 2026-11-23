@@ -91,11 +91,23 @@ class TemplateOptions(DataSpecModel):
     format: FormatConfig
 
 
+type ColumnList = list[Column]
+
+
+class DataFrame(DataSpecModel):
+    """A rowwise table with one column per value and the messages its rows render."""
+
+    type: Literal["dataframe"]
+    columns: ColumnList = Field(default_factory=list)
+    messages: list[Message] | None = None
+    seeds: list[int | None] | NodeRead | None = None
+
+
 class Column(DataSpecModel):
     """One labelled column: a nested table, a literal list or an upstream read."""
 
     label: str | None = None
-    data: "DataFrame | ListData | None" = None
+    data: DataFrame | ListData | None = None
     node: str | None = None
     path: str | None = None
     input_ref: InputRef | None = None
@@ -104,15 +116,6 @@ class Column(DataSpecModel):
     def _keep_ref_path(self, value: InputRef | None) -> Any:
         """Serialize the ref whole: a dump would drop its null path."""
         return value
-
-
-class DataFrame(DataSpecModel):
-    """A rowwise table with one column per value and the messages its rows render."""
-
-    type: Literal["dataframe"]
-    columns: list[Column] = Field(default_factory=list)
-    messages: list[Message] | None = None
-    seeds: list[int | None] | NodeRead | None = None
 
 
 class LiteralColumn(Column):

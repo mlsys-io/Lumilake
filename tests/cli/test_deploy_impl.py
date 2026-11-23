@@ -10,7 +10,7 @@ import os
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Self
 from unittest.mock import Mock
 
 import pytest
@@ -718,7 +718,7 @@ def test_stack_down_proceeds_when_flowmesh_server_unreachable(
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
-        def __enter__(self) -> "_StubClient":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *_args: object) -> None:
