@@ -11,8 +11,7 @@ def documented_seed(
     op_id: str = "Answer",
     round_number: int | None = None,
 ) -> list[int]:
-    """The docs/OPS.md formula: SHA-256 over [seed, op id, round, key] as
-    canonical JSON, first 8 bytes big-endian, mod 2^31."""
+    """The docs/OPS.md seed formula."""
 
     def one(key: Any) -> int:
         text = json.dumps([seed, op_id, round_number, key], separators=(",", ":"))

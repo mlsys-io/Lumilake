@@ -294,8 +294,8 @@ async def test_submitted_n8n_workflow_records_the_default_seed(
 async def test_native_key_form_is_refused_with_422_naming_the_op(
     app: FastAPI,
 ) -> None:
-    """A native graph whose keyed seed does not fit its chat op is refused with
-    the offending op named, and a malformed top-level seed is refused too."""
+    """A native key form that does not fit its chat op, or a malformed seed, is
+    refused naming the op."""
     cases = {"_op": "DataOp", "_inputs": [], "_max_iter": None, "data": ["{}"]}
     chat = {
         "_op": "LLMChatOp",
