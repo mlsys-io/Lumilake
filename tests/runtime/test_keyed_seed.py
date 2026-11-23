@@ -236,6 +236,26 @@ def test_a_native_graph_takes_the_same_key_form() -> None:
     assert rewrite_native_keys({"op": untyped}, job_seed=7) == {"op": untyped}
 
 
+def test_a_native_graph_builds_the_column_form_through_the_model() -> None:
+    """A native ``rowwise_seed`` without its node is refused by name, and an
+    unknown config key on a key form keeps the config refusal it had."""
+    native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
+    chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
+    cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
+    column = {"path": "items.output"}
+    with pytest.raises(ValueError, match="rowwise_seed: node: Field required"):
+        Graph.from_json(
+            {**native, chat_id: {**native[chat_id], "rowwise_seed": column}}
+        )
+    keyed = {
+        **native[chat_id],
+        "config": {"model": "m", "nonsense": 1},
+        "rowwise_seed": {"key": {"node": cases_id, "path": "items.output"}},
+    }
+    with pytest.raises(ValueError, match="config is not valid"):
+        rewrite_native_keys({**native, chat_id: keyed}, job_seed=7)
+
+
 def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     """A row Lambda's ``seed`` form binds a generated seed node ahead of it,
     whose step passes each row's derived seed to the function as a second

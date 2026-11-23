@@ -202,10 +202,14 @@ def key_target(
     if op_kind != "LambdaOp":
         if not isinstance(config, dict):
             raise ValueError(f"{op_kind} '{op_id}' config must be a mapping")
+        try:
+            generation_config = GenerationConfig(**config)
+        except TypeError as exc:
+            raise ValueError(f"{op_kind} '{op_id}' config is not valid: {exc}") from exc
         check_rowwise_seed(
             RowwiseSeed(column.node, column.path),
             rowwise_template,
-            GenerationConfig(**config),
+            generation_config,
             op_id,
         )
     return column.node, column.path, spec.pairing
