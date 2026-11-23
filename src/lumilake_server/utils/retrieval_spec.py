@@ -1,9 +1,4 @@
-"""The ``data_spec`` of a ``DataRetrievalOp`` and its row-order rule.
-
-A SQL result has no defined row order without an ``ORDER BY``, so a spec that
-may return several rows from one parameter row must declare one, or declare
-``rows: one`` for a lookup that returns at most one.
-"""
+"""The ``data_spec`` of a ``DataRetrievalOp`` and its SQL row-order rule."""
 
 import re
 from typing import Any, Self
@@ -32,8 +27,7 @@ _CHECK_ROW_ORDER = "check_row_order"
 
 
 class RetrievalSpec(RetrievalData):
-    """The user-authored ``data_spec`` of a ``DataRetrievalOp``, with its
-    row-order rule and any other key the user wrote for the worker."""
+    """The user-authored ``data_spec`` of a ``DataRetrievalOp``."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -90,12 +84,7 @@ def _carrying_tokens(tokens: list[Token]) -> list[Token]:
 
 
 def sql_has_top_level_order_by(query: str) -> bool:
-    """Whether a SQL query orders its own final result.
-
-    Only the last statement's outer query counts, and so does a query wrapped
-    whole in parentheses; an ``ORDER BY`` inside a subquery, a CTE or an
-    aggregate argument does not.
-    """
+    """Whether the last statement's outer query, unwrapped, ends in ``ORDER BY``."""
     collapsed = _ORDER_BY_SPACING.sub(_ORDER_BY, query)
     stripped = sqlparse.format(collapsed, strip_comments=True)
     statements = [s for s in sqlparse.parse(stripped) if _carrying_tokens(s.tokens)]

@@ -1394,9 +1394,7 @@ class FlowmeshRuntimeManager:
         tid: str,
         node_id: str,
     ) -> dict[str, Any]:
-        """Fetch a task's raw FlowMesh response and archive it as a job
-        artifact, redacting the untrusted body before persisting it. Returns
-        the response when it is a JSON object, and ``{}`` otherwise."""
+        """Archive a task's redacted FlowMesh response and return it as JSON."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1426,8 +1424,7 @@ class FlowmeshRuntimeManager:
         node_id: str,
         response_data: dict[str, Any],
     ) -> None:
-        """Fail a ``rows: one`` retrieval that returned more than one row for
-        a parameter row."""
+        """Fail a ``rows: one`` retrieval whose parameter row returned several rows."""
         node = runtime_graph.nodes.get(node_id)
         if node is None or not isinstance(node.data_spec, RetrievalData):
             return
