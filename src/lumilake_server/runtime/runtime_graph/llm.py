@@ -1160,10 +1160,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                     )
                 if op.mode != "row":
                     raise ValueError(
-                        f"LLMOp '{llm_op_id}' consumes the"
-                        f" {op.mode}-mode LambdaOp '{op.id}' through its message"
-                        " chain; a list, aligned, expand or reduce Lambda must be"
-                        " read through a node column"
+                        f"LLMOp '{llm_op_id}' consumes the {op.mode}-mode LambdaOp"
+                        f" '{op.id}' through its message chain; a list, aligned, expand"
+                        " or reduce Lambda must be read through a node column"
                         " (rowwise_columns / aggregate_table)."
                     )
                 message_labels = {
