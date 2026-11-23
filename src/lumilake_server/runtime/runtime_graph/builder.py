@@ -63,8 +63,8 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
             if op.declared_id is None:
                 continue
             for node_id in dsl_to_runtime.get(op.id, []):
-                # One declared op can lower to several nodes; the first is the
-                # op, the rest are steps it needed.
+                # One declared op can lower to several nodes; the first is the op, the
+                # rest are steps it needed.
                 op_names.setdefault(node_id, op.declared_id)
 
         if task_type_override != "data_profile":

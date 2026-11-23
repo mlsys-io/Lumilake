@@ -105,8 +105,8 @@ class NodeRecords:
             digest, value = found
             return digest, value or ""
         raise ValueError(
-            f"record {key!r} at position {position} has no signature yet: every"
-            " keyed node is written before its consumers"
+            f"record {key!r} at position {position} has no signature yet: every keyed"
+            " node is written before its consumers"
         )
 
     def _digest_at(
@@ -550,8 +550,8 @@ def _seed_at(
         rows = len(node_records.keys or [])
         if len(seeds) != rows:
             raise ValueError(
-                f"op '{plan.op_name}' declares {len(seeds)} per-row seed(s) for"
-                f" {rows} row(s)"
+                f"op '{plan.op_name}' declares {len(seeds)} per-row seed(s) for {rows}"
+                " row(s)"
             )
         seed = seeds[position]
         if isinstance(seed, bool) or not isinstance(seed, int):
@@ -727,8 +727,8 @@ def _declared_rows(
     ]
     if len(matching) > 1:
         logger.warning(
-            "Op '%s' carries %d literal lists that could hold the rows its key"
-            " names; the record takes no key from any of them",
+            "Op '%s' carries %d literal lists that could hold the rows its key names;"
+            " the record takes no key from any of them",
             plan.op_name,
             len(matching),
         )
