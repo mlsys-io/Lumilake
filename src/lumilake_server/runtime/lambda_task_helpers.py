@@ -52,8 +52,7 @@ def _walk_path(value: Any, parts: list[str], where: str) -> Any:
 
 
 def _decoded_cell(value: Any) -> Any:
-    """JSON object or array text becomes the value it holds; anything else
-    passes through."""
+    """JSON object or array text becomes the value it holds; anything else passes."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
@@ -80,8 +79,7 @@ def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _decoded_rows(value: Any, where: str) -> list[Any]:
-    """The rows a decoded cell carries: a ``{"df": "<json>"}`` table's rows,
-    a row object, or a list of these."""
+    """The rows a decoded cell holds: a table's rows, a row, or a list of these."""
     if (
         isinstance(value, dict)
         and list(value) == ["df"]

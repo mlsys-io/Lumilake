@@ -28,8 +28,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
 def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[Op]:
-    """The inputs ``op`` emits one output row per, one candidate where its
-    shape names one."""
+    """The inputs ``op`` emits one output row per, one candidate where one is named."""
     graph = ctx.graph_dict
     if isinstance(op, LambdaOp):
         if op.mode not in ("row", "aligned"):

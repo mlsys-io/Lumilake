@@ -1,7 +1,6 @@
 """Standalone join step: merge row columns and 1:1 outputs onto keyed rows.
 
-The generated task carries its whole description in ``_JOIN``, so its source
-holds no user code.
+The whole description rides in ``_JOIN``, so its source holds no user code.
 """
 
 import json
@@ -87,8 +86,7 @@ def _keyed(rows, where):
 
 
 def _required(output, keys, where):
-    """Fail the job when ``error`` is set and one side carries a key the other
-    does not, so a stray or misspelt row never loses its fields unnoticed."""
+    """Fail on a key only one side carries, so a stray row never loses its fields."""
     if _MISSING != "error":
         return
     for key in output:
