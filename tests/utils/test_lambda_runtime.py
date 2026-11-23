@@ -154,6 +154,14 @@ def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
         lambda_runtime.validate_inline_source(code, "main")
 
 
+def test_inline_source_refuses_any_statement_after_the_def() -> None:
+    """A trailing statement with no binding is refused by the statement kind."""
+    with pytest.raises(ValueError, match="module-level assert statement"):
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return x\n\nassert True", "main"
+        )
+
+
 def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
     """A module docstring before ``def main`` is fine; any other statement
     before it is not."""

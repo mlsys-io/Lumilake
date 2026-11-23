@@ -6,22 +6,10 @@ from lumilake_server.runtime.protocol import (
     HardwareRequirements,
     LumilakeRequestConfig,
     LumilakeResponse,
+    WorkflowSliceMeta,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.utils.queue import TSQueue
-
-
-@dataclass(slots=True)
-class WorkflowSliceMeta:
-    public_graph_name: str
-    slice_index: int
-    slice_start: int
-    slice_length: int
-    total_length: int
-    template_hash: str
-    varying_input_keys: tuple[str, ...] = ()
-    whole_set: bool = False
-    """Whether this slice is a template round's whole input set, its own row count."""
 
 
 @dataclass(slots=True)
