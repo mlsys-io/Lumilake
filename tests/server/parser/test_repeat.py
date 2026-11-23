@@ -12,14 +12,12 @@ _STEP = (
     "{{id: {id}, op: LambdaOp, inputs: {inputs}, fn_name: f, "
     "code: 'def f(x): return x'}}"
 )
-_JOIN = (
-    "      - {id: Gated, op: JoinOp, inputs: [$in, Status.fail, Answer], by: unit}\n"
-)
+_JOIN = "      - {id: G, op: JoinOp, inputs: [$in, Status.fail, Answer], by: u}\n"
 
 
-def _router(source: str, router_id: str = "Status", indent: str = "      ") -> str:
+def _router(source: str, at: str = "      ", router_id: str = "Status") -> str:
     return (
-        f"{indent}- {{id: {router_id}, op: RouterOp, inputs: [{source}], path: text, "
+        f"{at}- {{id: {router_id}, op: RouterOp, inputs: [{source}], path: text, "
         "default_branch: ok, rules: [{branch: fail, match: contains, value: x}]}\n"
     )
 
@@ -30,6 +28,12 @@ def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
         f" {{model: m}}, messages: [{{role: user, content: x}}], rowwise_template: x,"
         f" rowwise_columns: [{{label: p, node: {source}}}]}}\n"
     )
+
+
+_KEYED = _chat("Ask", "$in").replace(
+    " rowwise_columns:",
+    " rowwise_seed: {key: {node: $in, path: items.output.value}}," " rowwise_columns:",
+)
 
 
 def _op(step_id: str, inputs: str, indent: str = "  ") -> str:
@@ -51,9 +55,8 @@ def _repeat(
     )
 
 
-def _graph(ops: str, outputs: str = "", *, round_number: int | None = None) -> dict:
-    text = f"{_HEADER}ops:\n{ops}{outputs}"
-    return parse_yaml_payload(text, round_number=round_number)["repeat"]["graph"]
+def _graph(ops: str, outputs: str = "") -> dict:
+    return parse_yaml_payload(f"{_HEADER}ops:\n{ops}{outputs}")["repeat"]["graph"]
 
 
 def _named(graph: dict, name: str) -> dict:
@@ -103,12 +106,8 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
 
 
 def _draws(round_number: int | None) -> list[str]:
-    body = _chat("Ask", "$in").replace(
-        "rowwise_template: x,",
-        "rowwise_template: x, rowwise_seed: {key: {node: $in,"
-        " path: items.output.value}, pairing: shared},",
-    )
-    graph = _graph(_repeat("2", "Start", "Ask", body), round_number=round_number)
+    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', _KEYED)}"
+    graph = parse_yaml_payload(text, round_number=round_number)["repeat"]["graph"]
     return [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
 
 
@@ -124,8 +123,8 @@ def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
 
 def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:
     body = _router("$in") + _chat("Answer", "Status.fail") + _JOIN
-    gate = _router("Start", "Gate", "  ")
-    graph = _graph(gate + _repeat("3", "Gate.fail", "Gated", body), _OUTPUT)
+    gate = _router("Start", "  ", "Gate")
+    graph = _graph(gate + _repeat("3", "Gate.fail", "G", body), _OUTPUT)
     ops = list(graph.values())
     fails = [op for op in ops if op.get("fn_name") == "route_fail"][1:]
     chats = [op for op in ops if op["_op"] == "LLMChatOp"]
@@ -135,12 +134,11 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
     assert nodes == [fail["_id"] for fail in fails]
     source = [next(op["_id"] for op in ops if op.get("fn_name") == "route_fail")]
     source += [join["_id"] for join in joins[:-1]]
-    for index, join in enumerate(joins):
-        assert join["_inputs"] == [
-            source[index],
-            fails[index]["_id"],
-            chats[index]["_id"],
-        ]
+    expect = [
+        [head, fail["_id"], chat["_id"]]
+        for head, fail, chat in zip(source, fails, chats)
+    ]
+    assert [join["_inputs"] for join in joins] == expect
 
 
 @pytest.mark.parametrize(
@@ -157,7 +155,7 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         ),
         pytest.param(_repeat(body=""), "requires a non-empty 'body' list"),
         pytest.param(
-            _repeat(body=_router("$in") + "      - {id: Inner, op: RepeatOp}\n"),
+            _repeat(body="      - {id: Inner, op: RepeatOp}\n"),
             "may not hold a 'RepeatOp'",
         ),
         pytest.param(
@@ -166,7 +164,7 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
         pytest.param(_repeat(output="Status", body=_router("$in")), "is a body router"),
         pytest.param(
-            _router("Start", "a.b").replace("path", "copied: true, path"),
+            _router("Start", router_id="a.b").replace("path", "copied: true, path"),
             "letters, digits or underscores",
         ),
         pytest.param(
