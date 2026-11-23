@@ -159,11 +159,11 @@ def app(job_routes: Any) -> FastAPI:
 
 def _n8n_code_workflow() -> dict[str, Any]:
     """The smallest n8n workflow: a chat trigger feeding a code node."""
-    input_node = {"parameters": {}, "type": N8N_CHAT_TRIGGER, "name": "Input"}
-    code_node = {"parameters": {"pythonCode": "return 'hi'"}, "type": N8N_CODE_NODE}
-    code_node["name"] = "Code"
+    code = {"parameters": {"pythonCode": "return 'hi'"}, "type": N8N_CODE_NODE}
+    nodes = [{"parameters": {}, "type": N8N_CHAT_TRIGGER}, {**code, "name": "Code"}]
+    nodes[0]["name"] = "Input"
     edges = {"Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}}
-    return {"nodes": [input_node, code_node], "connections": edges}
+    return {"nodes": nodes, "connections": edges}
 
 
 def _submit_body(**overrides: Any) -> dict[str, Any]:

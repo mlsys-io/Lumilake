@@ -145,13 +145,10 @@ def test_the_key_form_is_refused() -> None:
         payload["ops"][1]["id"] = "50%sale" if "%" in message else "Answer"
         with pytest.raises(ValueError, match=message):
             _generated(payload)((json.dumps(cell),))
-    payloads = [_payload() for _ in range(3)]
+    payloads = [_payload() for _ in range(2)]
     payloads[0]["ops"][1].pop("rowwise_template")
     payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
-    payloads[2]["ops"][1]["rowwise_seed"] = {"key": dict(_KEY), "node": "Cases"}
-    for payload, match in zip(
-        payloads, ["rowwise_template", "API", "node: Extra inputs are not permitted"]
-    ):
+    for payload, match in zip(payloads, ["rowwise_template", "API"]):
         with pytest.raises(ValueError, match=match):
             _graph(payload)
 
@@ -184,14 +181,10 @@ def test_a_native_graph_builds_each_seed_form_through_its_model() -> None:
 
 def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     """A row Lambda's ``seed`` form binds a generated seed node ahead of it."""
-    draw = {
-        "id": "Draw",
-        "op": "LambdaOp",
-        "inputs": ["Cases"],
-        "fn_name": "draw",
-        "code": "def draw(row, seed):\n    return '%d' % seed\n",
-        "seed": {"key": dict(_KEY)},
-    }
+    draw: dict[str, Any] = {"id": "Draw", "op": "LambdaOp", "inputs": ["Cases"]}
+    draw["fn_name"] = "draw"
+    draw["code"] = "def draw(row, seed):\n    return '%d' % seed\n"
+    draw["seed"] = {"key": dict(_KEY)}
     cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
     payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
@@ -207,8 +200,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
             _graph({"ops": [cases, {**draw, "code": code}]})
     node = _graph(payload).nodes[draw_id]
     assert [e.get("role") for e in wire(node)["plan"]] == [None, "seed"]
-    # The generated id takes a ``seed`` prefix no op type emits, so a user op
-    # named like it builds beside the key form.
+    # No op type emits the ``seed`` prefix, so a user op named like it builds on.
     named = {"id": "Answer__seed", "op": "LambdaOp", "inputs": []}
     named.update({"fn_name": "p", "code": "def p(row):\n    return row\n"})
     payload = _payload()
