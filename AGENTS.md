@@ -42,6 +42,4 @@ Keep this file pointer-first: add routing entries and short high-signal reminder
 
 ## Auto-loaded references
 
-@docs/ARCHITECTURE.md
-@docs/CODE_STYLE.md
-@CONTRIBUTING.md
+@docs/ARCHITECTURE.md @docs/CODE_STYLE.md @CONTRIBUTING.md

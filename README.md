@@ -1,9 +1,6 @@
 # Lumilake
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![Lint](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml)
-[![Tests](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0) [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/) [![Lint](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml) [![Tests](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml)
 
 Lumilake is a data analytics engine for agentic workflows. It accepts workflow specs (native graph JSON, YAML, or n8n JSON), optimizes the runtime graph with HALO, and dispatches tasks through FlowMesh.
 
@@ -59,10 +56,7 @@ Note: a real workflow run requires a reachable lumid-data-app instance — `LUMI
 
 ### Hello world
 
-The repo ships a `hello-world.yaml` template — `FormatOp` →
-`LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting
-point for a Lumilake YAML workflow. Submit it once the stack is up and
-`LUMID_DATA_URL` points at a reachable lumid-data-app instance.
+The repo ships a `hello-world.yaml` template — `FormatOp` → `LambdaOp` → `LLMChatOp` — that is the smallest copy-paste starting point for a Lumilake YAML workflow. Submit it once the stack is up and `LUMID_DATA_URL` points at a reachable lumid-data-app instance.
 
 ```bash
 # From a source checkout:
@@ -77,18 +71,11 @@ lumilake job watch <job_id>
 lumilake job result <job_id>
 ```
 
-The template uses `Qwen/Qwen3-8B`, which is the bundled text-demo model.
-You do not need to pre-populate or inspect `cached_models` before the
-first run; it can be empty until after a worker serves a job. Only edit
-`config.model` if your FlowMesh stack is configured for a different
-model or the job fails with a missing-model / worker-placement error.
+The template uses `Qwen/Qwen3-8B`, which is the bundled text-demo model. You do not need to pre-populate or inspect `cached_models` before the first run; it can be empty until after a worker serves a job. Only edit `config.model` if your FlowMesh stack is configured for a different model or the job fails with a missing-model / worker-placement error.
 
 ### Real workflows
 
-Submit and inspect a workflow. From a source checkout the example
-workflow file is at `examples/templates/yaml/trading-agent.yaml`;
-PyPI installs do not ship the templates, so pass an absolute path to a
-workflow file you have locally:
+Submit and inspect a workflow. From a source checkout the example workflow file is at `examples/templates/yaml/trading-agent.yaml`; PyPI installs do not ship the templates, so pass an absolute path to a workflow file you have locally:
 
 ```bash
 # From a source checkout:
@@ -103,12 +90,9 @@ lumilake job list
 lumilake job watch <job_id>
 ```
 
-Run `lumilake init --deploy-dir ~/lumilake-deploy` once to point the CLI
-at the local server: it reads the port from that deployment's `.env`.
-For remote / hosted servers, set `LUMILAKE_BASE_URL` instead.
+Run `lumilake init --deploy-dir ~/lumilake-deploy` once to point the CLI at the local server: it reads the port from that deployment's `.env`. For remote / hosted servers, set `LUMILAKE_BASE_URL` instead.
 
-See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo
-workflows and dataset.
+See `docs/E2E_DEMO.md` for a full reproduction using the bundled demo workflows and dataset.
 
 ## Data Access
 
@@ -132,13 +116,7 @@ Generate both Lumilake and bundled FlowMesh env files:
 lumilake deploy init --flowmesh
 ```
 
-If another FlowMesh stack is already running on the same host, check
-ports before `deploy up`. Common co-tenant FlowMesh defaults are HTTP
-`8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`.
-The bundled stack reads `SERVER_HTTP_PORT`, `SERVER_GRPC_PORT`,
-`REDIS_CONTROL_PORT`, and `REDIS_TELEMETRY_PORT` from `.env.flowmesh`;
-change them to free ports. `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` and
-`FLOWMESH_BASE_URL` default to `SERVER_HTTP_PORT`.
+If another FlowMesh stack is already running on the same host, check ports before `deploy up`. Common co-tenant FlowMesh defaults are HTTP `8000`, gRPC `50051`, Redis control `6379`, and Redis telemetry `6380`. The bundled stack reads `SERVER_HTTP_PORT`, `SERVER_GRPC_PORT`, `REDIS_CONTROL_PORT`, and `REDIS_TELEMETRY_PORT` from `.env.flowmesh`; change them to free ports. `LUMILAKE_RUNTIME_ORCHESTRATOR_URL` and `FLOWMESH_BASE_URL` default to `SERVER_HTTP_PORT`.
 
 Common deployment commands:
 
