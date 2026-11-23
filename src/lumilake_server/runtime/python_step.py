@@ -328,9 +328,9 @@ def main(inputs):
                     "%s: reduce lambda cannot group row %d by %r: %s"
                     % ({op_id!r}, i, _BY, exc)
                 ) from exc
-            # Only a row whose key cannot be read has no key: it is the marker
-            # itself, or the key path reaches one. Its group is itself, and it
-            # emits that marker.
+            # Only a row whose key cannot be read has no key: it is the marker itself,
+            # or the key path reaches one. Its group is itself, and it emits that
+            # marker.
             entries.append((None, [row], marker))
             continue
         marker = failure_of(value)
@@ -345,8 +345,8 @@ def main(inputs):
     items = []
     for key, rows, own in entries:
         if own is not None:
-            # The group is the one row without a key, and it emits its marker,
-            # which names the op that failed rather than this one.
+            # The group is the one row without a key, and it emits its marker, which
+            # names the op that failed rather than this one.
             items.append({{"output": own}})
             continue
         markers = [m for m in map(carried_marker, rows) if m is not None]

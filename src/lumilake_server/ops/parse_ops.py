@@ -1,8 +1,4 @@
-"""The ``ParseOp``: turn one input value per row into a structured record.
-
-A row it cannot parse emits a failed-record marker instead of failing the
-task, or keeps its text when ``on_fail`` is ``raw``.
-"""
+"""The ``ParseOp``: parse one value per row, marking a row it cannot parse."""
 
 import re
 from typing import Any, Literal, Self

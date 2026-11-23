@@ -1283,9 +1283,9 @@ class _LLMBuilder(_EmbeddingBuilder):
             elif isinstance(op, ParseOp):
                 raise ValueError(
                     f"LLMOp '{llm_op_id}' consumes ParseOp '{op.id}' through its"
-                    " message chain; a parsed record must be read through a"
-                    " router's rule or default branch, so a failed record never"
-                    " reaches the model."
+                    " message chain; a parsed record must be read through a router's"
+                    " rule or default branch, so a failed record never reaches the"
+                    " model."
                 )
 
             else:

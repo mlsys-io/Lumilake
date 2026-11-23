@@ -67,8 +67,7 @@ def _rows(column, where):
 
 
 def _key(row, where):
-    """A row's join key, from its dotted key path; a row without the field
-    fails the job."""
+    """A row's join key, from its dotted key path; a row without it fails the job."""
     value = _value(row, ".".join(_BY))
     if value is None:
         raise ValueError("%s: row has no key field %r" % (where, ".".join(_BY)))
@@ -83,8 +82,7 @@ def _encoded(value, where):
 
 
 def _value(row, path):
-    """The value a dotted field path names in one row, or ``None`` when the
-    row lacks a field of the path or the path reaches a marker."""
+    """The value a dotted path names in one row, or ``None`` when it reads none."""
     value = row
     for part in path.split("."):
         if not isinstance(value, dict) or part not in value:
@@ -101,10 +99,7 @@ def _failed(reason):
 
 
 def _key_of(row, where):
-    """The row's key, or ``None`` when a failed record leaves it without one:
-    the row is itself a marker, or its key path reaches a marker or a field the
-    row lacks. A row whose key reads keeps that key even when another of its
-    fields is a marker."""
+    """The row's key, or ``None`` when a failed record leaves the row without one."""
     value = _value(row, ".".join(_BY))
     if value is None:
         return None
@@ -133,8 +128,7 @@ def _required(keyed, keys, where):
 
 
 def _keyed(rows, where):
-    """One further input's rows by key; a row whose key cannot be read fails
-    the job."""
+    """One further input's rows by key; a row whose key cannot be read fails the job."""
     keyed = {{}}
     marked = {{}}
     for row in rows:
@@ -153,8 +147,7 @@ def _keyed(rows, where):
 
 
 def _attach(keyed, marked, name, source_index, values, rows, where):
-    """Merge one attach field's values onto the source rows by position; a
-    length that pairs with neither every row nor the live rows fails the job."""
+    """Merge one attach field's values onto the source rows by position."""
     live = []
     for row in rows:
         carried = carried_marker((row,))
@@ -163,12 +156,12 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             continue
         key = _key_of(row, where)
         if key is not None and key not in marked:
-            # The source row's own failed record is its key's output, unless
-            # another marker already holds that key.
+            # The source row's own failed record is its key's output, unless another
+            # marker already holds that key.
             marked[key] = carried
     if len(values) == len(rows):
-        # A row whose key cannot be read is already its own marker, and its
-        # value is the marker passed through: there is no key to pair it with.
+        # A row whose key cannot be read is already its own marker, and its value is the
+        # marker passed through: there is no key to pair it with.
         pairs = [
             (value, key)
             for value, key in zip(values, (_key_of(row, where) for row in rows))
@@ -203,9 +196,9 @@ def main(inputs):
     marked = {{}}
     for row in rows:
         carried = carried_marker((row,))
-        # The first input still emits one row per its row: a marked row whose
-        # key cannot be read emits its marker at its own position, and a live
-        # row without a key fails the job.
+        # The first input still emits one row per its row: a marked row whose key cannot
+        # be read emits its marker at its own position, and a live row without a key
+        # fails the job.
         key = _key_of(row, first) if carried is not None else _key(row, first)
         if key is None:
             continue
@@ -220,15 +213,15 @@ def main(inputs):
         _required(keyed, more, where)
         missing = [key for key in keyed if key not in more]
         if missing and _ON_MISSING == "fail_row":
-            # Only the row whose key a further input lacks becomes a marker;
-            # the other rows merge as usual.
+            # Only the row whose key a further input lacks becomes a marker; the other
+            # rows merge as usual.
             for key in missing:
                 if key not in marked:
                     marked[key] = _failed("key %s is missing from %r" % (key, where))
         for key in more:
             if key in marked:
-                # A marked row's output is its marker: its other fields and
-                # every further input for that key are skipped.
+                # A marked row's output is its marker: its other fields and every
+                # further input for that key are skipped.
                 continue
             if key in more_marked:
                 marked[key] = more_marked[key]
@@ -243,8 +236,8 @@ def main(inputs):
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         paired = _attach(keyed, marked, name, source_index, values, more, where)
         if _ON_MISSING == "fail_row":
-            # Only a row the attach source lacks a key for becomes a marker;
-            # under null_fill its field is simply left out.
+            # Only a row the attach source lacks a key for becomes a marker; under
+            # null_fill its field is simply left out.
             for key in keyed:
                 if key not in paired and key not in marked:
                     marked[key] = _failed("key %s is missing from %r" % (key, where))

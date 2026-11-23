@@ -43,11 +43,7 @@ def _holds_marker(value: Any) -> bool:
 def _carries_markers(
     op: Op, inputs_dict: dict[str, list[str]], cache: dict[str, bool]
 ) -> bool:
-    """Whether an op's output can hold a failed-record marker: a ``ParseOp``
-    emits one unless it keeps the raw text, an ``InputOp`` may carry one, an
-    expand whose ``on_empty`` is ``fail`` emits one for a parent with no
-    children, and every other op passes on the markers of what it reads except
-    a router rule or default branch."""
+    """Whether an op's output can hold a failed-record marker."""
     if op.id in cache:
         return cache[op.id]
     if isinstance(op, ParseOp) and op.emits_markers:
@@ -396,10 +392,10 @@ class _RuntimeGraphBuilderBase:
         ):
             return
         raise ValueError(
-            f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}',"
-            " which carries failed-record markers; a model op would render a"
-            " marker as an ordinary value. Read a router's rule or default"
-            " branch, so failed records never reach the model."
+            f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}', which"
+            " carries failed-record markers; a model op would render a marker as an"
+            " ordinary value. Read a router's rule or default branch, so failed records"
+            " never reach the model."
         )
 
     def _op_output(self, op: Op) -> OpOutput:

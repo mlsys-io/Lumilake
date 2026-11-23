@@ -79,8 +79,8 @@ class RouterRuleSpec(BaseModel):
         if self.match == "empty":
             if self.value is not None:
                 raise ValueError(
-                    f"branch {self.branch!r} matches 'empty' and takes no value,"
-                    f" got {self.value!r}"
+                    f"branch {self.branch!r} matches 'empty' and takes no value, got"
+                    f" {self.value!r}"
                 )
             return self
         if not self.value:
@@ -138,8 +138,8 @@ class RouterSpec(BaseModel):
             raise ValueError("rule branches must be unique")
         if self.default_branch in names:
             raise ValueError(
-                f"rules already name the default branch {self.default_branch!r};"
-                " a default catches what no rule matched"
+                f"rules already name the default branch {self.default_branch!r}; a"
+                " default catches what no rule matched"
             )
         if self.error_branch and (
             ERROR_BRANCH in names or self.default_branch == ERROR_BRANCH
@@ -152,18 +152,13 @@ class RouterSpec(BaseModel):
 
     @property
     def branches(self) -> tuple[str, ...]:
-        """The default branch, the rule branches in order, then ``error`` when
-        declared."""
+        """The branches in routing order, with ``error`` last when declared."""
         ordered = (self.default_branch, *(rule.branch for rule in self.rules))
         return (*ordered, ERROR_BRANCH) if self.error_branch else ordered
 
 
 def branch_lambda_code(router: RouterSpec, branch: str) -> str:
-    """The list-mode LambdaOp source selecting ``branch``'s rows from ``router``:
-    a declared ``error`` branch keeps exactly the failed records, and every other
-    branch keeps the rows its own rule matches and no earlier rule matches; the
-    default branch keeps the rows no rule matches at all. A failed record reaches
-    no rule or default branch, so with no ``error`` branch it reaches none."""
+    """The list-mode LambdaOp source that selects one ``branch`` of a router."""
     rules = router.rules
     names = [rule.branch for rule in rules]
     header = [f"def route_{branch}(items):", f'    LABEL = "{router.id}.{branch}"']
@@ -174,8 +169,8 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
                     *header,
                     _DECODER,
                     _MARKER,
-                    "    return [row for row in (rows_of(items[0]) if items else [])"
-                    " if marked(row)]",
+                    "    return [row for row in (rows_of(items[0]) if items else []) if"
+                    " marked(row)]",
                 ]
             )
             + "\n"
@@ -224,12 +219,7 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
 def expand_routers(
     ops: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], frozenset[str]]:
-    """Expand every ``RouterOp`` entry into one list-mode LambdaOp per branch,
-    each reading the router's single input, so a consumer that names
-    ``<router id>.<branch>`` in its ``inputs`` gets exactly that branch's rows.
-    Returns the expanded entries and the ids of the rule and default branches,
-    which keep only the rows they matched and so never emit a failed record;
-    the ``error`` branch is exactly the failed records."""
+    """Expand each router into per-branch lambdas; return the ops and cleared ids."""
     expanded: list[dict[str, Any]] = []
     cleared: set[str] = set()
     for entry in ops:

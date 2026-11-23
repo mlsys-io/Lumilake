@@ -16,8 +16,7 @@ def fail_marker(op: str, reason: str) -> dict[str, Any]:
 
 
 def _is_marker(value: Any) -> bool:
-    """Whether a decoded value is a marker, an object whose only key is
-    ``_fail``."""
+    """Whether a decoded value is a marker, an object whose only key is ``_fail``."""
     return isinstance(value, dict) and list(value) == [FAIL_KEY]
 
 
@@ -58,21 +57,19 @@ def carried_marker(row: tuple[Any, ...] | list[Any]) -> dict[str, Any] | None:
 def reject_reserved_key(
     value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
 ) -> None:
-    """Refuse a user value carrying the reserved ``_fail`` key; a marker the
-    step received passes through."""
+    """Refuse a user value carrying the reserved ``_fail`` key."""
     if isinstance(value, dict) and FAIL_KEY in value:
         if any(value is original or value == original for original in originals):
             return
         where = f" for row {row}" if row is not None else ""
         raise ValueError(
-            f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r}"
-            " key; failed records carry that key and user functions must not"
+            f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r} key;"
+            " failed records carry that key and user functions must not"
         )
 
 
 def parse_row(spec: dict[str, Any], text: Any) -> Any:
-    """Parse one record's text by a ParseOp's spec, raising ``ValueError`` on
-    failure."""
+    """Parse one record's text by a ParseOp spec, raising ``ValueError`` on failure."""
     if spec["format"] == "regex":
         mask = 0
         for name, flag in (("i", re.IGNORECASE), ("s", re.DOTALL), ("m", re.MULTILINE)):

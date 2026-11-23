@@ -154,8 +154,7 @@ class JoinDescription(DataSpecModel):
 
 
 class ParseDescription(DataSpecModel):
-    """A parse step's format, its pattern, required keys and flags, and whether
-    an unparsable row becomes a marker or keeps its raw text."""
+    """A parse step's format, pattern, required keys, flags and failure policy."""
 
     format: Literal["json", "regex"]
     on_fail: Literal["marker", "raw"]

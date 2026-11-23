@@ -327,8 +327,7 @@ class LambdaOp(Op):
 
     @property
     def clears_markers(self) -> bool:
-        """Parser-owned: set on generated router branches, never a workflow
-        field."""
+        """Parser-owned: set on generated router branches, never a workflow field."""
         return bool(self.spec.clears_markers)
 
     @property

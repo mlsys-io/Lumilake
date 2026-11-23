@@ -600,8 +600,8 @@ def _dispatch_workflow_to_graph_specs(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
                     f"native op '{op_id}' of the graph at index {idx} declares"
-                    f" '{CLEARS_KEY}', which a router's expansion sets and is"
-                    " not a workflow field"
+                    f" '{CLEARS_KEY}', which a router's expansion sets and is not a"
+                    " workflow field"
                 ),
             )
     graph_specs[graph_name] = {
