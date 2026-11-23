@@ -162,12 +162,9 @@ def _collect_s3_params(
     for item in data_spec.params:
         if not item.label:
             continue
-        if (
-            item.data is not None
-            and isinstance(item.data.items, list)
-            and item.data.items
-        ):
-            literal_values[item.label] = [str(value) for value in item.data.items]
+        if item.data is not None:
+            if isinstance(item.data.items, list) and item.data.items:
+                literal_values[item.label] = [str(value) for value in item.data.items]
             continue
         if item.node:
             node_refs[item.label] = item.node
