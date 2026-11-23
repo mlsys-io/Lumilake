@@ -1,6 +1,6 @@
 # Lumilake
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0) [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/) [![Lint](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/lint-typecheck.yml) [![Tests](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/mlsys-io/lumilake_OSS/actions/workflows/unit-tests.yml)
+[![Paper](https://img.shields.io/badge/Paper-PDF-b31b1b.svg)](https://bauplanlabs.github.io/SAO-workshop/papers/84.pdf) [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0) [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/) [![Lint](https://github.com/mlsys-io/Lumilake/actions/workflows/lint-typecheck.yml/badge.svg)](https://github.com/mlsys-io/Lumilake/actions/workflows/lint-typecheck.yml) [![Tests](https://github.com/mlsys-io/Lumilake/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/mlsys-io/Lumilake/actions/workflows/unit-tests.yml)
 
 Lumilake is a data analytics engine for agentic workflows. It accepts workflow specs (native graph JSON, YAML, or n8n JSON), optimizes the runtime graph with HALO, and dispatches tasks through FlowMesh.
 
@@ -64,7 +64,7 @@ uv run lumilake job submit examples/templates/yaml/hello-world.yaml \
     --format yaml --input 'Name=world' --output-prefix demo/hello-world
 
 # From a PyPI install (download the template alongside lumilake):
-curl -O https://raw.githubusercontent.com/mlsys-io/lumilake_OSS/main/examples/templates/yaml/hello-world.yaml
+curl -O https://raw.githubusercontent.com/mlsys-io/Lumilake/main/examples/templates/yaml/hello-world.yaml
 lumilake job submit hello-world.yaml \
     --format yaml --input 'Name=world' --output-prefix demo/hello-world
 lumilake job watch <job_id>

@@ -25,8 +25,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mlsys-io/lumilake_OSS"
-Repository = "https://github.com/mlsys-io/lumilake_OSS"
+Homepage = "https://github.com/mlsys-io/Lumilake"
+Repository = "https://github.com/mlsys-io/Lumilake"
 
 [build-system]
 requires = ["setuptools>=82.0.1", "wheel"]

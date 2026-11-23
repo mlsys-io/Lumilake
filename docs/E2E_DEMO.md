@@ -92,7 +92,7 @@ docker compose -f scripts/dev/compose.data-plane.yml down -v
 
 ## Step 2 — Load the demo dataset (optional)
 
-`scripts/dev/load_demo_data.py` downloads the published bundle from the `demo-data-v1` release of `mlsys-io/lumilake_OSS`, restores the `lumilake_demo` schema, and uploads `news/{html,images}` into `s3://<bucket>[/<prefix>]/example-data/news/` (where `<prefix>` is the optional sub-path portion of `S3_DATA_PREFIX`, absent for the default `lumilake-demo` value).
+`scripts/dev/load_demo_data.py` downloads the published bundle from the `demo-data-v1` release of `mlsys-io/Lumilake`, restores the `lumilake_demo` schema, and uploads `news/{html,images}` into `s3://<bucket>[/<prefix>]/example-data/news/` (where `<prefix>` is the optional sub-path portion of `S3_DATA_PREFIX`, absent for the default `lumilake-demo` value).
 
 `load_demo_data.py` writes Postgres directly via `pg_restore` and uploads blobs via lumid-data-app's HTTP API. Pass the seed-time URLs as CLI flags (or set them in an env file via `--env-file`):
 
@@ -174,7 +174,7 @@ lumilake deploy -C ~/lumilake-deploy doctor   # validate env + connectivity
 Submit a workflow. `lumilake job submit` reads the workflow file path from your **current working directory**, so either pass an absolute path or `cd` to a checkout that has `examples/templates/...`:
 
 ```bash
-WORKFLOW_DIR=/path/to/lumilake_OSS/examples/templates
+WORKFLOW_DIR=/path/to/Lumilake/examples/templates
 
 lumilake job submit "$WORKFLOW_DIR/yaml/trading-agent.yaml" \
   --format yaml \

@@ -21,7 +21,7 @@ Use this publisher configuration:
 | Setting | Value |
 |---------|-------|
 | Owner | `mlsys-io` |
-| Repository | `lumilake_OSS` |
+| Repository | `Lumilake` |
 | Workflow | `release.yml` |
 | Environment | `pypi` for PyPI, `testpypi` for TestPyPI |
 
@@ -115,9 +115,9 @@ This manifest is a multi-arch OCI index covering `linux/amd64,linux/arm64`.
 The very first push creates the package under `ghcr.io/mlsys-io/lumilake_server`. Before `release-images.yml` can verify or retag, two manual steps are needed (one-time):
 
 1. Set visibility to **Public** at `github.com/orgs/mlsys-io/packages/container/lumilake_server/settings` (Danger Zone → Change visibility). Without this, the verify job's anonymous reads fail.
-2. **Link to the lumilake_OSS repository** with role **Write** (same page → Manage Actions access → Add repository). Without this, the retag-latest job's `GITHUB_TOKEN` cannot write `:latest`.
+2. **Link to the Lumilake repository** with role **Write** (same page → Manage Actions access → Add repository). Without this, the retag-latest job's `GITHUB_TOKEN` cannot write `:latest`.
 
-Also create a GitHub environment named **`ghcr`** at `github.com/mlsys-io/lumilake_OSS/settings/environments` with required reviewers configured — same approval pattern as the `pypi` environment. The retag-latest job runs only after a reviewer approves.
+Also create a GitHub environment named **`ghcr`** at `github.com/mlsys-io/Lumilake/settings/environments` with required reviewers configured — same approval pattern as the `pypi` environment. The retag-latest job runs only after a reviewer approves.
 
 ## Publish to PyPI
 
