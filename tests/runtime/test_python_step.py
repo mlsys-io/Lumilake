@@ -332,10 +332,10 @@ def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> 
     graph = RuntimeGraphBuilder().build(compiled)
 
     node = _python_nodes(graph)[reading.id]
-    assert node.data_spec["mode"] == mode
-    assert node.data_spec["plan"] == [
-        {"kind": "stage", "node": llm.id, "flatten": True}
-    ]
+    assert node.data_spec.mode == mode
+    assert node.data_spec.plan == _entries(
+        [{"kind": "stage", "node": llm.id, "flatten": True}]
+    )
     assert node.dependencies == (llm.id,)
 
 
@@ -719,9 +719,7 @@ def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
 
 def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> None:
     code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
-    plan: python_step.ColumnPlan = [
-        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["a,b", "", "c"]})
-    ]
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a,b", "", "c"]}]
     out = _run_wrapper(code, plan, {}, fn_name="split", mode="expand")
     assert out == {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]}
 
@@ -730,9 +728,7 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     code = "def best(rows):\n    return sorted(rows, key=lambda r: -r[0]['s'])[:2]\n"
     pairs = (("p1", 5), ("p2", 9), ("p1", 7), (1, 2), ("1", 3), ("p1", 1))
     rows = [json.dumps({"id": i, "s": s}) for i, s in pairs]
-    plan: python_step.ColumnPlan = [
-        ColumnPlanEntry.model_validate({"kind": "literal", "values": rows})
-    ]
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": rows}]
     out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
     scores = [[row[0]["s"] for row in item["output"]] for item in out["items"]]
     assert scores == [[7, 5], [9], [2], [3]]
@@ -756,18 +752,14 @@ _DF_ROWS = [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}]
 def test_wrapper_expand_mode_decodes_only_a_serialized_table(
     value: dict[str, Any], expected: list[dict[str, Any]]
 ) -> None:
-    plan: python_step.ColumnPlan = [
-        ColumnPlanEntry.model_validate({"kind": "literal", "values": [json.dumps(value)]})
-    ]
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": [json.dumps(value)]}]
     code = "def rows(r):\n    return r[0] if isinstance(r[0], list) else [r[0]]\n"
     out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
     assert out == {"items": expected}
 
 
 def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
-    plan: python_step.ColumnPlan = [
-        ColumnPlanEntry.model_validate({"kind": "literal", "values": ['{"x": 1}']})
-    ]
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": ['{"x": 1}']}]
     with pytest.raises(ValueError, match="group row 0 by 'patient_id'"):
         _run_wrapper("lambda rows: 0", plan, {}, "f", "reduce", "patient_id")
 
@@ -790,14 +782,6 @@ outputs: [{{name: out, ref: Group}}]
 """
     with pytest.raises(ValueError, match=expected):
         parse_yaml_payload(payload)
-
-
-def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
-    plan: python_step.ColumnPlan = [
-        ColumnPlanEntry.model_validate({"kind": "literal", "values": ["x"]})
-    ]
-    out = _run_wrapper("lambda inputs: inputs[0]", plan, {}, fn_name="anything")
-    assert out == {"items": [{"output": "x", "value": "x"}]}
 
 
 def test_wrapper_requires_a_function() -> None:

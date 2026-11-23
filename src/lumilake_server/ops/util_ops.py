@@ -230,13 +230,9 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
     return FormatOp(template, *args, **kwargs)
 
 
-LambdaMode = Literal["row", "list", "aligned", "expand", "reduce"]
-
-
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
-    mode: LambdaMode
 
     def __init__(
         self,
@@ -275,7 +271,7 @@ class LambdaOp(Op):
         )
 
     @property
-    def mode(self) -> str:
+    def mode(self) -> LambdaMode:
         return self.spec.mode
 
     @property
