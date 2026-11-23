@@ -746,9 +746,9 @@ class _LLMBuilder(_EmbeddingBuilder):
     ) -> tuple[GraphTemplateData, list[str]]:
         """Build the graph_template data_spec for an aggregate LLMChatOp,
         shared by the local and API paths."""
-        base_columns = list(template_spec.columns)
-        base_messages = list(template_spec.options.format.messages)
-        base_steps = list(template_spec.options.format.steps or [])
+        base_columns = template_spec.columns
+        base_messages = template_spec.options.format.messages
+        base_steps = template_spec.options.format.steps or []
         table_columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
         for col in llm_op.aggregate_table or []:
@@ -795,7 +795,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         }
         rendered_steps: list[FormatStep] = []
         for step in base_steps:
-            arguments = list(step.arguments)
+            arguments = step.arguments.copy()
             existing_labels = {
                 arg.label for arg in arguments if isinstance(arg, FormatArgument)
             }

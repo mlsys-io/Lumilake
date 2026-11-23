@@ -112,7 +112,7 @@ class _RetrievalBuilder(_LLMBuilder):
         # runtime dependencies. Mark those upstream op ids as visited so strict
         # traversal validation does not flag legitimate input-only branches.
         ctx.visited.update(input_op.id for input_op in op.inputs)
-        spec = dict(op.data_spec or {})
+        spec = op.data_spec or {}
         params = spec.get("params")
         if isinstance(params, list):
             for param in params:
@@ -428,7 +428,7 @@ class _RetrievalBuilder(_LLMBuilder):
         inputs_dict = ctx.inputs_dict
         input_ops_by_id = ctx.input_ops_by_id
         visited: set[str] | None = None
-        spec = dict(op.data_spec or {})
+        spec = op.data_spec or {}
         mode = spec["mode"]
         if not op.profilable:
             return None
@@ -602,11 +602,7 @@ class _RetrievalBuilder(_LLMBuilder):
                 f"placeholder '{label}' at node '{owner_node_id}': upstream "
                 f"'{upstream_id}' was already in the resolution stack."
             )
-        upstream_spec = dict(upstream.data_spec or {})
-        if not isinstance(upstream_spec, dict):
-            raise ValueError(
-                f"DataRetrievalOp '{upstream_id}' has a non-dict data_spec"
-            )
+        upstream_spec = upstream.data_spec or {}
         sample_value = upstream_spec.get("sample_value")
         if sample_value is not None:
             return self._project_sample_value(sample_value, path)
@@ -690,7 +686,7 @@ class _RetrievalBuilder(_LLMBuilder):
         input_ops_by_id: dict[str, InputOp],
         visited: set[str],
     ) -> str:
-        upstream_spec = dict(upstream.data_spec or {})
+        upstream_spec = upstream.data_spec or {}
         template = upstream_spec.get("template")
         if not isinstance(template, str):
             raise ValueError(

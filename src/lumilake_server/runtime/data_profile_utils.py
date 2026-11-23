@@ -14,12 +14,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import (
-    RetrievalData,
-    S3ProfileData,
-    is_s3_data,
-    is_sql_data,
-)
+from lumilake_server.data_specs import S3ProfileData, SqlProfileData
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.utils.data_profile_offload import (
@@ -86,14 +81,14 @@ async def _is_cancelled(callback: CancellationCallback | None) -> bool:
 
 def _has_sql_data_profile_nodes(graph: RuntimeGraph) -> bool:
     for node_id in graph.node_order:
-        if is_sql_data(graph.nodes[node_id].data_spec):
+        if isinstance(graph.nodes[node_id].data_spec, SqlProfileData):
             return True
     return False
 
 
 def _has_s3_data_profile_nodes(graph: RuntimeGraph) -> bool:
     for node_id in graph.node_order:
-        if is_s3_data(graph.nodes[node_id].data_spec):
+        if isinstance(graph.nodes[node_id].data_spec, S3ProfileData):
             return True
     return False
 
@@ -158,15 +153,8 @@ def _extract_template_fields(template: str) -> set[str]:
     return fields
 
 
-S3Source = S3ProfileData | RetrievalData
-
-
-def _template_of(data_spec: S3Source) -> str:
-    return data_spec.template or ""
-
-
 def _collect_s3_params(
-    data_spec: S3Source,
+    data_spec: S3ProfileData,
 ) -> tuple[dict[str, list[str]], dict[str, str]]:
     """The literal values and node refs an S3 template's params bind."""
     literal_values: dict[str, list[str]] = {}
@@ -174,7 +162,7 @@ def _collect_s3_params(
     for item in data_spec.params:
         if not item.label:
             continue
-        if item.data is not None and item.data.items:
+        if item.data is not None and isinstance(item.data.items, list):
             literal_values[item.label] = [str(value) for value in item.data.items]
             continue
         if item.node:
@@ -333,9 +321,14 @@ def _derive_s3_profile_for_graph(
 
     for node_id in graph.node_order:
         data_spec = graph.nodes[node_id].data_spec
-        if not is_s3_data(data_spec):
+        if not isinstance(data_spec, S3ProfileData):
             continue
-        template_path = _normalize_s3_template_path(_template_of(data_spec))
+        template = data_spec.template
+        if not isinstance(template, str):
+            raise RuntimeError(
+                f"S3 data profile requires template for node '{node_id}'"
+            )
+        template_path = _normalize_s3_template_path(template)
         template_fields = _extract_template_fields(template_path)
         literal_values, node_refs = _collect_s3_params(data_spec)
 
@@ -386,7 +379,7 @@ def _derive_s3_profile_for_graph(
                     input_driven_fields.add(field)
                     continue
                 ref_spec = ref_node.data_spec
-                if is_sql_data(ref_spec):
+                if isinstance(ref_spec, SqlProfileData):
                     sql_nodes.add(ref_node_id)
                 else:
                     # Concrete runtime node whose spec isn't SQL — modeling
@@ -491,9 +484,12 @@ def _extract_required_s3_folders(graph: RuntimeGraph) -> list[str]:
     folders: set[str] = set()
     for node_id in graph.node_order:
         data_spec = graph.nodes[node_id].data_spec
-        if not is_s3_data(data_spec):
+        if not isinstance(data_spec, S3ProfileData):
             continue
-        template_path = _normalize_s3_template_path(_template_of(data_spec))
+        template = data_spec.template
+        if not isinstance(template, str):
+            continue
+        template_path = _normalize_s3_template_path(template)
         literal_values, node_refs = _collect_s3_params(data_spec)
         template_fields = _extract_template_fields(template_path)
         node_fields = {field for field in template_fields if field in node_refs}

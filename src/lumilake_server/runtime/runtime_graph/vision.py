@@ -213,7 +213,9 @@ class _VisionBuilder(_RetrievalBuilder):
         # and a regroup python step (back to one item per symbol). The image
         # source is the group boundary: it defines the per-symbol image counts,
         # and every other grouped column must match them.
-        image_path = embedding_data_spec.path or ""
+        image_path = embedding_data_spec.path
+        if image_path is None:
+            raise ValueError(f"Per-row VLM '{llm_op_id}' image source has no path")
         if not image_path.startswith("items."):
             raise ValueError(
                 f"Per-row VLM '{llm_op_id}' image path '{image_path}' must"
@@ -259,7 +261,7 @@ class _VisionBuilder(_RetrievalBuilder):
                     f" list-mode Lambda '{c.node}'; a flattened per-row VLM"
                     " cannot read a whole-column Lambda."
                 )
-            if not (c.path or "").startswith("items."):
+            if c.path is None or not c.path.startswith("items."):
                 raise ValueError(
                     f"Column '{c.label}' of consumer '{llm_op_id}' reads"
                     f" '{c.path}' from '{c.node}'; only 'items.*' paths"
@@ -268,8 +270,8 @@ class _VisionBuilder(_RetrievalBuilder):
             plan.append(
                 ColumnPlanEntry(
                     kind="stage",
-                    node=c.node or "",
-                    path=(c.path or "")[len("items.") :],
+                    node=c.node,
+                    path=c.path[len("items.") :],
                     label=c.label,
                     grouped=isinstance(up, DataRetrievalOp),
                 )

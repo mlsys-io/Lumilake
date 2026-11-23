@@ -5,7 +5,12 @@ from typing import Any
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
-from lumilake_server.data_specs import Column, DataSpecModel, ListData
+from lumilake_server.data_specs import (
+    Column,
+    DataSpecModel,
+    ListData,
+    dump_data_spec,
+)
 from lumilake_server.ops import (
     InputOp,
     LLMOp,
@@ -275,7 +280,7 @@ class _RuntimeGraphBuilderBase:
         entries, and the condition node. Literal payloads are data, not
         references."""
         yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-            node.data_spec.model_dump(exclude_none=True)
+            dump_data_spec(node.data_spec)
         )
         condition = node.condition
         if condition is not None:
@@ -284,22 +289,17 @@ class _RuntimeGraphBuilderBase:
                 yield cond_node
 
     @staticmethod
-    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
+    def _iter_spec_refs(value: Any) -> Iterator[str]:
         """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` key is a reference; ``expr``
-        counts only outside literal list items. Recurse into nested mappings
-        and lists, disabling ``expr`` below a ``type: list`` payload."""
+        with a string ``node`` plus ``path`` or ``expr`` is a reference.
+        Recurse into nested mappings and lists."""
         if isinstance(value, dict):
             node = value.get("node")
-            if isinstance(node, str) and (
-                "path" in value or (allow_expr and "expr" in value)
-            ):
+            if isinstance(node, str) and ("path" in value or "expr" in value):
                 yield node
                 return
             if value.get("type") == "list":
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(value.get("items"))
                 return
             if value.get("kind") == "stage":
                 stage_node = value.get("node")
@@ -307,10 +307,10 @@ class _RuntimeGraphBuilderBase:
                     yield stage_node
                     return
             for v in value.values():
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v)
         elif isinstance(value, list):
             for v in value:
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
+                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v)
 
     def _guard_single_row_node_ref(
         self,

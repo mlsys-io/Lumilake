@@ -38,13 +38,6 @@ class ListData(DataSpecModel):
     lumid_cfg: dict[str, str] | None = None
 
 
-class Value(DataSpecModel):
-    """A column bound to one literal value."""
-
-    type: Literal["value"]
-    value: Any = None
-
-
 class Message(DataSpecModel):
     """One chat message in a template's format step."""
 
@@ -85,7 +78,7 @@ class Column(DataSpecModel):
     """One labelled column: a nested table, a literal list or an upstream read."""
 
     label: str | None = None
-    data: "DataFrame | ListData | Value | None" = None
+    data: "DataFrame | ListData | None" = None
     node: str | None = None
     path: str | None = None
 

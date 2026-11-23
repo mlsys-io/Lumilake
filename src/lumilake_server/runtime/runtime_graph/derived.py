@@ -117,7 +117,7 @@ class _DerivedBuilder(_VisionBuilder):
         if isinstance(values, list):
             if not values:
                 raise ValueError(f"{consumer} requires at least one query")
-            return ListData(type="list", items=list(values)), [], []
+            return ListData(type="list", items=values), [], []
         if values.needs_flatten:
             # A grouped upstream yields one item per table, so only a python
             # step can expand it to one value per row.

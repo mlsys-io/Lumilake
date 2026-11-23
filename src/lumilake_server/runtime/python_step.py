@@ -425,6 +425,13 @@ def wrapper_source(
     )
 
 
+def _required(value: str | None, field: str, mode: str) -> str:
+    """A field a python step of ``mode`` must carry."""
+    if value is None:
+        raise ValueError(f"a {mode}-mode python step requires {field!r}")
+    return value
+
+
 def flowmesh_spec(
     node_id: str,
     data_spec: PythonData,
@@ -434,7 +441,9 @@ def flowmesh_spec(
     plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
     mode = data_spec.mode or "row"
     if mode == "flatten":
-        code = flatten_source(node_id, plan, data_spec.template or "")
+        code = flatten_source(
+            node_id, plan, _required(data_spec.template, "template", mode)
+        )
     elif mode == "regroup":
         code = regroup_source(node_id, plan)
     elif mode == "pairs":
@@ -443,7 +452,11 @@ def flowmesh_spec(
         code = flatten_step_source(node_id, plan)
     else:
         code = wrapper_source(
-            node_id, data_spec.fn_name or "", data_spec.code or "", plan, mode
+            node_id,
+            _required(data_spec.fn_name, "fn_name", mode),
+            _required(data_spec.code, "code", mode),
+            plan,
+            mode,
         )
     spec: dict[str, Any] = {
         "taskType": TASK_TYPE,

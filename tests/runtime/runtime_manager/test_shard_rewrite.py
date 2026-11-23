@@ -364,7 +364,10 @@ def test_shard_rewrite_inlines_unsharded_list_dependency_without_boundary_nodes(
                         "template": {
                             "name": "format",
                             "columns": [
-                                {"label": "x", "data": {"type": "value", "value": "a"}}
+                                {
+                                    "label": "x",
+                                    "data": {"type": "list", "items": ["a", "b"]},
+                                }
                             ],
                             "options": {
                                 "format": {
