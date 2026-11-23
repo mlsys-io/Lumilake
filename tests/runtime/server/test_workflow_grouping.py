@@ -115,17 +115,12 @@ def _find_sql_symbol_items(compiled_graph: Graph) -> list[str]:
         if not isinstance(op, DataRetrievalOp):
             continue
         spec = op.data_spec
-        if spec.type != "lumid" or spec.mode != "sql":
+        if spec.mode != "sql":
             continue
         for param in spec.params:
-            label = param.label
-            data = param.data
-            if label is None or "Stock" not in label:
-                continue
-            if data is None:
-                continue
-            if isinstance(data.items, list):
-                return list(data.items)
+            items = param.data.items if param.data is not None else None
+            if isinstance(items, list) and "Stock" in (param.label or ""):
+                return list(items)
     raise AssertionError("Failed to locate SQL symbol param list in merged graph")
 
 
