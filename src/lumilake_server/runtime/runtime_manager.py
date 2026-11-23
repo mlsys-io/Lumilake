@@ -1434,10 +1434,10 @@ class FlowmeshRuntimeManager:
         if not multi:
             return
         raise RuntimeError(
-            f"DataRetrievalOp '{node_id}': declares rows: one but returned more "
-            f"than one row for parameter row(s) {multi} of this batch; the step "
-            "needs at most one row per parameter row. Make the query select one "
-            "row, or drop the rows: one declaration and order the query instead."
+            f"DataRetrievalOp '{node_id}': declares rows: one but returned more than "
+            f"one row for parameter row(s) {multi} of this batch; the step needs at "
+            "most one row per parameter row. Make the query select one row, or drop "
+            "the rows: one declaration and order the query instead."
         )
 
     async def process_request(
