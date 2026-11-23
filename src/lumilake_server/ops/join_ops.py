@@ -2,7 +2,7 @@
 from."""
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -134,7 +134,7 @@ class JoinOp(Op):
         }
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "JoinOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         spec = build_join_spec(data, f"JoinOp '{data.get('_id', '?')}'")
         joined = [_built_before(other_ops, name, "input") for name in data["_inputs"]]
         attach = {
@@ -144,7 +144,7 @@ class JoinOp(Op):
         return cls(joined, spec, attach)
 
 
-def _built_before(other_ops: dict[str, "Op"], op_id: str, role: str) -> "Op":
+def _built_before(other_ops: dict[str, Op], op_id: str, role: str) -> Op:
     """The op a join reads, from the ops the payload already built."""
     op = other_ops.get(op_id)
     if op is None:
