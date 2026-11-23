@@ -118,10 +118,10 @@ def test_a_body_chat_op_draws_a_different_seed_each_iteration() -> None:
 
 def test_a_body_keyed_seed_draws_its_iteration_round_from_the_body_id() -> None:
     body = (
-        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m}, "
-        "messages: [{role: user, content: x}], rowwise_template: x, rowwise_columns: "
-        "[{label: p, node: $in}], rowwise_seed: {key: {node: $in, path: "
-        "items.output.value}, pairing: shared}}\n"
+        "      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model: m}, messages:"
+        " [{role: user, content: x}], rowwise_template: x, rowwise_columns: [{label: p,"
+        " node: $in}], rowwise_seed: {key: {node: $in, path: items.output.value},"
+        " pairing: shared}}\n"
     )
     graph = _graph(_repeat("2", "Start", "Ask", body))
     draws = [o["_code"] for o in graph.values() if o.get("fn_name") == "seed_for_row"]
@@ -175,8 +175,8 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         pytest.param(
             _repeat(
                 output="Ask",
-                body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: "
-                "{model: m, seed: '7'}, messages: [{role: user, content: x}]}\n",
+                body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model:"
+                " m, seed: '7'}, messages: [{role: user, content: x}]}\n",
             ),
             "not an integer",
         ),
