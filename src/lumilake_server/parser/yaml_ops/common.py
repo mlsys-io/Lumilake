@@ -91,7 +91,7 @@ def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> 
 def emit_keyed_seed(
     op_dict: dict[str, Any],
     ctx: EmitContext,
-    seed: keyed_seed.RowwiseSeedSpec,
+    seed: keyed_seed.KeySeed,
     field: str,
     op_kind: str,
 ) -> None:

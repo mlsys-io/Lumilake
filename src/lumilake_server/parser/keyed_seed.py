@@ -7,95 +7,36 @@ declares ``pairing: shared``.
 """
 
 import json
-from typing import Any, Literal, Self
-
-from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError, model_validator
+from typing import Any
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.ops.llm_ops import RowwiseSeed, check_rowwise_seed
+from lumilake_server.ops.seed_spec import (
+    PAIRINGS,
+    ColumnSeed,
+    KeySeed,
+    Pairing,
+    SeedSpec,
+)
+from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.parser.common import make_id
 
 SEED_SUFFIX = "__seed"
 SEED_FN_NAME = "seed_for_row"
 _OUTPUT = "output"
 SEED_MODULUS = 2**31
-Pairing = Literal["unique", "shared"]
-PAIRINGS: tuple[Pairing, Pairing] = ("unique", "shared")
 
 
-class SeedKey(BaseModel):
-    """The column a key form reads each row's key from."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    node: StrictStr
-    path: StrictStr
+def read_key_seed(op_id: str, op_kind: str, field: str, entry: Any) -> KeySeed:
+    """One op entry's key form, naming the op and field in the error."""
+    return validate_fields(KeySeed, entry, f"{op_kind} '{op_id}'", {field: ""})
 
 
-class RowwiseSeedSpec(BaseModel):
-    """A ``rowwise_seed`` entry, or a Lambda's ``seed``: a ``{node, path}`` column
-    or the ``key`` form that derives each row's seed from its key."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    node: StrictStr | None = None
-    path: StrictStr = ""
-    key: SeedKey | None = None
-    pairing: Pairing = PAIRINGS[0]
-
-    @model_validator(mode="after")
-    def _one_form(self) -> Self:
-        """An entry reads a ``{node, path}`` column, or a ``key`` on its own."""
-        if self.key is None:
-            if self.node is None:
-                raise ValueError("must name a node and path, or a key")
-            return self
-        beside = [
-            name for name, value in (("node", self.node), ("path", self.path)) if value
-        ]
-        if beside:
-            raise ValueError(
-                f"combines a key with {beside}; the key form derives each row's"
-                " seed, so the node and path it reads must sit inside 'key'"
-            )
-        return self
-
-    @property
-    def column(self) -> SeedKey:
-        """The column this entry reads, whichever form it declares."""
-        if self.key is not None:
-            return self.key
-        assert self.node is not None
-        return SeedKey(node=self.node, path=self.path)
-
-
-def read_seed(
-    op_id: str,
-    op_kind: str,
-    field: str,
-    entry: Any,
-    *,
-    key_form_only: bool = False,
-) -> RowwiseSeedSpec:
-    """One op entry's seed, validated, naming the op and field in the error."""
-    try:
-        spec = RowwiseSeedSpec.model_validate(entry)
-    except ValidationError as exc:
-        raise ValueError(f"{op_kind} '{op_id}' {field} {_first_error(exc)}") from exc
-    if key_form_only and spec.key is None:
-        raise ValueError(
-            f"{op_kind} '{op_id}' {field} must take the key form"
-            " '{key: {node, path}}', which derives each row's seed"
-        )
-    return spec
-
-
-def _first_error(exc: ValidationError) -> str:
-    """The error's first message, without pydantic's own prefix."""
-    error = exc.errors()[0]
-    message = error["msg"].removeprefix("Value error, ")
-    field = ".".join(str(loc) for loc in error["loc"])
-    return f"{field} {message}" if field else message
+def read_seed_spec(op_id: str, op_kind: str, field: str, entry: Any) -> SeedSpec:
+    """One op entry's seed in either form, naming the op and field in the error."""
+    if isinstance(entry, dict) and "key" in entry:
+        return read_key_seed(op_id, op_kind, field, entry)
+    return validate_fields(ColumnSeed, entry, f"{op_kind} '{op_id}'", {field: ""})
 
 
 _SEED_FN = """\
@@ -251,14 +192,13 @@ def _duplicate_message(named: str) -> str:
 
 def key_target(
     op_id: str,
-    spec: RowwiseSeedSpec,
+    spec: KeySeed,
     op_kind: str,
     rowwise_template: str | None,
     config: Any,
 ) -> tuple[str, str, Pairing]:
-    """The ``(node, path)`` a key form reads and its pairing, after checking the
-    form fits this op."""
-    column = spec.column
+    """The ``(node, path)`` a key form reads and its pairing, checked for this op."""
+    column = spec.key
     if op_kind != "LambdaOp":
         if not isinstance(config, dict):
             raise ValueError(f"{op_kind} '{op_id}' config must be a mapping")
@@ -321,7 +261,7 @@ def rewrite_native_keys(
         ):
             rewritten[op_id] = op
             continue
-        spec = read_seed(op_id, op_kind, field, seed)
+        spec = read_key_seed(op_id, op_kind, field, seed)
         node_ref, path, pairing = key_target(
             op_id,
             spec,
