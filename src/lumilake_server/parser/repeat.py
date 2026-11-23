@@ -123,6 +123,7 @@ class Unrolled(NamedTuple):
     bind: References
     template_ids: dict[str, str]
     rounds: dict[str, int]
+    copied_routers: frozenset[str]
 
 
 def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
@@ -196,6 +197,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
     iterations: dict[str, list[Any]] = {}
     template_ids: dict[str, str] = {}
     rounds: dict[str, int] = {}
+    copied_routers: set[str] = set()
     for spec in ordered:
         iterations[spec.id] = []
         for index in range(1, spec.times + 1):
@@ -214,6 +216,8 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
             for body, copy in zip(spec.body, copies):
                 template_ids[copy["id"]] = body["id"]
                 rounds[copy["id"]] = index
+                if body["id"] in spec.branches:
+                    copied_routers.add(copy["id"])
             iterations[spec.id].extend(copies)
 
     unrolled: list[Any] = []
@@ -232,7 +236,7 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> Unrolled:
             frame_owner.get(referrer),
         )
 
-    return Unrolled(unrolled, bind, template_ids, rounds)
+    return Unrolled(unrolled, bind, template_ids, rounds, frozenset(copied_routers))
 
 
 def _iteration_copy(
@@ -240,8 +244,6 @@ def _iteration_copy(
 ) -> dict[str, Any]:
     """``entry`` as iteration ``index`` of ``repeat_id`` runs it."""
     copy = {**entry, "id": new_id}
-    if copy.get("op") == ROUTER_OP:
-        copy["copied"] = True
     seed = _literal_seed(entry, repeat_id)
     if seed is None:
         return copy

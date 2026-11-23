@@ -98,8 +98,6 @@ class RouterSpec(BaseModel):
     default_branch: StrictStr
     rules: list[RouterRuleSpec]
     error_branch: StrictBool = False
-    copied: StrictBool = False
-    """True on a router an unrolled repeat copied, whose id may then be dotted."""
 
     @field_validator("default_branch")
     @classmethod
@@ -107,14 +105,6 @@ class RouterSpec(BaseModel):
         if not _NAME_RE.match(value):
             raise ValueError(f"must be letters, digits or underscores, got {value!r}")
         return value
-
-    @model_validator(mode="after")
-    def _router_id(self) -> Self:
-        if not self.copied and not _NAME_RE.match(self.id):
-            raise ValueError(
-                f"id: must be letters, digits or underscores, got {self.id!r}"
-            )
-        return self
 
     @field_validator("path", mode="before")
     @classmethod
@@ -215,9 +205,13 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
 
 
 def expand_routers(
-    ops: list[dict[str, Any]],
+    ops: list[dict[str, Any]], copied: frozenset[str] = frozenset()
 ) -> tuple[list[dict[str, Any]], frozenset[str]]:
-    """Expand each router into per-branch lambdas; return the ops and cleared ids."""
+    """Expand each router into per-branch lambdas; return the ops and cleared ids.
+
+    ``copied`` holds the ids of routers an unrolled repeat copied, whose
+    unrolled ids may be dotted.
+    """
     expanded: list[dict[str, Any]] = []
     cleared: set[str] = set()
     for entry in ops:
@@ -227,6 +221,11 @@ def expand_routers(
         router = validate_fields(
             RouterSpec, entry, f"RouterOp '{entry.get('id', '?')}'"
         )
+        if router.id not in copied and not _NAME_RE.match(router.id):
+            raise ValueError(
+                f"RouterOp '{router.id}' id: must be letters, digits or underscores,"
+                f" got {router.id!r}"
+            )
         for branch in router.branches:
             expanded.append(
                 {

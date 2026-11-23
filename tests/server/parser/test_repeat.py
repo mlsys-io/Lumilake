@@ -166,6 +166,10 @@ def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> No
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
         pytest.param(_repeat(output="Status", body=_router("$in")), "is a body router"),
         pytest.param(
+            _router("Start", "a.b").replace("path", "copied: true, path"),
+            "letters, digits or underscores",
+        ),
+        pytest.param(
             _repeat(
                 output="Ask",
                 body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model:"

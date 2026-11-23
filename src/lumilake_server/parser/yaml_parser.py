@@ -343,7 +343,7 @@ def _compile_workflow(
     inputs = _validate_inputs(inputs_block)
     functions = parse_functions(spec.get("functions"))
     unrolled = unroll_repeats(ops_block, set(inputs))
-    expanded, cleared = expand_routers(unrolled.ops)
+    expanded, cleared = expand_routers(unrolled.ops, unrolled.copied_routers)
     cleared = cleared | frozenset(cleared_ids)
     seed_templates = {**unrolled.template_ids, **(template_ids or {})}
     seed_rounds = unrolled.rounds
