@@ -1,49 +1,12 @@
 from collections import defaultdict
 from collections.abc import Iterable
-from typing import Any, TypeVar, overload
+from typing import Any, Self, TypeVar, overload
 
 from lumilake_server.ops import InputOp, Op, OutputOp
 from lumilake_server.utils.graph import topological_sort
 
 OpType = TypeVar("OpType", bound=Op)
-
-
-class CompiledGraph:
-    def __init__(self, graph: "Graph", inputs: dict[str, list[str]]) -> None:
-        self.graph = graph
-        self.inputs = inputs
-
-        self._coalesce_rewrite_hits: dict[str, int] | None = None
-        self._coalesce_rewrite_skipped: bool | None = None
-
-    def copy(self, new_ids: bool = True) -> "CompiledGraph":
-        """Creates a deep copy of the compiled graph"""
-        copied = CompiledGraph(self.graph.copy(new_ids), self.inputs.copy())
-        copied._coalesce_rewrite_hits = (
-            dict(self._coalesce_rewrite_hits)
-            if isinstance(self._coalesce_rewrite_hits, dict)
-            else None
-        )
-        copied._coalesce_rewrite_skipped = self._coalesce_rewrite_skipped
-        return copied
-
-    def serialize(self) -> dict[str, Any]:
-        return {
-            "graph": self.graph.serialize(),
-            "inputs": self.inputs,
-        }
-
-    @overload
-    def iter_ops(self, op_type: None = None) -> Iterable[Op]: ...
-
-    @overload
-    def iter_ops(self, op_type: type[OpType]) -> Iterable[OpType]: ...
-
-    def iter_ops(self, op_type: type[Op] | None = None) -> Iterable[Op]:
-        return self.graph.iter_ops(op_type)
-
-    def dependencies(self) -> dict[Op, set[Op]]:
-        return self.graph.dependencies()
+type Compiled = CompiledGraph
 
 
 class Graph:
@@ -96,7 +59,7 @@ class Graph:
     def node_count(self) -> int:
         return len(self._graph)
 
-    def compile(self, *_, **inputs: list[str]) -> CompiledGraph:
+    def compile(self, *_, **inputs: list[str]) -> Compiled:
         # Check input length
         if len(inputs) != len(self._input_ops):
             raise ValueError(
@@ -123,14 +86,14 @@ class Graph:
         return serialized_graph
 
     @classmethod
-    def from_ops(cls, ops: list[OutputOp]) -> "Graph":
+    def from_ops(cls, ops: list[OutputOp]) -> Self:
         graph: dict[str, Op] = {}
         for op in ops:
             op.traverse_graph(graph)
         return cls(graph)
 
     @classmethod
-    def from_json(cls, json_graph: dict[str, Any]) -> "Graph":
+    def from_json(cls, json_graph: dict[str, Any]) -> Self:
         graph: dict[str, Op] = {}
         for op_id, op_data in json_graph.items():
             op_cls = Op.registry.get_class(op_data["_op"])
@@ -138,7 +101,7 @@ class Graph:
             graph[op_id] = op
         return cls(graph)
 
-    def copy(self, new_ids: bool = True) -> "Graph":
+    def copy(self, new_ids: bool = True) -> Self:
         node_map = {op: op.copy(new_ids) for op in self.iter_ops()}
 
         # Update op dependencies
@@ -148,7 +111,7 @@ class Graph:
             if isinstance(new_op, OutputOp):
                 output_ops.append(new_op)
 
-        return Graph.from_ops(output_ops)
+        return type(self).from_ops(output_ops)
 
     def dependencies(self) -> dict[Op, set[Op]]:
         """Returns a dependency mapping from op to a set of dependent ops"""
@@ -165,3 +128,41 @@ class Graph:
                 dependencies[dep].add(op)
         sorted_ops = topological_sort(dict(dependencies))
         self._graph = {op.id: op for op in sorted_ops}
+
+
+class CompiledGraph:
+    def __init__(self, graph: Graph, inputs: dict[str, list[str]]) -> None:
+        self.graph = graph
+        self.inputs = inputs
+
+        self._coalesce_rewrite_hits: dict[str, int] | None = None
+        self._coalesce_rewrite_skipped: bool | None = None
+
+    def copy(self, new_ids: bool = True) -> Self:
+        """Creates a deep copy of the compiled graph"""
+        copied = type(self)(self.graph.copy(new_ids), self.inputs.copy())
+        copied._coalesce_rewrite_hits = (
+            dict(self._coalesce_rewrite_hits)
+            if isinstance(self._coalesce_rewrite_hits, dict)
+            else None
+        )
+        copied._coalesce_rewrite_skipped = self._coalesce_rewrite_skipped
+        return copied
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "graph": self.graph.serialize(),
+            "inputs": self.inputs,
+        }
+
+    @overload
+    def iter_ops(self, op_type: None = None) -> Iterable[Op]: ...
+
+    @overload
+    def iter_ops(self, op_type: type[OpType]) -> Iterable[OpType]: ...
+
+    def iter_ops(self, op_type: type[Op] | None = None) -> Iterable[Op]:
+        return self.graph.iter_ops(op_type)
+
+    def dependencies(self) -> dict[Op, set[Op]]:
+        return self.graph.dependencies()
