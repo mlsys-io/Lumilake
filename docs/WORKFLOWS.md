@@ -60,6 +60,14 @@ Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` 
 
 `LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
+## Per-record store (`store:`)
+
+Set `store: true` at the top level of a YAML document, beside `graph` in a native
+payload, or at the top level of a dynamic workflow beside `type: dynamic`. It
+defaults to off, and a dynamic workflow's every round writes its records. An op's
+`key` is in [`docs/OPS.md`](OPS.md#per-record-store-keys); read a stored record's
+chain with `GET /api/v1/jobs/{job_id}/lineage` in [`docs/API.md`](API.md).
+
 ## n8n code-node notes
 
 An n8n **Code** node (`n8n-nodes-base.code`) becomes a `LambdaOp`. Its `parameters.pythonCode` is the function source, and its `notes` field carries Lumilake annotations as a JSON object with kebab-case keys:

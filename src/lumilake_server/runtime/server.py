@@ -2980,6 +2980,7 @@ class LumilakeServer:
             runtime_graphs_by_name[group_key] = self._runtime_builder.build(
                 merged_compiled,
                 node_prefix=group_key,
+                store_records=any(item.config.store for item in workflows),
             )
             if not envs.LUMILAKE_DISABLE_DATA_PROFILE:
                 data_profile_graphs_by_name[group_key] = self._runtime_builder.build(
@@ -3078,6 +3079,14 @@ class LumilakeServer:
                 for worker in selected_workers
                 if worker_profiles[worker]["has_gpu"]
             },
+            store_records=any(item.config.store for item in batch.workflows),
+            member_store={
+                item.request_id: item.config.store for item in batch.workflows
+            },
+            member_rounds={
+                item.request_id: item.config.semantic_round for item in batch.workflows
+            },
+            round_number=batch.config.semantic_round,
         )
         batch_request_info.batch_id = batch_id
         batch_request_info.runtime_graph = merged_graph
@@ -3746,8 +3755,11 @@ class LumilakeServer:
             raise ValueError("No graphs provided for preview")
 
         resolved_request_id = request_id or f"preview-{unique_id()}"
+        stores_records = config is not None and config.store
         runtime_graphs_by_name = {
-            name: self._runtime_builder.build(graph, node_prefix=name)
+            name: self._runtime_builder.build(
+                graph, node_prefix=name, store_records=stores_records
+            )
             for name, graph in graphs.items()
         }
         data_profile_graphs_by_name = (
@@ -3913,6 +3925,7 @@ class LumilakeServer:
     ) -> LumilakeResponse:
         if request_id is None:
             request_id = unique_id()
+        stores_records = config is not None and config.store
         resolved_workflow_slices: dict[str, WorkflowSliceMeta] = {}
         for graph_name, compiled_graph in graphs.items():
             slice_meta = (
@@ -3950,7 +3963,9 @@ class LumilakeServer:
             resolved_workflow_slices[graph_name] = slice_meta
 
         runtime_graphs = {
-            name: self._runtime_builder.build(graph, node_prefix=name)
+            name: self._runtime_builder.build(
+                graph, node_prefix=name, store_records=stores_records
+            )
             for name, graph in graphs.items()
         }
         data_profile_graphs = (

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.ops import RecordKey
 from lumilake_server.parser import keyed_seed
 
 _GENERATION_CONFIG_FIELDS: frozenset[str] = frozenset(
@@ -20,6 +21,8 @@ class OpEntry:
     inputs: list[str] = field(default_factory=list)
     fields: dict[str, Any] = field(default_factory=dict)
     max_iter: int | None = None
+    key: RecordKey | None = None
+    """A declared record key: the node carrying row keys and the path into it."""
 
 
 @dataclass

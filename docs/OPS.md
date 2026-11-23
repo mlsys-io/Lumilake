@@ -26,6 +26,30 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 
 YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` are generated from the top-level `inputs:` and `outputs:` blocks; do not declare them manually in YAML.
 
+### Per-record store keys
+
+Any op may declare `key: {node, path}` to name its records' logical keys, so a
+job submitted with `store: true` writes one entry per key. `node` names an op or
+input of the workflow, and `path` drills into its rows. A row-mode `LambdaOp` or
+a one-row-in-one-row-out model op needs no declaration: it inherits its single
+keyed input's key by position, and one keyed on an input reads it from the
+literal column that input feeds it.
+
+```yaml
+  - id: Answer
+    op: LambdaOp
+    inputs: [Cases]
+    fn_name: answer
+    mode: row
+    code: "def answer(c):\n    return c[0]\n"
+    key: {node: Cases, path: case_id}
+```
+
+An unknown `node` id is refused at submit.
+
+See [`docs/WORKFLOWS.md`](WORKFLOWS.md#per-record-store-store) for the `store:`
+flag.
+
 ### FormatOp
 
 `FormatOp` interpolates upstream op outputs into a Python `str.format` template. `format_kwargs` maps each `{name}` placeholder in `template` to the user-facing id of an upstream op (or workflow input). Listing the referenced ids in `inputs:` keeps the DAG wiring explicit.

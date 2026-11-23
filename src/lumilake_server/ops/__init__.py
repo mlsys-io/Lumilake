@@ -39,8 +39,10 @@ from lumilake_server.ops.llm_ops import (
 from lumilake_server.ops.ops import (
     FunctionalOp,
     Op,
+    RecordKey,
     RowShape,
     SingleDtype,
+    record_key,
 )
 from lumilake_server.ops.parse_ops import ParseOp, parse_op
 from lumilake_server.ops.util_ops import (
@@ -75,6 +77,7 @@ __all__ = [
     "OpMessage",
     "OutputOp",
     "ParseOp",
+    "RecordKey",
     "RowShape",
     "RowwiseMessages",
     "RowwiseSeed",
@@ -93,4 +96,5 @@ __all__ = [
     "llm_vision",
     "message_data",
     "parse_op",
+    "record_key",
 ]

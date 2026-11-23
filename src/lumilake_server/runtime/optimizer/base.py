@@ -3,12 +3,14 @@
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
 from lumilake_server.data_specs import parse_data_spec
+from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     chunk_group_parent,
@@ -81,7 +83,29 @@ def _normalize_spec_for_signature(
     return cast(dict[str, Any], normalized)
 
 
-def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, ...]:
+def _record_key_signature(
+    record_key: RecordKey | None,
+    mapping: dict[str, str],
+    nodes: Mapping[str, Any],
+) -> str | None:
+    """A node's declared record key as signature text: its path, and the node
+    it names when that node is another op of the graph."""
+    if record_key is None:
+        return None
+    if record_key.node not in nodes:
+        return _stable_json({"path": record_key.path})
+    return _stable_json(
+        {"node": mapping.get(record_key.node, record_key.node), "path": record_key.path}
+    )
+
+
+def _runtime_signature(
+    op: RuntimeOp,
+    mapping: dict[str, str],
+    record_key: RecordKey | None,
+    op_name: str | None,
+    nodes: Mapping[str, Any],
+) -> tuple[object, ...]:
     normalized_data_spec = _normalize_spec_for_signature(
         op.data_spec.model_dump(exclude_none=True), mapping
     )
@@ -116,6 +140,8 @@ def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, 
             if op.output_enforcement is not None
             else None
         ),
+        _record_key_signature(record_key, mapping, nodes),
+        op_name,
     )
 
 
@@ -200,6 +226,26 @@ def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str,
     return cast(dict[str, Any], remapped)
 
 
+def _merged_store_facts(
+    graph: RuntimeGraph, mapping: dict[str, str]
+) -> tuple[dict[str, RecordKey], dict[str, str]]:
+    """The merged graph's record keys and op names, at canonical node ids."""
+    record_keys: dict[str, RecordKey] = {}
+    op_names: dict[str, str] = {}
+    for node_id, record_key in graph.record_keys.items():
+        canonical = mapping.get(node_id, node_id)
+        record_keys.setdefault(
+            canonical,
+            RecordKey(
+                node=mapping.get(record_key.node, record_key.node),
+                path=record_key.path,
+            ),
+        )
+    for node_id, op_name in graph.op_names.items():
+        op_names.setdefault(mapping.get(node_id, node_id), op_name)
+    return record_keys, op_names
+
+
 def _dedupe_runtime_graph(
     graph: RuntimeGraph,
     logical_ops: dict[str, tuple[tuple[str, str], ...]],
@@ -225,7 +271,19 @@ def _dedupe_runtime_graph(
         if scope is None:
             mapping[node_id] = node_id
             continue
-        signature = (*scope, *_runtime_signature(op, mapping))
+        record_key, op_name = graph.record_keys.get(node_id), graph.op_names.get(
+            node_id
+        )
+        signature = (
+            *scope,
+            *_runtime_signature(
+                op,
+                mapping,
+                record_key=record_key,
+                op_name=op_name,
+                nodes=graph.nodes,
+            ),
+        )
         canonical = canonical_by_signature.get(signature)
         if canonical is None:
             canonical_by_signature[signature] = node_id
@@ -279,6 +337,7 @@ def _dedupe_runtime_graph(
         op_id: _dedupe_ordered([mapping.get(rid, rid) for rid in runtime_ids])
         for op_id, runtime_ids in graph.dsl_to_runtime.items()
     }
+    new_record_keys, new_op_names = _merged_store_facts(graph, mapping)
 
     return (
         RuntimeGraph(
@@ -287,6 +346,8 @@ def _dedupe_runtime_graph(
             output_node_map=new_output_node_map,
             output_paths=new_output_paths,
             dsl_to_runtime=new_dsl_to_runtime,
+            record_keys=new_record_keys,
+            op_names=new_op_names,
         ),
         mapping,
     )

@@ -3,8 +3,15 @@ from typing import Any
 
 import pytest
 
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import RecordKey
+from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
-from lumilake_server.runtime.runtime_graph import RuntimeGraph, make_chunk_group_key
+from lumilake_server.runtime.runtime_graph import (
+    RuntimeGraph,
+    RuntimeGraphBuilder,
+    make_chunk_group_key,
+)
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from tests.support.data_specs import runtime_op
 
@@ -365,3 +372,62 @@ def test_dedupe_keys_on_output_enforcement() -> None:
     }
     merged = HaloOptimizer().optimize_graphs({"wf": RuntimeGraph(nodes, [*nodes], {})})
     assert merged[0].nodes["F"].output_enforcement == {"text_regex": "F"}
+
+
+def test_dedupe_keeps_a_keyed_op_whose_key_is_read_off_its_own_rows() -> None:
+    """A key read off the op's own rows names an input, whose id carries the
+    workflow name and the slice. Two jobs of differently named workflows that
+    compute the same keyed op must still merge, so that node id stays out of the
+    signature while the key's path stays in it."""
+
+    def keyed(scope: str, path: str) -> RuntimeGraph:
+        """A one-node graph whose op declares a key path read off its own rows."""
+        node_id = f"{scope}__Mark"
+        op = runtime_op(node_id, "python", "python", "", {"code": "x"}, {}, {})
+        keys = {node_id: RecordKey(node=f"input_{scope}", path=path)}
+        return RuntimeGraph({node_id: op}, [node_id], {}, record_keys=keys)
+
+    def merged(paths: tuple[str, str]) -> int:
+        graphs = {s: keyed(s, p) for s, p in zip(("one", "two"), paths)}
+        return HaloOptimizer().optimize_graphs(graphs)[0].node_count
+
+    assert (merged(("id", "id")), merged(("id", "case"))) == (1, 2)
+
+
+def test_dedupe_ignores_a_declared_op_name_a_non_storing_build_leaves_out() -> None:
+    """A non-storing build carries no op names, so two graphs that differ only in
+    declared op name still merge."""
+
+    def build(declared: str) -> RuntimeGraph:
+        payload = {
+            "name": "named",
+            "inputs": {"Rows": ['{"id": "a"}']},
+            "ops": [
+                {
+                    "id": declared,
+                    "op": "LambdaOp",
+                    "inputs": ["Rows"],
+                    "fn_name": "mark",
+                    "mode": "row",
+                    "code": "def mark(c):\n    return c[0]\n",
+                    "key": {"node": "Rows", "path": "id"},
+                },
+                {
+                    "id": "Out",
+                    "op": "LambdaOp",
+                    "inputs": [declared],
+                    "fn_name": "echo",
+                    "mode": "row",
+                    "code": "def echo(c):\n    return c[0]\n",
+                },
+            ],
+            "outputs": [{"name": "out", "ref": "Out"}],
+        }
+        spec = next(iter(parse_yaml_payload(payload).values()))
+        compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+        return RuntimeGraphBuilder().build(compiled, node_prefix=declared)
+
+    merged, _, _ = HaloOptimizer().optimize_graphs(
+        {"one": build("Answer"), "two": build("Respond")}
+    )
+    assert merged.node_count - len(merged.output_node_map) == 1

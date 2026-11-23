@@ -135,6 +135,11 @@ class Graph:
         for op_id, op_data in json_graph.items():
             op_cls = Op.registry.get_class(op_data["_op"])
             op = op_cls.from_json(op_data, graph)
+            if op.key is not None and op.key.node not in json_graph:
+                raise ValueError(
+                    f"op '{op.declared_id or op_id}' key references unknown id"
+                    f" '{op.key.node}'"
+                )
             graph[op_id] = op
         return cls(graph)
 

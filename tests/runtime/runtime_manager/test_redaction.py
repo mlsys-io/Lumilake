@@ -472,6 +472,46 @@ async def test_archive_task_response_archives_grouped_api_result(
     assert saved["data"]["items"][0]["rows"][1]["text"] == '{"kind": "second"}'
 
 
+@pytest.mark.asyncio
+async def test_archive_task_response_returns_the_response_not_its_key(
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The record writer reads what this returns, so it hands back the task's
+    response, and that response is what the archived copy holds."""
+    payload = {"task_type": "python", "items": [{"output": "a"}]}
+    monkeypatch.setattr(
+        "lumilake_server.runtime.runtime_manager.flowmesh_for_context",
+        lambda: _FakeFlowMeshClient(payload),
+    )
+    saved: dict[str, Any] = {}
+
+    async def _fake_save_json_artifact(
+        _self: FlowmeshRuntimeManager,
+        _request_info: Any,
+        _filename: str,
+        data: Any,
+    ) -> str:
+        saved["data"] = data
+        return "memory://archived.json"
+
+    monkeypatch.setattr(
+        flowmesh_manager,
+        "_save_json_artifact",
+        types.MethodType(_fake_save_json_artifact, flowmesh_manager),
+    )
+    request_info = RequestInfo(
+        request_id="req-1", runtime_graphs={}, data_profile_graphs={}
+    )
+    request_info.batch_id = "batch-1"
+
+    response = await flowmesh_manager._archive_task_response(
+        request_info, "task-1", "node-a"
+    )
+
+    assert response == saved["data"] == payload
+
+
 def test_task_spec_dump_redacts_the_archive_copy_only() -> None:
     """The submit YAML keeps the credential FlowMesh needs; the archived copy
     replaces it."""

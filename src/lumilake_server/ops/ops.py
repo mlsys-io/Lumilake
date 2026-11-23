@@ -4,11 +4,33 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Self, TypeVar
 
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+
 from lumilake_server.common import Message
 from lumilake_server.utils.utils import unique_id
 
 T = TypeVar("T")
 SingleDtype = str | list[Message]
+
+
+class RecordKey(BaseModel):
+    """A record key an op declares: the node that carries its rows' keys, and
+    the path into it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node: StrictStr = Field(min_length=1)
+    path: StrictStr = ""
+
+
+def record_key(key: Any, op_id: str) -> RecordKey:
+    """An op's declared record key; an invalid one raises naming the field."""
+    try:
+        return RecordKey.model_validate(key)
+    except ValidationError as exc:
+        error = exc.errors()[0]
+        field = ".".join(str(part) for part in ("key", *error["loc"]))
+        raise ValueError(f"op '{op_id}' field '{field}' {error['msg']}") from exc
 
 
 class OpRegistry:
@@ -45,6 +67,9 @@ class Op(ABC):
     id: str
     inputs: list["Op"]
     registry: OpRegistry = OpRegistry()
+    declared_id: str | None = None
+    """The id the workflow declared for this op, when it declared one; it
+    survives the graph's scope and slicing."""
 
     @property
     def row_shape(self) -> RowShape:
@@ -76,6 +101,7 @@ class Op(ABC):
         self.id = unique_id()
         self.inputs = [] if inputs is None else inputs
         self._max_iter: int | None = None
+        self.key: RecordKey | None = None
 
     @property
     def looping(self) -> bool:
@@ -146,14 +172,21 @@ class Op(ABC):
         serialized["_op"] = self.__class__.__name__
         serialized["_max_iter"] = self._max_iter
         serialized["_inputs"] = [op.id for op in self.inputs]
+        if self.declared_id is not None:
+            serialized["_declared_id"] = self.declared_id
+        if self.key is not None:
+            serialized["key"] = self.key.model_dump()
         return serialized
 
     @classmethod
     def from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "Op":
         op = cls._from_json(data, other_ops)
         op.id = data["_id"]
+        op.declared_id = data.get("_declared_id")
         max_iter = data["_max_iter"]
         op.set_looping(max_iter is not None, max_iter)
+        key = data.get("key")
+        op.key = None if key is None else record_key(key, op.declared_id or op.id)
         return op
 
     def __hash__(self) -> int:

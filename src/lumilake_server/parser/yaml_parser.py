@@ -91,6 +91,7 @@ from typing import Any
 
 import yaml
 
+from ..ops import RecordKey, record_key
 from ..ops.router_ops import expand_routers
 from ..ops.seed_spec import Pairing, SeedKey
 from ..ops.util_ops import CLEARS_KEY
@@ -301,6 +302,7 @@ def _compile_workflow(
         op_id = _make_id(scope, "input", input_name)
         graph_ops[op_id] = {
             "_id": op_id,
+            "_declared_id": input_name,
             "_op": "InputOp",
             "_max_iter": None,
             "_inputs": [],
@@ -365,6 +367,7 @@ def _compile_workflow(
             raise ValueError(f"duplicate output id derived for '{out.name}'")
         out_dict: dict[str, Any] = {
             "_id": op_id,
+            "_declared_id": out.name,
             "_op": "OutputOp",
             "_max_iter": None,
             "_inputs": [refs[out.ref]],
@@ -395,7 +398,7 @@ def _validate_inputs(inputs_block: Any) -> dict[str, list[str]]:
 def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
     if not isinstance(entry, dict):
         raise ValueError(f"op entry at index {idx} must be a mapping")
-    reserved = {"id", "op", "inputs", "max_iter"}
+    reserved = {"id", "op", "inputs", "max_iter", "key"}
     user_id = entry.get("id")
     op_type = entry.get("op")
     if not isinstance(user_id, str) or not user_id.strip():
@@ -410,6 +413,7 @@ def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
         raise ValueError(f"op '{user_id}' inputs must be a list of ids")
 
     fields_dict = {k: v for k, v in entry.items() if k not in reserved}
+    raw_key = entry.get("key")
     max_iter = entry.get("max_iter")
     if max_iter is not None and not isinstance(max_iter, int):
         raise ValueError(f"op '{user_id}' max_iter must be int or null")
@@ -420,6 +424,7 @@ def _parse_op_entry(entry: Any, idx: int) -> OpEntry:
         inputs=list(raw_inputs),
         fields=fields_dict,
         max_iter=max_iter,
+        key=None if raw_key is None else record_key(raw_key, user_id.strip()),
     )
 
 
@@ -457,6 +462,7 @@ def _build_op_dict(
 
     op_dict: dict[str, Any] = {
         "_id": internal_id,
+        "_declared_id": entry.id,
         "_op": entry.op,
         "_max_iter": entry.max_iter,
         "_inputs": input_ids,
@@ -472,4 +478,11 @@ def _build_op_dict(
         template_ids=template_ids or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
+    if entry.key is not None:
+        node_ref = entry.key.node
+        if node_ref not in user_id_to_internal:
+            raise ValueError(f"op '{entry.id}' key references unknown id '{node_ref}'")
+        op_dict["key"] = RecordKey(
+            node=user_id_to_internal[node_ref], path=entry.key.path
+        ).model_dump()
     return op_dict

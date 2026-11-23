@@ -479,6 +479,7 @@ async def test_process_batch_uses_parent_workflow_grouping_and_relocates_artifac
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         prefixes.append(node_prefix)
@@ -595,6 +596,7 @@ async def test_process_batch_uses_server_data_profile_collection(
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -688,6 +690,7 @@ async def test_run_batch_skips_data_profile_when_disabled(
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         if task_type_override == "data_profile":
@@ -893,6 +896,7 @@ def _install_fake_build_and_schedule(server: Any, output_name: str) -> None:
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1199,6 +1203,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1261,6 +1266,7 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1309,6 +1315,7 @@ def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> No
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1361,6 +1368,7 @@ def _install_list_lambda_downstream_build_and_schedule(
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1428,6 +1436,7 @@ def _install_rowwise_python_downstream_build_and_schedule(
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
@@ -1676,6 +1685,7 @@ def _install_aligned_build_and_schedule(server: Any, output_name: str) -> None:
         compiled_graph: Any,
         task_type_override: str | None = None,
         node_prefix: str | None = None,
+        store_records: bool = False,
     ) -> RuntimeGraph:
         assert node_prefix is not None
         suffix = "data_profile" if task_type_override == "data_profile" else "runtime"
