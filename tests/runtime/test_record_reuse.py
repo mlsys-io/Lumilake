@@ -546,13 +546,11 @@ async def test_a_cancelled_request_cancels_its_read_sub_run(monkeypatch: Any) ->
     graph = _runtime_graph(_READ_CHAIN)
     read, manager = _read_sub_run(monkeypatch, graph), FlowmeshRuntimeManager()
 
-    async def _cancelling_status(*_: Any, **__: Any) -> bool:
+    async def _cancelled(*_: Any, **__: Any) -> bool:
         manager._cancelled_requests.add("req-2")
         return False
 
-    monkeypatch.setattr(
-        FlowmeshRuntimeManager, "update_task_status", _cancelling_status
-    )
+    monkeypatch.setattr(FlowmeshRuntimeManager, "update_task_status", _cancelled)
     with pytest.raises(RequestCancelledError):
         await manager._run_unversioned_reads(_reusing(graph), Schedule({"w": [read]}))
     assert manager._batch_workflow_id[("req-2", "batch-1")] == "wf-sub"
