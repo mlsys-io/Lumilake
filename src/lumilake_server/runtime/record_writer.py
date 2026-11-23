@@ -1479,6 +1479,22 @@ def _input_values(op: RuntimeOp, node: str) -> Any:
     return None
 
 
+def read_back_records(
+    runtime_graph: RuntimeGraph,
+    node_task_map: Mapping[str, str],
+    results: Mapping[str, Any],
+) -> dict[str, NodeRecords]:
+    """Finished values shaped as a consumer reads the store's own records, keyed
+    as the writer keys them: a keyed retrieval by its declared column, a 1:1 op
+    by its input's position."""
+    order = runtime_graph.topological_order()
+    plans = _resolve_plans(runtime_graph, order)
+    records, _ = _collect_node_records(
+        runtime_graph, plans, order, node_task_map, results
+    )
+    return records
+
+
 def _collect_node_records(
     runtime_graph: RuntimeGraph,
     plans: Mapping[str, RecordPlan],

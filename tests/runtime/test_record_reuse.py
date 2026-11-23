@@ -630,6 +630,64 @@ async def test_an_unversioned_read_rekeys_only_what_changed(
     }
 
 
+def _keyed_read_graph() -> Any:
+    """A keyed sql retrieval whose consumer reads one row per ``case_id``."""
+    workflow = {
+        "name": "keyed-read",
+        "ops": [
+            {
+                "id": "Read",
+                "op": "DataRetrievalOp",
+                "data_spec": {
+                    **_SQL,
+                    "template": "SELECT case_id FROM cases",
+                    "key": {"column": "case_id"},
+                },
+            },
+            _READ_ASK,
+        ],
+        "outputs": [{"name": "answer", "ref": "Ask"}],
+    }
+    return _runtime_graph(workflow)
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_sub_run_reads_a_keyed_retrieval_back_by_its_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keyed retrieval re-ran in the sub-run reads back one record per key,
+    so its keyed consumer decides on a key instead of an unkeyed row."""
+    graph = _keyed_read_graph()
+    read = _node(graph, "Read")
+    response = {
+        "items": [{"table": {"df": json.dumps({"case_id": {"0": "c1", "1": "c2"}})}}]
+    }
+    _read_sub_run(monkeypatch, graph, response)
+    records = await FlowmeshRuntimeManager()._run_unversioned_reads(
+        _reusing(graph), Schedule({"w": [read]})
+    )
+    assert records[read].keyed
+    assert records[read].keys == ["c1", "c2"]
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_sub_run_refuses_a_repeated_retrieval_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeated key in a re-ran retrieval's rows fails its consumer's job the
+    same way the full run's arrival check does."""
+    graph = _keyed_read_graph()
+    read = _node(graph, "Read")
+    response = {
+        "items": [{"table": {"df": json.dumps({"case_id": {"0": "c1", "1": "c1"}})}}]
+    }
+    _read_sub_run(monkeypatch, graph, response)
+    with pytest.raises(RuntimeError, match="repeated at row 0 of item 0 and row 1"):
+        await FlowmeshRuntimeManager()._run_unversioned_reads(
+            _reusing(graph), Schedule({"w": [read]})
+        )
+
+
 @pytest.mark.asyncio
 async def test_a_cancelled_request_cancels_its_read_sub_run(monkeypatch: Any) -> None:
     """A request cancelled while its read sub-run polls stops as cancelled."""

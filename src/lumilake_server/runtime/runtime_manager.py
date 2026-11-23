@@ -47,12 +47,11 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
-from lumilake_server.runtime.record_store import row_key
 from lumilake_server.runtime.record_writer import (
     NodeRecords,
     RecordWriter,
     content_addressed,
-    record_values,
+    read_back_records,
 )
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.retrieval_key_check import key_problem
@@ -310,31 +309,6 @@ def _sub_graph(runtime_graph: RuntimeGraph, node_ids: Sequence[str]) -> RuntimeG
         },
         op_names=runtime_graph.op_names.copy(),
     )
-
-
-def _read_back_records(
-    runtime_graph: RuntimeGraph,
-    node_task_map: Mapping[str, str],
-    results: Mapping[str, Any],
-) -> dict[str, NodeRecords]:
-    """One sub-run's finished values, shaped as a consumer reads them."""
-    records: dict[str, NodeRecords] = {}
-    for node_id, task_id in node_task_map.items():
-        response = results.get(task_id)
-        if response is None:
-            continue
-        values = record_values(response)
-        key_path = runtime_graph.record_keys.get(node_id)
-        records[node_id] = NodeRecords(
-            keyed=key_path is not None,
-            values=values,
-            keys=(
-                [row_key(value, key_path.path) for value in values]
-                if key_path is not None
-                else None
-            ),
-        )
-    return records
 
 
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
@@ -2130,12 +2104,16 @@ class FlowmeshRuntimeManager:
                 reason = self._task_failure_reason(task_id, node_task_map)
                 raise RuntimeError(f"unversioned read {node_id} failed{reason}")
             results[task_id] = await self._read_task_result(task_id)
+        for node_id, task_id in node_task_map.items():
+            response = results[task_id]
+            if isinstance(response, dict):
+                self._assert_retrieval_key(read_graph, [node_id], response)
         self._reuse_read_responses[request_info.request_id] = {
             node_id: (results[task_id], read_graph.output_paths.get(node_id))
             for node_id, task_id in node_task_map.items()
             if node_id in read_graph.output_node_map
         }
-        return _read_back_records(read_graph, node_task_map, results)
+        return read_back_records(read_graph, node_task_map, results)
 
     async def _aggregate_read_outputs(
         self, request_info: RequestInfo
