@@ -2,7 +2,6 @@
 
 import asyncio
 import copy
-import hashlib
 import json
 import logging
 import types
@@ -33,6 +32,7 @@ from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+from tests.support.seeds import documented_seed
 
 _DEMO_PRINCIPAL = PrincipalContext(
     principal_id="alice",
@@ -70,23 +70,6 @@ _SUBGRAPH_PLAN: dict[str, Any] = {
                 "template": "SELECT * FROM x",
                 "params": [{"label": "s", "node": "Symbols"}],
             },
-        }
-    ],
-}
-
-
-# A subgraph whose single op draws a keyed seed, so the round it runs in is
-# visible in the graph that dispatches.
-_SEEDED_SUBGRAPH_PLAN: dict[str, Any] = {
-    "next": "subgraph",
-    "ops": [
-        {
-            "id": "Sample",
-            "op": "LambdaOp",
-            "inputs": ["Symbols"],
-            "fn_name": "sample",
-            "code": "def sample(row, seed):\n    return '%d' % seed\n",
-            "seed": {"key": {"node": "Symbols", "path": "items.output"}},
         }
     ],
 }
@@ -1111,7 +1094,18 @@ async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
 ) -> None:
     """The proposer's opening round draws over an empty subgraph, so the first
     subgraph it emits runs as round 1 and a keyed seed in it draws with 1."""
-    job_routes._fake_runtime_server.plans = [_SEEDED_SUBGRAPH_PLAN, {"next": "STOP"}]
+    sample = {
+        "id": "Sample",
+        "op": "LambdaOp",
+        "inputs": ["Symbols"],
+        "fn_name": "sample",
+        "code": "def sample(row, seed):\n    return '%d' % seed\n",
+        "seed": {"key": {"node": "Symbols", "path": "items.output"}},
+    }
+    job_routes._fake_runtime_server.plans = [
+        {"next": "subgraph", "ops": [sample]},
+        {"next": "STOP"},
+    ]
     record = await _submit_and_run(app, job_routes, _VALID_DYNAMIC_YAML)
 
     assert record.status == "completed", record.error
@@ -1121,11 +1115,8 @@ async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
         for op in dispatched.iter_ops(LambdaOp)
         if op.code.startswith("import hashlib")
     )
-    text = json.dumps([0, "Sample", 1, "NVDA"], separators=(",", ":"))
-    assert (
-        lambda_runtime.materialize(generated.code)(("NVDA",))
-        == int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
-    )
+    draws = documented_seed(["NVDA"], seed=0, op_id="Sample", round_number=1)
+    assert lambda_runtime.materialize(generated.code)(("NVDA",)) == draws[0]
 
 
 @pytest.mark.anyio

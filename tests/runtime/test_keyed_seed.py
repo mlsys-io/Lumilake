@@ -1,7 +1,6 @@
 """A rowwise chat op derives each row's seed from that row's key."""
 
 import copy
-import hashlib
 import json
 from typing import Any
 
@@ -16,11 +15,13 @@ from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys,
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 from tests.support.data_specs import wire
+from tests.support.seeds import documented_seed
 
 _ROWS = [
     {"case_id": c, "question": q} for c, q in [("c1", "q1"), ("c2", "q2"), ("c1", "q3")]
 ]
 _COLUMN = [json.dumps(row) for row in _ROWS]
+_KEY = {"node": "Cases", "path": "items.output.case_id"}
 _ANSWER: dict[str, Any] = {
     "id": "Answer",
     "op": "LLMChatOp",
@@ -31,10 +32,7 @@ _ANSWER: dict[str, Any] = {
     "rowwise_columns": [
         {"label": "question", "node": "Cases", "path": "items.output.question"}
     ],
-    "rowwise_seed": {
-        "key": {"node": "Cases", "path": "items.output.case_id"},
-        "pairing": "shared",
-    },
+    "rowwise_seed": {"key": dict(_KEY), "pairing": "shared"},
 }
 
 
@@ -56,32 +54,13 @@ def _seed_node(payload: dict[str, Any]) -> Any:
 
 
 def _generated(payload: dict[str, Any]) -> Any:
-    node = _seed_node(payload)
-    return lambda_runtime.materialize(wire(node)["code"], SEED_FN_NAME)
-
-
-def _documented_seed(
-    keys: list[Any], op_id: str = "Answer", round_number: int | None = None
-) -> list[int]:
-    """The docs/OPS.md formula: SHA-256 over [seed, op id, round, key] as
-    canonical JSON (sorted keys, no whitespace, non-ASCII unescaped, UTF-8),
-    first 8 bytes big-endian, mod 2^31."""
-
-    def one(key: Any) -> int:
-        text = json.dumps(
-            [7, op_id, round_number, key],
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-        return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") % 2**31
-
-    return [one(key) for key in keys]
+    return lambda_runtime.materialize(wire(_seed_node(payload))["code"], SEED_FN_NAME)
 
 
 def _round_build(
     body: dict[str, Any], results: dict[str, Any], symbols: list[str] | None = None
 ) -> Any:
+    """Build one round over ``body``, with ``results`` as the run's node values."""
     template = DriverTemplate.model_validate(
         {"first": body, "next": body, "stop_when_empty": "x"}
     )
@@ -104,110 +83,72 @@ def _round_build(
     )
 
 
-def test_the_generated_function_matches_the_documented_seed() -> None:
-    """The parsed step draws the documented seed by key."""
-    fn = _generated(_payload())
-    keys = [row["case_id"] for row in _ROWS]
-    assert [fn((row,)) for row in _COLUMN] == _documented_seed(keys)
-    assert [fn((row,)) for row in reversed(_COLUMN)] == _documented_seed(keys[::-1])
-
-
-def test_a_keyed_seed_reads_the_chat_op() -> None:
-    """A row-mode seed op lets slices split, and the chat op reads its column."""
+def test_the_parsed_step_draws_the_documented_seed_by_key() -> None:
+    """The generated row function draws the documented seed per key."""
     graph = _graph(_payload())
+    seed_node = _seed_node(_payload())
+    fn = lambda_runtime.materialize(wire(seed_node)["code"], SEED_FN_NAME)
+    keys = [row["case_id"] for row in _ROWS]
+    assert [fn((row,)) for row in _COLUMN] == documented_seed(keys)
+    assert [fn((row,)) for row in reversed(_COLUMN)] == documented_seed(keys[::-1])
     assert graph.list_lambda_cardinality_nodes() == set()
     chat = next(n for n in graph.nodes.values() if n.task_type == "inference")
-    seed_id = _seed_node(_payload()).node_id
-    assert wire(chat)["seeds"] == {"node": seed_id, "path": "value.items.value"}
+    assert wire(chat)["seeds"] == {
+        "node": seed_node.node_id,
+        "path": "value.items.value",
+    }
+    # Text that is not JSON object or array text is the key as it stands.
+    op = seed_op("Answer", "Cases", "items.output", 7, None, "LLMChatOp")
+    fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
+    assert fn(("7",)) == documented_seed(["7"])[0] != documented_seed([7])[0]
 
 
-def test_a_template_round_keeps_its_id_and_reads_an_earlier_node() -> None:
-    """A template op keeps its unrendered id, and a later round's chat op keys
-    on an earlier round's node, forwarded flat for the row function to read;
-    a key that repeats over the round's own values or the run input is refused."""
-    answer = {**_ANSWER, "id": "Answer{{round}}"}
+def test_a_repeated_key_is_refused_unless_paired() -> None:
+    """A repeated key over a round, the run input or a literal column is refused."""
     results = {"Cases": [{"output": row} for row in _ROWS]}
-    build = _round_build({"ops": [answer]}, results)
+    build = _round_build({"ops": [{**_ANSWER, "id": "Answer{{round}}"}]}, results)
     generated = next(
         op for op in build.graph.values() if op.get("fn_name") == SEED_FN_NAME
     )
     (producer,) = (build.graph[ref] for ref in generated["_inputs"])
     assert (producer["_op"], producer["name"].startswith("Cases")) == ("InputOp", True)
     fn = lambda_runtime.materialize(generated["_code"], generated["fn_name"])
-    assert [fn(("c1",)), fn(("c2",))] == _documented_seed(
-        ["c1", "c2"], "Answer{{round}}", 2
+    assert [fn(("c1",)), fn(("c2",))] == documented_seed(
+        ["c1", "c2"], op_id="Answer{{round}}", round_number=2
     )
-    repeated = copy.deepcopy(answer)
-    del repeated["rowwise_seed"]["pairing"]
+    repeated = {**_ANSWER, "rowwise_seed": {"key": dict(_KEY)}}
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
-        _round_build({"ops": [repeated]}, {"Cases": [{"output": row} for row in _ROWS]})
-    # The run input is a round's key column too, over the symbols it was given.
+        _round_build({"ops": [repeated]}, results)
     repeated["rowwise_seed"] = {"key": {"node": "Symbols", "path": "items.output"}}
     with pytest.raises(ValueError, match="rows 0 and 2 share the key"):
         _round_build({"ops": [repeated]}, {}, symbols=["AAA", "BBB", "AAA"])
-
-
-def test_a_user_op_named_after_the_seed_keeps_its_own_id() -> None:
-    """The generated row function takes an id under the ``seed`` prefix, which
-    no op type emits, so a user op named like it builds beside the key form."""
-    user = {"id": "Answer__seed", "op": "LambdaOp", "inputs": [], "fn_name": "p"}
-    user["code"] = "def p(row):\n    return row\n"
-    payload = _payload()
-    payload["ops"].append(user)
-    spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
-    assert spec[make_id("yaml_workflow", "lambda", "Answer__seed")]["fn_name"] == "p"
-    assert spec[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
-
-
-def test_a_text_cell_is_the_key_as_it_stands() -> None:
-    """A cell that is not JSON object or array text is kept as written, so the
-    text ``"7"`` hashes as the string, not as the number it spells."""
-    op = seed_op(
-        "Answer",
-        "Cases",
-        "items.output",
-        7,
-        None,
-        "LLMChatOp",
-        pairing="shared",
-    )
-    fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
-    assert fn(("7",)) == _documented_seed(["7"])[0]
-    assert fn(("7",)) != _documented_seed([7])[0]
-
-
-def test_a_duplicate_key_fails_unless_paired() -> None:
-    """Two rows of one key draw one seed, so the key form refuses them and
-    names the op and both rows, and ``pairing: shared`` declares it."""
-    payload = _payload()
-    payload["ops"][1]["rowwise_seed"].pop("pairing")
+    literal = _payload()
+    literal["ops"][1]["rowwise_seed"].pop("pairing")
     with pytest.raises(ValueError, match="Answer' .*rows 0 and 2 share the key"):
-        yaml_parser.check_keyed_seed_duplicates(payload, {})
-    payload["ops"][1]["rowwise_seed"]["pairing"] = "shared"
-    yaml_parser.check_keyed_seed_duplicates(payload, {})
-    payload["ops"][1]["rowwise_seed"]["pairing"] = "paired"
+        yaml_parser.check_keyed_seed_duplicates(literal, {})
+    literal["ops"][1]["rowwise_seed"] = {"key": dict(_KEY), "pairing": "paired"}
     with pytest.raises(
         ValueError, match="Answer' rowwise_seed: pairing: Input should be 'unique'"
     ):
-        _graph(payload)
+        _graph(literal)
 
 
 def test_the_key_form_is_refused() -> None:
-    fn = _generated(_payload())
-    with pytest.raises(ValueError, match="Answer' has no row key in .*case_id"):
-        fn((json.dumps({"question": "q"}),))
-    with pytest.raises(ValueError, match="Answer' has a null row key in .*case_id"):
-        fn((json.dumps({"case_id": None}),))
-    # A literal ``%s`` in the op id is escaped before the value placeholder is
-    # added, so the error path still raises the documented ValueError.
-    payload = _payload()
-    payload["ops"][1]["id"] = "50%sale"
-    with pytest.raises(ValueError, match="50%sale' has no row key"):
-        _generated(payload)((json.dumps({"question": "q"}),))
+    """A row with no key or a null key fails; a seed that fits no field is refused."""
+    for cell, message in [
+        ({"question": "q"}, "has no row key in .*case_id"),
+        ({"case_id": None}, "has a null row key in .*case_id"),
+        # A literal ``%s`` in the op id is escaped before the value placeholder.
+        ({"question": "q"}, "50%sale' has no row key"),
+    ]:
+        payload = _payload()
+        payload["ops"][1]["id"] = "50%sale" if "%" in message else "Answer"
+        with pytest.raises(ValueError, match=message):
+            _generated(payload)((json.dumps(cell),))
     payloads = [_payload() for _ in range(3)]
     payloads[0]["ops"][1].pop("rowwise_template")
     payloads[1]["ops"][1]["config"]["api"] = {"url": "x"}
-    payloads[2]["ops"][1]["rowwise_seed"]["node"] = "Cases"
+    payloads[2]["ops"][1]["rowwise_seed"] = {"key": dict(_KEY), "node": "Cases"}
     for payload, match in zip(
         payloads, ["rowwise_template", "API", "node: Extra inputs are not permitted"]
     ):
@@ -215,81 +156,63 @@ def test_the_key_form_is_refused() -> None:
             _graph(payload)
 
 
-def test_a_native_graph_takes_the_same_key_form() -> None:
+def test_a_native_graph_builds_each_seed_form_through_its_model() -> None:
+    """A native key form adds its row function ahead of the op reading it."""
     native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
     chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
     cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
-    seed_key = {"key": {"node": cases_id, "path": "items.output.case_id"}}
-    native[chat_id] = {**native[chat_id], "rowwise_seed": seed_key}
-    out = rewrite_native_keys(native, job_seed=7)
+    keyed = {**native[chat_id], "rowwise_seed": {"key": dict(_KEY, node=cases_id)}}
+    out = rewrite_native_keys({**native, chat_id: keyed}, job_seed=7)
     assert out[f"{chat_id}__seed"]["mode"] == "row"
     # The graph is built in insertion order, so the seed op comes first.
     assert list(out).index(f"{chat_id}__seed") < list(out).index(chat_id)
-    native[f"{chat_id}__seed"] = {}
-    with pytest.raises(ValueError, match="already holds"):
-        rewrite_native_keys(native, job_seed=7)
-    native[chat_id]["config"] = ""
-    with pytest.raises(ValueError, match="config must be a mapping"):
-        rewrite_native_keys(native, job_seed=7)
+    with pytest.raises(ValueError, match="rowwise_seed: node: Field required"):
+        Graph.from_json({**native, chat_id: {**keyed, "rowwise_seed": {"path": "p"}}})
+    for entry, match in [
+        ({**keyed, "config": {"model": "m", "nonsense": 1}}, "config is not valid"),
+        ({**keyed, "config": ""}, "config must be a mapping"),
+        ({**keyed, "_id": f"{chat_id}__seed"}, "already holds"),
+    ]:
+        native[f"{chat_id}__seed"] = {}
+        with pytest.raises(ValueError, match=match):
+            rewrite_native_keys({**native, chat_id: entry}, job_seed=7)
+        del native[f"{chat_id}__seed"]
     # An op that names no kind is the graph builder's to refuse, not this pass's.
     untyped = {"_inputs": [], "_max_iter": None, "data": ["{}"]}
     assert rewrite_native_keys({"op": untyped}, job_seed=7) == {"op": untyped}
 
 
-def test_a_native_graph_builds_the_column_form_through_the_model() -> None:
-    """A native ``rowwise_seed`` without its node is refused by name, and an
-    unknown config key on a key form keeps the config refusal it had."""
-    native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
-    chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
-    cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
-    column = {"path": "items.output"}
-    with pytest.raises(ValueError, match="rowwise_seed: node: Field required"):
-        Graph.from_json(
-            {**native, chat_id: {**native[chat_id], "rowwise_seed": column}}
-        )
-    keyed = {
-        **native[chat_id],
-        "config": {"model": "m", "nonsense": 1},
-        "rowwise_seed": {"key": {"node": cases_id, "path": "items.output"}},
-    }
-    with pytest.raises(ValueError, match="config is not valid"):
-        rewrite_native_keys({**native, chat_id: keyed}, job_seed=7)
-
-
 def test_a_row_lambda_takes_a_seeded_key_form() -> None:
-    """A row Lambda's ``seed`` form binds a generated seed node ahead of it,
-    whose step passes each row's derived seed to the function as a second
-    argument; the other modes and a one-parameter function are refused."""
+    """A row Lambda's ``seed`` form binds a generated seed node ahead of it."""
     draw = {
         "id": "Draw",
         "op": "LambdaOp",
         "inputs": ["Cases"],
         "fn_name": "draw",
         "code": "def draw(row, seed):\n    return '%d' % seed\n",
-        "seed": {"key": {"node": "Cases", "path": "items.output.case_id"}},
+        "seed": {"key": dict(_KEY)},
     }
-    cases = {
-        "id": "Cases",
-        "op": "DataOp",
-        "inputs": [],
-        "data": [json.dumps({"case_id": k}) for k in ("k1", "k2")],
-    }
+    cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
     payload: dict[str, Any] = {"seed": 7, "ops": [cases, draw]}
     spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
     (seed_id,) = [
         op_id for op_id, op in spec.items() if op.get("fn_name") == SEED_FN_NAME
     ]
-    assert spec[make_id("yaml_workflow", "lambda", "Draw")]["seed"] == {
-        "node": seed_id,
-        "path": "items.output",
-    }
+    draw_id = make_id("yaml_workflow", "lambda", "Draw")
+    assert spec[draw_id]["seed"] == {"node": seed_id, "path": "items.output"}
     with pytest.raises(ValueError, match="seed is available in modes"):
         parse_yaml_payload({"ops": [cases, {**draw, "mode": "list"}]})
-    with pytest.raises(ValueError, match="exactly 2 parameters"):
-        _graph(
-            {"ops": [cases, {**draw, "code": "def draw(row):\n    return row[0]\n"}]}
-        )
-    with pytest.raises(ValueError, match="exactly 2 parameters"):
-        _graph({"ops": [cases, {**draw, "code": "lambda row: row[0]"}]})
-    draw_node = _graph(payload).nodes[make_id("yaml_workflow", "lambda", "Draw")]
-    assert [e.get("role") for e in wire(draw_node)["plan"]] == [None, "seed"]
+    for code in ("def draw(row):\n    return row[0]\n", "lambda row: row[0]"):
+        with pytest.raises(ValueError, match="exactly 2 parameters"):
+            _graph({"ops": [cases, {**draw, "code": code}]})
+    node = _graph(payload).nodes[draw_id]
+    assert [e.get("role") for e in wire(node)["plan"]] == [None, "seed"]
+    # The generated id takes a ``seed`` prefix no op type emits, so a user op
+    # named like it builds beside the key form.
+    named = {"id": "Answer__seed", "op": "LambdaOp", "inputs": []}
+    named.update({"fn_name": "p", "code": "def p(row):\n    return row\n"})
+    payload = _payload()
+    payload["ops"].append(named)
+    built = next(iter(parse_yaml_payload(payload).values()))["graph"]
+    assert built[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
+    assert built[make_id("yaml_workflow", "lambda", "Answer__seed")]["fn_name"] == "p"
