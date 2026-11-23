@@ -39,8 +39,7 @@ _API_ITEM_PATH = "items.json.choices[0].message.content"
 
 
 def _drills_index(declared: str, root: str) -> bool:
-    """Whether a declared path reads a numeric position below the whole-result
-    field, written either as ``.0.`` or ``[0]``."""
+    """Whether a declared path reads a numeric position below the whole-result field."""
     field = root.rsplit(".", 1)[-1]
     segments = declared.replace("[", ".").replace("]", ".").split(".")
     if field not in segments:
