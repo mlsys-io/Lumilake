@@ -37,8 +37,8 @@ class JobLineagePayload(BaseModel):
     entries: list[JobLineageEntry] = Field(
         default_factory=list,
         description=(
-            "The record's chain: the record itself, then each input it read,"
-            " level by level."
+            "The record's chain: the record itself, then each input it read, level by"
+            " level."
         ),
     )
 
