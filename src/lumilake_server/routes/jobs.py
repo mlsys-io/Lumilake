@@ -12,7 +12,7 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator, Collection
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
@@ -548,10 +548,10 @@ def _dispatch_workflow_to_graph_specs(
     this to keep DSL ids stable across slices of the same parent
     workflow, which the multi-batch data-profile path depends on.
 
-    ``cleared_ids`` names the native ops a server-built graph such as a
-    dynamic round's drops markers on, from the ids its own expansion returned.
-    That key is set on exactly those ops; any other graph declaring it is
-    refused, because a router's expansion is its only source.
+    ``cleared_ids`` names the native ops a server-built graph such as a dynamic round's
+    drops markers on, from the ids its own expansion returned. That key is set on
+    exactly those ops; any other graph declaring it is refused, because a router's
+    expansion is its only source.
     """
     if workflow_format == "n8n":
         payload = {
@@ -641,6 +641,21 @@ def _dispatch_workflow_to_graph_specs(
     }
 
 
+def _workflow_store_flag(workflow_payload: Any, graph_name: str) -> bool:
+    """Whether the workflow asks for its records to be stored."""
+    if not isinstance(workflow_payload, dict):
+        return False
+    flag = workflow_payload.get("store")
+    if flag is None:
+        return False
+    if not isinstance(flag, bool):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"workflow '{graph_name}' field 'store' must be a boolean",
+        )
+    return flag
+
+
 def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
     """A native workflow's ops, without a bare graph's workflow-level ``seed``."""
     if "graph" in workflow_payload:
@@ -669,25 +684,10 @@ def _submitted_job_seed(
     if len(seeds) > 1:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="one job carries workflows with different seeds; submit each"
-            " seed as its own job",
+            detail="one job carries workflows with different seeds; submit each seed as"
+            " its own job",
         )
     return seeds.pop() if seeds else 0
-
-
-def _workflow_store_flag(workflow_payload: Any, graph_name: str) -> bool:
-    """Whether the workflow asks for its records to be stored."""
-    if not isinstance(workflow_payload, dict):
-        return False
-    flag = workflow_payload.get("store")
-    if flag is None:
-        return False
-    if not isinstance(flag, bool):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"workflow '{graph_name}' field 'store' must be a boolean",
-        )
-    return flag
 
 
 @dataclass
@@ -972,7 +972,7 @@ class JobSubmitItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobSubmitItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
@@ -1042,7 +1042,7 @@ class JobPreviewItem(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _validate_inputs(self) -> "JobPreviewItem":
+    def _validate_inputs(self) -> Self:
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
@@ -1898,9 +1898,9 @@ async def _submit_dynamic_child(
     """Create and dispatch one dynamic round as a child job, returning its id.
 
     The caller must check the child record's status after this returns, because
-    ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this
-    round's expansion cleared; ``semantic_round`` is the chain round a stored
-    record's round comes from, defaulting to ``round_index``.
+    ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this round's
+    expansion cleared; ``semantic_round`` is the chain round a stored record's round
+    comes from, defaulting to ``round_index``.
     """
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
