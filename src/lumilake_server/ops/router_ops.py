@@ -28,6 +28,7 @@ ROUTER_OP = "RouterOp"
 ERROR_BRANCH = "error"
 
 _NAME_RE = re.compile(r"^\w+$")
+_ROUTER_ID_RE = re.compile(r"^\w+(\.\w+)*$")
 _PATH_RE = re.compile(r"^\w+(\.\w+)*$")
 
 _MARKER = f"""\
@@ -99,10 +100,18 @@ class RouterSpec(BaseModel):
     rules: list[RouterRuleSpec]
     error_branch: StrictBool = False
 
-    @field_validator("id", "default_branch")
+    @field_validator("default_branch")
     @classmethod
     def _name(cls, value: str) -> str:
         if not _NAME_RE.match(value):
+            raise ValueError(f"must be letters, digits or underscores, got {value!r}")
+        return value
+
+    @field_validator("id")
+    @classmethod
+    def _router_id(cls, value: str) -> str:
+        """A dotted id is a router an unrolled repeat copied into its iteration."""
+        if not _ROUTER_ID_RE.match(value):
             raise ValueError(f"must be letters, digits or underscores, got {value!r}")
         return value
 

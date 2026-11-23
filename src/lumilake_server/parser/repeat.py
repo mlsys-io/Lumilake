@@ -7,7 +7,8 @@ before any id is registered, so one declared op exists per iteration.
 from collections.abc import Callable, Iterator, Mapping
 from typing import Any, NamedTuple
 
-from lumilake_server.ops.router_ops import ROUTER_OP
+from lumilake_server.ops.router_ops import ROUTER_OP, RouterSpec
+from lumilake_server.ops.spec_validation import validate_fields
 
 REPEAT_OP = "RepeatOp"
 INPUT_REF = "$in"
@@ -21,10 +22,22 @@ class _Repeat(NamedTuple):
     input_ref: str
     output_ref: str
     body: list[dict[str, Any]]
+    branches: dict[str, tuple[str, ...]]
 
     @property
     def body_ids(self) -> list[str]:
         return [entry["id"] for entry in self.body]
+
+    @property
+    def written_ids(self) -> list[str]:
+        """Every name one iteration registers: each body id and its router branches."""
+        names: list[str] = []
+        for body_id in self.body_ids:
+            names.append(body_id)
+            names.extend(
+                f"{body_id}.{branch}" for branch in self.branches.get(body_id, ())
+            )
+        return names
 
     def at(self, index: int, body_id: str) -> str:
         return f"{self.id}.{index}.{body_id}"
@@ -32,7 +45,10 @@ class _Repeat(NamedTuple):
     def names(self, index: int, source: str) -> dict[str, str]:
         """The names iteration ``index`` writes, ``$in`` included."""
         read = source if index == 1 else self.at(index - 1, self.output_ref)
-        return {INPUT_REF: read, **{bid: self.at(index, bid) for bid in self.body_ids}}
+        return {
+            INPUT_REF: read,
+            **{name: self.at(index, name) for name in self.written_ids},
+        }
 
 
 class _Scoped(Mapping[str, str]):
@@ -101,10 +117,12 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         if spec.id in repeats or spec.id in known_ids or spec.id in plain:
             raise ValueError(f"duplicate id '{spec.id}'")
         repeats[spec.id] = spec
+    if repeats:
+        plain |= _router_branch_ids(ops)
 
     owner: dict[str, str] = {}
     for spec in repeats.values():
-        for body_id in spec.body_ids:
+        for body_id in spec.written_ids:
             if body_id in owner or body_id in plain:
                 raise ValueError(
                     f"RepeatOp '{spec.id}' body id '{body_id}' collides with an id "
@@ -143,11 +161,11 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         for index in range(1, spec.times + 1):
             iteration = spec.names(index, sources[spec.id])
             frames.update(
-                (spec.at(index, body_id), {**outside, **iteration})
-                for body_id in spec.body_ids
+                (spec.at(index, name), {**outside, **iteration})
+                for name in spec.written_ids
             )
             frame_owner.update(
-                (spec.at(index, body_id), spec.id) for body_id in spec.body_ids
+                (spec.at(index, name), spec.id) for name in spec.written_ids
             )
             iterations[spec.id].extend(
                 {**copy, "id": iteration[copy["id"]]} for copy in spec.body
@@ -170,6 +188,19 @@ def unroll_repeats(ops: list[Any], known_ids: set[str]) -> tuple[list[Any], Refe
         )
 
     return unrolled, bind
+
+
+def _router_branch_ids(ops: list[Any]) -> set[str]:
+    """The branch ids the routers outside any repeat register, ``<id>.<branch>``."""
+    branches: set[str] = set()
+    for entry in ops:
+        if not isinstance(entry, dict) or entry.get("op") != ROUTER_OP:
+            continue
+        router = validate_fields(
+            RouterSpec, entry, f"RouterOp '{entry.get('id', '?')}'"
+        )
+        branches.update(f"{router.id}.{branch}" for branch in router.branches)
+    return branches
 
 
 def _in_dependency_order(repeats: dict[str, _Repeat]) -> list[_Repeat]:
@@ -201,22 +232,28 @@ def _parse_repeat(entry: dict[str, Any], idx: int) -> _Repeat:
     if not isinstance(raw_body, list) or not raw_body:
         raise ValueError(f"RepeatOp '{repeat_id}' requires a non-empty 'body' list")
     body: list[dict[str, Any]] = []
+    branches: dict[str, tuple[str, ...]] = {}
     for body_idx, candidate in enumerate(raw_body):
         if not isinstance(candidate, dict):
             raise ValueError(
                 f"RepeatOp '{repeat_id}' body entry {body_idx} must be a mapping"
             )
         body_id, op_kind = _entry_id(candidate), candidate.get("op")
-        if op_kind in (REPEAT_OP, ROUTER_OP):
+        if op_kind == REPEAT_OP:
             raise ValueError(f"RepeatOp '{repeat_id}' body may not hold a '{op_kind}'")
         if not body_id or "." in body_id:
             raise ValueError(
                 f"RepeatOp '{repeat_id}' body id '{body_id}' may not contain '.'"
             )
         body.append({**candidate, "id": body_id})
+        if op_kind == ROUTER_OP:
+            router = validate_fields(
+                RouterSpec, candidate, f"RepeatOp '{repeat_id}' body entry '{body_id}'"
+            )
+            branches[body_id] = router.branches
 
     source, carried = (_ref(entry, repeat_id, key) for key in ("input", "output"))
-    return _Repeat(repeat_id, times, source, carried, body)
+    return _Repeat(repeat_id, times, source, carried, body, branches)
 
 
 def _ref(entry: dict[str, Any], repeat_id: str, key: str) -> str:

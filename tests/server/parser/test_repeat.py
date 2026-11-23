@@ -12,10 +12,24 @@ _STEP = (
     "{{id: {id}, op: LambdaOp, inputs: {inputs}, fn_name: f, "
     "code: 'def f(x): return x'}}"
 )
-_ROUTER = (
-    "      - {id: First, op: RouterOp, inputs: [$in], path: text, "
-    "default_branch: b, rules: [{branch: b, match: contains, value: x}]}\n"
+_JOIN = (
+    "      - {id: Gated, op: JoinOp, inputs: [$in, Status.fail, Answer], by: unit}\n"
 )
+
+
+def _router(source: str, router_id: str = "Status", indent: str = "      ") -> str:
+    return (
+        f"{indent}- {{id: {router_id}, op: RouterOp, inputs: [{source}], path: text, "
+        "default_branch: ok, rules: [{branch: fail, match: contains, value: x}]}\n"
+    )
+
+
+def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
+    return (
+        f"{indent}- {{id: {chat_id}, op: LLMChatOp, inputs: [{source}], "
+        "config: {model: m}, messages: [{role: user, content: x}], "
+        f"rowwise_template: x, rowwise_columns: [{{label: p, node: {source}}}]}}\n"
+    )
 
 
 def _op(step_id: str, inputs: str, indent: str = "  ") -> str:
@@ -87,6 +101,27 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     assert len(list(compiled.iter_ops(LambdaOp))) == 6
 
 
+def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:
+    body = _router("$in") + _chat("Answer", "Status.fail") + _JOIN
+    gate = _router("Start", "Gate", "  ")
+    graph = _graph(gate + _repeat("3", "Gate.fail", "Gated", body), _OUTPUT)
+    ops = list(graph.values())
+    fails = [op for op in ops if op.get("fn_name") == "route_fail"][1:]
+    chats = [op for op in ops if op["_op"] == "LLMChatOp"]
+    joins = [op for op in ops if op["_op"] == "JoinOp"]
+    assert (len(fails), len(chats), len(joins)) == (3, 3, 3)
+    nodes = [column["node"] for op in chats for column in op["rowwise_columns"]]
+    assert nodes == [fail["_id"] for fail in fails]
+    source = [next(op["_id"] for op in ops if op.get("fn_name") == "route_fail")]
+    source += [join["_id"] for join in joins[:-1]]
+    for index, join in enumerate(joins):
+        assert join["_inputs"] == [
+            source[index],
+            fails[index]["_id"],
+            chats[index]["_id"],
+        ]
+
+
 @pytest.mark.parametrize(
     ("ops", "message"),
     [
@@ -100,7 +135,10 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
             _repeat().replace("  - id: R\n", "  - op: RepeatOp\n"), "missing 'id'"
         ),
         pytest.param(_repeat(body=""), "requires a non-empty 'body' list"),
-        pytest.param(_repeat(body=_ROUTER), "may not hold a 'RouterOp'"),
+        pytest.param(
+            _repeat(body=_router("$in") + "      - {id: Inner, op: RepeatOp}\n"),
+            "may not hold a 'RepeatOp'",
+        ),
         pytest.param(
             _repeat(body=_op("A.B", "[$in]", "      ")), "may not contain '.'"
         ),

@@ -56,7 +56,9 @@ ops:
       - {id: Rectify, op: LLMChatOp, inputs: [$in], messages: [...], config: {...}}
 ```
 
-Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
+A router inside a body gives the round a gate: `Status` routes `$in`, `Answer` reads `Status.fail`, and `Gated` joins `[$in, Status.fail, Answer]` so every row of the round carries forward.
+
+Iteration `i` copies each body entry to `Retry.i.<bodyId>`; a body entry's router branches are copied beside it as `Retry.i.<bodyId>.<branch>`, and an op inside the body names one as `<bodyId>.<branch>`. `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat or a router branch outside every repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 
