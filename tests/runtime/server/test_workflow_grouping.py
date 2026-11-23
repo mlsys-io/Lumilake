@@ -6,15 +6,15 @@ import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
-from lumilake_server.graphs import Graph
-from lumilake_server.ops import (
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
     ColumnTable,
-    DataRetrievalOp,
     LiteralColumn,
-    LLMChatOp,
     NodeColumn,
+    PythonData,
 )
+from lumilake_server.graphs import Graph
+from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.job_manager.base import WorkflowItem
@@ -542,7 +542,7 @@ def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> Non
     columns = _rowwise_columns(merged.graph)
     paper_col = next(col for col in columns if col.label == "Stock")
     assert isinstance(paper_col, LiteralColumn)
-    assert paper_col.data["items"] == ["paper"]
+    assert paper_col.model_dump(exclude_none=True)["data"]["items"] == ["paper"]
 
 
 def _with_python_step(

@@ -7,15 +7,15 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.data_specs import (
     Column,
+    ColumnTable,
     DataSpecModel,
     ListData,
+    NodeColumn,
 )
 from lumilake_server.ops import (
-    ColumnTable,
     DataOp,
     InputOp,
     LLMOp,
-    NodeColumn,
     Op,
 )
 from lumilake_server.runtime.runtime_graph.outputs import (

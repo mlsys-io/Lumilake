@@ -6,13 +6,14 @@ from lumilake_server.data_specs import (
     GraphTemplate,
     GraphTemplateData,
     ListData,
+    LiteralColumn,
     Message,
     NodeRead,
     PythonData,
     TemplateOptions,
 )
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
-from lumilake_server.ops.llm_ops import ImageGenerationOp, LiteralColumn, LLMVisionOp
+from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import (
     _default_output_destination,

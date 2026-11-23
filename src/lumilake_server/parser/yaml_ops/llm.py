@@ -3,7 +3,11 @@
 from collections.abc import Mapping
 from typing import Any
 
-from lumilake_server.ops import ColumnTable, NodeColumn, build_column_table
+from lumilake_server.data_specs import (
+    ColumnTable,
+    NodeColumn,
+    build_column_table,
+)
 from lumilake_server.parser.common import make_id
 
 from .common import EmitContext, OpEntry, build_generation_config
@@ -154,11 +158,15 @@ def _emit_llm_like_op(
     if "structural_outputs" in entry.fields:
         op_dict["structural_outputs"] = entry.fields["structural_outputs"]
     if resolved_aggregate is not None:
-        op_dict["aggregate_table"] = [column.to_dict() for column in resolved_aggregate]
+        op_dict["aggregate_table"] = [
+            column.model_dump(exclude_none=True) for column in resolved_aggregate
+        ]
     if "rowwise_template" in entry.fields:
         op_dict["rowwise_template"] = entry.fields["rowwise_template"]
     if resolved_rowwise is not None:
-        op_dict["rowwise_columns"] = [column.to_dict() for column in resolved_rowwise]
+        op_dict["rowwise_columns"] = [
+            column.model_dump(exclude_none=True) for column in resolved_rowwise
+        ]
     _emit_rowwise_messages(entry, op_dict, user_id_to_internal, op_kind)
     if "system_messages" in entry.fields:
         op_dict["system_messages"] = entry.fields["system_messages"]

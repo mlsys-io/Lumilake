@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.data_specs import ListData, LiteralColumn, NodeColumn
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -15,11 +16,9 @@ from lumilake_server.ops import (
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
-    LiteralColumn,
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
-    NodeColumn,
 )
 from lumilake_server.ops.ops import RowShape
 
@@ -207,7 +206,8 @@ def _llm_row_count(
         counts: list[int | None] = []
         for column in op.rowwise_columns:
             if isinstance(column, LiteralColumn):
-                items = column.data.get("items")
+                data = column.data
+                items = data.items if isinstance(data, ListData) else None
                 if isinstance(items, list):
                     counts.append(len(items))
                 continue

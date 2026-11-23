@@ -14,7 +14,9 @@ from lumilake_server.data_specs import (
     GraphTemplate,
     GraphTemplateData,
     ListData,
+    LiteralColumn,
     Message,
+    NodeColumn,
     NodeRead,
     TemplateOptions,
 )
@@ -31,11 +33,9 @@ from lumilake_server.ops import (
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
-    LiteralColumn,
     LLMChatOp,
     LLMCompletionOp,
     LLMVisionOp,
-    NodeColumn,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
 from lumilake_server.runtime.flowmesh_client import (

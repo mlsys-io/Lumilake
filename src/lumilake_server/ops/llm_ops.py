@@ -2,9 +2,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, StrictStr, TypeAdapter, ValidationError
-
-from lumilake_server.common import GenerationConfig, InputRef
+from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import (
+    Column,
+    ColumnTable,
+    NodeColumn,
+    build_column_table,
+)
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
 
@@ -30,57 +34,6 @@ class RowwiseMessages:
         return payload
 
 
-class ColumnSpec(BaseModel):
-    """One ``rowwise_columns`` or ``aggregate_table`` entry."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    label: StrictStr
-    input_ref: InputRef | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = self.model_dump(exclude_none=True)
-        if self.input_ref is not None:
-            payload["input_ref"] = self.input_ref
-        return payload
-
-
-class LiteralColumn(ColumnSpec):
-    """A column bound to its own list of values."""
-
-    data: dict[str, Any]
-
-
-class NodeColumn(ColumnSpec):
-    """A column read from a node's output at an optional drill ``path``."""
-
-    node: StrictStr
-    path: StrictStr | None = None
-
-
-ColumnTable = list[LiteralColumn | NodeColumn]
-ColumnTableIn = Sequence[ColumnSpec | dict[str, Any]]
-
-ColumnTableAdapter = TypeAdapter(list[NodeColumn | LiteralColumn])
-
-
-def build_column_table(table: ColumnTableIn | None, field: str) -> ColumnTable | None:
-    """Validate one column table through the column union."""
-    if table is None:
-        return None
-    try:
-        return ColumnTableAdapter.validate_python(table)
-    except ValidationError as exc:
-        error = exc.errors(include_url=False)[0]
-        where = "".join(
-            f"[{part}]" if isinstance(part, int) else f".{part}"
-            for part in error["loc"]
-            if part not in ("NodeColumn", "LiteralColumn")
-        )
-        message = str(error["msg"]).removeprefix("Value error, ")
-        raise ValueError(f"{field}{where}: {message}") from exc
-
-
 @dataclass(frozen=True)
 class RowwiseSeed:
     """Locates one sampling seed per row at ``path`` under the seed producer's
@@ -100,9 +53,9 @@ class RowwiseSeed:
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
-    aggregate_table: ColumnTableIn | None,
+    aggregate_table: Sequence[Column | dict[str, Any]] | None,
     rowwise_template: str | None,
-    rowwise_columns: ColumnTableIn | None,
+    rowwise_columns: Sequence[Column | dict[str, Any]] | None,
     system_messages: list[str] | None,
     condition: dict[str, str] | None,
     return_history: bool,
@@ -189,9 +142,9 @@ class LLMChatOp(LLMOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         structural_outputs: dict[str, Any] | list[dict[str, Any]] | None = None,
-        aggregate_table: ColumnTableIn | None = None,
+        aggregate_table: Sequence[Column | dict[str, Any]] | None = None,
         rowwise_template: str | None = None,
-        rowwise_columns: ColumnTableIn | None = None,
+        rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
         rowwise_messages: RowwiseMessages | None = None,
         rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
@@ -278,13 +231,13 @@ class LLMChatOp(LLMOp):
             payload["structural_outputs"] = self.structural_outputs
         if self.aggregate_table is not None:
             payload["aggregate_table"] = [
-                column.to_dict() for column in self.aggregate_table
+                column.model_dump(exclude_none=True) for column in self.aggregate_table
             ]
         if self.rowwise_template is not None:
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
             payload["rowwise_columns"] = [
-                column.to_dict() for column in self.rowwise_columns
+                column.model_dump(exclude_none=True) for column in self.rowwise_columns
             ]
         if self.rowwise_messages is not None:
             payload["rowwise_messages"] = self.rowwise_messages.to_dict(
@@ -483,7 +436,7 @@ class LLMVisionOp(LLMChatOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         rowwise_template: str | None = None,
-        rowwise_columns: ColumnTableIn | None = None,
+        rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
     ) -> None:
@@ -548,7 +501,7 @@ def llm_vision(
     config: GenerationConfig | None = None,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: ColumnTableIn | None = None,
+    rowwise_columns: Sequence[Column | dict[str, Any]] | None = None,
     system_messages: list[str] | None = None,
     cacheable: bool = False,
 ) -> LLMVisionOp:

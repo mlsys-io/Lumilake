@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from lumilake_server.common import retrieval_items_path
-from lumilake_server.ops import NodeColumn, build_column_table
+from lumilake_server.data_specs import NodeColumn, build_column_table
 
 from ..common import make_id as _make_id
 from . import references, shared
@@ -504,11 +504,11 @@ def _build_llm_chat_op(
             )
         op["structural_outputs"] = structural_outputs
     if aggregate_columns is not None:
-        op["aggregate_table"] = [column.to_dict() for column in aggregate_columns]
+        op["aggregate_table"] = [column.model_dump(exclude_none=True) for column in aggregate_columns]
     if rowwise_template is not None:
         op["rowwise_template"] = rowwise_template
     if rowwise_specs is not None:
-        op["rowwise_columns"] = [column.to_dict() for column in rowwise_specs]
+        op["rowwise_columns"] = [column.model_dump(exclude_none=True) for column in rowwise_specs]
     if system_messages is not None:
         op["system_messages"] = system_messages
     return op
@@ -542,7 +542,7 @@ def _build_llm_vision_op(
         op["rowwise_template"] = rowwise_template
     vision_columns = build_column_table(rowwise_columns, "rowwise_columns")
     if vision_columns is not None:
-        op["rowwise_columns"] = [column.to_dict() for column in vision_columns]
+        op["rowwise_columns"] = [column.model_dump(exclude_none=True) for column in vision_columns]
     if system_messages is not None:
         op["system_messages"] = system_messages
     return op

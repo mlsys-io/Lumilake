@@ -10,7 +10,7 @@ import queue
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -28,11 +28,15 @@ from lumilake.log import (
     log_on_exception_async,
 )
 from lumilake_server.common import InputRef, project_input_values
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ListData,
+    LiteralColumn,
+    PythonData,
+)
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
-from lumilake_server.ops import DataRetrievalOp, LiteralColumn, LLMChatOp
-from lumilake_server.runtime import python_step
+from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -94,6 +98,8 @@ from lumilake_server.utils.utils import (
     unique_id,
 )
 
+_ListSpecWriter = Callable[[list[Any], bool], None]
+
 
 def _empty_runtime_graph() -> RuntimeGraph:
     """A node-less graph used when data profiling is disabled.
@@ -103,6 +109,30 @@ def _empty_runtime_graph() -> RuntimeGraph:
     profiling is skipped entirely.
     """
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
+
+
+def _dict_list_writer(data: dict[str, Any]) -> _ListSpecWriter:
+    """Write a rewritten list back into a retrieval param's dict spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        data["items"] = items
+        if grouped:
+            data["grouped"] = True
+
+    return write
+
+
+def _column_list_writer(column: LiteralColumn) -> _ListSpecWriter:
+    """Write a rewritten list back into a rowwise column's typed spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        assert isinstance(column.data, ListData)
+        update: dict[str, Any] = {"items": items}
+        if grouped:
+            update["grouped"] = True
+        column.data = column.data.model_copy(update=update)
+
+    return write
 
 
 @dataclass(slots=True)
@@ -1729,7 +1759,9 @@ class LumilakeServer:
     @staticmethod
     def _iter_input_bound_list_specs(
         graph: Graph,
-    ) -> Generator[tuple[str, dict[str, Any], InputRef | None], None, None]:
+    ) -> Generator[tuple[str, list[Any], InputRef | None, _ListSpecWriter], None, None]:
+        """Yield each input-bound literal list: its label, its items, the
+        ``input_ref`` it was projected from, and a writer for its items."""
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
                 params = op.data_spec.get("params")
@@ -1751,17 +1783,22 @@ class LumilakeServer:
                                 "key": param["input_ref"]["key"],
                                 "path": param["input_ref"].get("path"),
                             }
-                        yield label, data, input_ref
+                        yield label, items, input_ref, _dict_list_writer(data)
             if isinstance(op, LLMChatOp):
                 for column in op.rowwise_columns or []:
                     if not isinstance(column, LiteralColumn):
                         continue
                     data = column.data
-                    data_type = data.get("type")
-                    items = data.get("items")
-                    if data_type != "list" or not isinstance(items, list):
+                    if not isinstance(data, ListData) or not isinstance(
+                        data.items, list
+                    ):
                         continue
-                    yield column.label, data, column.input_ref
+                    yield (
+                        column.label,
+                        data.items,
+                        column.input_ref,
+                        _column_list_writer(column),
+                    )
 
     @classmethod
     def _validate_merged_varying_inputs(
@@ -1850,11 +1887,8 @@ class LumilakeServer:
                 return label
             return inferred_aliases.get(label)
 
-        for label, data, input_ref in cls._iter_input_bound_list_specs(graph):
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
             if label in varying_input_keys or input_ref is not None:
-                continue
-            items = data.get("items")
-            if not isinstance(items, list):
                 continue
             matched_keys = [
                 key for key, values in first_slice_inputs.items() if items == values
@@ -1868,7 +1902,7 @@ class LumilakeServer:
             if len(matched_keys) == 1:
                 inferred_aliases[label] = matched_keys[0]
 
-        for label, data, input_ref in cls._iter_input_bound_list_specs(graph):
+        for label, _items, input_ref, write in cls._iter_input_bound_list_specs(graph):
             rewrite_target_key = _rewrite_target_key(label, input_ref)
             if rewrite_target_key is None:
                 continue
@@ -1879,11 +1913,10 @@ class LumilakeServer:
                     input_ref["path"],
                     input_ref["key"],
                 )
-                data["items"] = list(projected)
-                if len(replacement) > 1:
-                    data["grouped"] = True
+                data = list(projected)
             else:
-                data["items"] = list(replacement)
+                data = list(replacement)
+            write(data, len(replacement) > 1)
             rewrite_hits[rewrite_target_key] += 1
 
         for key, hit_count in rewrite_hits.items():
@@ -1899,16 +1932,10 @@ class LumilakeServer:
                     "Expected at least one input-bound list field keyed by this label."
                 )
 
-        for label, data, input_ref in cls._iter_input_bound_list_specs(graph):
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
             validation_target_key = _rewrite_target_key(label, input_ref)
             if validation_target_key is None:
                 continue
-            items = data.get("items")
-            if not isinstance(items, list):
-                raise ValueError(
-                    "Rewritten field is no longer a list for "
-                    f"key='{label}' in {group_context}"
-                )
             expected_len = len(merged_inputs[validation_target_key])
             actual_len = len(items)
             if actual_len != expected_len:

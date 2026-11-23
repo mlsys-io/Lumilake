@@ -1757,7 +1757,12 @@ def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
     )
 
     (node,) = runtime_graph.nodes.values()
-    columns = node.data_spec.get("columns") or node.data_spec["template"]["columns"]
+    data_spec = wire(node)
+    columns = (
+        data_spec["template"]["columns"]
+        if form == "aggregate_table"
+        else data_spec["columns"]
+    )
     (column,) = columns[0]["data"]["columns"] if form == "aggregate_table" else columns
     assert column == {
         "label": "topic",
