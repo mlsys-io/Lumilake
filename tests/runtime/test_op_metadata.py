@@ -4,7 +4,6 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
-from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -16,6 +15,7 @@ from lumilake_server.ops import (
     input_placeholder,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import wire
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -60,7 +60,7 @@ def test_chat_shape_decides_how_its_consumer_reads_it(
     consumer = LambdaOp([chat], _whole_list, mode="list")
 
     assert chat.row_shape is shape
-    stage = dump_data_spec(_build(consumer).nodes[consumer.id].data_spec)["plan"][0]
+    stage = wire(_build(consumer).nodes[consumer.id])["plan"][0]
     assert stage.get("flatten", False) is flatten
 
 

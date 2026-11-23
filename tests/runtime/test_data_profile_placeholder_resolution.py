@@ -8,7 +8,6 @@ import pytest
 from lumilake import envs
 from lumilake.envs import _positive_float
 from lumilake_server.common import GenerationConfig
-from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -25,6 +24,7 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
+from tests.support.data_specs import wire
 
 
 def _build_profile_node(compiled: Any, op_id: str) -> Any:
@@ -145,7 +145,7 @@ class TestStructuralOutputTypeDefault:
         )
         compiled = Graph.from_ops([as_output("r", report)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, retrieval.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "BUY"
 
 
@@ -183,7 +183,7 @@ class TestSampleValueShortCircuit:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "K-123"
 
     def test_sample_value_projects_by_path_when_record_shaped(self) -> None:
@@ -219,7 +219,7 @@ class TestSampleValueShortCircuit:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "K-7"
 
 
@@ -270,7 +270,7 @@ class TestLiveSqlSampler:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "fetched-key"
         assert len(calls) == 1
         assert "LIMIT" in calls[0].upper()
@@ -391,7 +391,7 @@ class TestDefaultDenyLiveSampling:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "live-key"
         assert len(sample_calls) == 1
         assert "LIMIT" in sample_calls[0].upper()
@@ -436,7 +436,7 @@ class TestDefaultDenyLiveSampling:
             node = _build_profile_node(compiled, downstream.id)
             mock_post.assert_not_called()
 
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "static-key"
 
 
@@ -478,7 +478,7 @@ class TestRecursiveResolverAndCycleGuard:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "hop2-b"
 
     def test_cycle_in_upstream_chain_is_rejected(
@@ -599,7 +599,7 @@ class TestLambdaOpUpstreamSampleValue:
             sample_value="K-123",
         )
         node = self._build(terms)
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "K-123"
 
     def test_lambda_upstream_sample_value_projects_by_path(self) -> None:
@@ -610,7 +610,7 @@ class TestLambdaOpUpstreamSampleValue:
             sample_value={"key": "K-7", "label": "alpha"},
         )
         node = self._build(terms, path="items.output.key")
-        sample = dump_data_spec(node.data_spec)["params"][0]["data"]["items"][0]
+        sample = wire(node)["params"][0]["data"]["items"][0]
         assert sample == "K-7"
 
 

@@ -6,7 +6,6 @@ from typing import Any
 
 import pytest
 
-from lumilake_server.data_specs import dump_data_spec
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -22,6 +21,7 @@ from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import _admit_subgraph
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import wire
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -795,7 +795,7 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
-    assert dump_data_spec(node.data_spec)["seeds"] == [7, 9]
+    assert wire(node)["seeds"] == [7, 9]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
@@ -851,8 +851,7 @@ def test_forward_aligned_materializers_are_row_cardinality():
     aligned = [
         node
         for node in graph.nodes.values()
-        if node.task_type == "python"
-        and dump_data_spec(node.data_spec).get("mode") == "aligned"
+        if node.task_type == "python" and wire(node).get("mode") == "aligned"
     ]
     assert len(aligned) == 2
     # Neither the materializers nor News Report are whole-list-per-run.
@@ -865,9 +864,7 @@ def test_forward_aligned_materializers_are_row_cardinality():
     )
     assert report.node_id not in cardinality
     # News Report's columns still read the materializers at value.items.output.
-    df_columns = dump_data_spec(report.data_spec)["template"]["columns"][0]["data"][
-        "columns"
-    ]
+    df_columns = wire(report)["template"]["columns"][0]["data"]["columns"]
     assert [c["label"] for c in df_columns] == ["title", "summary"]
     for column in df_columns:
         assert column["path"] == "value.items.output"

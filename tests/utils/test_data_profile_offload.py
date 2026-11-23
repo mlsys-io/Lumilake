@@ -7,8 +7,8 @@ from lumilake_server.data_specs import ListData, RetrievalParam, SqlProfileData
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import data_profile_offload
-from tests.support.data_specs import runtime_op
 
 
 class _DummyGraph:
@@ -94,7 +94,7 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
         node_id = f"{node_prefix}__db_node"
         return RuntimeGraph(
             nodes={
-                node_id: runtime_op(
+                node_id: RuntimeOp(
                     node_id=node_id,
                     task_type="data_profiling",
                     backend="data_profiling",
@@ -138,7 +138,7 @@ def test_build_request_data_profile_tasks_builds_one_node_from_merged_slices(
 def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> None:
     target_graph = RuntimeGraph(
         nodes={
-            "target__db_node": runtime_op(
+            "target__db_node": RuntimeOp(
                 node_id="target__db_node",
                 task_type="data_profiling",
                 backend="data_profiling",
@@ -147,7 +147,7 @@ def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> No
                 model_spec={},
                 inference_spec={},
             ),
-            "target__non_sql": runtime_op(
+            "target__non_sql": RuntimeOp(
                 node_id="target__non_sql",
                 task_type="inference",
                 backend="vllm",

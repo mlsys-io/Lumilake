@@ -16,7 +16,6 @@ from lumid_hooks import PrincipalContext, ResourceRef
 
 from lumilake import envs
 from lumilake_server import hooks
-from lumilake_server.data_specs import EmptyData
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -111,7 +110,7 @@ def _schedule_body() -> dict[str, Any]:
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec=EmptyData(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         dependencies=(),

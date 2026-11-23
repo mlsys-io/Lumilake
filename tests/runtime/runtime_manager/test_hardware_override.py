@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake_server.data_specs import ListData
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -24,7 +23,7 @@ def _gpu_graph() -> RuntimeGraph:
                 task_type="inference",
                 backend="vllm",
                 model="meta-llama/Llama-3.1-8B-Instruct",
-                data_spec=ListData(type="list", items=["a"]),
+                data_spec={"type": "list", "items": ["a"]},
                 model_spec={},
                 inference_spec={"max_tokens": 32},
             )

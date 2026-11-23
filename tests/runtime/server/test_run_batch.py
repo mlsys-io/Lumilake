@@ -18,7 +18,6 @@ from support.runtime_server import (
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
-from lumilake_server.data_specs import EmptyData, PythonData
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -1208,7 +1207,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
             task_type="python",
             backend="python",
             model="",
-            data_spec=PythonData(mode="list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1217,7 +1216,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
             task_type="api",
             backend="api",
             model="",
-            data_spec=EmptyData(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1269,7 +1268,7 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
             task_type="api",
             backend="api",
             model="",
-            data_spec=EmptyData(),
+            data_spec={},
             model_spec={},
             inference_spec={},
         )
@@ -1317,7 +1316,7 @@ def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> No
             task_type="python",
             backend="python",
             model="",
-            data_spec=PythonData(mode="list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1370,7 +1369,7 @@ def _install_list_lambda_downstream_build_and_schedule(
             task_type="python",
             backend="python",
             model="",
-            data_spec=PythonData(mode="list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1379,7 +1378,7 @@ def _install_list_lambda_downstream_build_and_schedule(
             task_type="api",
             backend="api",
             model="",
-            data_spec=EmptyData(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1436,7 +1435,7 @@ def _install_rowwise_python_downstream_build_and_schedule(
             task_type="python",
             backend="python",
             model="",
-            data_spec=PythonData(mode="list"),
+            data_spec={"mode": "list"},
             model_spec={},
             inference_spec={},
         )
@@ -1445,7 +1444,7 @@ def _install_rowwise_python_downstream_build_and_schedule(
             task_type="python",
             backend="python",
             model="",
-            data_spec=EmptyData(),
+            data_spec={},
             model_spec={},
             inference_spec={},
             dependencies=(lambda_id,),
@@ -1666,7 +1665,7 @@ def _install_aligned_build_and_schedule(server: Any, output_name: str) -> None:
             task_type="python",
             backend="python",
             model="",
-            data_spec=PythonData(mode="aligned"),
+            data_spec={"mode": "aligned"},
             model_spec={},
             inference_spec={},
         )

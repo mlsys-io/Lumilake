@@ -18,7 +18,6 @@ import pytest
 
 from lumilake import envs
 from lumilake_hook import BaseBindings
-from lumilake_server.data_specs import EmptyData
 from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
@@ -157,7 +156,7 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
         task_type="inference",
         backend="vllm",
         model="gpt2",
-        data_spec=EmptyData(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         dependencies=(),

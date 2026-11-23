@@ -8,7 +8,6 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake_server.data_specs import EmptyData, PythonData
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from tests.support.data_specs import runtime_op
@@ -30,7 +29,7 @@ def _python_op(node_id: str) -> RuntimeOp:
         task_type="python",
         backend="python",
         model="",
-        data_spec=PythonData(code="lambda a: a[0]", plan=[], timeout_s=600),
+        data_spec={"code": "lambda a: a[0]", "plan": [], "timeout_s": 600},
         model_spec={},
         inference_spec={},
     )
@@ -42,7 +41,7 @@ def _api_op(node_id: str) -> RuntimeOp:
         task_type="api",
         backend="api",
         model="model-a",
-        data_spec=EmptyData(),
+        data_spec={},
         model_spec={},
         inference_spec={},
         api_spec={"method": "POST", "url": "https://lum.id/llm/v1/chat/completions"},
@@ -55,7 +54,7 @@ def _inference_op(node_id: str) -> RuntimeOp:
         task_type="inference",
         backend="vllm",
         model="meta-llama/Llama-3.1-8B-Instruct",
-        data_spec=EmptyData(),
+        data_spec={},
         model_spec={},
         inference_spec={},
     )

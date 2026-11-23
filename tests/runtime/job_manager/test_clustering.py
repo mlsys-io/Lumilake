@@ -1,4 +1,3 @@
-from lumilake_server.data_specs import DataFrame, Message
 from lumilake_server.runtime.job_manager.cluster_algo.clustering import (
     select_affinity_batch_ids,
 )
@@ -15,10 +14,10 @@ def _graph(workflow_id: str, *, model: str, system_prompt: str) -> RuntimeGraph:
                 task_type="inference",
                 backend="vllm",
                 model=model,
-                data_spec=DataFrame(
-                    type="dataframe",
-                    messages=[Message(role="system", content=system_prompt)],
-                ),
+                data_spec={
+                    "type": "dataframe",
+                    "messages": [{"role": "system", "content": system_prompt}],
+                },
                 model_spec={},
                 inference_spec={},
             )

@@ -3,7 +3,6 @@ advertises its task type; every other node is placed by engine alone."""
 
 import pytest
 
-from lumilake_server.data_specs import EmptyData
 from lumilake_server.runtime.optimizer.topological_sort import (
     TopologicalSortOptimizer,
 )
@@ -18,7 +17,7 @@ def _op(node_id: str, task_type: str, backend: str) -> RuntimeOp:
         task_type=task_type,
         backend=backend,
         model="",
-        data_spec=EmptyData(),
+        data_spec={},
         model_spec={},
         inference_spec={},
     )

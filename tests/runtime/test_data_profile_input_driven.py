@@ -8,11 +8,6 @@ here treats input-driven placeholders as ``file_count = 1`` — the
 minimum the op is guaranteed to fetch per invocation.
 """
 
-from lumilake_server.data_specs import (
-    RetrievalParam,
-    S3ProfileData,
-    SqlProfileData,
-)
 from lumilake_server.runtime.data_profile_utils import _derive_s3_profile_for_graph
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -23,14 +18,18 @@ def _s3_node(
     node_id: str,
     *,
     template: str,
-    params: list[RetrievalParam],
+    params: list[dict[str, str]],
 ) -> RuntimeOp:
     return runtime_op(
         node_id=node_id,
-        task_type="data_retrieval",
+        task_type="data_profiling",
         backend="data_retrieval",
         model="data_retrieval",
-        data_spec=S3ProfileData(type="s3", template=template, params=params),
+        data_spec={
+            "type": "s3",
+            "template": template,
+            "params": params,
+        },
         model_spec={},
         inference_spec={},
     )
@@ -39,10 +38,14 @@ def _s3_node(
 def _sql_node(node_id: str) -> RuntimeOp:
     return runtime_op(
         node_id=node_id,
-        task_type="data_retrieval",
+        task_type="data_profiling",
         backend="data_retrieval",
         model="data_retrieval",
-        data_spec=SqlProfileData(type="sql", template="SELECT 1"),
+        data_spec={
+            "type": "sql",
+            "template": "SELECT 1",
+            "params": [],
+        },
         model_spec={},
         inference_spec={},
     )
@@ -72,7 +75,7 @@ class TestInputDrivenProfile:
             "retrieve_by_tweet_id",
             template="eventx/impressions/by_tweet_id/{key}.json",
             params=[
-                RetrievalParam(label="key", node=input_op_id, path="data"),
+                {"label": "key", "node": input_op_id, "path": "data"},
             ],
         )
         graph = RuntimeGraph(
@@ -110,7 +113,7 @@ class TestInputDrivenProfile:
         s3 = _s3_node(
             "retrieve_by_sql_key",
             template="eventx/impressions/by_tweet_id/{key}.json",
-            params=[RetrievalParam(label="key", node=sql.node_id, path="data")],
+            params=[{"label": "key", "node": sql.node_id, "path": "data"}],
         )
         graph = RuntimeGraph(
             nodes={sql.node_id: sql, s3.node_id: s3},
@@ -176,7 +179,7 @@ class TestInputDrivenProfile:
         downstream = _s3_node(
             "downstream_retrieval",
             template="eventx/impressions/by_tweet_id/{key}.json",
-            params=[RetrievalParam(label="key", node=upstream_s3.node_id, path="data")],
+            params=[{"label": "key", "node": upstream_s3.node_id, "path": "data"}],
         )
         graph = RuntimeGraph(
             nodes={upstream_s3.node_id: upstream_s3, downstream.node_id: downstream},
@@ -212,8 +215,8 @@ class TestInputDrivenProfile:
             # than the folder-must-be-static check above it.
             template="eventx/impressions/by_tweet_id/{key}-{shard}.json",
             params=[
-                RetrievalParam(label="key", node=sql.node_id, path="data"),
-                RetrievalParam(label="shard", node=input_op_id, path="data"),
+                {"label": "key", "node": sql.node_id, "path": "data"},
+                {"label": "shard", "node": input_op_id, "path": "data"},
             ],
         )
         graph = RuntimeGraph(

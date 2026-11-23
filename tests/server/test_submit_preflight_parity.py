@@ -3,7 +3,6 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException
 
-from lumilake_server.data_specs import PythonData
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.routes.jobs import (
     _validate_list_lambda_slice_span,
@@ -107,7 +106,7 @@ def _list_lambda_graph(output_name: str) -> RuntimeGraph:
         task_type="python",
         backend="python",
         model="",
-        data_spec=PythonData(mode="list"),
+        data_spec={"mode": "list"},
         model_spec={},
         inference_spec={},
     )
@@ -125,7 +124,7 @@ def _row_graph(output_name: str) -> RuntimeGraph:
         task_type="python",
         backend="python",
         model="",
-        data_spec=PythonData(mode="row"),
+        data_spec={"mode": "row"},
         model_spec={},
         inference_spec={},
     )
@@ -189,7 +188,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         task_type="python",
         backend="python",
         model="",
-        data_spec=PythonData(mode="list"),
+        data_spec={"mode": "list"},
         model_spec={},
         inference_spec={},
     )
@@ -198,7 +197,7 @@ def test_list_lambda_output_not_an_output_is_accepted() -> None:
         task_type="python",
         backend="python",
         model="",
-        data_spec=PythonData(mode="row"),
+        data_spec={"mode": "row"},
         model_spec={},
         inference_spec={},
         dependencies=(lambda_id,),

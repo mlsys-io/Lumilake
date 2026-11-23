@@ -15,15 +15,6 @@ with ``data_spec.type in {'sql','s3'}`` for retrieval, chained dependencies,
 and a mixed GPU/CPU worker pool.
 """
 
-from lumilake_server.data_specs import (
-    DataFrame,
-    FormatConfig,
-    GraphTemplate,
-    GraphTemplateData,
-    Message,
-    RetrievalData,
-    TemplateOptions,
-)
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from tests.support.data_specs import runtime_op
@@ -36,13 +27,10 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="Qwen/Qwen2.5-1.5B-Instruct",
-            data_spec=GraphTemplateData(
-                type="graph_template",
-                template=GraphTemplate(
-                    name="format",
-                    options=TemplateOptions(format=FormatConfig(messages=[])),
-                ),
-            ),
+            data_spec={
+                "type": "graph_template",
+                "template": {"name": "format", "options": {"format": {}}},
+            },
             model_spec={},
             inference_spec={"max_tokens": 256},
         ),
@@ -53,11 +41,11 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=RetrievalData(
-                type="lumid",
-                mode="sql",
-                template="SELECT id, title FROM demo.fact_news_metadata",
-            ),
+            data_spec={
+                "type": "lumid",
+                "mode": "sql",
+                "template": "SELECT id, title FROM demo.fact_news_metadata",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("sql_param_proposer",),
@@ -67,11 +55,11 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=RetrievalData(
-                type="lumid",
-                mode="s3",
-                template="unstructured/news-html/{id}.html",
-            ),
+            data_spec={
+                "type": "lumid",
+                "mode": "s3",
+                "template": "unstructured/news-html/{id}.html",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("news_sql",),
@@ -81,11 +69,7 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=DataFrame(
-                type="dataframe",
-                columns=[],
-                messages=[Message(role="user", content="summary")],
-            ),
+            data_spec={"type": "dataframe"},
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_s3"),
@@ -95,11 +79,11 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="data_retrieval",
             backend="data_retrieval",
             model="data_retrieval",
-            data_spec=RetrievalData(
-                type="lumid",
-                mode="s3",
-                template="archive/summaries/{id}.json",
-            ),
+            data_spec={
+                "type": "lumid",
+                "mode": "s3",
+                "template": "archive/summaries/{id}.json",
+            },
             model_spec={},
             inference_spec={},
             dependencies=("news_summary",),
@@ -109,13 +93,10 @@ def _news_retrieval_runtime_graph() -> RuntimeGraph:
             task_type="inference",
             backend="vllm",
             model="meta-llama/Llama-3.1-8B-Instruct",
-            data_spec=GraphTemplateData(
-                type="graph_template",
-                template=GraphTemplate(
-                    name="aggregate",
-                    options=TemplateOptions(format=FormatConfig(messages=[])),
-                ),
-            ),
+            data_spec={
+                "type": "graph_template",
+                "template": {"name": "aggregate", "options": {"format": {}}},
+            },
             model_spec={},
             inference_spec={"max_tokens": 512},
             dependencies=("news_sql", "news_summary"),

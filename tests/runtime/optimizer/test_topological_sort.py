@@ -1,4 +1,3 @@
-from lumilake_server.data_specs import EmptyData, ListData
 from lumilake_server.runtime.optimizer.topological_sort import TopologicalSortOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -11,7 +10,7 @@ def _op(node_id: str, backend: str, task_type: str = "inference") -> RuntimeOp:
         task_type=task_type,
         backend=backend,
         model="m",
-        data_spec=EmptyData() if task_type == "python" else ListData(items=[]),
+        data_spec={},
         model_spec={},
         inference_spec={},
         dependencies=(),
@@ -24,7 +23,7 @@ def test_topological_sort_assigns_omni_node_to_gpu_worker() -> None:
     graph = RuntimeGraph(
         nodes={
             omni_id: _op(omni_id, backend="omni", task_type="omni_text2image"),
-            cpu_id: _op(cpu_id, backend="text", task_type="embedding"),
+            cpu_id: _op(cpu_id, backend="text", task_type="format"),
         },
         node_order=[omni_id, cpu_id],
         output_node_map={},

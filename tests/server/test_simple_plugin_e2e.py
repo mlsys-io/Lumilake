@@ -15,7 +15,6 @@ from examples.plugins import simple_plugin
 from examples.plugins.simple_plugin import state as simple_plugin_state
 from lumilake_hook import ResourceAction, ResourceKind, UsageRow
 from lumilake_server import hooks
-from lumilake_server.data_specs import EmptyData
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes import trace as trace_routes
 from lumilake_server.runtime.optimizer import create_optimizer
@@ -347,7 +346,7 @@ async def test_sample_plugin_exercises_every_plugin_component(
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec=EmptyData(),
+                data_spec={},
                 model_spec={},
                 inference_spec={},
             ),
@@ -356,7 +355,7 @@ async def test_sample_plugin_exercises_every_plugin_component(
                 task_type="llm",
                 backend="mock",
                 model="mock",
-                data_spec=EmptyData(),
+                data_spec={},
                 model_spec={},
                 inference_spec={},
                 dependencies=("node-a",),
