@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import lumilake_server.ops.ops as ops_module
 from lumilake import envs
 from lumilake_server.data_specs import parse_data_spec
 from tests.support import golden_graphs
@@ -19,6 +20,7 @@ def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", _LUMID_URL)
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", _LUMID_TOKEN)
     monkeypatch.setattr(envs, "RUNTIME_TOKEN", "test-token")
+    monkeypatch.setattr(ops_module, "unique_id", golden_graphs.FixedIds.next)
 
 
 @pytest.mark.parametrize("graph_name", sorted(golden_graphs.GRAPHS))

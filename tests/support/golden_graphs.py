@@ -4,8 +4,6 @@ writer (run against origin/main) and the golden test."""
 import json
 from typing import Any
 
-import lumilake_server.ops.ops as ops_module
-from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -32,12 +30,8 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
-envs.LUMID_DATA_URL = "http://lumid-data"
-envs.LUMID_DATA_TOKEN = "test-token"
-envs.RUNTIME_TOKEN = "test-token"
 
-
-class _FixedIds:
+class FixedIds:
     """Id counters, so a graph builds the same node ids on any checkout."""
 
     counter = 0
@@ -50,9 +44,6 @@ class _FixedIds:
     def next(cls) -> str:
         cls.counter += 1
         return f"node{cls.counter:04d}"
-
-
-ops_module.unique_id = _FixedIds.next
 
 
 def _config(model: str = MODEL) -> GenerationConfig:
@@ -259,7 +250,7 @@ def _generated_code(op: Any) -> str | None:
 
 def build(graph_name: str) -> dict[str, dict[str, Any]]:
     """One graph's node specs and generated code, keyed by node id."""
-    _FixedIds.reset()
+    FixedIds.reset()
     built = GRAPHS[graph_name]()
     entries: dict[str, dict[str, Any]] = {}
     for node_id, op in built.nodes.items():
