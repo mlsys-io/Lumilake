@@ -304,10 +304,15 @@ class LLMChatOp(LLMOp):
         return op
 
     def _add_column_producers(self, other_ops: dict[str, Op]) -> None:
-        """Add each node column's producer to ``inputs`` so the graph
-        traversal reaches a producer that supplies only a column."""
-        for table in (self.aggregate_table, self.rowwise_columns):
-            for column in table or []:
+        """Add the op that produces a node column to the chat's inputs, so the
+        graph reaches a producer the chat reads only through a column."""
+        tables = [
+            table
+            for table in (self.aggregate_table, self.rowwise_columns)
+            if table is not None
+        ]
+        for table in tables:
+            for column in table:
                 if not isinstance(column, NodeColumn):
                     continue
                 producer = other_ops.get(column.node)
