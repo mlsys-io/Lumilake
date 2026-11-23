@@ -1966,8 +1966,7 @@ class FlowmeshRuntimeManager:
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
-                "Record store write failed for job %s (%s); job results are"
-                " unaffected",
+                "Record store write failed for job %s (%s); job results are unaffected",
                 job_ids[0],
                 exc,
             )
