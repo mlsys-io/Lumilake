@@ -91,14 +91,14 @@ def seed_input_id(op_id: str, node_ref: str, ctx: EmitContext, op_kind: str) -> 
 def emit_keyed_seed(
     op_dict: dict[str, Any],
     ctx: EmitContext,
-    seed: dict[str, Any],
+    seed: keyed_seed.RowwiseSeedSpec,
     field: str,
     op_kind: str,
 ) -> None:
     """Queue a row function over the key column and bind the op that draws
     with it to that function's output."""
     entry = ctx.entry
-    node_ref, path = keyed_seed.key_target(
+    node_ref, path, pairing = keyed_seed.key_target(
         entry.id,
         seed,
         op_kind,
@@ -115,7 +115,7 @@ def emit_keyed_seed(
         op_kind,
         template_id=ctx.template_ids.get(entry.id, entry.id),
         scope=ctx.scope,
-        pairing=keyed_seed.key_pairing(seed, entry.id, op_kind),
+        pairing=pairing,
     )
     op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
     op_dict[field] = {"node": seed_dict["_id"], "path": "items.output"}

@@ -233,7 +233,7 @@ def check_keyed_seed_duplicates(
     if not isinstance(ops_block, list):
         return
     literal: dict[str, list[Any]] = {}
-    declared: list[tuple[str, str, str, str, dict[str, Any]]] = []
+    declared: list[tuple[str, str, keyed_seed.SeedKey, keyed_seed.Pairing]] = []
     for op in ops_block:
         if not isinstance(op, dict):
             continue
@@ -245,23 +245,22 @@ def check_keyed_seed_duplicates(
         if op_kind not in ("LLMChatOp", "LambdaOp"):
             continue
         field = "seed" if op_kind == "LambdaOp" else "rowwise_seed"
-        seed = op.get(field)
-        if not isinstance(seed, dict):
+        op_id = str(op.get("id"))
+        entry = op.get(field)
+        if not isinstance(entry, dict) or not isinstance(entry.get("key"), dict):
             continue
-        key = seed.get("key")
-        node = key.get("node") if isinstance(key, dict) else None
-        path = key.get("path") if isinstance(key, dict) else None
-        if isinstance(node, str) and isinstance(path, str):
-            declared.append((str(op.get("id")), op_kind, node, path, seed))
-    for op_id, op_kind, node, path, seed in declared:
-        values = inputs.get(node, literal.get(node))
+        seed = keyed_seed.read_seed(op_id, op_kind, field, entry)
+        if seed.key is not None:
+            declared.append((op_id, op_kind, seed.key, seed.pairing))
+    for op_id, op_kind, key, pairing in declared:
+        values = inputs.get(key.node, literal.get(key.node))
         if values is None:
             continue
         keyed_seed.check_unique(
             op_id,
             op_kind,
-            keyed_seed.key_cells(values, keyed_seed.key_parts(path)),
-            keyed_seed.key_pairing(seed, op_id, op_kind),
+            keyed_seed.key_cells(values, keyed_seed.key_parts(key.path)),
+            pairing,
         )
 
 

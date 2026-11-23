@@ -3,6 +3,7 @@
 from typing import Any
 
 from lumilake_server.ops.util_ops import build_lambda_spec
+from lumilake_server.parser.keyed_seed import read_seed
 
 from .common import EmitContext, emit_keyed_seed
 
@@ -28,9 +29,5 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     )
     op_dict.update(spec.model_dump(by_alias=True, exclude_none=True))
     if spec.seed is not None:
-        if "key" not in spec.seed:
-            raise ValueError(
-                f"LambdaOp '{entry.id}' seed must take the key form"
-                " '{key: {node, path}}', which derives each row's seed"
-            )
-        emit_keyed_seed(op_dict, ctx, spec.seed, "seed", "LambdaOp")
+        seed = read_seed(entry.id, "LambdaOp", "seed", spec.seed, key_form_only=True)
+        emit_keyed_seed(op_dict, ctx, seed, "seed", "LambdaOp")
