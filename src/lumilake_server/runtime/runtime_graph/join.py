@@ -1,7 +1,7 @@
 """Join lowering: one standalone python step merging keyed rows.
 
-The join phase runs after every other phase, so the ops a join reads have
-their runtime nodes before its step is built.
+The join phase runs after every other phase, so the ops a join reads have their runtime
+nodes before its step is built.
 """
 
 from lumilake_server.ops.join_ops import JoinOp

@@ -201,7 +201,7 @@ ops:
 
 ### LambdaOp
 
-`LambdaOp` runs a serialized Python function against the listed upstream values. YAML carries the function as source code (`code`) plus a `fn_name`. The function must accept the input tuple in the same order as `inputs:` and return a string (anything else is archived as its JSON text). For `def` source, `fn_name` names the top-level function to call; imports, constants and helper functions may come before it, and a name the code references without binding, importing or defining is rejected at submit if the namespace does not provide it. For a `lambda` expression `fn_name` is only a label.
+`LambdaOp` runs a Python function you submit as source: `code` holds the source and `fn_name` names the top-level function to call. The source may define imports, constants and helpers before that function; for a `lambda` expression `fn_name` is only a label. The function takes one tuple with a value per entry in `inputs:`, in that order. A `LambdaOp` may name blocks from the workflow's top-level `functions:` map in `uses:`; see [`docs/WORKFLOWS.md`](WORKFLOWS.md#shared-functions-functions-and-uses).
 
 ```yaml
 inputs:
@@ -222,26 +222,37 @@ outputs:
     ref: "Lowercase"
 ```
 
-Where the function runs depends on what reads it:
+#### Modes
 
-- **An output, or read only by other `LambdaOp`s** (as above): compiled to its own FlowMesh `python` task. This is the isolated path for submitted code: the code runs in a per-task container with no network, as an unprivileged user, and the Lumilake server never executes it. Its inputs may be LLM or data-retrieval ops, other `LambdaOp`s, workflow inputs or literal data; the function is applied once per row (length-1 inputs broadcast) and the step emits `items[].output` like any other items-producing op. The step is placed only on a CPU worker that advertises the `python` task type (a Docker-backed worker on a FlowMesh version that supports it). While every such worker is busy the batch waits for capacity; with no such worker in the cluster the schedule fails before dispatch. Lumilake mounts the shared Lambda runtime from a content-addressed blob and uploads literal payloads above 1 KiB once per digest as mounted JSON. Smaller literals stay inline. The generated stub holds only the op id, user code, function name, and plan; the worker fetches blobs through `LUMID_DATA_WORKER_URL` (falling back to `LUMID_DATA_URL`). The code may `import` any module the task image provides (the default image carries the standard library, numpy and pandas), at module level or in the function body; only relative imports are rejected at submit. A `LambdaOp` with an `image` always runs as its own standalone `python` task. If the function raises, the job's error names the step and the exception, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Read by an LLM op** (a message content): inlined into that LLM's FlowMesh task as a template function step, and evaluated by the FlowMesh worker that runs the task. This is not a Lumilake-provided isolation boundary; use the standalone form above for code that should run in its own container. The worker's namespace has no `import`, so the code must not import anything; Lumilake wraps each row so it arrives decoded, and submit rejects a binder of a wrapper name, an annotated assignment, or a `Message`/`ops` type. A runtime node that also reads this `LambdaOp` compiles it additionally to its own standalone `python` task, so the function is evaluated once per reader.
-- **Read by an API-mode `LLMChatOp`**: not supported for submitted code. The server does not run `LambdaOp` code to render an API request body, and the request body cannot carry a function step, so the build fails with an error naming the step. Make the `LambdaOp` a workflow output, or use a non-API `LLMChatOp`.
+`mode` sets how often the function is called and how its return value becomes rows:
 
-Every mode decodes each column value: JSON object or array text as that object or list, a serialized table (`{"df": "<json>"}`, or a retrieval item's `table`) as its row dicts.
+| `mode` | Calls | The function receives | It returns | Output rows |
+|---|---|---|---|---|
+| `row` (default) | once per row | the row's values | a value (a non-string is archived as its JSON text) | one per input row |
+| `aligned` | once per run | each input as its whole list | a list with one value per input row | one per input row |
+| `list` | once per run | each input as its whole list | a list of JSON values | one per element |
+| `expand` | once per row | the row's values | a list | one per element, in input order; an empty list drops the row |
+| `reduce` | once per group | the group's row tuples, in input order | one value | one per group, in order of first appearance |
 
-A `LambdaOp` may declare `mode: list`. The function then receives each input as its whole list and returns a list of JSON values; the standalone `python` task emits one item per element in order, so each element is one group downstream, read at `value.items.output`. A list-mode `LambdaOp` is read through a node column (`rowwise_columns` / `aggregate_table`), not through an LLM message chain.
+- `reduce` groups rows by the value at its required `by` dotted path into the first input's value, compared as JSON text (`1` and `"1"` are different keys); `by` is accepted only in reduce mode. A row missing its `by` path fails the job naming the op and the row; an expand call that returns something other than a list fails naming the op.
+- Each `expand` item carries its parent's input-row index under `parent` and its own position under `child`, so a downstream op can tell which parent an item came from.
+- Every mode decodes each column value before the call: JSON object or array text becomes that object or list, and a serialized table (`{"df": "<json>"}`, or a retrieval item's `table`) becomes its row dicts.
+- In `row` and `aligned` mode every multi-row input must carry the same number of rows; submit refuses unequal counts. A one-row input broadcasts to every row.
+- An `aligned` function that returns a list of the wrong length fails the task.
 
-An `LLMCompletionOp` prompt, an `EmbeddingOp` content or an `ImageGenerationOp` content whose list column binds a list-mode `LambdaOp` directly runs once per element, so it produces one whole-list value holding every answer, embedded row or image, not one value per row. A node that reads the whole column as one value, such as an `aggregate_table` chat, already answers once per run, so its answer is the output value as it is. A per-element node two or more hops from the list-mode `LambdaOp` is not folded, and its several values fail the run's slice merge.
+`list`, `expand` and `reduce` produce a whole-list result per run, read at `value.items.output`:
 
-A list-mode `LambdaOp` that reads a local row-wise `LLMChatOp` receives one value per input row: the row-wise LLM groups its per-row outputs back into one item internally, and the standalone `python` step flattens that grouped item back to one value per row before the function sees its whole-list input.
+- Another op reads it through a node column (`rowwise_columns` / `aggregate_table`); an LLM message chain cannot read it.
+- It cannot be split across input slices. Submit refuses an `input_batch_size` that would split such an output, or a row-mode step below one (which keeps one value per element), and names the output and the fix: one input value per job, or an `input_batch_size` that keeps the whole input set in one slice. `aligned` output is one value per row, so it splits like `row` output.
+- Only these modes can be a driver template's `stop_when_empty` export, since only their output reads as an empty list.
+- An `LLMCompletionOp` prompt, `EmbeddingOp` content or `ImageGenerationOp` content whose list column binds one directly runs once per element and yields one whole-list value; an `aggregate_table` chat answers once per run as usual. A per-element node two or more hops below is not folded, and its several values fail the slice merge.
+- A list-mode function that reads a local row-wise `LLMChatOp` receives one value per input row.
 
-`mode: expand` calls the function once per input row with that row's tuple (same zip and length-1 broadcast as `row` mode) and expects a list back. The step emits the concatenation, in input order, one item per element, so each output's dependencies are known from the op alone; an empty list drops the row, and a non-list return fails with the op named. Each emitted item also carries its parent's input-row index under `parent` and its own position under `child`, so a downstream op can tell which parent an item came from and two elements of one parent apart. A parent whose input row carries a failed record is not passed to the function: it emits one item carrying that marker, at `child: 0`, so every failed parent keeps a defined slot. A parent that returns an empty list emits nothing; `on_empty` decides what it does instead:
+#### Failed records in expand and reduce
 
-- `drop` (the default) emits nothing.
-- `fail` emits one item carrying the marker `{"_fail": {"op": "<op id>", "reason": "empty expansion"}}` at `child: 0`.
+An expand parent whose row carries a [failed record](#failed-records) skips the function and emits one item with that marker at `child: 0`. `on_empty` (expand only) sets what a parent that returns an empty list emits: `drop` (the default) emits nothing, and `fail` emits one item with the marker `{"_fail": {"op": "<op id>", "reason": "empty expansion"}}` at `child: 0`. An expand with `on_empty: fail` is a marker source, which no model op may read.
 
-`on_empty` is accepted only in expand mode; an expand with `on_empty: fail` is a [marker source](#failed-records), which no model op may read.
+`on_fail` (reduce only) sets what a group holding a failed record emits: `fail_group` (the default) emits the group's first marker, and `drop_failed` drops the failed rows before the call, so a group that loses every row emits `{"_fail": {"op": "<op id>", "reason": "empty group"}}`. A row's key is read before its other fields, so a marked row whose key reads joins its group; one whose key cannot be read forms its own group.
 
 ```yaml
 ops:
@@ -249,23 +260,11 @@ ops:
     op: LambdaOp
     inputs: [Keywords]
     mode: expand
+    on_empty: fail
     fn_name: split
     code: |
       def split(row):
           return [k for k in row[0].split(",") if k.strip()]
-```
-
-`mode: reduce` zips its inputs into row tuples as `row` mode does, groups them by the value at the required `by` dotted path into the first input's value (compared as JSON text, so `1` and `"1"` differ), and calls the function once per group with that group's row tuples in input order. The step emits one item per group, groups ordered by first appearance. A row missing the `by` path fails with the op and the row index named. `by` is accepted only in reduce mode.
-
-A row's key is read before its other fields, so a marked row whose key reads still joins its group; only a row whose key cannot be read forms its own group.
-
-`on_fail` decides what a group holding a failed record does, defaulting to `fail_group` and accepted only in reduce mode:
-
-- `fail_group` emits the group's first marker as its item.
-- `drop_failed` drops the failed rows before the call; a group that loses every row emits the marker `{"_fail": {"op": "<op id>", "reason": "empty group"}}`.
-
-```yaml
-ops:
   - id: "TopThree"
     op: LambdaOp
     inputs: [Scores]
@@ -278,32 +277,34 @@ ops:
           return sorted(rows, key=lambda r: -r[0]["score"])[:3]
 ```
 
-Both modes decode each column value once (JSON text is parsed, a serialized table becomes its row dicts) and always run as a standalone `python` task, so they follow the list-mode whole-result rules for slices, template stops and direct reads.
+#### Where the function runs
 
-`mode: aligned` is the same calling convention as `list` (whole columns in, a list out, read at `value.items.output`), with one added guarantee: the function returns exactly one value per input row, and the standalone task raises if the returned list's length does not match the row count. Because its output is row-aligned, an aligned `LambdaOp` is never treated as a whole-list-per-run value, so its dependents keep one item per row and can be split across slices. In both `row` and `aligned` mode, inputs with unequal multi-row counts are rejected at submit: every multi-row input must carry the same number of rows.
+- **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
+- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import`, so the code imports nothing; Lumilake wraps each row so it arrives decoded, and submit refuses code that binds a wrapper name, annotates a top-level assignment or uses a `Message`/`ops` type. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
+- **API-mode `LLMChatOp`**: cannot read a `LambdaOp`, since the request body carries no function step; the build fails naming the step. Make the Lambda a workflow output, or use a non-API chat.
 
-A list-mode `LambdaOp` runs once over the whole input lists of one run, so its single whole-list result cannot be partitioned per slice. A submission whose `input_batch_size` would split a list-mode `LambdaOp` output across more than one slice is rejected at submit with a message naming the output and the fix (submit one input value per job, or raise `input_batch_size` so the whole input set runs in a single slice). A row-mode step below a list-mode `LambdaOp` keeps its input's cardinality, one value per element the Lambda returned, and submit refuses to split it across slices too.
+The Lumilake server never runs submitted code: it only parses the source, and a Lambda whose inputs are all literal is not folded into a constant. A function passed as a Python callable through the SDK (`LambdaOp(fn=...)`) is the caller's own code and may run in process; its source is serialized with `dill.source.getsource`, with captured closure values written in.
 
-The server never executes submitted `LambdaOp` code in its own process or in a child of it. Submitted source is only parsed (it must be a lambda, or source that defines a one-parameter `def` named `fn_name`), and a `LambdaOp` whose inputs are all literal is not folded into a constant when its code was submitted. Code authored through the Python SDK in the same process (`LambdaOp(fn=...)` with a real callable, as used by library callers of the graph builder) is the caller's own trusted code and may be called in-process.
+A standalone task gets the shared Lambda runtime and every literal above 1 KiB as content-addressed blobs mounted as files, fetched through `LUMID_DATA_WORKER_URL` (or `LUMID_DATA_URL`); smaller literals stay inline.
 
-In every location the function sees the same base namespace: a small set of builtins (`int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `any`, `all`, `range`, `isinstance`) plus `json`, `re`, `math`, `np` and `pd`. The standalone namespace additionally has the built-in exception classes user code reasonably raises or catches (`Exception`, `ArithmeticError`, `AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`, `NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`, `TypeError`, `ValueError`, `ZeroDivisionError`); the inline namespace has no exception classes, so inline code that references one is rejected at submit. The standalone task embeds the same materializer the server validates against. This namespace fixes which names resolve; it is **not** a security boundary. In the standalone task the container is the boundary, which is why that task allows importing any module the image provides; `np` / `pd` resolve only if the task image provides them. A name the code references that the namespace does not provide (and that is not bound, imported or defined in the code) is rejected at submit with the name and the fix, instead of failing with `NameError` when the task runs.
+#### Namespace
 
-Optional per-op limits for the standalone `python` task:
+The function sees the builtins `int`, `float`, `str`, `bool`, `list`, `dict`, `tuple`, `set`, `len`, `sum`, `max`, `min`, `abs`, `round`, `sorted`, `reversed`, `enumerate`, `zip`, `map`, `filter`, `any`, `all`, `range` and `isinstance`, plus `json`, `re`, `math`, `np` and `pd` (the last two when the image provides them). A standalone task also has the common exception classes (`Exception`, `ArithmeticError`, `AssertionError`, `AttributeError`, `IndexError`, `KeyError`, `LookupError`, `NotImplementedError`, `OverflowError`, `RuntimeError`, `StopIteration`, `TypeError`, `ValueError`, `ZeroDivisionError`); inlined code has none. Submit refuses a name the code uses without binding, importing or defining it when the namespace lacks it, naming the name. The namespace decides which names resolve; the container is the security boundary.
+
+#### Limits
+
+These fields apply to the standalone task only:
 
 | Field | Default | Bounds | Meaning |
 |---|---|---|---|
-| `timeout_s` | 600 | (0, 600] without `image`; (0, 3600] with `image` | Task timeout in seconds (`timeoutSeconds`). |
-| `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
-| `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
-| `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
-| `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
-| `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
+| `timeout_s` | 600 | (0, 600]; (0, 3600] with `image` | Task timeout in seconds. |
+| `memory_mb` | worker default | [128, 8192] | Task memory limit. |
+| `image` | worker default | non-empty string | Container image; a Lambda with an image always runs as a standalone task. |
+| `expected_runtime_s` | none | (0, effective `timeout_s`] | Planning hint for HALO: seconds per input row, never enforced. |
+| `cache` | none | bool | Opt-in FlowMesh task caching, sent only when set. |
+| `sample_value` | none | any non-null JSON | Value that data-profile preflight uses for a placeholder reading this Lambda; never executed. |
 
-The limits apply only to the standalone `python` task; they have no effect on a `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as its own standalone `python` task and may set `timeout_s` up to FlowMesh's 3600 s cap; without an `image` the cap stays at 600 s.
-
-`expected_runtime_s` is a planning hint only: it is seconds per input row of the task, and HALO uses it to estimate the step's run time. It is never enforced as a limit. When a job's input slices are coalesced into one workflow, the step runs their rows in sequence, so Lumilake coalesces only as many slices as keep the step's expected run time within its `timeout_s`; the rest run as separate copies of the workflow in the same batch. A slice whose row count cannot be known before it runs is never coalesced. `cache` is also opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it. `sample_value` is never executed: it only supplies a representative value so data-profile preflight can resolve a placeholder whose upstream is this `LambdaOp`.
-
-For Python-side authoring, `lumilake_server.ops.LambdaOp(fn=...)` serializes the function automatically via `dill.source.getsource` — see `src/lumilake_server/ops/util_ops.py` for the closure-capture rules.
+When a job's input slices are coalesced into one workflow, the task runs their rows in sequence, so Lumilake coalesces only as many slices as keep `expected_runtime_s` times the rows within `timeout_s`; a slice whose row count is unknown before it runs is never coalesced.
 
 ### RouterOp
 
