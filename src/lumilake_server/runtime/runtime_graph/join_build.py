@@ -1,12 +1,4 @@
-"""Building one join's python step.
-
-A join reads one plan column per row column and one value/source pair per
-attach field. A row column that is a workflow input or a data op has no runtime
-node, so its literal values are inlined into the plan. An attach target's row
-source is resolved here, when the runtime graph is built, so the step pairs
-values with keys by position. Consumers read the join by its op id, which is its
-runtime node id, so only the join phase builds the step.
-"""
+"""Building one join's python step, pairing each attach's values with keyed rows."""
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -69,8 +61,7 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
 
 
 def _non_literal(op: Op) -> list[Op]:
-    """The op's inputs that compile to a runtime node, or every input when it
-    reads only literal columns."""
+    """The op's inputs that compile to a runtime node, or every input."""
     inputs = [inp for inp in op.inputs if not isinstance(inp, (InputOp, DataOp))]
     return inputs or op.inputs
 
