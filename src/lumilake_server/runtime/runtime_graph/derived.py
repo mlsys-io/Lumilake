@@ -4,6 +4,7 @@ from typing import Any
 
 from lumilake_server.common import GenerationConfig
 from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
     ColumnPlanEntry,
     DataSpecModel,
     ListData,
@@ -92,7 +93,7 @@ class _DerivedBuilder(_VisionBuilder):
         node_id = f"{op_id}__flatten"
         return self._create_runtime_op(
             name=node_id,
-            task_type=python_step.TASK_TYPE,
+            task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
                 mode="flatten_step",
                 # No path: the worker's flatten branch expands both shapes —
@@ -216,7 +217,7 @@ class _DerivedBuilder(_VisionBuilder):
             extra_ops.append(
                 self._create_runtime_op(
                     name=pairs_node_id,
-                    task_type=python_step.TASK_TYPE,
+                    task_type=PYTHON_TASK_TYPE,
                     data_spec=pairs_data_spec,
                     model_spec={},
                     inference_spec={},

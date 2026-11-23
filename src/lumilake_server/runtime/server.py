@@ -28,11 +28,10 @@ from lumilake.log import (
     log_on_exception_async,
 )
 from lumilake_server.common import InputRef, project_input_values
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.data_profile_utils import (
     DataProfileSource,
@@ -1498,7 +1497,7 @@ class LumilakeServer:
                         else math.inf
                     )
                     for node in item.runtime_graph.nodes.values()
-                    if node.task_type == python_step.TASK_TYPE
+                    if node.task_type == PYTHON_TASK_TYPE
                     and isinstance(step := node.data_spec, PythonData)
                     and step.expected_runtime_s is not None
                 ),

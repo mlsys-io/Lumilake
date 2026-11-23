@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
     DataFrame,
     ListData,
     PythonData,
@@ -1768,7 +1769,7 @@ class FlowmeshRuntimeManager:
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
             list_lambda = (
                 output_node is not None
-                and output_node.task_type == python_step.TASK_TYPE
+                and output_node.task_type == PYTHON_TASK_TYPE
                 and isinstance(output_node.data_spec, PythonData)
                 and output_node.data_spec.mode == "list"
             )
@@ -1887,7 +1888,7 @@ class FlowmeshRuntimeManager:
         for node in nodes:
             node_name = node["name"]
             view_spec = node["spec"]
-            if view_spec["taskType"] != python_step.TASK_TYPE:
+            if view_spec["taskType"] != PYTHON_TASK_TYPE:
                 continue
             data_spec = PythonData.model_validate(view_spec["data"])
             python_nodes.append((node, view_spec, node_name, data_spec))

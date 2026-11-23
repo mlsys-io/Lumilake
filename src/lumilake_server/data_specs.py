@@ -1,6 +1,6 @@
 """Typed ``data_spec`` for every runtime task type."""
 
-from typing import Annotated, Any, Literal, TypeGuard
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -112,9 +112,9 @@ class ColumnPlanEntry(DataSpecModel):
     path: str | None = None
     flatten: Literal[True] | None = None
     values: list[Any] | None = None
-    file: str | None = None
     label: str | None = None
     grouped: bool | None = None
+    file: str | None = None
 
 
 PythonMode = Literal[
@@ -230,20 +230,6 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
         return _MODEL_DATA.validate_python(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
-
-
-def is_sql_data(data_spec: DataSpecModel) -> TypeGuard[SqlProfileData | RetrievalData]:
-    """Whether the spec reads a SQL source."""
-    if isinstance(data_spec, SqlProfileData):
-        return True
-    return isinstance(data_spec, RetrievalData) and data_spec.mode == "sql"
-
-
-def is_s3_data(data_spec: DataSpecModel) -> TypeGuard[S3ProfileData | RetrievalData]:
-    """Whether the spec reads an S3 source."""
-    if isinstance(data_spec, S3ProfileData):
-        return True
-    return isinstance(data_spec, RetrievalData) and data_spec.mode == "s3"
 
 
 def dump_data_spec(model: DataSpecModel) -> dict[str, Any]:

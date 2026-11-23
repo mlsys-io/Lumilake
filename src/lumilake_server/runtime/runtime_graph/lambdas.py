@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -107,7 +107,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         )
         return self._create_runtime_op(
             name=op.id,
-            task_type=python_step.TASK_TYPE,
+            task_type=PYTHON_TASK_TYPE,
             data_spec=data_spec,
             model_spec={},
             inference_spec={},
@@ -193,7 +193,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         )
         node = self._create_runtime_op(
             name=op_id,
-            task_type=python_step.TASK_TYPE,
+            task_type=PYTHON_TASK_TYPE,
             data_spec=data_spec,
             model_spec={},
             inference_spec={},

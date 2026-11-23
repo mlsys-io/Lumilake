@@ -9,9 +9,9 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from lumilake_server.runtime import python_step
+from lumilake_server.data_specs import PYTHON_TASK_TYPE
 
-CAPABILITY_GATED_TASK_TYPES = frozenset({python_step.TASK_TYPE})
+CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 """Task types that run on a CPU worker only (HALO's CPU-only engines)."""

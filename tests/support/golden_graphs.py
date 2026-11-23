@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.data_specs import PYTHON_TASK_TYPE
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -231,7 +232,7 @@ def _dumped(spec: Any) -> dict[str, Any]:
 
 def _generated_code(op: Any) -> str | None:
     """The python task code a python step generates, or None for other tasks."""
-    if op.task_type != python_step.TASK_TYPE:
+    if op.task_type != PYTHON_TASK_TYPE:
         return None
     published = dict(python_step.literal_blobs(op.data_spec.plan))
     for key, blob in list(published.items()):

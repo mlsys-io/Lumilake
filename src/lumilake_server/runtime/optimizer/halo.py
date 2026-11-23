@@ -17,12 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import (
-    RetrievalData,
-    dump_data_spec,
-    is_s3_data,
-    is_sql_data,
-)
+from lumilake_server.data_specs import RetrievalData, dump_data_spec
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -524,8 +519,6 @@ class HaloOptimizer(BaseOptimizer):
         op: RuntimeOp,
         data_profile_results: Mapping[str, Sequence[DataProfileResultRow]],
     ) -> tuple[QueryPlanChoice, ...]:
-        if not (is_sql_data(op.data_spec) or is_s3_data(op.data_spec)):
-            return tuple()
         query_name = f"{node_id}_query"
         cache_key = data_profile_key_for_node_query(node_id, query_name)
         rows = data_profile_results.get(cache_key, ())
@@ -620,7 +613,8 @@ class HaloOptimizer(BaseOptimizer):
     def _is_data_profile_candidate(self, op: RuntimeOp) -> bool:
         if self._map_engine(op.backend, op.task_type) != "db":
             return False
-        return is_sql_data(op.data_spec) or is_s3_data(op.data_spec)
+        spec = op.data_spec
+        return isinstance(spec, RetrievalData) and spec.mode in {"sql", "s3"}
 
     @staticmethod
     def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:

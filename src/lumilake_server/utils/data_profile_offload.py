@@ -343,8 +343,12 @@ def _collect_data_profile_param_candidates(
     for item in params or ():
         if not item.label:
             continue
-        if item.data is not None and isinstance(item.data.items, list):
-            result[item.label] = list(item.data.items)
+        if (
+            item.data is not None
+            and isinstance(item.data.items, list)
+            and item.data.items
+        ):
+            result[item.label] = item.data.items
     if isinstance(constraints, list):
         for item in constraints:
             if not isinstance(item, dict):

@@ -8,12 +8,12 @@ from typing import Any, Self
 from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
     ListData,
     PythonData,
     dump_data_spec,
     parse_data_spec,
 )
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.graph import topological_sort
@@ -178,7 +178,7 @@ class RuntimeGraph:
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
-            if node.task_type == python_step.TASK_TYPE
+            if node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
             and node.data_spec.mode == "list"
         }
@@ -188,7 +188,7 @@ class RuntimeGraph:
             if node_id in list_lambda_nodes:
                 list_lambda_dependent.add(node_id)
                 continue
-            if node.task_type == python_step.TASK_TYPE and not (
+            if node.task_type == PYTHON_TASK_TYPE and not (
                 isinstance(node.data_spec, PythonData) and node.data_spec.mode == "list"
             ):
                 continue
@@ -210,7 +210,7 @@ class RuntimeGraph:
             for node_id, node_ref in reads.items()
             if node_ref is not None
             and (upstream := self.nodes.get(node_ref)) is not None
-            and upstream.task_type == python_step.TASK_TYPE
+            and upstream.task_type == PYTHON_TASK_TYPE
             and isinstance(upstream.data_spec, PythonData)
             and upstream.data_spec.mode == "list"
         }

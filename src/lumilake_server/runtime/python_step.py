@@ -23,7 +23,6 @@ TASK_RUNTIME_MODULE = "lumilake_runtime"
 LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
-TASK_TYPE = PYTHON_TASK_TYPE
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
@@ -33,13 +32,8 @@ ColumnPlan = list[ColumnPlanEntry]
 
 
 def plan_json(plan: ColumnPlan) -> str:
-    """A plan as the JSON the generated task code embeds; a mounted literal's
-    ``file`` comes last, as the builder emits it."""
-    dumped = [entry.model_dump(exclude_none=True) for entry in plan]
-    for entry in dumped:
-        if "file" in entry:
-            entry["file"] = entry.pop("file")
-    return json.dumps(dumped)
+    """A plan as the JSON the generated task code embeds."""
+    return json.dumps([entry.model_dump(exclude_none=True) for entry in plan])
 
 
 @dataclass(frozen=True)
@@ -459,7 +453,7 @@ def flowmesh_spec(
             mode,
         )
     spec: dict[str, Any] = {
-        "taskType": TASK_TYPE,
+        "taskType": PYTHON_TASK_TYPE,
         "code": code,
         "entrypoint": "main",
         "timeoutSeconds": data_spec.timeout_s,

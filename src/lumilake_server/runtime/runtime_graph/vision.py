@@ -1,4 +1,5 @@
 from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
     Column,
     ColumnPlanEntry,
     FormatConfig,
@@ -285,7 +286,7 @@ class _VisionBuilder(_RetrievalBuilder):
         )
         flatten = self._create_runtime_op(
             name=flatten_id,
-            task_type=python_step.TASK_TYPE,
+            task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
                 mode="flatten",
                 plan=plan,
@@ -341,7 +342,7 @@ class _VisionBuilder(_RetrievalBuilder):
         )
         regroup = self._create_runtime_op(
             name=llm_op_id,
-            task_type=python_step.TASK_TYPE,
+            task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
                 mode="regroup",
                 plan=[

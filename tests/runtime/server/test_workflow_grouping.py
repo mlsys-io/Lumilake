@@ -6,7 +6,7 @@ import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
@@ -543,7 +543,7 @@ def _with_python_step(
 ) -> WorkflowItem:
     step = RuntimeOp(
         node_id="sim",
-        task_type=python_step.TASK_TYPE,
+        task_type=PYTHON_TASK_TYPE,
         backend=python_step.BACKEND,
         model="",
         data_spec=PythonData(
