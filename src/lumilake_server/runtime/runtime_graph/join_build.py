@@ -1,8 +1,8 @@
 """Building one join's python step.
 
-An attach target's row source is resolved here, so the step pairs values with
-keys by position. Consumers in an earlier phase read the join by its op id,
-which is its runtime node id, so only the join phase builds the step.
+An attach target's row source is resolved here, so the step pairs values with keys by
+position. Consumers in an earlier phase read the join by its op id, which is its runtime
+node id, so only the join phase builds the step.
 """
 
 from lumilake_server.data_specs import (
@@ -51,8 +51,8 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
             if len(nodes) > 1:
                 names = ", ".join(f"'{node}'" for node in sorted(nodes))
                 raise ValueError(
-                    f"{consumer} reads columns from several nodes ({names}); a"
-                    " row source is the single node all its columns read"
+                    f"{consumer} reads columns from several nodes ({names}); a row"
+                    " source is the single node all its columns read"
                 )
             if not nodes:
                 return _drop_broadcasts(_non_literal(op), ctx)
@@ -94,8 +94,8 @@ def resolve_row_source(
             if len(candidates) != 1:
                 names = ", ".join(f"'{inp.id}'" for inp in candidates) or "none"
                 raise ValueError(
-                    f"{consumer}: op '{current.id}' is not 1:1 over one row"
-                    f" column, so its row source is ambiguous ({names})"
+                    f"{consumer}: op '{current.id}' is not 1:1 over one row column, so"
+                    f" its row source is ambiguous ({names})"
                 )
             source = candidates[0]
         current = source
@@ -117,8 +117,8 @@ def build_join_step(
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
         if isinstance(target, FormatOp):
             raise ValueError(
-                f"{consumer}, but a format op is a row source only as a hop on"
-                " a chain; it has no runtime node to read directly"
+                f"{consumer}, but a format op is a row source only as a hop on a chain;"
+                " it has no runtime node to read directly"
             )
         source = resolve_row_source(target, set(op.column_ids), ctx, consumer)
         attach.append(
@@ -165,8 +165,8 @@ def _planned(
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
         raise ValueError(
-            f"JoinOp '{join.id}' reads '{column.id}', which compiled to no"
-            " runtime node before the join"
+            f"JoinOp '{join.id}' reads '{column.id}', which compiled to no runtime node"
+            " before the join"
         )
     node = runtime_ids[-1]
     entry = ColumnPlanEntry(kind="stage", node=node)
