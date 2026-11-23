@@ -70,8 +70,8 @@ class JoinSpec(BaseModel):
             missing = [path for path in self.by if path not in self.row_key]
             if missing:
                 raise ValueError(
-                    f"row_key must name every by path, got {self.row_key!r}"
-                    f" without {missing!r}"
+                    f"row_key must name every by path, got {self.row_key!r} without"
+                    f" {missing!r}"
                 )
         return self
 
@@ -108,9 +108,9 @@ class JoinOp(Op):
         for field, target in attach.items():
             if target not in joined:
                 raise ValueError(
-                    f"JoinOp attach field {field!r} reads '{target.id}', which"
-                    " is not one of the op's inputs; list it there so its"
-                    " producer is built before the join"
+                    f"JoinOp attach field {field!r} reads '{target.id}', which is not"
+                    " one of the op's inputs; list it there so its producer is built"
+                    " before the join"
                 )
             self.attach_indices[field] = joined.index(target)
             target_indices.add(self.attach_indices[field])
@@ -184,7 +184,7 @@ def _built_before(other_ops: dict[str, Op], op_id: str, role: str) -> Op:
     op = other_ops.get(op_id)
     if op is None:
         raise ValueError(
-            f"JoinOp {role} references '{op_id}', which is not built before it;"
-            " list it in the op's inputs"
+            f"JoinOp {role} references '{op_id}', which is not built before it; list it"
+            " in the op's inputs"
         )
     return op

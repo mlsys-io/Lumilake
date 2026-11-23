@@ -1,9 +1,24 @@
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake_server.common import Message
+
+
+@dataclass(slots=True)
+class WorkflowSliceMeta:
+    public_graph_name: str
+    slice_index: int
+    slice_start: int
+    slice_length: int
+    total_length: int
+    template_hash: str
+    varying_input_keys: tuple[str, ...] = ()
+    whole_set: bool = False
+    """True when this slice holds a template round's whole input set, whose row
+    count is its own answer."""
 
 
 class Priority(Enum):

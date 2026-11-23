@@ -5,7 +5,7 @@ import io
 import json
 import tarfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import pytest
 import requests as _requests_mod
@@ -200,7 +200,7 @@ def test_logs_stream_streams_sse_entries(
     class _FakeResp:
         status_code = 200
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: Any) -> None:
@@ -230,7 +230,7 @@ def test_logs_stream_cursor_forwarded(
     class _FakeResp:
         status_code = 200
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: Any) -> None:
@@ -313,7 +313,7 @@ def test_logs_stream_sse_error_frame_exits_1(
     class _FakeResp:
         status_code = 200
 
-        def __enter__(self) -> "_FakeResp":
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *args: Any) -> None:

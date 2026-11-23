@@ -114,8 +114,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             break
         else:
             raise ValueError(
-                f"LambdaOp '{op.id}' seed node '{seed_node}' is not one of its"
-                " inputs; add it there so the step reads its column"
+                f"LambdaOp '{op.id}' seed node '{seed_node}' is not one of its inputs;"
+                " add it there so the step reads its column"
             )
         if seed_node not in dependencies:
             dependencies.append(seed_node)
