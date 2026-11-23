@@ -14,7 +14,9 @@ import hashlib
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, StrictInt, ValidationError
+from pydantic import BaseModel, ConfigDict, field_validator
+
+from lumilake_server.ops.spec_validation import validate_fields
 
 
 class WorkflowSeed(BaseModel):
@@ -22,15 +24,19 @@ class WorkflowSeed(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    seed: StrictInt = 0
+    seed: int = 0
+
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _integer(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"must be an integer, got {value!r}")
+        return value
 
 
 def read_workflow_seed(document: Any, where: str) -> int:
     """A workflow document's ``seed``, naming the field in the error."""
-    try:
-        return WorkflowSeed.model_validate(document).seed
-    except ValidationError as exc:
-        raise ValueError(f"{where} 'seed' must be an integer") from exc
+    return validate_fields(WorkflowSeed, document, where).seed
 
 
 def make_id(scope: str, prefix: str, name: str) -> str:

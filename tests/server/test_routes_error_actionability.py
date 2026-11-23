@@ -322,7 +322,10 @@ async def test_native_key_form_is_refused_with_422_naming_the_op(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         for graph, match in [
             ({"graph": {"chat": chat, "cases": cases}}, "LLMChatOp 'chat'"),
-            ({"graph": {"cases": cases}, "seed": "7"}, "'seed' must be an integer"),
+            (
+                {"graph": {"cases": cases}, "seed": "7"},
+                "seed: must be an integer, got '7'",
+            ),
         ]:
             body["data"][0]["workflow"] = json.dumps(graph)
             resp = await client.post(
