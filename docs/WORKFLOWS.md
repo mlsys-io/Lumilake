@@ -148,8 +148,7 @@ For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, 
 
 An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
 
-A `sql`-mode retrieval must define its row order; see
-[`docs/OPS.md`](OPS.md#dataretrievalop) for the rule and its refusals.
+A `sql`-mode retrieval must define its row order; see [`docs/OPS.md`](OPS.md#dataretrievalop) for the rule and its refusals.
 
 Live sampling is **off by default**. The recommended path is to set `sample_value` on the upstream `data_spec` — that supplies a representative value at build time with zero live execution. To explicitly opt in to bounded live queries, set `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1`. To skip data profiling entirely, set `LUMILAKE_DISABLE_DATA_PROFILE=1`.
 
