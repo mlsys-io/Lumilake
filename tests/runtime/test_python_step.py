@@ -313,8 +313,7 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
 
 @pytest.mark.parametrize("mode", ["expand", "reduce"])
 def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
-    """An expand or reduce LambdaOp compiles to its own python task, with its
-    mode in the spec."""
+    """An expand or reduce LambdaOp compiles to its own python task with its mode."""
     stock = input_placeholder("Stock")
     source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
     llm = LLMChatOp(

@@ -110,8 +110,7 @@ def _row_content(row: Any) -> Any:
 
 
 def _serialized_table(value: Any) -> dict[str, Any] | None:
-    """The ``column -> row index -> value`` table ``value`` holds as a
-    ``{"df": <json text>}`` mapping, or ``None``."""
+    """The ``column -> row index -> value`` table ``value`` holds, or ``None``."""
     if isinstance(value, str):
         try:
             value = json.loads(value)
@@ -132,8 +131,7 @@ def _serialized_table(value: Any) -> dict[str, Any] | None:
 
 
 def _decode(value: Any) -> Any:
-    """Decode one column value before the function sees it: JSON text is
-    parsed and a serialized table becomes its row dicts."""
+    """Decode one column value: JSON text is parsed, a table becomes its row dicts."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
@@ -152,8 +150,7 @@ def _decode(value: Any) -> Any:
 def _rows(
     columns: list[list[Any]], plan: list[dict[str, Any]], op_id: str
 ) -> list[tuple[Any, ...]]:
-    """The per-call rows of a decoded column set: a one-row column broadcasts,
-    and the others must agree on the count."""
+    """The per-call rows of a decoded column set; a one-row column broadcasts."""
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(plan, columns):
         if len(col) not in (1, n):
