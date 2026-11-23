@@ -20,10 +20,6 @@ from lumilake_server.runtime.runtime_graph.lowering import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
-_PYTHON_MODES = frozenset(
-    {"row", "list", "aligned", "flatten", "regroup", "pairs", "flatten_step"}
-)
-
 
 class _LambdaBuilder(_RuntimeGraphBuilderBase):
     def _build_python_step(self, op: LambdaOp, ctx: LoweringContext) -> list[RuntimeOp]:
@@ -183,7 +179,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             code=op.code,
             fn_name=op.fn.__name__,
             plan=plan,
-            mode=op.mode if op.mode in _PYTHON_MODES else None,
+            mode=op.mode,
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None

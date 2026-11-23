@@ -4,9 +4,9 @@ from lumilake_server.data_specs import (
     FormatConfig,
     GraphTemplate,
     GraphTemplateData,
-    ImageEmbedding,
     ListData,
     Message,
+    NodeRead,
     PythonData,
     TemplateOptions,
     dump_data_spec,
@@ -86,7 +86,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 path = col.get("path")
                 if isinstance(label, str) and isinstance(data, dict):
                     columns.append(
-                        Column(label=label, data=ListData.model_validate(data))
+                        Column.model_validate({"label": label, "data": data})
                     )
                     continue
                 if isinstance(label, str) and isinstance(node_ref, str):
@@ -193,7 +193,7 @@ class _VisionBuilder(_RetrievalBuilder):
                 data_spec=GraphTemplateData(
                     type="graph_template",
                     template=template_spec,
-                    image_embedding=ImageEmbedding(
+                    image_embedding=NodeRead(
                         node=embedding_node_id, path="embedding_file"
                     ),
                 ),
@@ -322,9 +322,7 @@ class _VisionBuilder(_RetrievalBuilder):
             data_spec=GraphTemplateData(
                 type="graph_template",
                 template=infer_template,
-                image_embedding=ImageEmbedding(
-                    node=embedding_node_id, path="embedding_file"
-                ),
+                image_embedding=NodeRead(node=embedding_node_id, path="embedding_file"),
             ),
             model_spec=self._build_model_spec(llm_op.config, "vllm", backend_config),
             inference_spec=inference_spec,

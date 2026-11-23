@@ -127,8 +127,7 @@ def estimate_area(item: WorkflowItem, params: CostParams | None = None) -> float
     durations: dict[str, float] = {}
     for node_id, op in graph.nodes.items():
         if _classify(op) == "db":
-            data_spec = op.data_spec
-            if isinstance(data_spec, RetrievalData) and data_spec.mode == "agent":
+            if isinstance(op.data_spec, RetrievalData) and op.data_spec.mode == "agent":
                 return None
         durations[node_id] = _node_duration(op, params)
 

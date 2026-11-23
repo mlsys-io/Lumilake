@@ -22,10 +22,6 @@ class NodeRead(DataSpecModel):
     path: str = ""
 
 
-class ImageEmbedding(NodeRead):
-    """The embedding artifact a VLM inference task reads."""
-
-
 class ListData(DataSpecModel):
     """A list-fed task reading literal items, an upstream node, or a
     placeholder that resolves to a whole upstream list."""
@@ -105,7 +101,7 @@ class GraphTemplateData(DataSpecModel):
 
     type: Literal["graph_template"]
     template: GraphTemplate
-    image_embedding: ImageEmbedding | None = None
+    image_embedding: NodeRead | None = None
 
 
 class ColumnPlanEntry(DataSpecModel):
@@ -230,37 +226,27 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
         if task_type == RETRIEVAL_TASK_TYPE:
             return RetrievalData.model_validate(value)
         if task_type == PROFILE_TASK_TYPE:
-            return validate_profile(value)
-        return validate_model_data(value)
+            return _PROFILE_DATA.validate_python(value)
+        return _MODEL_DATA.validate_python(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
 
 
-def validate_model_data(value: dict[str, Any]) -> ModelTaskData:
-    """The list, dataframe or graph-template spec a model task carries."""
-    return _MODEL_DATA.validate_python(value)
-
-
-def validate_profile(value: dict[str, Any]) -> SqlProfileData | S3ProfileData:
-    """The SQL or S3 spec a data-profile task carries."""
-    return _PROFILE_DATA.validate_python(value)
-
-
-def is_sql_data(data_spec: BaseModel) -> TypeGuard[SqlProfileData | RetrievalData]:
+def is_sql_data(data_spec: DataSpecModel) -> TypeGuard[SqlProfileData | RetrievalData]:
     """Whether the spec reads a SQL source."""
     if isinstance(data_spec, SqlProfileData):
         return True
     return isinstance(data_spec, RetrievalData) and data_spec.mode == "sql"
 
 
-def is_s3_data(data_spec: BaseModel) -> TypeGuard[S3ProfileData | RetrievalData]:
+def is_s3_data(data_spec: DataSpecModel) -> TypeGuard[S3ProfileData | RetrievalData]:
     """Whether the spec reads an S3 source."""
     if isinstance(data_spec, S3ProfileData):
         return True
     return isinstance(data_spec, RetrievalData) and data_spec.mode == "s3"
 
 
-def dump_data_spec(model: BaseModel) -> dict[str, Any]:
+def dump_data_spec(model: DataSpecModel) -> dict[str, Any]:
     """The serialized dict for a typed ``data_spec`` model."""
     return model.model_dump(exclude_none=True)
 

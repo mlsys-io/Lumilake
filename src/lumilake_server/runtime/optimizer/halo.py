@@ -18,7 +18,6 @@ from lumilake_server.data_profile_models import (
     DataProfileResultRow,
 )
 from lumilake_server.data_specs import (
-    DataSpecModel,
     RetrievalData,
     dump_data_spec,
     is_s3_data,
@@ -48,11 +47,6 @@ from .schedule.models import DBQuery, Edge, GraphSpec, Node, QueryPlanChoice, Wo
 
 _HF_SAFETENSORS_FILE = "model.safetensors"
 _HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
-
-
-def _retrieval_is_data_profile_eligible(data_spec: DataSpecModel) -> bool:
-    """Whether the spec reads a SQL or S3 source."""
-    return is_sql_data(data_spec) or is_s3_data(data_spec)
 
 
 def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
@@ -530,8 +524,7 @@ class HaloOptimizer(BaseOptimizer):
         op: RuntimeOp,
         data_profile_results: Mapping[str, Sequence[DataProfileResultRow]],
     ) -> tuple[QueryPlanChoice, ...]:
-        data_spec = op.data_spec
-        if not _retrieval_is_data_profile_eligible(data_spec):
+        if not (is_sql_data(op.data_spec) or is_s3_data(op.data_spec)):
             return tuple()
         query_name = f"{node_id}_query"
         cache_key = data_profile_key_for_node_query(node_id, query_name)
@@ -627,7 +620,7 @@ class HaloOptimizer(BaseOptimizer):
     def _is_data_profile_candidate(self, op: RuntimeOp) -> bool:
         if self._map_engine(op.backend, op.task_type) != "db":
             return False
-        return _retrieval_is_data_profile_eligible(op.data_spec)
+        return is_sql_data(op.data_spec) or is_s3_data(op.data_spec)
 
     @staticmethod
     def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:

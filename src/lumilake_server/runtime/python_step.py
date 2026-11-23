@@ -13,7 +13,7 @@ from functools import cache
 from typing import Any
 
 from lumilake import envs
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
 from lumilake_server.runtime import lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
@@ -23,7 +23,7 @@ TASK_RUNTIME_MODULE = "lumilake_runtime"
 LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
-TASK_TYPE = "python"
+TASK_TYPE = PYTHON_TASK_TYPE
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16

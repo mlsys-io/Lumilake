@@ -242,10 +242,6 @@ class _LLMBuilder(_EmbeddingBuilder):
             # Raw completions read their prompt directly and never build a
             # chat-message graph, including when the prompt is a list-mode op.
             upstream_llm_ids: list[str] = []
-            template_spec = GraphTemplate(
-                name="format",
-                options=TemplateOptions(format=FormatConfig()),
-            )
         else:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 llm_op_id,
@@ -614,7 +610,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             node_ref = col.get("node")
             path = col.get("path")
             if isinstance(label, str) and isinstance(data, dict):
-                columns.append(Column(label=label, data=ListData.model_validate(data)))
+                columns.append(Column.model_validate({"label": label, "data": data}))
                 continue
             if isinstance(label, str) and isinstance(node_ref, str):
                 if path is None and not isinstance(graph_dict.get(node_ref), InputOp):

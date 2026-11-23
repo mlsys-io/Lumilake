@@ -2,42 +2,42 @@
 lumid retrieval in sql or s3 mode. A missed shape starves /profile rows."""
 
 from lumilake_server.data_specs import (
+    DataSpecModel,
     EmptyData,
     ListData,
     RetrievalData,
     S3ProfileData,
     SqlProfileData,
+    is_s3_data,
+    is_sql_data,
 )
-from lumilake_server.runtime.optimizer.halo import _retrieval_is_data_profile_eligible
+
+
+def _eligible(spec: DataSpecModel) -> bool:
+    return is_sql_data(spec) or is_s3_data(spec)
 
 
 def test_eligible_sql_profile() -> None:
-    assert _retrieval_is_data_profile_eligible(SqlProfileData(type="sql", template="x"))
+    assert _eligible(SqlProfileData(type="sql", template="x"))
 
 
 def test_eligible_s3_profile() -> None:
-    assert _retrieval_is_data_profile_eligible(S3ProfileData(type="s3", template="x"))
+    assert _eligible(S3ProfileData(type="s3", template="x"))
 
 
 def test_eligible_lumid_sql() -> None:
-    assert _retrieval_is_data_profile_eligible(
-        RetrievalData(type="lumid", mode="sql", template="...")
-    )
+    assert _eligible(RetrievalData(type="lumid", mode="sql", template="..."))
 
 
 def test_eligible_lumid_s3() -> None:
-    assert _retrieval_is_data_profile_eligible(
-        RetrievalData(type="lumid", mode="s3", template="...")
-    )
+    assert _eligible(RetrievalData(type="lumid", mode="s3", template="..."))
 
 
 def test_ineligible_lumid_agent() -> None:
     """Agent mode skips HALO's plan-choice path."""
-    assert not _retrieval_is_data_profile_eligible(
-        RetrievalData(type="lumid", mode="agent")
-    )
+    assert not _eligible(RetrievalData(type="lumid", mode="agent"))
 
 
 def test_ineligible_unrelated_type() -> None:
-    assert not _retrieval_is_data_profile_eligible(ListData(items=[]))
-    assert not _retrieval_is_data_profile_eligible(EmptyData())
+    assert not _eligible(ListData(items=[]))
+    assert not _eligible(EmptyData())

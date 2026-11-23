@@ -35,7 +35,6 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
-    parse_data_spec,
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -1884,14 +1883,13 @@ class FlowmeshRuntimeManager:
             flowmesh_to_raw = rewrite.flowmesh_to_raw
 
         python_nodes: list[tuple[dict[str, Any], dict[str, Any], str, PythonData]] = []
-        final_plans: list[list[python_step.ColumnPlanEntry]] = []
+        final_plans: list[python_step.ColumnPlan] = []
         for node in nodes:
             node_name = node["name"]
             view_spec = node["spec"]
             if view_spec["taskType"] != python_step.TASK_TYPE:
                 continue
-            data_spec = parse_data_spec(python_step.TASK_TYPE, view_spec["data"])
-            assert isinstance(data_spec, PythonData)
+            data_spec = PythonData.model_validate(view_spec["data"])
             python_nodes.append((node, view_spec, node_name, data_spec))
             final_plans.append(data_spec.plan)
 
