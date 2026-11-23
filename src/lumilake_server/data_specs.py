@@ -27,6 +27,7 @@ PythonMode = Literal[
     "expand",
     "reduce",
     "join",
+    "parse",
 ]
 
 ReduceOnFail = Literal["drop_failed", "fail_group"]
@@ -152,6 +153,17 @@ class JoinDescription(DataSpecModel):
     on_missing: Literal["null_fill", "fail_row"]
 
 
+class ParseDescription(DataSpecModel):
+    """A parse step's format, its pattern, required keys and flags, and whether
+    an unparsable row becomes a marker or keeps its raw text."""
+
+    format: Literal["json", "regex"]
+    on_fail: Literal["marker", "raw"]
+    pattern: str | None = None
+    require: list[str] | None = None
+    flags: str | None = None
+
+
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -163,6 +175,7 @@ class PythonData(DataSpecModel):
     on_fail: ReduceOnFail | None = None
     on_empty: ExpandOnEmpty | None = None
     join: JoinDescription | None = None
+    parse: ParseDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
     memory_mb: int | None = None

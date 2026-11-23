@@ -13,7 +13,12 @@ from functools import cache
 from typing import Any
 
 from lumilake import envs
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ColumnPlanEntry,
+    ParseDescription,
+    PythonData,
+)
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
@@ -599,14 +604,14 @@ def main(inputs):
 """
 
 
-def parse_source(op_id: str, plan: ColumnPlan, parse_spec: dict[str, Any]) -> str:
+def parse_source(op_id: str, plan: ColumnPlan, parse_spec: ParseDescription) -> str:
     """The python-task code for a ParseOp: one parsed record per row."""
     return (_PARSE_PRELUDE + _PARSE_MAIN).format(
         op_id=op_id,
         module=TASK_RUNTIME_MODULE,
         mount=TASK_RUNTIME_MOUNT,
-        plan=json.dumps(plan),
-        parser=json.dumps({"op": op_id, **parse_spec}),
+        plan=plan_json(plan),
+        parser=json.dumps({"op": op_id, **parse_spec.model_dump(exclude_none=True)}),
     )
 
 
@@ -677,7 +682,7 @@ def flowmesh_spec(
     elif mode == "flatten_step":
         code = flatten_step_source(node_id, plan)
     elif mode == "parse":
-        code = parse_source(node_id, plan, data_spec["parse"])
+        code = parse_source(node_id, plan, _required(data_spec.parse, "parse", mode))
     else:
         code = wrapper_source(
             node_id,

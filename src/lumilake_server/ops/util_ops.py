@@ -55,7 +55,7 @@ class LambdaSpec(BaseModel):
     cache: StrictBool | None = None
     on_fail: ReduceOnFail | None = None
     on_empty: ExpandOnEmpty | None = None
-    clears_markers: StrictBool | None = Field(default=None, alias=CLEARS_KEY)
+    clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
 
     @field_validator("image")
     @classmethod
@@ -260,10 +260,6 @@ class LambdaOp(Op):
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
         clears_markers: bool = False,
-        seed: dict[str, Any] | None = None,
-        on_empty: str = ON_EMPTY_DROP,
-        by: str | None = None,
-        on_fail: str = "fail_group",
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs

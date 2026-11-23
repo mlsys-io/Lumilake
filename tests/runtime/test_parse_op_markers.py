@@ -47,7 +47,7 @@ def _run(
         node = graph.nodes[node_id]
         if node.task_type != "python":
             continue
-        plan = node.data_spec["plan"]
+        plan = node.data_spec.plan
         literals = python_step.literal_blobs(plan).values()
         blobs: dict[str, python_step.PublishedBlob] = {
             blob.key: blob for blob in (python_step.runtime_blob(), *literals)

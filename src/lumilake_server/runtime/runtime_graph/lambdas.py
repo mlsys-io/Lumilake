@@ -1,6 +1,11 @@
 from collections.abc import Sequence
 
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ColumnPlanEntry,
+    ParseDescription,
+    PythonData,
+)
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -270,18 +275,16 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             [(op.inputs[0].id, self._op_output(op.inputs[0]).row_count)],
             combines_rows=False,
         )
-        data_spec: dict[str, Any] = {
-            "mode": "parse",
-            "parse": op.parse_spec,
-            "plan": plan,
-            "timeout_s": python_step.DEFAULT_TIMEOUT_SECONDS,
-        }
-        if row_count is not None:
-            data_spec["row_count"] = row_count
         node = self._create_runtime_op(
             name=op.id,
-            task_type=python_step.TASK_TYPE,
-            data_spec=data_spec,
+            task_type=PYTHON_TASK_TYPE,
+            data_spec=PythonData(
+                mode="parse",
+                parse=ParseDescription.model_validate(op.parse_spec),
+                plan=plan,
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+                row_count=row_count,
+            ),
             model_spec={},
             inference_spec={},
             backend=python_step.BACKEND,
@@ -297,12 +300,10 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         """The single-column plan a ParseOp reads: one value per input row."""
         source = op.inputs[0]
         if isinstance(source, InputOp):
-            return (
-                [{"kind": "literal", "values": list(ctx.inputs_dict[source.name])}],
-                [],
-            )
+            values = list(ctx.inputs_dict[source.name])
+            return [ColumnPlanEntry(kind="literal", values=values)], []
         if isinstance(source, DataOp):
-            return [{"kind": "literal", "values": list(source.data)}], []
+            return [ColumnPlanEntry(kind="literal", values=list(source.data))], []
         if isinstance(source, LambdaOp) and not source.takes_whole_columns:
             nodes = self._build_python_step(source, ctx)
             for node in nodes:
@@ -314,12 +315,12 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 f"ParseOp '{op.id}' reads '{source.id}', which compiled to"
                 f" {len(runtime_ids)} runtime nodes; a ParseOp reads one column"
             )
-        entry: dict[str, Any] = {"kind": "stage", "node": runtime_ids[0]}
+        entry = ColumnPlanEntry(kind="stage", node=runtime_ids[0])
         output = self._op_output(source)
         if output.needs_flatten:
-            entry["flatten"] = True
+            entry.flatten = True
         elif output.path:
-            entry["path"] = item_relative_path(output.path)
+            entry.path = item_relative_path(output.path)
         return [entry], [runtime_ids[0]]
 
     @after_phase(Phase.ROW_LAMBDA)
