@@ -4,7 +4,7 @@
 import asyncio
 import json
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 from weakref import WeakValueDictionary
 
@@ -45,6 +45,20 @@ _UNVERSIONED_TASKS = frozenset({"data_retrieval", "api"})
 
 _INDEX_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 """One lock per job id, held across a batch's load-merge-save of its index."""
+
+
+_CONTENT_ADDRESSED_TASKS = frozenset({"data_retrieval"})
+"""Unversioned task types whose value is a read rather than a draw."""
+
+
+def reads_unversioned(op: RuntimeOp) -> bool:
+    """Whether the op reads a source no snapshot records."""
+    return op.task_type in _UNVERSIONED_TASKS
+
+
+def content_addressed(op: RuntimeOp) -> bool:
+    """Whether the op's unversioned value can be re-read and keyed on."""
+    return op.task_type in _CONTENT_ADDRESSED_TASKS
 
 
 class RecordInput:
@@ -175,11 +189,9 @@ class RecordWriter:
         member_rounds: Mapping[str, int] | None = None,
         node_owners: Mapping[str, set[str]] | None = None,
         served: Mapping[str, NodeRecords] | None = None,
+        content_nodes: Collection[str] = (),
     ) -> int:
-        """Write the records of every node this batch produced and return how many.
-
-        ``served`` holds the records a reuse plan answered without a task; they
-        enter each storing member's index too."""
+        """Write every produced node's records under the round of its owners."""
         if not self._enabled:
             return 0
         order = runtime_graph.topological_order()
@@ -207,9 +219,7 @@ class RecordWriter:
             )
             if not storing:
                 continue
-            if reads_unversioned(plan) or any(
-                node in unversioned for node in input_nodes(plan)
-            ):
+            if reads_unversioned(plan.op):
                 unversioned.add(node_id)
             versions = EffectVersions(unversioned=node_id in unversioned)
             targets = sorted(
@@ -229,7 +239,9 @@ class RecordWriter:
                         plan=plan,
                         node_records=node_records,
                         records=records,
-                        inputs=_record_inputs(plan, records, member_round),
+                        inputs=_record_inputs(
+                            plan, records, member_round, plans, content_nodes
+                        ),
                         versions=versions,
                         source=source,
                     )
@@ -274,7 +286,7 @@ class RecordWriter:
         rounds: Mapping[str, int],
         owners: Mapping[str, set[str]],
     ) -> None:
-        """List the entries a reuse plan served in each storing member's index."""
+        """List the served entries in each storing member's index."""
         for node_id, node_records in served.items():
             if not node_records.entries:
                 continue
@@ -472,14 +484,25 @@ def position_inputs(
 
 
 def _record_inputs(
-    plan: RecordPlan, records: Mapping[str, NodeRecords], round_number: int
+    plan: RecordPlan,
+    records: Mapping[str, NodeRecords],
+    round_number: int,
+    plans: Mapping[str, RecordPlan],
+    content_nodes: Collection[str] = (),
 ) -> list[RecordInput]:
-    """The inputs a node reads, in its declared order, at ``round_number``, each
-    literal rows list included at the row's position."""
+    """The inputs a node reads at ``round_number``, in its declared order."""
     inputs: list[RecordInput] = []
     for node in input_nodes(plan):
         produced = records.get(node)
         if produced is not None:
+            addressing = (
+                content_addressed(plans[node].op)
+                if node in plans
+                else node in content_nodes
+            )
+            if addressing:
+                inputs.append(content_input(produced))
+                continue
             positions = range(len(produced.values)) if produced.keyed else range(1)
             inputs.append(
                 RecordInput(
@@ -512,6 +535,36 @@ def _record_inputs(
     return inputs
 
 
+def content_value(value: Any) -> Any:
+    """What an unversioned read's record is addressed by: the returned values."""
+    if isinstance(value, Mapping):
+        table = value.get("table")
+        if isinstance(table, str):
+            return {"rows": _decoded_table(table)}
+        if isinstance(table, Mapping) and isinstance(table.get("df"), str):
+            return {"rows": _decoded_table(table["df"])}
+    if isinstance(value, list):
+        return [content_value(item) for item in value]
+    return value
+
+
+def _decoded_table(table: str) -> Any:
+    try:
+        return json.loads(table)
+    except ValueError:
+        return table
+
+
+def content_input(produced: NodeRecords) -> RecordInput:
+    """One input named by each record's value, in record order."""
+    positions = range(len(produced.values)) if produced.keyed else range(1)
+    records: list[tuple[str, str] | None] = []
+    for position in positions:
+        value = content_value(produced.value_at(position))
+        records.append((digest_of({"value": value}), digest_of(value)))
+    return RecordInput(keyed=produced.keyed, records=records)
+
+
 def literal_rows(plan: RecordPlan) -> list[list[Any]]:
     """Every literal rows list the op carries: its python plan's literal
     entries, then the lists its data spec holds outside a plan."""
@@ -537,12 +590,6 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
 def input_nodes(plan: RecordPlan) -> list[str]:
     """The nodes a node reads, in its declared order."""
     return list(plan.op.dependencies)
-
-
-def reads_unversioned(plan: RecordPlan) -> bool:
-    """A retrieval or fetch reads a source that records no snapshot, so its
-    value is not reusable and neither is anything computed from it."""
-    return plan.op.task_type in _UNVERSIONED_TASKS
 
 
 def realization(
@@ -804,10 +851,13 @@ def _inherit_marker_keys(
                 node_records.keys[position] = inherited.keys[position]
 
 
+def record_values(response: Any) -> list[Any]:
+    """The values one task produced, in order: ``items`` outputs, or grouped rows."""
+    return [value for value, _ in _record_values(response)]
+
+
 def _record_values(response: Any) -> list[tuple[Any, Any]]:
-    """The values one task produced, in order, each with the result item it
-    came from: ``items`` outputs, or the rows a rowwise hosted task groups
-    under each item's ``rows``."""
+    """The values one task produced, in order, each with its result item."""
     payload = response
     if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
         payload = payload["value"]

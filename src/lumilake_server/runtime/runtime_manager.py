@@ -15,9 +15,10 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -46,13 +47,19 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
-from lumilake_server.runtime.record_writer import NodeRecords, RecordWriter
+from lumilake_server.runtime.record_store import row_key
+from lumilake_server.runtime.record_writer import (
+    NodeRecords,
+    RecordWriter,
+    content_addressed,
+    record_values,
+)
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
     rebuilt_output,
-    served_records,
+    writer_records,
 )
 from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
@@ -251,6 +258,83 @@ def _sanitize_flowmesh_api_error(e: APIError) -> APIError:
     )
 
 
+def _sub_run_reads(runtime_graph: RuntimeGraph) -> list[str]:
+    """The reads a sub-run holds: those whose every dependency is another read."""
+    reads: set[str] = set()
+    for node_id in runtime_graph.node_order:
+        op = runtime_graph.nodes[node_id]
+        if content_addressed(op) and all(node in reads for node in op.dependencies):
+            reads.add(node_id)
+    return [node_id for node_id in runtime_graph.node_order if node_id in reads]
+
+
+def _sub_schedule(schedule: Schedule, node_ids: Sequence[str]) -> Schedule:
+    """The batch schedule restricted to one sub-run's nodes."""
+    kept = set(node_ids)
+    return Schedule(
+        worker_assignment={
+            worker: [node for node in nodes if node in kept]
+            for worker, nodes in schedule.worker_assignment.items()
+        }
+    )
+
+
+def _sub_graph(runtime_graph: RuntimeGraph, node_ids: Sequence[str]) -> RuntimeGraph:
+    """A graph holding only ``node_ids``."""
+    kept = set(node_ids)
+    nodes = {
+        node_id: runtime_graph.nodes[node_id]
+        for node_id in runtime_graph.node_order
+        if node_id in kept
+    }
+    return RuntimeGraph(
+        nodes=nodes,
+        node_order=[node_id for node_id in runtime_graph.node_order if node_id in kept],
+        output_node_map={
+            node_id: runtime_graph.output_node_map[node_id]
+            for node_id in kept
+            if node_id in runtime_graph.output_node_map
+        },
+        output_paths={
+            node_id: path
+            for node_id, path in runtime_graph.output_paths.items()
+            if node_id in kept
+        },
+        dsl_to_runtime=runtime_graph.dsl_to_runtime.copy(),
+        record_keys={
+            node_id: key
+            for node_id, key in runtime_graph.record_keys.items()
+            if node_id in kept
+        },
+        op_names=runtime_graph.op_names.copy(),
+    )
+
+
+def _read_back_records(
+    runtime_graph: RuntimeGraph,
+    node_task_map: Mapping[str, str],
+    results: Mapping[str, Any],
+) -> dict[str, NodeRecords]:
+    """One sub-run's finished values, shaped as a consumer reads them."""
+    records: dict[str, NodeRecords] = {}
+    for node_id, task_id in node_task_map.items():
+        response = results.get(task_id)
+        if response is None:
+            continue
+        values = record_values(response)
+        key_path = runtime_graph.record_keys.get(node_id)
+        records[node_id] = NodeRecords(
+            keyed=key_path is not None,
+            values=values,
+            keys=(
+                [row_key(value, key_path.path) for value in values]
+                if key_path is not None
+                else None
+            ),
+        )
+    return records
+
+
 _TRANSIENT_FLOWMESH_STATUS = frozenset({502, 503, 504})
 _FLOWMESH_RETRY_DELAYS_S = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0)
 _DROPPED_CONNECTION_ERRORS = (
@@ -358,6 +442,14 @@ class FlowmeshRuntimeManager:
         # (member request id, workflow id) -> owned task ids, for per-job usage.
         self._request_task_ids: dict[tuple[str, str], list[str]] = {}
         self._cancelled_requests: set[str] = set()
+        # The unversioned reads a reusing job re-ran, so its writer names them by value
+        # as a full run does.
+        self._reuse_content_reads: dict[str, dict[str, NodeRecords]] = {}
+        # A re-ran read's raw response and output path, kept for a read that is itself a
+        # declared output.
+        self._reuse_read_responses: dict[str, dict[str, tuple[Any, str | None]]] = {}
+        # The outputs such reads export, as their own run would.
+        self._reuse_read_outputs: dict[str, dict[str, list[str]]] = {}
 
         # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
         # so threading lock, not asyncio.
@@ -1474,6 +1566,10 @@ class FlowmeshRuntimeManager:
             for workflow_id in submitted:
                 await self._abort_workflow(workflow_id)
             raise
+        finally:
+            self._reuse_content_reads.pop(request_info.request_id, None)
+            self._reuse_read_responses.pop(request_info.request_id, None)
+            self._reuse_read_outputs.pop(request_info.request_id, None)
 
     async def _process_request(
         self,
@@ -1854,9 +1950,7 @@ class FlowmeshRuntimeManager:
 
         self.logger.info(f"Aggregated {len(flat_outputs)} output results.")
         if reuse_plan is not None:
-            for node_id in reuse_plan.outputs:
-                if node_id in reuse_plan.hits:
-                    flat_outputs[node_id] = rebuilt_output(reuse_plan, node_id)
+            self._add_reused_outputs(request_info, reuse_plan, flat_outputs)
         if request_info.store_records and (reuse_plan is not None or stored_responses):
             await self._write_records(
                 request_info,
@@ -1864,7 +1958,15 @@ class FlowmeshRuntimeManager:
                 node_task_map=node_task_map,
                 workflow_id=workflow_id,
                 results=stored_responses,
-                served=None if reuse_plan is None else served_records(reuse_plan),
+                served=(
+                    None
+                    if reuse_plan is None
+                    else writer_records(
+                        reuse_plan,
+                        self._reuse_content_reads.get(request_info.request_id, {}),
+                    )
+                ),
+                content_nodes=() if reuse_plan is None else set(reuse_plan.content),
             )
         return {
             "flat_outputs": flat_outputs,
@@ -1873,14 +1975,24 @@ class FlowmeshRuntimeManager:
             "reuse_decisions": [] if reuse_plan is None else reuse_plan.decisions,
         }
 
+    def _add_reused_outputs(
+        self, request_info: RequestInfo, plan: ReusePlan, flat_outputs: dict[str, Any]
+    ) -> None:
+        """Add a reusing job's outputs: the store's answers and its re-ran reads."""
+        for node_id in plan.outputs:
+            if node_id in plan.hits:
+                flat_outputs[node_id] = rebuilt_output(plan, node_id)
+        for node_id, values in self._reuse_read_outputs.get(
+            request_info.request_id, {}
+        ).items():
+            flat_outputs.setdefault(node_id, values)
+
     async def _reused_outputs(
         self, request_info: RequestInfo, plan: ReusePlan
     ) -> dict[str, Any]:
         """The batch result of a request the store answered in full."""
         flat_outputs: dict[str, Any] = {}
-        for node_id in plan.outputs:
-            if node_id in plan.hits:
-                flat_outputs[node_id] = rebuilt_output(plan, node_id)
+        self._add_reused_outputs(request_info, plan, flat_outputs)
         if request_info.store_records:
             await self._write_records(
                 request_info,
@@ -1888,7 +2000,10 @@ class FlowmeshRuntimeManager:
                 node_task_map={},
                 workflow_id="",
                 results={},
-                served=served_records(plan),
+                served=writer_records(
+                    plan, self._reuse_content_reads.get(request_info.request_id, {})
+                ),
+                content_nodes=set(plan.content),
             )
         self.logger.info(
             "Record reuse answered request %s from the store with no dispatch",
@@ -1909,11 +2024,13 @@ class FlowmeshRuntimeManager:
         if not _batch_reuses_as_one(request_info):
             return None
         try:
+            content_values = await self._run_unversioned_reads(request_info, schedule)
             plan, planned_graph = await asyncio.to_thread(
                 ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
                 runtime_graph=request_info.runtime_graph,
                 round_number=request_info.round_number,
                 job_id=request_info.request_id,
+                content_values=content_values,
             )
         except (ArchiveError, ValueError) as exc:
             self.logger.warning(
@@ -1923,13 +2040,125 @@ class FlowmeshRuntimeManager:
             )
             return None
         request_info.runtime_graph = planned_graph
-        hits = plan.hits
+        self._reuse_content_reads[request_info.request_id] = content_values
+        self._reuse_read_outputs[request_info.request_id] = (
+            await self._aggregate_read_outputs(request_info)
+        )
+        served = plan.served_nodes()
         schedule.worker_assignment = {
             worker: kept
             for worker, nodes in schedule.worker_assignment.items()
-            if (kept := [node for node in nodes if node not in hits])
+            if (kept := [node for node in nodes if node not in served])
         }
         return plan
+
+    async def _run_unversioned_reads(
+        self, request_info: RequestInfo, schedule: Schedule
+    ) -> dict[str, NodeRecords]:
+        """Re-run the batch's unversioned reads as their own sub-run."""
+        reads = _sub_run_reads(request_info.runtime_graph)
+        if not reads:
+            return {}
+        if await self.is_request_cancelled(request_info.request_id):
+            raise RequestCancelledError(request_info.request_id)
+        read_graph = _sub_graph(request_info.runtime_graph, reads)
+        task_spec, _, _ = await self._build_task_spec(
+            request_info, read_graph, schedule=_sub_schedule(schedule, reads)
+        )
+        self._resolve_api_credentials(request_info.member_request_ids, task_spec)
+        task_spec["metadata"]["annotations"]["custom"] = {
+            "lumilake_submit_id": uuid.uuid4().hex
+        }
+        task_yaml, _ = await asyncio.to_thread(_dump_task_spec_yaml, task_spec)
+        workflow_id, task_ids = await self._submit_workflow(task_yaml, uuid.uuid4().hex)
+        async with self._task_status_lock:
+            self._batch_workflow_id[
+                (request_info.request_id, request_info.batch_id)
+            ] = workflow_id
+        self.logger.info(
+            "Record reuse re-ran %d unversioned read(s) of job %s: %s",
+            len(reads),
+            request_info.request_id,
+            ", ".join(reads),
+        )
+        node_names = [
+            node.get("name")
+            for node in task_spec["spec"]["graph"].get("nodes", [])
+            if node.get("name")
+        ]
+        _, node_task_map = await self._resolve_task_node_maps(
+            workflow_id, task_ids, node_names
+        )
+        status = {task_id: "PENDING" for task_id in task_ids}
+        try:
+            await self._await_tasks(status, workflow_id, request_info.request_id)
+        finally:
+            self._task_workers.pop(workflow_id, None)
+            self._workflow_status_cursors.pop(workflow_id, None)
+        results: dict[str, Any] = {}
+        for task_id in task_ids:
+            node_id = next(
+                (node for node, mapped in node_task_map.items() if mapped == task_id),
+                None,
+            )
+            if node_id is None:
+                raise RuntimeError(f"unversioned read task {task_id} names no node")
+            if status[task_id] == "FAILED":
+                reason = self._task_failure_reason(task_id, node_task_map)
+                raise RuntimeError(f"unversioned read {node_id} failed{reason}")
+            results[task_id] = await self._read_task_result(task_id)
+        self._reuse_read_responses[request_info.request_id] = {
+            node_id: (results[task_id], read_graph.output_paths.get(node_id))
+            for node_id, task_id in node_task_map.items()
+            if node_id in read_graph.output_node_map
+        }
+        return _read_back_records(read_graph, node_task_map, results)
+
+    async def _aggregate_read_outputs(
+        self, request_info: RequestInfo
+    ) -> dict[str, list[str]]:
+        """Export the re-ran reads that are declared outputs."""
+        exported: dict[str, list[str]] = {}
+        responses = self._reuse_read_responses.get(request_info.request_id, {})
+        for node_id, (response, path) in responses.items():
+            if not isinstance(response, dict):
+                raise RuntimeError(f"unversioned read {node_id} returned no response")
+            exported[node_id] = await self._aggregate_output_node(
+                output_op_id=node_id,
+                output_task_id="",
+                request_id=request_info.request_id,
+                items=self._resolve_output_items(
+                    response, node_id, task_type="data_retrieval"
+                ),
+                output_path=path,
+                list_lambda=False,
+                list_lambda_cardinality=False,
+            )
+        return exported
+
+    async def _read_task_result(self, task_id: str) -> Any:
+        """One finished task's raw response as plain data."""
+        response = await _retry_transient_read(
+            partial(self.fm.results.retrieve, task_id), f"task {task_id}"
+        )
+        if isinstance(response, BaseModel):
+            return response.model_dump(mode="json")
+        return response
+
+    async def _await_tasks(
+        self, status: dict[str, str], workflow_id: str, request_id: str
+    ) -> None:
+        """Poll one sub-run's tasks until every one is terminal."""
+        poll_interval = envs.LUMILAKE_POLL_INTERVAL_SECONDS
+        timeout = envs.LUMILAKE_POLL_TIMEOUT_SECONDS
+        start = time.time()
+        while (elapsed := time.time() - start) < timeout:
+            if await self.is_request_cancelled(request_id):
+                raise RequestCancelledError(request_id)
+            if await self.update_task_status(status, workflow_id):
+                return
+            await asyncio.sleep(poll_interval)
+        raise RuntimeError(f"unversioned read timed out after {elapsed:.0f}s")
 
     async def _write_records(
         self,
@@ -1940,6 +2169,7 @@ class FlowmeshRuntimeManager:
         workflow_id: str,
         results: Mapping[str, Any],
         served: Mapping[str, NodeRecords] | None = None,
+        content_nodes: Collection[str] = (),
     ) -> None:
         """Write this batch's records once; an archive or keying error is
         logged and the job continues."""
@@ -1963,6 +2193,7 @@ class FlowmeshRuntimeManager:
                 member_rounds=request_info.member_rounds,
                 node_owners=request_info.task_owner_members,
                 served=served,
+                content_nodes=content_nodes,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(

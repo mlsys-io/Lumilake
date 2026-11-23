@@ -16,6 +16,7 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ColumnPlanEntry,
     PythonData,
+    parse_data_spec,
 )
 from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import items_column
@@ -35,6 +36,8 @@ from lumilake_server.runtime.record_writer import (
     NodeRecords,
     RecordInput,
     RecordPlan,
+    _decoded,
+    content_value,
     input_nodes,
     input_values,
     key_path,
@@ -53,8 +56,20 @@ _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"}
 """Task types whose stored value a served op carries whole; an api, diffusion
 or fetch task archives its value as an artifact instead."""
 
-_SERVED_OUTPUT_PATHS = frozenset({None, "items.output"})
-"""Output paths whose archived value is one stored value per record in order."""
+
+@dataclass(frozen=True)
+class OutputShape:
+    """How an output node archives its records."""
+
+    path: str | None = None
+    """The stored value's own field to archive, when the output names one."""
+    whole_list: bool = False
+
+    def archived(self, values: Sequence[Any]) -> list[str]:
+        selected = [_value_at_path(value, self.path) for value in values]
+        if self.whole_list:
+            return [_output_text(selected)]
+        return [_output_text(value) for value in selected]
 
 
 class OpDecision(BaseModel):
@@ -76,6 +91,19 @@ class RecordDecision(OpDecision):
     that own it."""
 
 
+class ContentRecords(BaseModel):
+    """One unversioned read this plan re-ran, as its consumers read it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keyed: bool = False
+    values: list[Any] = Field(default_factory=list)
+    keys: list[str | None] = Field(default_factory=list)
+
+    def value_at(self, position: int) -> Any:
+        return self.values[position] if self.keyed else self.values
+
+
 class ReusePlan(BaseModel):
     """One reusing job's plan: what the store answers and every decision."""
 
@@ -91,6 +119,18 @@ class ReusePlan(BaseModel):
     """Node id -> the record-key path it plans with, so a dispatched op keeps
     the key it inherited from a served input even after that input left the
     graph."""
+    content: dict[str, ContentRecords] = Field(default_factory=dict)
+    """Node id -> the records of an unversioned read the plan re-ran. Such a
+    read never hits; its consumers name its values by value."""
+    content_served: set[str] = Field(default_factory=set)
+    """The re-ran reads whose every reader takes their values, so the read
+    leaves the dispatched graph. A read another reader needs stays in it."""
+    output_shapes: dict[str, OutputShape] = Field(default_factory=dict)
+    """Node id -> how its archived output reads its stored values, for every
+    output node the plan serves."""
+
+    def served_nodes(self) -> set[str]:
+        return {*self.hits, *self.content_served}
 
 
 @dataclass(frozen=True)
@@ -109,14 +149,20 @@ class ReusePlanner:
         self.logger = logger
 
     def plan(
-        self, *, runtime_graph: RuntimeGraph, round_number: int, job_id: str
+        self,
+        *,
+        runtime_graph: RuntimeGraph,
+        round_number: int,
+        job_id: str,
+        content_values: Mapping[str, NodeRecords] | None = None,
     ) -> tuple[ReusePlan, RuntimeGraph]:
-        """Walk the graph in topological order and decide every op, returning
-        the plan and the graph to dispatch in its place."""
+        """Decide every op in topological order."""
         names = logical_names(runtime_graph)
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
         misses: set[str] = set()
         plans: dict[str, RecordPlan] = {}
+        content = {} if content_values is None else content_values
+        content_keys = set(content)
         for node_id in runtime_graph.topological_order():
             plans[node_id] = RecordPlan(
                 op=runtime_graph.nodes[node_id],
@@ -127,7 +173,10 @@ class ReusePlanner:
             plan = plans[node_id]
             if plan.key_path is not None:
                 decision.key_paths[node_id] = plan.key_path
-            inputs = _planner_inputs(plan, decision)
+            if node_id in content_keys:
+                self._serve_content(decision, plan, content[node_id], runtime_graph)
+                continue
+            inputs = _planner_inputs(plan, decision, plans, content)
             records = _record_keys(plan, inputs)
             reason, hit = self._decide(
                 plan,
@@ -154,13 +203,22 @@ class ReusePlanner:
             if hit is None:
                 misses.add(node_id)
                 continue
-            unserved = _unserved_reader_reason(runtime_graph, plan.op, hit)
+            unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
             if unserved is not None:
                 decision.decisions[-1] = decision.decisions[-1].model_copy(
                     update={"decision": "miss", "reason": unserved}
                 )
                 misses.add(node_id)
                 continue
+            if node_id in runtime_graph.output_node_map:
+                shape = output_shape(plan, runtime_graph.output_paths.get(node_id))
+                if shape is None or output_runs(shape, hit):
+                    decision.decisions[-1] = decision.decisions[-1].model_copy(
+                        update={"decision": "miss", "reason": "value not servable"}
+                    )
+                    misses.add(node_id)
+                    continue
+                decision.output_shapes[node_id] = shape
             decision.hits[node_id] = hit
         self.logger.info(
             "Record reuse plan for job %s: %d hit op(s), %d miss op(s)",
@@ -169,6 +227,38 @@ class ReusePlanner:
             len(decision.decisions) - len(decision.hits),
         )
         return decision, _without_hits(runtime_graph, decision)
+
+    def _serve_content(
+        self,
+        decision: ReusePlan,
+        plan: RecordPlan,
+        records: NodeRecords,
+        runtime_graph: RuntimeGraph,
+    ) -> None:
+        """Record one unversioned read this plan re-ran."""
+        decision.decisions.append(
+            RecordDecision(
+                op=plan.op_name,
+                node=plan.op.node_id,
+                decision="miss",
+                reason="unversioned upstream",
+                records=len(records.values) if records.keyed else 1,
+            )
+        )
+        decision.content[plan.op.node_id] = ContentRecords(
+            keyed=records.keyed,
+            values=records.values.copy(),
+            keys=(
+                [
+                    _key_at(records.keys, position)
+                    for position in range(len(records.values))
+                ]
+                if records.keyed
+                else []
+            ),
+        )
+        if _content_servable(runtime_graph, decision, plan.op.node_id):
+            decision.content_served.add(plan.op.node_id)
 
     def _decide(
         self,
@@ -184,16 +274,12 @@ class ReusePlanner:
         node_id: str,
     ) -> tuple[str | None, list[RecordEntry] | None]:
         """One op's ``(first miss reason, stored entries)``."""
+        if reads_unversioned(plan.op):
+            return "unversioned upstream", None
         if plan.op.task_type not in _SERVED_TASKS:
-            return "value not servable", None
-        if node_id in runtime_graph.output_node_map and not _servable_output(
-            runtime_graph, plan, node_id
-        ):
             return "value not servable", None
         if any(node in misses for node in input_nodes(plan)):
             return "upstream miss", None
-        if reads_unversioned(plan):
-            return "unversioned upstream", None
         if records is None:
             return "unkeyed row", None
         named = [item.named for item in inputs]
@@ -227,12 +313,15 @@ class ReusePlanner:
 
 
 def rebuilt_output(plan: ReusePlan, node_id: str) -> list[str]:
-    """One hit output node's archived values, emitted as the aggregator emits
-    them: a string as itself, any other value as its JSON text."""
+    """One hit output's archived values: a string as itself, any other as JSON text."""
     entries = plan.hits[node_id]
-    if entries[0].address.record is None:
-        return [_output_text(entries[0].value)]
-    return [_output_text(entry.value) for entry in entries]
+    shape = plan.output_shapes.get(node_id, OutputShape())
+    if entries[0].address.record is not None:
+        return shape.archived([entry.value for entry in entries])
+    value = entries[0].value
+    if not isinstance(value, list):
+        return shape.archived([value])
+    return shape.archived(value)
 
 
 def _output_text(value: Any) -> str:
@@ -262,60 +351,210 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
     return served
 
 
-def _servable_output(
-    runtime_graph: RuntimeGraph, plan: RecordPlan, node_id: str
-) -> bool:
-    """Whether a hit at an output node rebuilds that node's archived value: only
-    a keyed row op or a list-mode step, at a path a stored value names."""
-    if plan.op.task_type not in _SERVED_TASKS:
-        return False
-    path = runtime_graph.output_paths.get(node_id)
-    if path not in _SERVED_OUTPUT_PATHS:
-        return False
-    return path is None if plan.keyed else _list_mode(plan.op)
+def writer_records(
+    plan: ReusePlan, content_values: Mapping[str, NodeRecords]
+) -> dict[str, NodeRecords]:
+    """The records a reusing job hands its writer: re-ran reads and every hit."""
+    return {**content_values, **served_records(plan)}
 
 
-def _list_mode(op: RuntimeOp) -> bool:
-    """Whether the op runs its whole input as one list-mode python step."""
-    spec = op.data_spec
-    return (
-        op.task_type == PYTHON_TASK_TYPE
-        and isinstance(spec, PythonData)
-        and spec.mode == "list"
+_PROMPT_TASKS = frozenset({"inference"})
+"""Task types whose output items carry the per-row prompt a history rebuilds
+from; a stored value holds the output text alone."""
+
+
+def output_shape(plan: RecordPlan, path: str | None) -> OutputShape | None:
+    """How a hit output archives its records; ``None`` if no stored value holds it."""
+    if plan.op.task_type in _PROMPT_TASKS:
+        return None
+    spec = plan.op.data_spec
+    whole_list = isinstance(spec, PythonData) and spec.mode == "list" and not plan.keyed
+    if path is None or path == "items" or path == "":
+        return OutputShape(whole_list=whole_list)
+    field = _stored_path(path)
+    if field is None:
+        return None
+    return OutputShape(path=field, whole_list=whole_list)
+
+
+def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
+    """Whether a hit output runs: it reads a field or list no stored value holds."""
+    if shape.whole_list:
+        return entries[0].address.record is not None or not isinstance(
+            entries[0].value, list
+        )
+    return any(
+        _value_at_path(value, shape.path) is _UNSET for value in _hit_values(entries)
     )
 
 
 def _rewritten(
     op: RuntimeOp, plan: ReusePlan, runtime_graph: RuntimeGraph
 ) -> RuntimeOp:
-    """An op whose hit inputs read their stored values: the entry keeps its
-    kind, node and path, so the spec digest does not move."""
-    served = [node for node in op.dependencies if node in plan.hits]
-    if not served:
+    """An op reading its served inputs' values, each entry gaining values."""
+    if not any(_served_node(plan, node) for node in op.dependencies):
         return op
-    if op.task_type != PYTHON_TASK_TYPE:
-        raise ValueError(f"op '{op.node_id}' cannot read a served record")
     spec = op.data_spec
-    if not isinstance(spec, PythonData):
-        raise ValueError(f"op '{op.node_id}' cannot read a served record")
-    entries = spec.plan
-    if not entries:
-        raise ValueError(f"python step '{op.node_id}' carries no column plan")
+    if isinstance(spec, PythonData) and spec.plan:
+        return _rewritten_plan(op, spec, plan, runtime_graph)
+    if _reads_literal_lists(op):
+        literals = _replace_with_literals(data_spec_dict(op), plan)
+        return replace(op, data_spec=parse_data_spec(op.task_type, literals))
+    raise ValueError(f"op '{op.node_id}' cannot read a served record")
+
+
+def _rewritten_plan(
+    op: RuntimeOp,
+    spec: PythonData,
+    plan: ReusePlan,
+    runtime_graph: RuntimeGraph,
+) -> RuntimeOp:
+    """A python step whose plan entries read the values of served inputs."""
     rewritten: list[ColumnPlanEntry] = []
-    for entry in entries:
+    for entry in spec.plan:
         node = entry.node
-        if node is None or node not in plan.hits:
+        if node is None or not _served_node(plan, node):
             rewritten.append(entry)
             continue
-        column = served_column(
-            plan.hits[node],
-            entry,
-            _wrapped(runtime_graph.nodes[node]),
-        )
+        column = _plan_column(plan, node, entry, runtime_graph)
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
         rewritten.append(entry.model_copy(update={"values": column}))
     return replace(op, data_spec=spec.model_copy(update={"plan": rewritten}))
+
+
+def _reads_literal_lists(op: RuntimeOp) -> bool:
+    """Whether the op reads its rows in positions a literal list fills."""
+    return (
+        op.task_type != PYTHON_TASK_TYPE and _list_refs(data_spec_dict(op)) is not None
+    )
+
+
+def _list_refs(value: Any) -> list[Mapping[str, Any]] | None:
+    """Every reference a literal list can replace, or ``None`` for one it cannot."""
+    refs: list[Mapping[str, Any]] = []
+
+    def walk(item: Any) -> bool:
+        if isinstance(item, Mapping):
+            node = item.get("node")
+            if isinstance(node, str) and "path" in item:
+                if item.get("expr") is not None:
+                    return False
+                refs.append(item)
+                return True
+            return all(walk(nested) for nested in item.values())
+        if isinstance(item, list):
+            return all(walk(nested) for nested in item)
+        return True
+
+    return refs if walk(value) else None
+
+
+def _replace_with_literals(value: Any, plan: ReusePlan) -> Any:
+    """One data-spec side with every served reference replaced by its values."""
+    if isinstance(value, Mapping):
+        node = value.get("node")
+        if isinstance(node, str) and _served_node(plan, node):
+            items = _model_entry_values(plan.hits[node], value.get("path"))
+            if any(item is _UNSET for item in items):
+                raise ValueError("op reads a field the stored value does not hold")
+            if value.get("type") == "list":
+                return {**value, "items": items}
+            if "label" in value:
+                return {
+                    "label": value["label"],
+                    "data": {"type": "list", "items": items},
+                }
+            return {"type": "list", "items": items}
+        return {key: _replace_with_literals(item, plan) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_with_literals(item, plan) for item in value]
+    return value
+
+
+_ENVELOPES = ("value.items.value", "value.items.output", "items.value", "items.output")
+
+
+def _model_entry_values(entries: Sequence[RecordEntry], path: Any) -> list[Any]:
+    """Every value a model op reads from a hit at ``path``, in record order."""
+    field = _stored_path(path)
+    if field is None:
+        return [_UNSET]
+    return [
+        _value_at_path(value, field, decode=False) for value in _hit_values(entries)
+    ]
+
+
+def _stored_path(path: Any) -> str | None:
+    """The field an envelope path selects inside a stored value, or ``None``."""
+    if not isinstance(path, str) or not path:
+        return None
+    for prefix in _ENVELOPES:
+        if path == prefix:
+            return ""
+        if path.startswith(prefix + "."):
+            return path[len(prefix) + 1 :]
+    return None
+
+
+def _served_node(plan: ReusePlan, node: Any) -> bool:
+    """Whether one of the plan's served nodes answers ``node``."""
+    return isinstance(node, str) and (node in plan.hits or node in plan.content_served)
+
+
+def _content_servable(
+    runtime_graph: RuntimeGraph, plan: ReusePlan, node_id: str
+) -> bool:
+    """Whether every reader of a re-ran read takes its values."""
+    readers = [
+        reader
+        for reader in runtime_graph.nodes.values()
+        if node_id in reader.dependencies
+    ]
+    if not readers:
+        return True
+    return all(_reader_takes_content(plan, node_id, reader) for reader in readers)
+
+
+def _reader_takes_content(plan: ReusePlan, node_id: str, reader: RuntimeOp) -> bool:
+    """Whether one reader can read a re-ran read's values in place of its node."""
+    if reader.task_type != PYTHON_TASK_TYPE:
+        return False
+    spec = reader.data_spec
+    if not isinstance(spec, PythonData):
+        return False
+    if not spec.plan:
+        return False
+    for entry in spec.plan:
+        if entry.node != node_id:
+            continue
+        column = _content_column(plan, node_id, entry)
+        if not column or any(value is _UNSET for value in column):
+            return False
+    return True
+
+
+def _content_column(
+    plan: ReusePlan, node: str, entry: ColumnPlanEntry
+) -> list[Any] | None:
+    """The column a python reader takes from a re-ran read."""
+    try:
+        return items_column(
+            entry.model_dump(exclude_none=True, exclude={"values"}),
+            plan.content[node].values,
+            _as_is,
+            "served",
+        )
+    except ValueError:
+        return None
+
+
+def _hit_values(entries: Sequence[RecordEntry]) -> list[Any]:
+    """Every stored value one hit answers with, one per record or per item."""
+    if entries[0].address.record is not None:
+        return [entry.value for entry in entries]
+    value = entries[0].value
+    return value if isinstance(value, list) else [value]
 
 
 _WRAPPED_TASKS = frozenset({"python", "inference"})
@@ -327,6 +566,22 @@ def _wrapped(op: RuntimeOp) -> bool:
     """Whether the producer's items carry their value under ``output``, so a
     served item is the stored value wrapped again."""
     return op.task_type in _WRAPPED_TASKS
+
+
+def _plan_column(
+    plan: ReusePlan,
+    node: str,
+    entry: ColumnPlanEntry,
+    runtime_graph: RuntimeGraph,
+) -> list[Any] | None:
+    """An answered input's column for a python step, built as the worker builds it."""
+    if node in plan.content:
+        return _content_column(plan, node, entry)
+    return served_column(
+        plan.hits[node],
+        entry,
+        wrapped=_wrapped(runtime_graph.nodes[node]),
+    )
 
 
 def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
@@ -342,12 +597,7 @@ def served_column(
     entry: ColumnPlanEntry,
     wrapped: bool,
 ) -> list[Any] | None:
-    """The column a python step reads from a hit producer, built as the worker
-    builds it, or ``None`` when the stored form cannot rebuild those items.
-
-    A producer whose items carry their value under ``output`` stores each value
-    without it, so the items a live read sees are the stored values wrapped
-    again."""
+    """A hit producer's column for a python step; ``None`` if it cannot be rebuilt."""
     if entry.grouped:
         return None
     items = [
@@ -370,12 +620,40 @@ def _as_is(value: Any) -> Any:
     return value
 
 
+def _key_at(keys: Sequence[str | None] | None, position: int) -> str | None:
+    """The key of the record at ``position``, or ``None`` when it has none."""
+    if keys is None or position >= len(keys):
+        return None
+    return keys[position]
+
+
+_UNSET = object()
+
+
+def _value_at_path(value: Any, path: Any, decode: bool = True) -> Any:
+    """One stored value selected at ``path``, or ``_UNSET`` when a part is missing."""
+    if not isinstance(path, str) or not path:
+        return value
+    current = value
+    for part in path.split("."):
+        if isinstance(current, str):
+            if not decode:
+                return _UNSET
+            try:
+                current = json.loads(current)
+            except ValueError:
+                return _UNSET
+        if not isinstance(current, dict) or part not in current:
+            return _UNSET
+        current = current[part]
+    return current
+
+
 def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
-    """The graph to dispatch: every hit node gone, and every miss reading its
-    served inputs' stored values."""
+    """The graph to dispatch, with every served node reading its value instead."""
     nodes: dict[str, RuntimeOp] = {}
     for node_id in runtime_graph.node_order:
-        if node_id in plan.hits:
+        if node_id in plan.served_nodes():
             continue
         nodes[node_id] = _rewritten(runtime_graph.nodes[node_id], plan, runtime_graph)
     return RuntimeGraph(
@@ -419,13 +697,21 @@ def _dispatch_record_keys(
     return keys
 
 
-def _planner_inputs(plan: RecordPlan, decision: ReusePlan) -> list[_Input]:
+def _planner_inputs(
+    plan: RecordPlan,
+    decision: ReusePlan,
+    plans: Mapping[str, RecordPlan],
+    content: Mapping[str, NodeRecords],
+) -> list[_Input]:
     """The inputs one op's records read, named the way the writer names them."""
     inputs: list[_Input] = []
     for node in input_nodes(plan):
         hit = decision.hits.get(node)
         if hit is not None:
             inputs.append(_served_input(hit))
+            continue
+        if node in decision.content:
+            inputs.append(_content_input(decision.content[node]))
             continue
         values = input_values(plan.op, node)
         inputs.append(
@@ -455,6 +741,23 @@ def _served_input(records: Sequence[RecordEntry]) -> _Input:
     )
 
 
+def _content_input(records: ContentRecords) -> _Input:
+    """An unversioned read the plan re-ran, named by the value it returned."""
+    positions = range(len(records.values)) if records.keyed else range(1)
+    named: list[tuple[str, str] | None] = []
+    for position in positions:
+        value = content_value(records.value_at(position))
+        named.append((digest_of({"value": value}), digest_of(value)))
+    return _Input(
+        named=RecordInput(keyed=records.keyed, records=named),
+        keys=(
+            [records.keys[position] for position in positions]
+            if records.keyed
+            else [None]
+        ),
+    )
+
+
 def _literal_input(values: Sequence[Any], key_path: str | None) -> _Input:
     """One literal rows list, named per value and keyed by the op's key path."""
     return _Input(
@@ -469,11 +772,7 @@ def _literal_input(values: Sequence[Any], key_path: str | None) -> _Input:
 
 
 def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None] | None:
-    """Every record an op has before it ran: one per distinct key of a keyed
-    input, or one whole-op record.
-
-    ``None`` when a keyed op reads a row without a key, or none of its inputs
-    carries one; an input with no key beside one with keys is positional."""
+    """Every record an op has before it ran, or ``None`` when a keyed op lacks one."""
     if not plan.keyed:
         return [None]
     keys: list[str | None] = []
@@ -528,28 +827,49 @@ def _counted(
 
 
 def _unserved_reader_reason(
-    runtime_graph: RuntimeGraph, op: RuntimeOp, hit: Sequence[RecordEntry]
+    runtime_graph: RuntimeGraph,
+    plan: ReusePlan,
+    op: RuntimeOp,
+    hit: Sequence[RecordEntry],
 ) -> str | None:
-    """Why a hit is not served: a reader that is not a python step reads it as a
-    non-literal input, or a python step cannot rebuild a declared column."""
+    """The reason a hit stays dispatched, or ``None`` when it is served."""
     for reader in runtime_graph.nodes.values():
         if op.node_id not in reader.dependencies:
             continue
         if reader.task_type != PYTHON_TASK_TYPE:
-            return "read by a non-literal op"
+            if not _reads_literal_ref(reader, op.node_id, hit):
+                return "read by a non-literal op"
+            continue
         spec = reader.data_spec
-        if not isinstance(spec, PythonData):
+        if not isinstance(spec, PythonData) or not spec.plan:
             return "value not servable"
-        entries = spec.plan
-        if not entries:
-            return "value not servable"
-        for entry in entries:
-            if (
-                entry.node == op.node_id
-                and served_column(hit, entry, _wrapped(op)) is None
-            ):
+        for entry in spec.plan:
+            if entry.node != op.node_id:
+                continue
+            if served_column(hit, entry, _wrapped(op)) is None:
                 return "value not servable"
     return None
+
+
+def _reads_literal_ref(
+    op: RuntimeOp, node_id: str, entries: Sequence[RecordEntry]
+) -> bool:
+    """Whether every reference to ``node_id`` names a scalar the store holds."""
+    refs = _list_refs(data_spec_dict(op))
+    if refs is None:
+        return False
+    to_node = [ref for ref in refs if ref.get("node") == node_id]
+    if not to_node:
+        return False
+    for ref in to_node:
+        values = _model_entry_values(entries, ref.get("path"))
+        if any(value is _UNSET for value in values):
+            return False
+        if _stored_path(ref.get("path")) == "" and any(
+            isinstance(_decoded(value), list) for value in values
+        ):
+            return False
+    return True
 
 
 def _entry_miss_reason(entry: RecordEntry | None) -> str | None:

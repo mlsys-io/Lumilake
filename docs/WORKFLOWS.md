@@ -76,9 +76,15 @@ computed; without `store: true` the submit is refused with 422. An op is kept
 only when every one of its records is stored: one missing record reruns the
 whole op, and its consumers with it.
 
-Only python, chat, classification and embedding ops are served, and an output
-only from a keyed row op or a list-mode Lambda; a dynamic round's outputs always
-rerun.
+A python step, chat, classification or embedding op is kept when the store
+holds every one of its records. A kept op's consumers read its stored values,
+and a request the store answers in full submits nothing. A kept output is
+rebuilt from those records, and a chat, completion or dynamic round output runs
+instead.
+
+A retrieval re-runs, so its consumers hit while its rows are unchanged; a
+retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a
+model op that reads a retrieval keeps that retrieval dispatched.
 
 A job records one decision per op, `hit` or `miss` with the first reason it
 missed; see [`docs/API.md`](API.md).

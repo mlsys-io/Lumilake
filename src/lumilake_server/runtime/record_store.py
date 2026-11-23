@@ -262,7 +262,8 @@ class EffectVersions(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     unversioned: bool = False
-    """Reads a source with no recorded snapshot upstream."""
+    """Reads its source live, so its own record names a production unique to the
+    run that made it; its consumers name the value it returned instead."""
 
 
 class RecordSource(BaseModel):
