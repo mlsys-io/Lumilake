@@ -9,6 +9,7 @@ from sqlparse.tokens import Keyword
 from lumilake import envs
 from lumilake_server.data_specs import (
     DataSpecModel,
+    ListData,
     RetrievalData,
     RetrievalParam,
     S3ProfileData,
@@ -56,33 +57,27 @@ _RuntimeProfileSamplers = _RuntimeProfileSamplerRegistry()
 
 def _inline_single_value_list_params(
     template: str,
-    params: list[Any],
-) -> tuple[str, list[Any]]:
+    params: list[RetrievalParam],
+) -> tuple[str, list[RetrievalParam]]:
     """Render single-element list params directly into the SQL/S3 template."""
     rendered = template
-    remaining: list[Any] = []
+    remaining: list[RetrievalParam] = []
     for param in params:
-        if not isinstance(param, dict):
-            remaining.append(param)
-            continue
-        label = param.get("label")
-        data = param.get("data")
+        label = param.label
+        data = param.data
         if (
-            not isinstance(label, str)
-            or not isinstance(data, dict)
-            or data.get("type") != "list"
+            label is None
+            or data is None
+            or not isinstance(data.items, list)
+            or len(data.items) != 1
         ):
-            remaining.append(param)
-            continue
-        items = data.get("items")
-        if not isinstance(items, list) or len(items) != 1:
             remaining.append(param)
             continue
         placeholder = "{" + label + "}"
         if placeholder not in rendered:
             remaining.append(param)
             continue
-        value = str(items[0]).replace("'", "''")
+        value = str(data.items[0]).replace("'", "''")
         rendered = rendered.replace(placeholder, value)
     return rendered, remaining
 
@@ -169,7 +164,7 @@ class _RetrievalBuilder(_LLMBuilder):
         # before the spec reaches the worker. Non-InputOp node refs
         # (real SQL/retrieval upstreams) keep their node pointer and
         # become genuine task dependencies.
-        resolved_params: list[Any] = []
+        resolved_params: list[RetrievalParam] = []
         param_row_counts: dict[str, int] = {}
         for param in params:
             resolved = param
@@ -201,10 +196,9 @@ class _RetrievalBuilder(_LLMBuilder):
                             "that exposes the target field, or drop the "
                             "``path`` for scalar inputs."
                         )
-                    literal_param: dict[str, Any] = {
-                        "label": param.label,
-                        "data": {"type": "list", "items": list(values)},
-                    }
+                    literal_param = RetrievalParam(
+                        label=param.label, data=ListData(items=list(values))
+                    )
                     if len(values) > 1:
                         param_row_counts[str(param.label)] = len(values)
                     resolved_params.append(literal_param)
@@ -233,7 +227,7 @@ class _RetrievalBuilder(_LLMBuilder):
                 if param.node not in seen:
                     seen.add(param.node)
                     dependencies.append(param.node)
-            resolved_params.append(resolved.model_dump(exclude_none=True))
+            resolved_params.append(resolved)
 
         if len(set(param_row_counts.values())) > 1:
             raise ValueError(
