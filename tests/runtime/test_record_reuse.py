@@ -345,7 +345,7 @@ async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
     assert isinstance(consumer.data_spec, PythonData)
     (entry,), (hit,) = consumer.data_spec.plan, plan.hits.values()
     staged = ColumnPlanEntry(kind="stage", node="x")
-    assert entry.values == served_column(hit, staged, True) == ["ab", 3]
+    assert entry.values == served_column(hit, staged, "output") == ["ab", 3]
     run = PythonData(plan=[entry], code="", fn_name="", timeout_s=60)
     blob = python_step.runtime_blob()
     assert "inputs" not in python_step.flowmesh_spec("Consume", run, {blob.key: blob})
@@ -356,13 +356,13 @@ def test_a_served_output_item_is_wrapped_as_a_live_read_sees_it() -> None:
     staged, row = ColumnPlanEntry(kind="stage", node="x"), {"output": 1, "x": 2}
     entry = [_stored(row, "Final", "a")]
     output = staged.model_copy(update={"path": "output"})
-    assert served_column(entry, output, True) == [row]
-    assert served_column(entry, staged, True) == [row]
+    assert served_column(entry, output, "output") == [row]
+    assert served_column(entry, staged, "output") == [row]
     flat = [_stored([["x", "y"]], "Expand")]
     flatten = staged.model_copy(update={"flatten": True})
-    assert served_column(flat, flatten, True) == ["x", "y"]
+    assert served_column(flat, flatten, "output") == ["x", "y"]
     scored, score = [_stored({"index": 0, "score": 0.5}, "E", "a")], {"path": "score"}
-    assert served_column(scored, staged.model_copy(update=score), False) == [0.5]
+    assert served_column(scored, staged.model_copy(update=score), None) == [0.5]
 
 
 @pytest.mark.asyncio

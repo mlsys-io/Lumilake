@@ -333,6 +333,19 @@ async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
     assert [e.address.record for e in found if e.address.op == "P"] == ["a", "b"]
 
 
+def test_an_unlisted_workflow_input_keys_from_any_position() -> None:
+    """A workflow input the keyed op does not list still keys it, read last."""
+    payload = _payload()
+    payload["ops"][0] = {**payload["ops"][0], "key": {"node": "Cases", "path": "id"}}
+    payload["inputs"]["Cases"] = ["c1"]
+    graph = next(iter(parse_yaml_payload(payload).values()))["graph"]
+    last = next(k for k, v in graph.items() if v.get("_declared_id") == "Cases")
+    reordered = {k: v for k, v in graph.items() if k != last} | {last: graph[last]}
+    built = Graph.from_json(reordered).as_dict()
+    mark = next(op for op in built.values() if op.declared_id == "Mark")
+    assert mark.key is not None and mark.key.node == last
+
+
 def test_a_key_on_an_op_it_does_not_read_is_refused() -> None:
     """A key reads its declared op's rows, so naming an unread op is refused."""
     payload = _payload()
