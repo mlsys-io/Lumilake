@@ -1148,12 +1148,17 @@ def _attach_records(
             record = source.identity_at(source_position, round_number)
             if record is not None:
                 found.append(record)
-        value_position = _attach_value_position(source, values, source_position)
-        if values is None or value_position is None:
+        if values is None:
             continue
-        record = values.identity_at(value_position, round_number)
-        if record is not None:
-            found.append(record)
+        if source is not None and not source.keyed and values.keyed:
+            positions: Sequence[int] = range(len(values.values))
+        else:
+            value_position = _attach_value_position(source, values, source_position)
+            positions = [] if value_position is None else [value_position]
+        for at in positions:
+            record = values.identity_at(at, round_number)
+            if record is not None:
+                found.append(record)
     return found
 
 
