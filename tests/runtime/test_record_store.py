@@ -423,6 +423,22 @@ def _hosted(seed: int) -> Any:
 
 _HOSTED_ROWS = [{"json": {"choices": [{"message": {"content": t}}]}} for t in "LR"]
 _HOSTED = {"task_type": "api", "items": [{"rows": _HOSTED_ROWS}]}
+_LOCAL = {"task_type": "inference", "items": [{"output": ["LEFT", "RIGHT"]}]}
+
+
+@pytest.mark.asyncio
+async def test_a_local_rowwise_chat_stores_one_record_per_row() -> None:
+    """A local rowwise chat's grouped item stores one record per row under its key."""
+    graph = _paths_graph(task_type="inference", model_spec={}, inference_spec={})
+    mark = _node_id(graph, "Mark")
+    graph.record_keys[_node_id(graph, "AskX")] = RecordKey(node=mark, path="id")
+    marks = {"Mark": [{"id": "a"}, {"id": "b"}], "AskX": ["LEFT", "RIGHT"]}
+    storage, _ = await _write(graph, marks, raw={"AskX": _LOCAL})
+    chat = _declared_name(graph, "AskX")
+    assert [k for k in _indexed(storage, "req-1") if k[0] == chat] == [
+        (chat, "a"),
+        (chat, "b"),
+    ]
 
 
 @pytest.mark.asyncio
