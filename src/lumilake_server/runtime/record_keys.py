@@ -5,9 +5,10 @@ and a composite read their key through `key_text`.
 """
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
+from lumilake_server.data_specs import JoinDescription
 from lumilake_server.runtime.record_store import is_marker, key_text
 
 CHILD_KEY_SEPARATOR = "\x1f"
@@ -49,27 +50,11 @@ def child_key(parent_key: str, child: int) -> str:
     return f"{parent_key}{CHILD_KEY_SEPARATOR}{child}"
 
 
-def join_key_paths(data_spec: Mapping[str, Any]) -> list[str]:
+def join_key_paths(join: JoinDescription) -> list[str]:
     """The paths a join's rows are keyed by: its ``by``, one path or a composite."""
-    return _path_list(_join_spec(data_spec).get("by"))
+    return list(join.by)
 
 
-def join_row_key_paths(data_spec: Mapping[str, Any]) -> list[str]:
-    """The paths that keep a broadcast join's rows apart: its ``row_key``, or
-    nothing when it emits one row per ``by`` value."""
-    return _path_list(_join_spec(data_spec).get("row_key"))
-
-
-def _join_spec(data_spec: Mapping[str, Any]) -> Mapping[str, Any]:
-    """The join description a python step's spec carries."""
-    join = data_spec.get("join")
-    return join if isinstance(join, Mapping) else data_spec
-
-
-def _path_list(paths: Any) -> list[str]:
-    """One path or a list of them, as a list of the paths it names."""
-    if isinstance(paths, str):
-        return [paths]
-    if isinstance(paths, list):
-        return [path for path in paths if isinstance(path, str)]
-    return []
+def join_row_key_paths(join: JoinDescription) -> list[str]:
+    """The paths that keep a broadcast join's rows apart, or nothing without one."""
+    return list(join.row_key or [])

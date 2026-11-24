@@ -557,10 +557,7 @@ stores unwrapped."""
 
 
 def _wrapped(op: RuntimeOp) -> str | None:
-    """How a producer's items carry their value for a served read: ``output``
-    for an item that holds the value alone, ``text`` for a row step's item,
-    which also holds the typed value under ``value``, or ``None`` with no
-    wrapping."""
+    """How a producer's items carry their value: ``output``, ``text`` or none."""
     if _typed_row_step(op):
         return "text"
     return "output" if op.task_type in _WRAPPED_TASKS else None
@@ -823,9 +820,7 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
 
 
 def _seeded_records(plan: RecordPlan, decision: ReusePlan) -> dict[str, NodeRecords]:
-    """The planned records a node-bound seed column reads, shaped as the writer
-    reads a finished row step's items: the seed node is a python row step, so it
-    is answered or dispatched before this op decides."""
+    """The planned records a node-bound seed column reads, as row-step items."""
     seeds = data_spec_dict(plan.op).get("seeds")
     if not isinstance(seeds, Mapping):
         return {}

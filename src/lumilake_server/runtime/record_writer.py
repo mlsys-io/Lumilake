@@ -16,7 +16,11 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import (
+    ColumnPlanEntry,
+    JoinDescription,
+    PythonData,
+)
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import (
     child_key,
@@ -179,8 +183,8 @@ class RecordPlan:
         key_path: str | None,
         key_paths: list[str],
         row_key_paths: list[str],
-        join_inputs: Sequence[str | None] | None,
-        join_attaches: Sequence[tuple[str | None, str | None, bool]] | None,
+        join_inputs: list[str | None],
+        join_attaches: list[tuple[str | None, str | None, bool]],
         column: str | None,
         groups_keyed: bool,
         expand_source: str | None,
@@ -192,8 +196,8 @@ class RecordPlan:
         self.key_path = key_path
         self.key_paths = key_paths
         self.row_key_paths = row_key_paths
-        self.join_inputs = tuple(join_inputs or ())
-        self.join_attaches = tuple(join_attaches or ())
+        self.join_inputs = join_inputs
+        self.join_attaches = join_attaches
         self.column = column
         self.groups_keyed = groups_keyed
         self.expand_source = expand_source
@@ -837,6 +841,12 @@ def _entry_node(entries: Sequence[ColumnPlanEntry], index: int) -> str | None:
     return entries[index].node if 0 <= index < len(entries) else None
 
 
+def _join(op: RuntimeOp) -> JoinDescription | None:
+    """The join description a python step's spec carries, when it is a join."""
+    spec = op.data_spec
+    return spec.join if isinstance(spec, PythonData) else None
+
+
 def join_input_nodes(op: RuntimeOp) -> list[str | None]:
     """A join's inputs in ``JoinDescription.inputs`` order, ``None`` for a literal."""
     spec = op.data_spec
@@ -867,7 +877,7 @@ def position_inputs(
     return _position_inputs(inputs, position, keyed=keyed)
 
 
-def input_nodes(plan: RecordPlan) -> list[str]:
+def input_nodes(plan: RecordPlan) -> Sequence[str]:
     """The nodes a node reads, in its declared order."""
     return _input_nodes(plan)
 
@@ -1162,7 +1172,9 @@ def _attach_source_position(
     """The position of the source row one output row's attach came from."""
     if source is None:
         return None
-    if first_source or not source.keyed:
+    if not source.keyed:
+        return 0
+    if first_source:
         return position if position < len(source.values) else None
     return None if key is None else index.get(key)
 
@@ -1175,6 +1187,8 @@ def _attach_value_position(
     """The attach value paired with one source row, by position or among live rows."""
     if source is None or values is None or source_position is None:
         return None
+    if not source.keyed:
+        return 0
     rows = source.values
     if len(values.values) == len(rows):
         return source_position
@@ -1243,9 +1257,9 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
     ]
 
 
-def _input_nodes(plan: RecordPlan) -> list[str]:
+def _input_nodes(plan: RecordPlan) -> Sequence[str]:
     """The nodes a node reads, in its declared order."""
-    return list(plan.op.dependencies)
+    return plan.op.dependencies
 
 
 def _reads_unversioned(plan: RecordPlan) -> bool:
@@ -1350,12 +1364,13 @@ def _resolve_plans(
     plans: dict[str, RecordPlan] = {}
     for node_id in order:
         op = runtime_graph.nodes[node_id]
+        join = _join(op)
         plans[node_id] = RecordPlan(
             op=op,
             op_name=names.get(node_id, node_id),
             key_path=_key_path(runtime_graph, node_id, plans),
-            key_paths=join_key_paths(data_spec_dict(op)),
-            row_key_paths=join_row_key_paths(data_spec_dict(op)),
+            key_paths=[] if join is None else join_key_paths(join),
+            row_key_paths=[] if join is None else join_row_key_paths(join),
             join_inputs=join_input_nodes(op),
             join_attaches=join_attach_nodes(op),
             column=retrieval_key_column(op.data_spec),
@@ -1417,9 +1432,7 @@ def _key_path(
 
 
 def _one_to_one(op: RuntimeOp) -> bool:
-    """Whether the op maps each input row to exactly one output row: a
-    row-mode or parse Lambda, or a scalar model op. A list-mode or reduce op
-    consumes its whole input."""
+    """Whether the op maps each input row to exactly one output row."""
     if op.task_type == _LAMBDA_TASK_TYPE:
         return _mode_of(op) in ("row", "parse", None)
     return _mode_of(op) not in {"list", "reduce", "pairs", "regroup"}
@@ -1509,7 +1522,7 @@ def _collect_node_records(
             keyed=plan.keyed,
             values=values,
             keys=None,
-            items=list(items_of.get(node_id, [])),
+            items=items_of.get(node_id) or [],
         )
     _keyed_mode_records(runtime_graph, plans, order, items_of, produced, records)
     _inherit_marker_keys(order, plans, runtime_graph, records)

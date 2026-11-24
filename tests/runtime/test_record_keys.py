@@ -10,7 +10,14 @@ from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.record_store import RecordEntry
-from lumilake_server.runtime.record_writer import RecordWriter, read_entry, read_index
+from lumilake_server.runtime.record_writer import (
+    NodeRecords,
+    RecordWriter,
+    _attach_source_position,
+    _attach_value_position,
+    read_entry,
+    read_index,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -332,6 +339,19 @@ async def test_a_joins_first_input_is_the_one_its_columns_name_first() -> None:
     )
     assert entries["1"].input_digests[0] == label_entries["1"].digest
     assert label_entries["2"].digest not in entries["1"].input_digests
+
+
+@pytest.mark.asyncio
+async def test_an_unkeyed_attach_source_names_every_join_row() -> None:
+    """An unkeyed source names its whole-op record at every join row."""
+    source = NodeRecords(keyed=False, values=["a", "b"], keys=None)
+    values = NodeRecords(keyed=False, values=["a", "b"], keys=None)
+    positions = [
+        _attach_source_position(source, {}, position, None, False)
+        for position in range(4)
+    ]
+    assert positions == [0, 0, 0, 0]
+    assert _attach_value_position(source, values, 0) == 0
 
 
 @pytest.mark.asyncio
