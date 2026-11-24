@@ -785,18 +785,22 @@ def _inherit_input_keys(
     runtime_graph: RuntimeGraph,
     records: dict[str, NodeRecords],
 ) -> None:
-    """Every row of a 1:1 node takes its keyed input's key at the same position,
-    when the counts match: a parsed or failed row keeps its input row's address."""
+    """Fill each None key of a 1:1 node from its keyed input at the same position."""
     for node_id in order:
         node_records = records.get(node_id)
         source = _keyed_input(runtime_graph, node_id, plans)
-        inherited = None if source is None else records.get(source)
-        if node_records is None or node_records.keys is None or inherited is None:
+        if node_records is None or node_records.keys is None or source is None:
             continue
-        if inherited.keys is None or len(inherited.keys) != len(node_records.keys):
+        inherited = records.get(source)
+        if inherited is None or inherited.keys is None:
             continue
+        if len(inherited.keys) != len(node_records.keys):
+            continue
+        declared = runtime_graph.record_keys.get(node_id) is not None
         for position, key in enumerate(node_records.keys):
-            if key is None:
+            value = node_records.values[position]
+            marker = is_marker(value) or is_marker(_decoded(value))
+            if key is None and (marker or not declared):
                 node_records.keys[position] = inherited.keys[position]
 
 
