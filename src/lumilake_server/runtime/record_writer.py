@@ -10,6 +10,7 @@ from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
 from lumilake_server.data_specs import PythonData
+from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -198,10 +199,8 @@ class RecordWriter:
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
         records = _collect_node_records(
-            runtime_graph, plans, order, node_task_map, results, self.logger
+            runtime_graph, plans, order, node_task_map, results, served, self.logger
         )
-        for node_id, served_records_of_node in (served or {}).items():
-            records.setdefault(node_id, served_records_of_node)
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
@@ -746,9 +745,11 @@ def _collect_node_records(
     order: Sequence[str],
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
+    served: Mapping[str, NodeRecords] | None,
     logger: Logger,
 ) -> dict[str, NodeRecords]:
-    """Read every finished node's records in the order it produced them."""
+    """Read every finished node's records in the order it produced them, and the
+    records a reuse plan served, so a keyed node reads a served input's keys."""
     produced: dict[str, list[Any]] = {}
     raw_items: dict[str, list[Any]] = {}
     for node_id, task_id in node_task_map.items():
@@ -758,14 +759,20 @@ def _collect_node_records(
         found = _record_values(response, typed_row_step(runtime_graph.nodes[node_id]))
         produced[node_id] = [value for value, _ in found]
         raw_items[node_id] = [item for _, item in found]
-    records: dict[str, NodeRecords] = {}
+    records: dict[str, NodeRecords] = {
+        node_id: node_records
+        for node_id, node_records in (served or {}).items()
+        if node_id not in produced
+    }
     for node_id, values in produced.items():
         plan = plans[node_id]
         key_path = plan.key_path
         keys = (
             None
             if key_path is None
-            else _record_keys(runtime_graph, plan, key_path, values, produced, logger)
+            else _record_keys(
+                runtime_graph, plan, key_path, values, produced, records, logger
+            )
         )
         records[node_id] = NodeRecords(
             keyed=plan.keyed,
@@ -783,6 +790,7 @@ def _record_keys(
     key_path: str,
     values: Sequence[Any],
     produced: Mapping[str, Sequence[Any]],
+    records: Mapping[str, NodeRecords],
     logger: Logger,
 ) -> list[str | None]:
     """One key per row of one keyed node, in row order; a one-to-one op reads a
@@ -793,19 +801,33 @@ def _record_keys(
         return own
     if not _one_to_one(plan.op):
         return own
-    rows = produced.get(declared.node)
-    if rows is None:
-        rows = _declared_rows(plan, declared.path, len(values), logger)
-    if rows is None:
+    source = _declared_keys(plan, declared, len(values), produced, records, logger)
+    if source is None:
         return own
     return [
-        (
-            row_key(rows[position], declared.path)
-            if key is None and position < len(rows)
-            else key
-        )
+        source[position] if key is None and position < len(source) else key
         for position, key in enumerate(own)
     ]
+
+
+def _declared_keys(
+    plan: RecordPlan,
+    declared: RecordKey,
+    count: int,
+    produced: Mapping[str, Sequence[Any]],
+    records: Mapping[str, NodeRecords],
+    logger: Logger,
+) -> Sequence[str | None] | None:
+    """The key each row of a declared input carries: its produced rows' keys, the
+    keys a reuse plan served for it, or its literal rows' keys."""
+    rows = produced.get(declared.node)
+    if rows is not None:
+        return [row_key(row, declared.path) for row in rows]
+    served = records.get(declared.node)
+    if served is not None and served.keys is not None:
+        return served.keys
+    literal = _declared_rows(plan, declared.path, count, logger)
+    return None if literal is None else [row_key(row, declared.path) for row in literal]
 
 
 def _declared_rows(
@@ -834,18 +856,22 @@ def _inherit_input_keys(
     runtime_graph: RuntimeGraph,
     records: dict[str, NodeRecords],
 ) -> None:
-    """Every row of a 1:1 node takes its keyed input's key at the same position,
-    when the counts match: a parsed or failed row keeps its input row's address."""
+    """Fill each None key of a 1:1 node from its keyed input at the same position."""
     for node_id in order:
         node_records = records.get(node_id)
         source = _keyed_input(runtime_graph, node_id, plans)
-        inherited = None if source is None else records.get(source)
-        if node_records is None or node_records.keys is None or inherited is None:
+        if node_records is None or node_records.keys is None or source is None:
             continue
-        if inherited.keys is None or len(inherited.keys) != len(node_records.keys):
+        inherited = records.get(source)
+        if inherited is None or inherited.keys is None:
             continue
+        if len(inherited.keys) != len(node_records.keys):
+            continue
+        declared = runtime_graph.record_keys.get(node_id) is not None
         for position, key in enumerate(node_records.keys):
-            if key is None:
+            value = node_records.values[position]
+            marker = is_marker(value) or is_marker(_decoded(value))
+            if key is None and (marker or not declared):
                 node_records.keys[position] = inherited.keys[position]
 
 
