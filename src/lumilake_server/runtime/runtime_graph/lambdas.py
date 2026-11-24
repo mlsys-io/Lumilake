@@ -211,9 +211,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         self, op: LambdaOp, ctx: LoweringContext
     ) -> LoweringResult | None:
         """Lower a row-mode LambdaOp to its own python step when no LLM inlined
-        it: one that is an output, that nothing reached, that has an image, or
-        that a runtime node references. The last one lowers checks that no
-        runtime node reads an inlined Lambda."""
+        it: one that is an output, that nothing reached, that asks for an image
+        or GPUs, or that a runtime node references. The last one lowers checks
+        that no runtime node reads an inlined Lambda."""
         if op.takes_whole_columns:
             return None
         referenced = self._referenced_row_lambdas(ctx)
@@ -221,6 +221,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             op.id in ctx.visited
             and op.id not in ctx.outputs_by_source
             and op.image is None
+            and op.gpu is None
             and op.id not in referenced
         ):
             return None
