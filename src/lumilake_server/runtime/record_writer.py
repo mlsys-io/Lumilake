@@ -1522,7 +1522,7 @@ def _collect_node_records(
             items=items_of.get(node_id) or [],
         )
     _keyed_mode_records(runtime_graph, plans, order, items_of, produced, records)
-    _inherit_marker_keys(order, plans, runtime_graph, records)
+    _inherit_input_keys(order, plans, runtime_graph, records)
     return records, items_of
 
 
@@ -1639,7 +1639,8 @@ def _node_keys(
     A 1:1 op whose own row carries no key reads it from the node it declares, at
     the same position, else from the literal list the op carries for that
     input; every other keyed node (a keyed retrieval, an op inheriting its
-    single keyed input's key) reads its own rows."""
+    single keyed input's key, which takes it at the same position) reads its
+    own rows."""
     if plan.column is not None:
         return [
             None if value.get(plan.column) is None else key_text(value[plan.column])
@@ -1692,27 +1693,24 @@ def _table_rows(table: Any) -> list[dict[str, Any]]:
     return [] if found is None else table_rows(found)
 
 
-def _inherit_marker_keys(
+def _inherit_input_keys(
     order: Sequence[str],
     plans: Mapping[str, RecordPlan],
     runtime_graph: RuntimeGraph,
     records: dict[str, NodeRecords],
 ) -> None:
-    """A failed record keeps its address: a marker carries no key of its own,
-    so a keyed 1:1 node's marker takes the key of the record it replaces at the
-    same position of its single keyed input."""
+    """Every row of a 1:1 node takes its keyed input's key at the same position,
+    when the counts match: a parsed or failed row keeps its input row's address."""
     for node_id in order:
         node_records = records.get(node_id)
         source = _keyed_input(runtime_graph, node_id, plans)
         inherited = None if source is None else records.get(source)
         if node_records is None or node_records.keys is None or inherited is None:
             continue
-        for position, value in enumerate(node_records.values):
-            if node_records.keys[position] is not None:
-                continue
-            if not (is_marker(value) or is_marker(_decoded(value))):
-                continue
-            if inherited.keys is not None and position < len(inherited.keys):
+        if inherited.keys is None or len(inherited.keys) != len(node_records.keys):
+            continue
+        for position, key in enumerate(node_records.keys):
+            if key is None:
                 node_records.keys[position] = inherited.keys[position]
 
 
