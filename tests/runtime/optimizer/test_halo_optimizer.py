@@ -800,3 +800,43 @@ def test_disable_data_profile_drops_supplied_results(
 
     assert parse_calls == []
     assert build_calls == [{}]
+
+
+def _gpu_python_graph() -> RuntimeGraph:
+    graph = _python_graph()
+    op = graph.nodes["p1"]
+    graph.nodes["p1"] = runtime_op(
+        node_id="p1",
+        task_type="python",
+        backend="python",
+        model="",
+        data_spec={**op.data_spec.model_dump(exclude_none=True), "gpu": {"count": 1}},
+        model_spec={},
+        inference_spec={},
+    )
+    return graph
+
+
+def test_halo_optimizer_places_a_gpu_python_step_on_a_gpu_python_worker() -> None:
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_gpu_python_graph(),
+        worker_names=["gpu-python", "cpu-python"],
+        worker_profiles={
+            "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
+            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+        },
+    )
+    assert schedule.worker_assignment["gpu-python"] == ["p1"]
+    assert schedule.worker_assignment["cpu-python"] == []
+
+
+def test_halo_optimizer_refuses_a_gpu_python_step_without_a_gpu_python_worker() -> None:
+    with pytest.raises(ValueError, match="selected GPU workers"):
+        HaloOptimizer().generate_schedule(
+            graph=_gpu_python_graph(),
+            worker_names=["gpu-plain", "cpu-python"],
+            worker_profiles={
+                "gpu-plain": {"has_gpu": True, "supported_task_types": []},
+                "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+            },
+        )

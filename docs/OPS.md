@@ -250,11 +250,14 @@ Optional per-op limits for the standalone `python` task:
 | `timeout_s` | 600 | (0, 600] without `image`; (0, 3600] with `image` | Task timeout in seconds (`timeoutSeconds`). |
 | `memory_mb` | worker default | [128, 8192] | Task memory limit, sent as `resources.hardware.memory`. |
 | `image` | worker default | non-empty string | Container image for the standalone `python` task (`image`). |
+| `gpu` | none (CPU) | `count` in [1, 8]; optional `type`, `memory` | GPUs the task needs, sent as `resources.hardware.gpu`. The task is placed on a GPU worker that advertises the `python` task type. |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | HALO planning hint: seconds per input row of the task; never enforced. |
 | `cache` | none | bool | Opt-in task caching, passed to FlowMesh as `cache: true` only when set. |
 | `sample_value` | none | any non-null JSON | Representative value for data-profile preflight placeholders; never executed. |
 
 The limits apply only to the standalone `python` task; they have no effect on a `LambdaOp` that an LLM op inlines. A `LambdaOp` with an `image` always runs as its own standalone `python` task and may set `timeout_s` up to FlowMesh's 3600 s cap; without an `image` the cap stays at 600 s.
+
+A `LambdaOp` with `gpu` is the one `python` step HALO places on a GPU worker; every other `python` step runs on a CPU worker. The job needs a GPU worker that advertises the `python` task type, or submission fails naming the node. The step's own `gpu` request reaches FlowMesh unchanged, so `count`, `type` and `memory` choose the device; the job-level `hardware.gpu` hint does not override it. Use an `image` that provides the GPU libraries the code imports, for example `gpu: {count: 1, memory: 24Gi}` with a CUDA image.
 
 `expected_runtime_s` is a planning hint only: it is seconds per input row of the task, and HALO uses it to estimate the step's run time. It is never enforced as a limit. When a job's input slices are coalesced into one workflow, the step runs their rows in sequence, so Lumilake coalesces only as many slices as keep the step's expected run time within its `timeout_s`; the rest run as separate copies of the workflow in the same batch. A slice whose row count cannot be known before it runs is never coalesced. `cache` is also opt-in: Lumilake sends `cache: true` to FlowMesh only when the op sets it. `sample_value` is never executed: it only supplies a representative value so data-profile preflight can resolve a placeholder whose upstream is this `LambdaOp`.
 

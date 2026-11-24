@@ -2039,6 +2039,10 @@ class FlowmeshRuntimeManager:
             runtime_op = runtime_graph.nodes.get(node_name)
             if runtime_op is None:
                 continue
+            if self._python_step_requests_gpu(runtime_op):
+                # The step carries its own GPU request in its task spec.
+                gpu_nodes += 1
+                continue
             if self._runtime_op_requires_gpu(runtime_op):
                 if gpu_count <= 0:
                     raise ValueError(
@@ -2073,7 +2077,16 @@ class FlowmeshRuntimeManager:
         )
 
     @staticmethod
+    def _python_step_requests_gpu(runtime_op: RuntimeOp) -> bool:
+        return (
+            isinstance(runtime_op.data_spec, PythonData)
+            and runtime_op.data_spec.gpu is not None
+        )
+
+    @staticmethod
     def _runtime_op_requires_gpu(runtime_op: RuntimeOp) -> bool:
+        if FlowmeshRuntimeManager._python_step_requests_gpu(runtime_op):
+            return True
         backend = (runtime_op.backend or "").strip().lower()
         if backend in {"vllm", "transformers", "diffusers"}:
             return True

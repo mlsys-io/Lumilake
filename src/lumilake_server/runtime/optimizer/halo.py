@@ -17,7 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import RetrievalData
+from lumilake_server.data_specs import PythonData, RetrievalData
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -224,6 +224,7 @@ class HaloOptimizer(BaseOptimizer):
                     outputs=tuple(),
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
+                    requires_gpu=self._python_step_requests_gpu(op),
                     raw=raw,
                 )
                 for dep in deps:
@@ -386,7 +387,8 @@ class HaloOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
     ) -> dict[str, Worker]:
         requires_gpu = any(
-            self._is_gpu_backend(op.backend) for op in graph.nodes.values()
+            self._is_gpu_backend(op.backend) or self._python_step_requests_gpu(op)
+            for op in graph.nodes.values()
         )
 
         workers: dict[str, Worker] = {}
@@ -435,7 +437,7 @@ class HaloOptimizer(BaseOptimizer):
             elif node.engine == "http":
                 tiers = (cpu_workers,)
             elif node.engine == "python":
-                tiers = (cpu_workers,)
+                tiers = (gpu_workers,) if node.requires_gpu else (cpu_workers,)
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
@@ -981,6 +983,10 @@ class HaloOptimizer(BaseOptimizer):
             )
 
     @staticmethod
+    def _python_step_requests_gpu(op: RuntimeOp) -> bool:
+        return isinstance(op.data_spec, PythonData) and op.data_spec.gpu is not None
+
+    @staticmethod
     def _is_gpu_backend(backend: str) -> bool:
         return backend.strip().lower() in {
             "vllm",
@@ -989,38 +995,45 @@ class HaloOptimizer(BaseOptimizer):
             "omni",
         }
 
-    @staticmethod
+    @classmethod
     def _validate_task_type_workers(
+        cls,
         graph: RuntimeGraph,
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, Mapping[str, Any]],
     ) -> None:
         """Fail before scheduling when a node's task type has no executor.
 
-        Gated task types run on CPU workers, so only CPU workers count. Only
+        Gated task types run on CPU workers, so only CPU workers count, except a
+        python step that requests a GPU, which only GPU workers can run. Only
         task types in ``CAPABILITY_GATED_TASK_TYPES`` are checked; other nodes
         are placed by engine alone.
         """
-        cpu_names = [
-            name
-            for name in worker_names
-            if not worker_profiles.get(name, {}).get("has_gpu")
-        ]
-        advertised: set[str] = set()
-        for name in cpu_names:
-            advertised |= advertised_task_types(worker_profiles.get(name, {}))
-        needed = required_task_types(op.task_type for op in graph.nodes.values())
-        for task_type in sorted(needed - advertised):
-            nodes = sorted(
-                node_id
+        for on_gpu in (False, True):
+            names = [
+                name
+                for name in worker_names
+                if bool(worker_profiles.get(name, {}).get("has_gpu")) == on_gpu
+            ]
+            advertised: set[str] = set()
+            for name in names:
+                advertised |= advertised_task_types(worker_profiles.get(name, {}))
+            ops = {
+                node_id: op
                 for node_id, op in graph.nodes.items()
-                if op.task_type == task_type
-            )
-            raise ValueError(
-                f"Graph has {task_type!r} task node(s) {nodes}, but none of the"
-                f" selected CPU workers {cpu_names} advertises the {task_type!r}"
-                " task type."
-            )
+                if cls._python_step_requests_gpu(op) == on_gpu
+            }
+            needed = required_task_types(op.task_type for op in ops.values())
+            for task_type in sorted(needed - advertised):
+                nodes = sorted(
+                    node_id for node_id, op in ops.items() if op.task_type == task_type
+                )
+                kind = "GPU" if on_gpu else "CPU"
+                raise ValueError(
+                    f"Graph has {task_type!r} task node(s) {nodes}, but none of the"
+                    f" selected {kind} workers {names} advertises the {task_type!r}"
+                    " task type."
+                )
 
     def _map_engine(self, backend: str, task_type: str) -> str:
         normalized_backend = backend.strip().lower()

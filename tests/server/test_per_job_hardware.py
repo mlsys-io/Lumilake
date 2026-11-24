@@ -11,6 +11,8 @@ Covers:
 - ``_any_graph_requires_gpu`` correctly classifies vLLM ops.
 """
 
+import logging
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -18,9 +20,11 @@ from pydantic import ValidationError
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
+    LambdaOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -33,6 +37,7 @@ from lumilake_server.runtime.job_manager.priority_queue import (
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
+    FlowmeshRuntimeManager,
     _resolve_cpu,
     _resolve_gpu_count,
     _resolve_gpu_memory,
@@ -301,3 +306,40 @@ def test_any_graph_requires_gpu_scans_multiple_real_graphs(
 
     graphs = {"cpu_only": _cpu_only_compiled(), "has_gpu": _gpu_compiled()}
     assert _any_graph_requires_gpu(_make_server_stub(), graphs) is True
+
+
+def _gpu_lambda_compiled() -> Any:
+    stock = input_placeholder("Stock")
+    measure = LambdaOp(
+        [stock],
+        fn=lambda inputs: str(inputs[0]),
+        image="ghcr.io/me/bench:1",
+        gpu=GpuRequest(count=1, type="RTX 5090"),
+    )
+    return Graph.from_ops([as_output("result", measure)]).compile(Stock=["NVDA"])
+
+
+def test_any_graph_requires_gpu_detects_a_python_step_gpu_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+    assert (
+        _any_graph_requires_gpu(_make_server_stub(), {"g": _gpu_lambda_compiled()})
+        is True
+    )
+
+
+def test_per_node_hints_keep_a_python_step_s_own_gpu_request() -> None:
+    graph = RuntimeGraphBuilder().build(_gpu_lambda_compiled())
+    (node_id,) = graph.nodes
+    own = {"hardware": {"gpu": {"count": 1, "type": "RTX 5090"}}}
+    nodes: list[dict[str, Any]] = [{"name": node_id, "spec": {"resources": own}}]
+    stub = SimpleNamespace(
+        logger=logging.getLogger("test"),
+        _python_step_requests_gpu=FlowmeshRuntimeManager._python_step_requests_gpu,
+        _runtime_op_requires_gpu=FlowmeshRuntimeManager._runtime_op_requires_gpu,
+    )
+    # No job-level GPU: a vLLM node would be refused, the python step keeps its request.
+    FlowmeshRuntimeManager._apply_per_node_resource_hints(stub, nodes, graph, None)  # type: ignore[arg-type]
+    assert nodes[0]["spec"]["resources"] == own

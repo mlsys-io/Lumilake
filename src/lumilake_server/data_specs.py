@@ -132,6 +132,19 @@ class ColumnPlanEntry(DataSpecModel):
     file: str | None = None
 
 
+class GpuRequest(BaseModel):
+    """GPUs a standalone python step asks FlowMesh for.
+
+    ``type`` and ``memory`` narrow which device FlowMesh may pick.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(default=1, ge=1, le=8)
+    type: str | None = None
+    memory: str | None = None
+
+
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -143,6 +156,7 @@ class PythonData(DataSpecModel):
     timeout_s: int | float = 600
     memory_mb: int | None = None
     image: str | None = None
+    gpu: GpuRequest | None = None
     expected_runtime_s: float | None = None
     row_count: int | None = None
     cache: bool | None = None

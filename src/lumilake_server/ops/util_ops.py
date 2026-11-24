@@ -4,6 +4,7 @@ from typing import Any, Literal, Self, overload
 
 import dill
 
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.utils.lambda_runtime import validate_source
@@ -164,6 +165,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -179,6 +181,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -194,6 +197,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -208,6 +212,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -234,6 +239,7 @@ class LambdaOp(Op):
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
         self.image = image
+        self.gpu = gpu
         # A planning hint for HALO; never enforced at runtime.
         self.expected_runtime_s = expected_runtime_s
         # Opt-in task caching; passed to FlowMesh only when set.
@@ -291,6 +297,8 @@ class LambdaOp(Op):
             data["memory_mb"] = self.memory_mb
         if self.image is not None:
             data["image"] = self.image
+        if self.gpu is not None:
+            data["gpu"] = self.gpu.model_dump(exclude_none=True)
         if self.expected_runtime_s is not None:
             data["expected_runtime_s"] = self.expected_runtime_s
         if self.cache is not None:
@@ -309,6 +317,7 @@ class LambdaOp(Op):
         timeout_s = data.get("timeout_s")
         memory_mb = data.get("memory_mb")
         image = data.get("image")
+        gpu = GpuRequest.model_validate(data["gpu"]) if "gpu" in data else None
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
         sample_value = data.get("sample_value")
@@ -326,6 +335,7 @@ class LambdaOp(Op):
             timeout_s=timeout_s,
             memory_mb=memory_mb,
             image=image,
+            gpu=gpu,
             expected_runtime_s=expected_runtime_s,
             cache=cache,
             sample_value=sample_value,
