@@ -806,15 +806,16 @@ def test_disable_data_profile_drops_supplied_results(
 def _gpu_python_graph(gpu: dict[str, Any] | None = None) -> RuntimeGraph:
     graph = _python_graph()
     op = graph.nodes["p1"]
+    data_spec = {
+        **op.data_spec.model_dump(exclude_none=True),
+        "gpu": gpu or {"count": 1},
+    }
     graph.nodes["p1"] = runtime_op(
         node_id="p1",
         task_type="python",
         backend="python",
         model="",
-        data_spec={
-            **op.data_spec.model_dump(exclude_none=True),
-            "gpu": gpu or {"count": 1},
-        },
+        data_spec=data_spec,
         model_spec={},
         inference_spec={},
     )
@@ -822,22 +823,19 @@ def _gpu_python_graph(gpu: dict[str, Any] | None = None) -> RuntimeGraph:
 
 
 def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, dict[str, Any]]:
-    """Worker profiles for ``gpu-<i>``, each carrying the named cards."""
-    return {
+    """Worker profiles for ``gpu-<i>``, each carrying the named cards, beside a
+    plain GPU worker and a CPU python worker."""
+    profiles = {
         f"gpu-{index}": {
             "has_gpu": True,
             "supported_task_types": ["python"],
-            "gpu": {
-                "devices": [
-                    {"name": name, "memory_total_bytes": 24 * 1024**3} for name in names
-                ]
-            },
+            "gpu": {"devices": [{"name": name} for name in names]},
         }
         for index, names in enumerate(cards)
-    } | {
-        "gpu-plain": {"has_gpu": True, "supported_task_types": []},
-        "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
     }
+    profiles["gpu-plain"] = {"has_gpu": True, "supported_task_types": []}
+    profiles["cpu-python"] = {"has_gpu": False, "supported_task_types": ["python"]}
+    return profiles
 
 
 def test_halo_optimizer_places_a_gpu_python_step_on_a_gpu_python_worker() -> None:
@@ -851,11 +849,10 @@ def test_halo_optimizer_places_a_gpu_python_step_on_a_gpu_python_worker() -> Non
 
 
 def test_halo_optimizer_skips_a_gpu_worker_that_cannot_carry_the_request() -> None:
-    profiles = _gpu_profiles(("RTX 4090",), ("H100", "H100"))
     schedule = HaloOptimizer().generate_schedule(
         graph=_gpu_python_graph({"count": 2, "type": "H100"}),
         worker_names=["gpu-0", "gpu-1", "cpu-python"],
-        worker_profiles=profiles,
+        worker_profiles=_gpu_profiles(("RTX 4090",), ("H100", "H100")),
     )
     assert schedule.worker_assignment["gpu-1"] == ["p1"]
     assert schedule.worker_assignment["gpu-0"] == []
@@ -871,7 +868,7 @@ def test_halo_optimizer_refuses_a_gpu_python_step_no_selected_worker_can_run() -
     with pytest.raises(RuntimeError, match="Halo optimizer failed") as excinfo:
         HaloOptimizer().generate_schedule(
             graph=_gpu_python_graph({"count": 4, "type": "H100"}),
-            worker_names=["gpu-0", "gpu-1", "cpu-python"],
-            worker_profiles=_gpu_profiles(("RTX 4090",), ("H100", "H100")),
+            worker_names=["gpu-0"],
+            worker_profiles=_gpu_profiles(("H100",)),
         )
     assert "carries the GPUs node 'p1' requests" in str(excinfo.value.__cause__)

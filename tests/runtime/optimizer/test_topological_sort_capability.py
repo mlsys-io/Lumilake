@@ -89,23 +89,22 @@ def test_python_node_without_an_advertising_worker_fails() -> None:
 
 
 def test_python_node_with_a_gpu_request_goes_to_a_python_gpu_worker() -> None:
+    profiles = {
+        "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+        "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
+    }
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=_graph(_gpu_python_op("p1")),
         worker_names=["cpu-python", "gpu-python"],
-        worker_profiles={
-            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
-            "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
-        },
+        worker_profiles=profiles,
     )
     assert schedule.worker_assignment == {"cpu-python": [], "gpu-python": ["p1"]}
+    profiles["gpu-python"] = {"has_gpu": True, "supported_task_types": []}
     with pytest.raises(ValueError, match="selected GPU workers"):
         TopologicalSortOptimizer().generate_schedule(
             graph=_graph(_gpu_python_op("p1")),
-            worker_names=["cpu-python", "gpu-plain"],
-            worker_profiles={
-                "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
-                "gpu-plain": {"has_gpu": True, "supported_task_types": []},
-            },
+            worker_names=["cpu-python", "gpu-python"],
+            worker_profiles=profiles,
         )
 
 

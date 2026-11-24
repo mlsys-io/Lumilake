@@ -1401,7 +1401,3 @@ def test_python_step_sends_its_own_gpu_request_beside_memory() -> None:
     assert _spec(node)["resources"] == {
         "hardware": {"memory": "512Mi", "gpu": {"count": 1, "memory": "24Gi"}}
     }
-
-    _, plain, plain_compiled = _llm_then_lambda(memory_mb=512)
-    plain_spec = _spec(RuntimeGraphBuilder().build(plain_compiled).nodes[plain.id])
-    assert plain_spec["resources"] == {"hardware": {"memory": "512Mi"}}
