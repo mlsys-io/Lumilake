@@ -162,6 +162,7 @@ class ReusePlanner:
         names = logical_names(runtime_graph)
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
         misses: set[str] = set()
+        stored: dict[str, list[RecordEntry]] = {}
         plans: dict[str, RecordPlan] = {}
         content = {} if content_values is None else content_values
         content_keys = set(content)
@@ -188,6 +189,7 @@ class ReusePlanner:
                 job_id=job_id,
                 misses=misses,
                 decision=decision,
+                stored=stored,
                 runtime_graph=runtime_graph,
                 node_id=node_id,
             )
@@ -222,6 +224,8 @@ class ReusePlanner:
                     continue
                 decision.output_shapes[node_id] = shape
             decision.hits[node_id] = hit
+            stored[node_id] = hit
+        _keep_seed_nodes_dispatched(runtime_graph, decision)
         self.logger.info(
             "Record reuse plan for job %s: %d hit op(s), %d miss op(s)",
             job_id,
@@ -272,6 +276,7 @@ class ReusePlanner:
         job_id: str,
         misses: set[str],
         decision: ReusePlan,
+        stored: Mapping[str, list[RecordEntry]],
         runtime_graph: RuntimeGraph,
         node_id: str,
     ) -> tuple[str | None, list[RecordEntry] | None]:
@@ -287,7 +292,7 @@ class ReusePlanner:
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
-        seeded = _seeded_records(plan, decision)
+        seeded = _seeded_records(plan, stored)
         for position, record in enumerate(records):
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
@@ -573,9 +578,8 @@ stores unwrapped."""
 type _Wrapping = Literal["output", "text"]
 
 
-def _wrapped(op: RuntimeOp) -> _Wrapping | None:
-    """How a producer's items carry their value: ``text`` for a row step's item,
-    ``output`` for an item that holds the value alone, ``None`` with no wrap."""
+def _wrap(op: RuntimeOp) -> _Wrapping | None:
+    """``text`` for a row step's item, ``output`` for a bare item, else ``None``."""
     if _typed_row_step(op):
         return "text"
     return "output" if op.task_type in _WRAPPED_TASKS else None
@@ -603,7 +607,7 @@ def _plan_column(
     return served_column(
         plan.hits[node],
         entry,
-        wrapped=_wrapped(runtime_graph.nodes[node]),
+        wrapped=_wrap(runtime_graph.nodes[node]),
     )
 
 
@@ -680,6 +684,35 @@ def _value_at_path(value: Any, path: Any, decode: bool = True) -> Any:
             return _UNSET
         current = current[part]
     return current
+
+
+def _keep_seed_nodes_dispatched(runtime_graph: RuntimeGraph, plan: ReusePlan) -> None:
+    """Demote a seed node a dispatched reader still reads, so the graph holds it."""
+    placed = {d.node: index for index, d in enumerate(plan.decisions)}
+    for node_id in list(plan.hits):
+        reader = _dispatched_seed_reader(runtime_graph, plan, node_id)
+        if reader is None:
+            continue
+        name = runtime_graph.op_names.get(reader, reader)
+        decision = plan.decisions[placed[node_id]]
+        reason = f"read by dispatched '{name}'"
+        update = {"decision": "miss", "reason": reason}
+        plan.decisions[placed[node_id]] = decision.model_copy(update=update)
+        del plan.hits[node_id]
+
+
+def _dispatched_seed_reader(
+    runtime_graph: RuntimeGraph, plan: ReusePlan, node_id: str
+) -> str | None:
+    """The dispatched reader that reads ``node_id`` through its ``seeds``, if any."""
+    for reader in runtime_graph.nodes.values():
+        if reader.node_id in plan.hits:
+            continue
+        spec = reader.data_spec
+        if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
+            if spec.seeds.node == node_id:
+                return reader.node_id
+    return None
 
 
 def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
@@ -822,17 +855,21 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
-def _seeded_records(plan: RecordPlan, decision: ReusePlan) -> dict[str, NodeRecords]:
-    """The planned records a node-bound seed column reads, as row-step items."""
+def _seeded_records(
+    plan: RecordPlan, stored: Mapping[str, list[RecordEntry]]
+) -> dict[str, NodeRecords]:
+    """The planned records a node-bound seed column reads, as row step items."""
     spec = plan.op.data_spec
     if not isinstance(spec, DataFrame) or not isinstance(spec.seeds, NodeRead):
         return {}
     node = spec.seeds.node
-    entries = decision.hits.get(node)
+    entries = stored.get(node)
     if entries is None:
         return {}
     if entries[0].address.record is None:
-        values = list(entries[0].value)
+        values = entries[0].value
+        if not isinstance(values, list):
+            return {}
         return {
             node: NodeRecords(
                 keyed=False,
@@ -915,7 +952,7 @@ def _unserved_reader_reason(
         for entry in spec.plan:
             if entry.node != op.node_id:
                 continue
-            if served_column(hit, entry, _wrapped(op)) is None:
+            if served_column(hit, entry, _wrap(op)) is None:
                 return "value not servable"
     return None
 

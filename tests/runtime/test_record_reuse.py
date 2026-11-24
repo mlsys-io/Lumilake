@@ -271,6 +271,51 @@ async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
+    """A seed op's bare ints serve its chat; a changed chat still holds the seed."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    seeds = NodeRead(node=mark, path="value.items.value")
+    graph.nodes[join] = replace(
+        graph.nodes[join], data_spec=spec.model_copy(update={"seeds": seeds})
+    )
+    graph.record_keys.pop(mark)
+    ints = [{"output": str(n), "value": n} for n in (7, 9)]
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Mark": _ROWS["Mark"], "Join": _ROWS["Join"]},
+        "req-1",
+        graph=graph,
+    )
+    await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
+        job_id="req-1",
+        member_job_ids=["req-1"],
+        round_number=0,
+        runtime_graph=graph,
+        node_task_map={mark: "task-Mark"},
+        task_worker={},
+        results={"task-Mark": {"items": ints}},
+    )
+    plan, _ = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None), _decisions(plan)
+    changed = _chat_graph(_BASE_ROWS)
+    changed.nodes[join] = replace(
+        changed.nodes[join],
+        model_spec={"top_p": 0.9},
+        data_spec=graph.nodes[join].data_spec,
+    )
+    changed.record_keys.pop(mark)
+    plan, dispatched = _planned(storage, changed)
+    assert _decisions(plan)["Mark"] == ("miss", "read by dispatched 'Join'")
+    assert {mark, join} <= set(dispatched.nodes)
+    for node in dispatched.nodes.values():
+        assert set(node.dependencies) <= set(dispatched.nodes)
+
+
+@pytest.mark.asyncio
 async def test_a_node_bound_seed_answers_a_chat_op_under_reuse() -> None:
     """A chat seeded from a keyed node's records hits on an unchanged rerun."""
     rows = [{"id": "a", "q": "one", "seed": 7}, {"id": "b", "q": "two", "seed": 9}]
