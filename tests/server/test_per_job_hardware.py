@@ -318,19 +318,15 @@ def _gpu_lambda_compiled() -> Any:
     return Graph.from_ops([as_output("result", measure)]).compile(Stock=["NVDA"])
 
 
-def test_any_graph_requires_gpu_detects_a_python_step_gpu_request(
+def test_a_python_step_gpu_request_counts_as_gpu_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    assert (
-        _any_graph_requires_gpu(_make_server_stub(), {"g": _gpu_lambda_compiled()})
-        is True
-    )
+    compiled = _gpu_lambda_compiled()
+    assert _any_graph_requires_gpu(_make_server_stub(), {"g": compiled}) is True
 
-
-def test_per_node_hints_keep_a_python_step_s_own_gpu_request() -> None:
-    graph = RuntimeGraphBuilder().build(_gpu_lambda_compiled())
+    graph = RuntimeGraphBuilder().build(compiled)
     (node_id,) = graph.nodes
     own = {"hardware": {"gpu": {"count": 1, "type": "RTX 5090"}}}
     nodes: list[dict[str, Any]] = [{"name": node_id, "spec": {"resources": own}}]

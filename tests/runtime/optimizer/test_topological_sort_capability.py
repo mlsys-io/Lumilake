@@ -98,9 +98,6 @@ def test_python_node_with_a_gpu_request_goes_to_a_python_gpu_worker() -> None:
         },
     )
     assert schedule.worker_assignment == {"cpu-python": [], "gpu-python": ["p1"]}
-
-
-def test_python_node_with_a_gpu_request_fails_without_a_python_gpu_worker() -> None:
     with pytest.raises(ValueError, match="selected GPU workers"):
         TopologicalSortOptimizer().generate_schedule(
             graph=_graph(_gpu_python_op("p1")),

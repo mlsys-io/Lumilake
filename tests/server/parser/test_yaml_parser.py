@@ -695,13 +695,10 @@ def _gpu_lambda_yaml(gpu: str) -> str:
         """)
 
 
-def test_lambda_op_gpu_request_round_trip() -> None:
+def test_lambda_op_gpu_request_round_trips_and_rejects_a_bad_count() -> None:
     specs = parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24Gi}"))
     graph = Graph.from_json(specs["lambda_gpu"]["graph"])
     (op,) = [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
     assert op.gpu == GpuRequest(count=1, memory="24Gi")
-
-
-def test_lambda_op_invalid_gpu_request_rejected() -> None:
     with pytest.raises(ValueError, match="'gpu' is invalid"):
         parse_yaml_payload(_gpu_lambda_yaml("{count: 0}"))

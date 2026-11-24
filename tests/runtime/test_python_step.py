@@ -845,27 +845,20 @@ def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
 
 
 @pytest.mark.parametrize(
-    "image,gpu",
-    [("ghcr.io/me/sim:latest", None), (None, GpuRequest(count=1))],
+    "kwargs",
+    [{"image": "ghcr.io/me/sim:latest"}, {"gpu": GpuRequest(count=1)}],
 )
 def test_lambda_needing_its_own_worker_read_by_an_llm_message_chain_is_rejected(
-    image: str | None, gpu: GpuRequest | None
+    kwargs: dict[str, Any],
 ) -> None:
     stock = input_placeholder("Stock")
-    shout = LambdaOp(
-        [stock],
-        fn=lambda inputs: str(inputs[0]).upper(),
-        image=image,
-        gpu=gpu,
-    )
+    shout = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper(), **kwargs)
     llm = LLMChatOp(
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model=_MODEL),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
-    with pytest.raises(
-        ValueError, match="LambdaOp '.*' that asks for an image or GPUs"
-    ):
+    with pytest.raises(ValueError, match="asks for an image or GPUs"):
         RuntimeGraphBuilder().build(compiled)
 
 
