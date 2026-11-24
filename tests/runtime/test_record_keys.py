@@ -76,6 +76,16 @@ ops:
 outputs: [{name: merged, ref: M}]
 """
 
+_ATTACHED_LITERAL = """\
+name: attached-literal
+inputs: {Rows: %s}
+ops:
+  - {id: Tag, op: LambdaOp, inputs: [Rows], mode: row, fn_name: tag,
+     key: {node: Rows, path: id}, code: "lambda c: 'n'"}
+  - {id: M, op: JoinOp, inputs: [Rows, Tag], by: id, attach: {tag: Tag}}
+outputs: [{name: merged, ref: M}]
+"""
+
 _ATTACHED = """\
 name: attached
 inputs: {Docs: %s, Src: %s}
@@ -352,16 +362,17 @@ async def test_a_joins_first_input_is_the_one_its_columns_name_first() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unkeyed_attach_source_names_every_value_record() -> None:
-    """A keyed value over an unkeyed source names all its records at each row."""
+    """A keyed value over a source with no keyed rows names every record."""
     rows = [{"id": 1}, {"id": 2}]
-    graph = _graph(_ATTACHED_UNKEYED % _rows_text(rows))
-    tasks = {"S": _items(*rows), "Tag": _items("n", "m"), "M": _items(*rows)}
-    tag_digests = {
-        entry.digest for entry in (await _records_of(graph, tasks, "Tag")).values()
-    }
-    assert len(tag_digests) == 2
-    joined = await _records_of(graph, tasks, "M")
-    assert all(tag_digests <= set(entry.input_digests) for entry in joined.values())
+    for template, source in ((_ATTACHED_UNKEYED, "S"), (_ATTACHED_LITERAL, None)):
+        tasks = {"Tag": _items("n", "m"), "M": _items(*rows)}
+        if source is not None:
+            tasks[source] = _items(*rows)
+        entries = _entries(await _write(_graph(template % _rows_text(rows)), tasks))
+        tag_digests = {entry.digest for entry in _records(entries, "Tag").values()}
+        joined = _records(entries, "M")
+        assert len(tag_digests) == 2
+        assert all(tag_digests <= set(e.input_digests) for e in joined.values())
 
 
 @pytest.mark.asyncio

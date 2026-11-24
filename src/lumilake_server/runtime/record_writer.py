@@ -1179,12 +1179,12 @@ def _attach_value_positions(
     values: NodeRecords,
     source_position: int | None,
 ) -> Sequence[int]:
-    """The attach value records one row names; every one over an unkeyed source."""
+    """The value records one join row names through its source row."""
     if not values.keyed:
         return [0]
-    if source is not None and not source.keyed:
+    if source is None or not source.keyed:
         return range(len(values.values))
-    if source is None or source_position is None:
+    if source_position is None:
         return []
     rows = source.values
     if len(values.values) == len(rows):
