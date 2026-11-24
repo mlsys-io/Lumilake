@@ -21,7 +21,6 @@ from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
-from tests.support.data_specs import wire
 
 
 @pytest.fixture(autouse=True)
@@ -404,7 +403,7 @@ def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():
-        data_spec = wire(node)
+        data_spec = node.data_spec.model_dump(exclude_none=True)
         if data_spec.get("type") == "dataframe":
             return data_spec["columns"]
     raise AssertionError("No dataframe node found")

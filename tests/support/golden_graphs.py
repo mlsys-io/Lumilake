@@ -5,7 +5,7 @@ graphs."""
 from typing import Any
 
 from lumilake_server.common import ApiConfig, GenerationConfig
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PythonData, build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -29,7 +29,6 @@ from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.data_specs import column_table, wire
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -80,7 +79,7 @@ def _python_rowwise():
     rowwise = LLMChatOp(
         [OpMessage(role="user", content="hello")],
         rowwise_template="Summarize {value}",
-        rowwise_columns=column_table(
+        rowwise_columns=build_column_table(
             [
                 {"label": "value", "node": explode.id, "path": "items.output.value"},
                 {"label": "tone", "data": {"type": "list", "items": ["a", "b"]}},
@@ -142,7 +141,7 @@ def _completion_vision_image():
         image_source_op=images,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=column_table(
+        rowwise_columns=build_column_table(
             [{"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}],
             "rowwise_columns",
         ),
@@ -169,7 +168,7 @@ def _grouped_fetch_classify():
         [OpMessage(role="user", content=prompt)],
         config=_config(),
         rowwise_template="{prompt}",
-        rowwise_columns=column_table(
+        rowwise_columns=build_column_table(
             [{"label": "prompt", "node": prompt.id, "path": ""}], "rowwise_columns"
         ),
     )
@@ -197,7 +196,7 @@ def _aggregate_retrieval_python():
     digest = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table")],
         config=_config(),
-        aggregate_table=column_table(
+        aggregate_table=build_column_table(
             [{"label": "summary", "node": upstream.id, "path": "items.output"}],
             "aggregate_table",
         ),
@@ -248,7 +247,10 @@ def build(graph_name: str) -> dict[str, dict[str, Any]]:
     built = GRAPHS[graph_name]()
     entries: dict[str, dict[str, Any]] = {}
     for node_id, op in built.nodes.items():
-        entry: dict[str, Any] = {"task_type": op.task_type, "data_spec": wire(op)}
+        entry: dict[str, Any] = {
+            "task_type": op.task_type,
+            "data_spec": op.data_spec.model_dump(exclude_none=True),
+        }
         code = _generated_code(op)
         if code is not None:
             entry["code"] = code
