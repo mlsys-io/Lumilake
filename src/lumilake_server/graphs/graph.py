@@ -2,7 +2,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any, Self, TypeVar, overload
 
-from lumilake_server.ops import InputOp, Op, OutputOp
+from lumilake_server.ops import InputOp, Op, OutputOp, RecordKey
 from lumilake_server.utils.graph import topological_sort
 
 OpType = TypeVar("OpType", bound=Op)
@@ -99,7 +99,7 @@ class Graph:
             op_cls = Op.registry.get_class(op_data["_op"])
             op = op_cls.from_json(op_data, graph)
             if op.key is not None:
-                _refuse_unread_key_node(op, op_id, op_data, json_graph, graph)
+                _refuse_unread_key_node(op.key, op_id, op_data, json_graph)
             graph[op_id] = op
         return cls(graph)
 
@@ -171,23 +171,23 @@ class CompiledGraph:
 
 
 def _refuse_unread_key_node(
-    op: Op,
+    key: RecordKey,
     op_id: str,
     op_data: dict[str, Any],
     json_graph: dict[str, Any],
-    built: dict[str, Op],
 ) -> None:
     """Refuse a key naming an op it does not read; an unlisted input still keys."""
-    node = op.key.node if op.key is not None else None
-    if node is None or node not in json_graph:
+    node = key.node
+    if node not in json_graph:
         raise ValueError(
-            f"op '{op.declared_id or op_id}' key references unknown id '{node}'"
+            f"op '{op_data.get('_declared_id') or op_id}' key references unknown id"
+            f" '{node}'"
         )
     declared_inputs: list[str] = op_data.get("_inputs", [])
-    source = built.get(node)
-    if isinstance(source, InputOp) or node in declared_inputs:
+    source_cls = Op.registry.get_class(json_graph[node]["_op"])
+    if issubclass(source_cls, InputOp) or node in declared_inputs:
         return
-    named = f"op '{op.declared_id or op_id}'"
+    named = f"op '{op_data.get('_declared_id') or op_id}'"
     raise ValueError(
         f"{named} key reads '{_declared_name(node, json_graph)}', which is not one of"
         " its inputs; list it in inputs: so the key is read from the rows it feeds"
