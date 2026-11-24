@@ -9,7 +9,7 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import DataFrame, PythonData
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -661,7 +661,7 @@ def _collect_node_records(
         response = results.get(task_id)
         if response is None or plans.get(node_id) is None:
             continue
-        found = _record_values(response, typed_row_step(runtime_graph.nodes[node_id]))
+        found = _record_values(response, plans[node_id])
         produced[node_id] = [value for value, _ in found]
         raw_items[node_id] = [item for _, item in found]
     records: dict[str, NodeRecords] = {}
@@ -759,10 +759,10 @@ def _inherit_input_keys(
                 node_records.keys[position] = inherited.keys[position]
 
 
-def _record_values(response: Any, typed: bool) -> list[tuple[Any, Any]]:
+def _record_values(response: Any, plan: RecordPlan) -> list[tuple[Any, Any]]:
     """The values one task produced, in order, each with the result item it
-    came from: ``items`` outputs, or the rows a rowwise hosted task groups
-    under each item's ``rows``."""
+    came from: ``items`` outputs, the rows a rowwise hosted task groups under
+    each item's ``rows``, or a local rowwise model task's grouped outputs."""
     payload = response
     if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
         payload = payload["value"]
@@ -771,14 +771,27 @@ def _record_values(response: Any, typed: bool) -> list[tuple[Any, Any]]:
     items = payload.get("items")
     if not isinstance(items, list):
         return []
+    typed = typed_row_step(plan.op)
     found: list[tuple[Any, Any]] = []
     for item in items:
         rows = item.get("rows") if isinstance(item, Mapping) else None
         if isinstance(rows, list):
             found.extend((_row_value(row), row) for row in rows)
+        elif _grouped_model_output(item, plan):
+            found.extend((text, item) for text in _item_output(item, typed))
         else:
             found.append((_item_output(item, typed), item))
     return found
+
+
+def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
+    """Whether an item holds a local rowwise model task's per-row outputs
+    grouped into one list, one item per input table."""
+    return (
+        isinstance(plan.op.data_spec, DataFrame)
+        and isinstance(item, Mapping)
+        and isinstance(item.get("output"), list)
+    )
 
 
 def _row_value(row: Any) -> Any:
