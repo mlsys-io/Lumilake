@@ -251,7 +251,7 @@ async def test_a_parse_steps_field_is_served_under_reuse() -> None:
 
 @pytest.mark.asyncio
 async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
-    """A seed op's bare ints read at ``items.output`` serve, so its chat hits."""
+    """A seed op's bare ints serve its chat; a changed chat still holds the seed."""
     graph = _chat_graph(_BASE_ROWS)
     join, mark = _node(graph, "Join"), _node(graph, "Mark")
     assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
@@ -265,6 +265,18 @@ async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
     await _run(storage, _FOUR_OPS, _ROWS, "req-1", graph=graph, items=items)
     plan, _ = _planned(storage, graph)
     assert _decisions(plan)["Join"] == ("hit", None), _decisions(plan)
+    changed = _chat_graph(_BASE_ROWS)
+    changed.nodes[join] = replace(
+        changed.nodes[join],
+        model_spec={"top_p": 0.9},
+        data_spec=spec.model_copy(update={"seeds": read}),
+    )
+    changed.record_keys.pop(mark)
+    plan, dispatched = _planned(storage, changed)
+    assert _decisions(plan)["Mark"] == ("miss", "read by dispatched 'Join'")
+    assert {mark, join} <= set(dispatched.nodes)
+    for node in dispatched.nodes.values():
+        assert set(node.dependencies) <= set(dispatched.nodes)
 
 
 @pytest.mark.asyncio
@@ -310,7 +322,7 @@ def _list_workflow(consume_suffix: str) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
-    """A list-mode producer hit answers its consumer with one value per item."""
+    """A hit producer answers its consumer, flat or scored as the store holds it."""
     storage = InMemoryJobStorage()
     await _run(storage, _list_workflow("!"), {"Expand": ["ab", 3]}, "req-1")
     graph = _runtime_graph(_list_workflow("?"))
@@ -324,24 +336,13 @@ async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
     assert entry.values == served_column(hit, staged, "output") == ["ab", 3]
     run = PythonData(plan=[entry], code="", fn_name="", timeout_s=60)
     blob = python_step.runtime_blob()
-    spec = python_step.flowmesh_spec("Consume", run, {blob.key: blob})
-    assert "inputs" not in spec
-
-
-def test_a_served_output_item_is_wrapped_as_a_live_read_sees_it() -> None:
-    """A value that is itself an ``output``-keyed dict is wrapped back once."""
-    row = {"output": 1, "x": 2}
-    entry = [_stored(row, "Final", "a")]
-    staged = ColumnPlanEntry(kind="stage", node="x")
-    assert served_column(entry, staged, "output") == [row]
-    out = staged.model_copy(update={"path": "output"})
-    assert served_column(entry, out, "output") == [row]
-    flat_entry = ColumnPlanEntry(kind="stage", node="x", flatten=True)
-    flat = [_stored([["x", "y"]], "Expand")]
-    assert served_column(flat, flat_entry, "output") == ["x", "y"]
-    item = [_stored({"index": 0, "score": 0.5}, "E", "a")]
-    scored = ColumnPlanEntry(kind="stage", node="x", path="score")
-    assert served_column(item, scored, None) == [0.5]
+    assert "inputs" not in python_step.flowmesh_spec("Consume", run, {blob.key: blob})
+    flat, flatten = [_stored([["x", "y"]], "Expand")], staged.model_copy(
+        update={"flatten": True}
+    )
+    assert served_column(flat, flatten, "output") == ["x", "y"]
+    score = staged.model_copy(update={"path": "score"})
+    assert served_column([_stored({"score": 0.5}, "E", "a")], score, None) == [0.5]
 
 
 @pytest.mark.asyncio
