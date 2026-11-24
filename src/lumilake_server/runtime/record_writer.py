@@ -1552,10 +1552,9 @@ def _keyed_mode_records(
             continue
         if plan.mode == "join":
             key_paths = _join_row_paths(plan)
-            typed = typed_row_step(plan.op)
             node_records.keys = [
                 (
-                    composite_key(_item_output(item, typed), key_paths)
+                    composite_key(_item_output(item, False), key_paths)
                     if key_paths
                     else None
                 )
