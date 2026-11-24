@@ -280,6 +280,28 @@ async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_list_mode_seed_op_is_served_under_reuse() -> None:
+    """A list-mode seed node serves its chat from the list's own item shape."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    read = NodeRead(node=mark, path="value.items.output")
+    graph.nodes[join] = replace(
+        graph.nodes[join], data_spec=spec.model_copy(update={"seeds": read})
+    )
+    assert isinstance(mark_spec := graph.nodes[mark].data_spec, PythonData)
+    graph.nodes[mark] = replace(
+        graph.nodes[mark], data_spec=mark_spec.model_copy(update={"mode": "list"})
+    )
+    graph.record_keys.pop(mark)
+    items = {"Mark": [{"output": 11}, {"output": 12}]}
+    storage = InMemoryJobStorage()
+    await _run(storage, _FOUR_OPS, _ROWS, "req-1", graph=graph, items=items)
+    plan, _ = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None), _decisions(plan)
+
+
+@pytest.mark.asyncio
 async def test_an_all_hit_request_dispatches_no_task(
     monkeypatch: pytest.MonkeyPatch,
     job_storage: InMemoryJobStorage,

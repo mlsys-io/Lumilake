@@ -45,6 +45,7 @@ from lumilake_server.runtime.record_writer import (
     read_entry,
     reads_unversioned,
     realization,
+    typed_row_step,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -112,8 +113,7 @@ class ReusePlanner:
     def plan(
         self, *, runtime_graph: RuntimeGraph, round_number: int, job_id: str
     ) -> tuple[ReusePlan, RuntimeGraph]:
-        """Walk the graph in topological order and decide every op, returning
-        the plan and the graph to dispatch in its place."""
+        """Decide every op in topological order and return the graph to dispatch."""
         names = logical_names(runtime_graph)
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
         misses: set[str] = set()
@@ -205,7 +205,7 @@ class ReusePlanner:
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
-        seeded = _seeded_records(plan, stored)
+        seeded = _seeded_records(plan, stored, runtime_graph)
         for position, record in enumerate(records):
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
@@ -234,8 +234,7 @@ class ReusePlanner:
 
 
 def rebuilt_output(plan: ReusePlan, node_id: str) -> list[str]:
-    """One hit output node's archived values, emitted as the aggregator emits
-    them: a string as itself, any other value as its JSON text."""
+    """A hit output node's archived values, as the aggregator emits them."""
     entries = plan.hits[node_id]
     if entries[0].address.record is None:
         return [_output_text(entries[0].value)]
@@ -247,8 +246,7 @@ def _output_text(value: Any) -> str:
 
 
 def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
-    """The records every hit serves, shaped as the writer reads a finished node's
-    records so a consumer names them identically."""
+    """The records every hit serves, shaped as the writer reads a finished node."""
     served: dict[str, NodeRecords] = {}
     for node_id, entries in plan.hits.items():
         keyed = entries[0].address.record is not None
@@ -272,8 +270,7 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
 def _servable_output(
     runtime_graph: RuntimeGraph, plan: RecordPlan, node_id: str
 ) -> bool:
-    """Whether a hit at an output node rebuilds that node's archived value: only
-    a keyed row op or a list-mode step, at a path a stored value names."""
+    """Whether a hit at an output node rebuilds its archived value."""
     if plan.op.task_type not in _SERVED_TASKS:
         return False
     path = runtime_graph.output_paths.get(node_id)
@@ -295,15 +292,10 @@ def _list_mode(op: RuntimeOp) -> bool:
 def _rewritten(
     op: RuntimeOp, plan: ReusePlan, runtime_graph: RuntimeGraph
 ) -> RuntimeOp:
-    """An op whose hit inputs read their stored values: the entry keeps its
-    kind, node and path, so the spec digest does not move."""
+    """An op whose hit inputs read their stored values, with its spec digest kept."""
     served = [node for node in op.dependencies if node in plan.hits]
     if not served:
         return op
-    if isinstance(op.data_spec, DataFrame):
-        seeds = op.data_spec.seeds
-        if isinstance(seeds, NodeRead) and all(node == seeds.node for node in served):
-            return op
     if op.task_type != PYTHON_TASK_TYPE:
         raise ValueError(f"op '{op.node_id}' cannot read a served record")
     spec = op.data_spec
@@ -339,24 +331,13 @@ type _Wrapping = Literal["output", "text"]
 
 def _wrap(op: RuntimeOp) -> _Wrapping | None:
     """``text`` for a row step's item, ``output`` for a bare item, else ``None``."""
-    if _typed_row_step(op):
+    if typed_row_step(op):
         return "text"
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
-def _typed_row_step(op: RuntimeOp) -> bool:
-    """Whether the producer emits one item per row with the typed ``value``."""
-    spec = op.data_spec
-    return (
-        op.task_type == PYTHON_TASK_TYPE
-        and isinstance(spec, PythonData)
-        and spec.mode in (None, "row", "parse")
-    )
-
-
 def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
-    """A hit producer's item-output lists, one per stored entry: one item per
-    keyed row, or one per output of a whole-op value."""
+    """A hit producer's item outputs, one list per keyed row or per whole-op value."""
     if entries[0].address.record is not None:
         return [[entry.value] for entry in entries]
     return [[output] for output in entries[0].value]
@@ -367,13 +348,7 @@ def served_column(
     entry: ColumnPlanEntry,
     wrapping: _Wrapping | None,
 ) -> list[Any] | None:
-    """The column a python step reads from a hit producer, built as the worker
-    builds it, or ``None`` when the stored form cannot rebuild those items.
-
-    A producer whose items carry their value under ``output`` stores each value
-    without it, so the items a live read sees are the stored values wrapped
-    again. A row step's item carries the text under ``output`` and the typed
-    value under ``value``, and its readers read either."""
+    """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
         return None
     items: list[Any] = []
@@ -403,10 +378,8 @@ def _as_is(value: Any) -> Any:
 def _keep_seed_nodes_dispatched(runtime_graph: RuntimeGraph, plan: ReusePlan) -> None:
     """Demote a seed node a dispatched reader still reads, so the graph holds it."""
     placed = {d.node: index for index, d in enumerate(plan.decisions)}
-    for node_id in list(plan.hits):
-        reader = _dispatched_seed_reader(runtime_graph, plan, node_id)
-        if reader is None:
-            continue
+    readers = _dispatched_seed_readers(runtime_graph, plan)
+    for node_id, reader in readers.items():
         name = runtime_graph.op_names.get(reader, reader)
         decision = plan.decisions[placed[node_id]]
         reason = f"read by dispatched '{name}'"
@@ -415,23 +388,22 @@ def _keep_seed_nodes_dispatched(runtime_graph: RuntimeGraph, plan: ReusePlan) ->
         del plan.hits[node_id]
 
 
-def _dispatched_seed_reader(
-    runtime_graph: RuntimeGraph, plan: ReusePlan, node_id: str
-) -> str | None:
-    """The dispatched reader that reads ``node_id`` through its ``seeds``, if any."""
+def _dispatched_seed_readers(
+    runtime_graph: RuntimeGraph, plan: ReusePlan
+) -> dict[str, str]:
+    """Each hit seed node read by a dispatched op, mapped to that reader's id."""
+    readers: dict[str, str] = {}
     for reader in runtime_graph.nodes.values():
         if reader.node_id in plan.hits:
             continue
         spec = reader.data_spec
         if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
-            if spec.seeds.node == node_id:
-                return reader.node_id
-    return None
+            readers.setdefault(spec.seeds.node, reader.node_id)
+    return {node_id: readers[node_id] for node_id in plan.hits if node_id in readers}
 
 
 def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
-    """The graph to dispatch: every hit node gone, and every miss reading its
-    served inputs' stored values."""
+    """The graph to dispatch: every hit gone, every miss reading stored values."""
     nodes: dict[str, RuntimeOp] = {}
     for node_id in runtime_graph.node_order:
         if node_id in plan.hits:
@@ -461,8 +433,7 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
-    """Each dispatched op's declared record key, plus the key it inherited from
-    a served input that then left the graph."""
+    """Each dispatched op's declared key, plus one inherited from a served input."""
     keys = {
         node_id: key
         for node_id, key in runtime_graph.record_keys.items()
@@ -528,11 +499,7 @@ def _literal_input(values: Sequence[Any], key_path: str | None) -> _Input:
 
 
 def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None] | None:
-    """Every record an op has before it ran: one per distinct key of a keyed
-    input, or one whole-op record.
-
-    ``None`` when a keyed op reads a row without a key, or none of its inputs
-    carries one; an input with no key beside one with keys is positional."""
+    """Every record an op has before it ran: one per distinct key, or one whole-op."""
     if not plan.keyed:
         return [None]
     keys: list[str | None] = []
@@ -550,9 +517,11 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
 
 
 def _seeded_records(
-    plan: RecordPlan, stored: Mapping[str, list[RecordEntry]]
+    plan: RecordPlan,
+    stored: Mapping[str, list[RecordEntry]],
+    runtime_graph: RuntimeGraph,
 ) -> dict[str, NodeRecords]:
-    """The planned records a node-bound seed column reads, as a row step's items."""
+    """The planned records a node-bound seed column reads, in the seed node's items."""
     spec = plan.op.data_spec
     if not isinstance(spec, DataFrame) or not isinstance(spec.seeds, NodeRead):
         return {}
@@ -560,6 +529,7 @@ def _seeded_records(
     entries = stored.get(node)
     if entries is None:
         return {}
+    wrapping = _wrap(runtime_graph.nodes[node])
     if entries[0].address.record is None:
         values = entries[0].value
         if not isinstance(values, list):
@@ -569,7 +539,7 @@ def _seeded_records(
                 keyed=False,
                 values=values,
                 keys=None,
-                items=[{"output": _output_text(v), "value": v} for v in values],
+                items=[_seed_item(v, wrapping) for v in values],
             )
         }
     return {
@@ -577,12 +547,16 @@ def _seeded_records(
             keyed=True,
             values=[entry.value for entry in entries],
             keys=[entry.address.record for entry in entries],
-            items=[
-                {"output": _output_text(entry.value), "value": entry.value}
-                for entry in entries
-            ],
+            items=[_seed_item(entry.value, wrapping) for entry in entries],
         )
     }
+
+
+def _seed_item(value: Any, wrapping: _Wrapping | None) -> Any:
+    """One seed value shaped as the seed node's own item."""
+    if wrapping == "text":
+        return {"output": _output_text(value), "value": value}
+    return {"output": value} if wrapping == "output" else value
 
 
 def _planned_realization(
@@ -625,8 +599,7 @@ def _counted(
 def _unserved_reader_reason(
     runtime_graph: RuntimeGraph, op: RuntimeOp, hit: Sequence[RecordEntry]
 ) -> str | None:
-    """Why a hit is not served: a reader that is not a python step reads it as a
-    non-literal input, or a python step cannot rebuild a declared column."""
+    """Why a hit is not served: a non-python reader, or an unrebuildable column."""
     for reader in runtime_graph.nodes.values():
         if op.node_id not in reader.dependencies:
             continue
