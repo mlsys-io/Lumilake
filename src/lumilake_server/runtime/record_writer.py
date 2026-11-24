@@ -760,9 +760,7 @@ def _inherit_input_keys(
 
 
 def _record_values(response: Any, plan: RecordPlan) -> list[tuple[Any, Any]]:
-    """The values one task produced, in order, each with the result item it
-    came from: ``items`` outputs, the rows a rowwise hosted task groups under
-    each item's ``rows``, or a local rowwise model task's grouped outputs."""
+    """Each value one task produced, in order, with its own result item."""
     payload = response
     if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
         payload = payload["value"]
@@ -785,8 +783,7 @@ def _record_values(response: Any, plan: RecordPlan) -> list[tuple[Any, Any]]:
 
 
 def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
-    """Whether an item holds a local rowwise model task's per-row outputs
-    grouped into one list, one item per input table."""
+    """Whether an item holds a rowwise model task's per-row outputs as one list."""
     return (
         isinstance(plan.op.data_spec, DataFrame)
         and isinstance(item, Mapping)

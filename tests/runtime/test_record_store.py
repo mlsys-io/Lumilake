@@ -428,8 +428,7 @@ _LOCAL = {"task_type": "inference", "items": [{"output": ["LEFT", "RIGHT"]}]}
 
 @pytest.mark.asyncio
 async def test_a_local_rowwise_chat_stores_one_record_per_row() -> None:
-    """A local rowwise chat groups a task's outputs into one item, and each row
-    of that list still stores its own record under its own key."""
+    """A local rowwise chat's grouped item stores one record per row under its key."""
     graph = _paths_graph(task_type="inference", model_spec={}, inference_spec={})
     mark = _node_id(graph, "Mark")
     graph.record_keys[_node_id(graph, "AskX")] = RecordKey(node=mark, path="id")
