@@ -327,9 +327,12 @@ async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
     """A parse step is 1:1, so its rows keep their record keys."""
     payload = _payload()
     payload["ops"].append(_op("P", "ParseOp", inputs=["Mark"], format="json"))
-    rows = {"Mark": _TWO_ROWS, "P": _TWO_ROWS}
+    parsed = {"kind": "x"}
+    failed = {"_fail": {"op": "P", "reason": "boom"}}
+    rows = {"Mark": _TWO_ROWS, "P": [parsed, failed]}
     found = await _store(_runtime_graph(payload), rows)
-    assert [e.address.record for e in found if e.address.op == "P"] == ["a", "b"]
+    stored = [(e.address.record, e.status) for e in found if e.address.op == "P"]
+    assert stored == [("a", "ok"), ("b", "failed")]
 
 
 def test_an_unlisted_workflow_input_keys_from_any_position() -> None:
