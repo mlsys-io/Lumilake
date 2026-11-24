@@ -773,7 +773,7 @@ def _collect_node_records(
             keys=keys,
             items=raw_items[node_id],
         )
-    _inherit_marker_keys(order, plans, runtime_graph, records)
+    _inherit_input_keys(order, plans, runtime_graph, records)
     return records
 
 
@@ -828,27 +828,24 @@ def _declared_rows(
     return matching[0] if len(matching) == 1 else None
 
 
-def _inherit_marker_keys(
+def _inherit_input_keys(
     order: Sequence[str],
     plans: Mapping[str, RecordPlan],
     runtime_graph: RuntimeGraph,
     records: dict[str, NodeRecords],
 ) -> None:
-    """A failed record keeps its address: a marker carries no key of its own,
-    so a keyed node's marker takes the key of the record it replaces, at the
-    same position of the node's one keyed input."""
+    """Every row of a 1:1 node takes its keyed input's key at the same position,
+    when the counts match: a parsed or failed row keeps its input row's address."""
     for node_id in order:
         node_records = records.get(node_id)
         source = _keyed_input(runtime_graph, node_id, plans)
         inherited = None if source is None else records.get(source)
         if node_records is None or node_records.keys is None or inherited is None:
             continue
-        for position, value in enumerate(node_records.values):
-            if node_records.keys[position] is not None:
-                continue
-            if not (is_marker(value) or is_marker(_decoded(value))):
-                continue
-            if inherited.keys is not None and position < len(inherited.keys):
+        if inherited.keys is None or len(inherited.keys) != len(node_records.keys):
+            continue
+        for position, key in enumerate(node_records.keys):
+            if key is None:
                 node_records.keys[position] = inherited.keys[position]
 
 
