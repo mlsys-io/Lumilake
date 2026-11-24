@@ -250,6 +250,31 @@ async def test_a_parse_steps_field_is_served_under_reuse() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
+    """A parse step rerun while its keyed input is served stores under that
+    input's keys, so the next run hits it."""
+    rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
+    parsed = [{"text": row["text"]} for row in rows]
+    text = _PARSE_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
+    planner, graph = _planner(storage), _runtime_graph(changed)
+    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
+    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    served = served_records(plan)
+    await _run(
+        storage, changed, {"Parsed": parsed}, "req-2", graph=dispatched, served=served
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"a", "b"}
+    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
+    assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
+
+
+@pytest.mark.asyncio
 async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
     """A seed op's bare ints serve its chat; a changed chat still holds the seed."""
     graph = _chat_graph(_BASE_ROWS)
