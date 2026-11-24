@@ -15,6 +15,8 @@ from lumilake.log import Logger
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ColumnPlanEntry,
+    DataFrame,
+    NodeRead,
     PythonData,
 )
 from lumilake_server.ops import RecordKey
@@ -25,7 +27,6 @@ from lumilake_server.runtime.record_store import (
     RecordEntry,
     RecordRealization,
     RecordSource,
-    data_spec_dict,
     digest_of,
     entry_digest,
     is_marker,
@@ -294,6 +295,10 @@ def _rewritten(
     served = [node for node in op.dependencies if node in plan.hits]
     if not served:
         return op
+    if isinstance(op.data_spec, DataFrame):
+        seeds = op.data_spec.seeds
+        if isinstance(seeds, NodeRead) and all(node == seeds.node for node in served):
+            return op
     if op.task_type != PYTHON_TASK_TYPE:
         raise ValueError(f"op '{op.node_id}' cannot read a served record")
     spec = op.data_spec
@@ -311,7 +316,7 @@ def _rewritten(
         column = served_column(
             plan.hits[node],
             entry,
-            _wrapped(runtime_graph.nodes[node]),
+            _wrap(runtime_graph.nodes[node]),
         )
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
@@ -324,36 +329,24 @@ _WRAPPED_TASKS = frozenset({"python", "inference"})
 stores unwrapped."""
 
 
-def _wrapped(op: RuntimeOp) -> str | None:
-    """How a producer's items carry their value for a served read: ``output``
-    for an item that holds the value alone, ``text`` for a row step's item,
-    which also holds the typed value under ``value``, or ``None`` with no
-    wrapping."""
+type _Wrapping = Literal["output", "text"]
+
+
+def _wrap(op: RuntimeOp) -> _Wrapping | None:
+    """How a producer's items carry their value: ``text`` for a row step's item,
+    ``output`` for an item that holds the value alone, ``None`` with no wrap."""
     if _typed_row_step(op):
         return "text"
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
-def _served_value(text: Any) -> Any:
-    """The typed value a row step wrote as text: JSON object or array text
-    becomes the value it holds, anything else stays the text."""
-    if not isinstance(text, str):
-        return text
-    try:
-        decoded = json.loads(text)
-    except ValueError:
-        return text
-    return decoded if isinstance(decoded, (dict, list)) else text
-
-
 def _typed_row_step(op: RuntimeOp) -> bool:
-    """Whether the producer is a python step that emits one item per row, with
-    the text under ``output`` and the typed value under ``value``."""
+    """Whether the producer emits one item per row with the typed ``value``."""
     spec = op.data_spec
     return (
         op.task_type == PYTHON_TASK_TYPE
         and isinstance(spec, PythonData)
-        and spec.mode in (None, "row")
+        and spec.mode in (None, "row", "parse")
     )
 
 
@@ -368,7 +361,7 @@ def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
 def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
-    wrapped: bool | str | None,
+    wrapping: _Wrapping | None,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as the worker
     builds it, or ``None`` when the stored form cannot rebuild those items.
@@ -382,11 +375,9 @@ def served_column(
     items: list[Any] = []
     for values in served_lists(entries):
         for item in values:
-            if wrapped == "text":
-                items.append(
-                    {"output": _output_text(item), "value": _served_value(item)}
-                )
-            elif wrapped:
+            if wrapping == "text":
+                items.append({"output": _output_text(item), "value": item})
+            elif wrapping == "output":
                 items.append({"output": item})
             else:
                 items.append(item)
@@ -526,18 +517,24 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
 
 
 def _seeded_records(plan: RecordPlan, decision: ReusePlan) -> dict[str, NodeRecords]:
-    """The planned records a node-bound seed column reads, shaped as the writer
-    reads a finished row step's items: the seed node is a python row step, so it
-    is answered or dispatched before this op decides."""
-    seeds = data_spec_dict(plan.op).get("seeds")
-    if not isinstance(seeds, Mapping):
+    """The planned records a node-bound seed column reads, as a row step's items."""
+    spec = plan.op.data_spec
+    if not isinstance(spec, DataFrame) or not isinstance(spec.seeds, NodeRead):
         return {}
-    node = seeds.get("node")
-    if not isinstance(node, str):
-        return {}
+    node = spec.seeds.node
     entries = decision.hits.get(node)
-    if entries is None or entries[0].address.record is None:
+    if entries is None:
         return {}
+    if entries[0].address.record is None:
+        values = list(entries[0].value)
+        return {
+            node: NodeRecords(
+                keyed=False,
+                values=values,
+                keys=None,
+                items=[{"output": _output_text(v), "value": v} for v in values],
+            )
+        }
     return {
         node: NodeRecords(
             keyed=True,
@@ -558,10 +555,9 @@ def _planned_realization(
     source: RecordSource,
     seeded: Mapping[str, NodeRecords],
 ) -> RecordRealization | None:
-    """The realization the record at ``position`` keys with, or ``None`` when a
-    draw no seed reproduces enters it. The writer draws each record from its own
-    seed row, so a per-row seeded op is probed per position."""
-    seeds = data_spec_dict(plan.op).get("seeds")
+    """The realization at ``position``, or ``None`` when no seed reproduces it."""
+    spec = plan.op.data_spec
+    seeds = spec.seeds if isinstance(spec, DataFrame) else None
     if isinstance(seeds, list) and len(seeds) != len(records):
         return None
     node_records = NodeRecords(
@@ -597,9 +593,12 @@ def _unserved_reader_reason(
     for reader in runtime_graph.nodes.values():
         if op.node_id not in reader.dependencies:
             continue
+        spec = reader.data_spec
+        if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
+            if spec.seeds.node == op.node_id:
+                continue
         if reader.task_type != PYTHON_TASK_TYPE:
             return "read by a non-literal op"
-        spec = reader.data_spec
         if not isinstance(spec, PythonData):
             return "value not servable"
         entries = spec.plan
@@ -608,7 +607,7 @@ def _unserved_reader_reason(
         for entry in entries:
             if (
                 entry.node == op.node_id
-                and served_column(hit, entry, _wrapped(op)) is None
+                and served_column(hit, entry, _wrap(op)) is None
             ):
                 return "value not servable"
     return None

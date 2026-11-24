@@ -1916,9 +1916,9 @@ async def _submit_dynamic_child(
     """Create and dispatch one dynamic round as a child job, returning its id.
 
     The caller must check the child record's status after this returns, because
-    ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this
-    round's expansion cleared; ``semantic_round`` is the chain round a stored
-    record's round comes from, defaulting to ``round_index``.
+    ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this round's
+    expansion cleared; ``semantic_round`` is the chain round a stored record's round
+    comes from, defaulting to ``round_index``.
     """
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
