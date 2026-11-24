@@ -215,6 +215,31 @@ async def test_a_chat_op_hits_on_its_record_keys(
 
 
 @pytest.mark.asyncio
+async def test_a_served_local_chat_keeps_its_grouped_item_shape() -> None:
+    """A served local rowwise chat answers its reader with the live grouped
+    item, one ``output`` list holding every row's reply, not one item per row."""
+    graph = _chat_graph(_BASE_ROWS)
+    join = _node(graph, "Join")
+    replies = [row["id"] for row in _BASE_ROWS]
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-1",
+        graph=graph,
+        items={"Join": [{"output": replies}]},
+    )
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None)
+    assert not any(n == join for n in dispatched.nodes)
+    final = dispatched.nodes[_node(graph, "Final")]
+    assert isinstance(final.data_spec, PythonData)
+    (entry,) = final.data_spec.plan
+    assert entry.values == [["a", "b"]]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "value",
     [7, True, None, '{"a": 1}', {"a": 1}, ["a"], "plain", 0.5],

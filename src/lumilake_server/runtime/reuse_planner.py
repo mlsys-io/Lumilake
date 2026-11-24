@@ -310,10 +310,12 @@ def _rewritten(
         if node is None or node not in plan.hits:
             rewritten.append(entry)
             continue
+        producer = runtime_graph.nodes[node]
         column = served_column(
             plan.hits[node],
             entry,
-            _wrap(runtime_graph.nodes[node]),
+            _wrap(producer),
+            _grouped_items(producer),
         )
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
@@ -336,23 +338,32 @@ def _wrap(op: RuntimeOp) -> _Wrapping | None:
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
-def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
-    """A hit producer's item outputs, one list per keyed row or per whole-op value."""
-    if entries[0].address.record is not None:
-        return [[entry.value] for entry in entries]
-    return [[output] for output in entries[0].value]
+def _grouped_items(op: RuntimeOp) -> bool:
+    """Whether a local rowwise chat groups every row's reply into one item."""
+    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
+
+
+def served_lists(entries: Sequence[RecordEntry], grouped: bool) -> list[list[Any]]:
+    """A hit producer's item outputs: one list per keyed row, one whole-op value,
+    or every keyed row folded into the one grouped list a local chat emits."""
+    if entries[0].address.record is None:
+        return [[output] for output in entries[0].value]
+    if grouped:
+        return [[[entry.value for entry in entries]]]
+    return [[entry.value] for entry in entries]
 
 
 def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
     wrapping: _Wrapping | None,
+    grouped: bool = False,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
         return None
     items: list[Any] = []
-    for values in served_lists(entries):
+    for values in served_lists(entries, grouped):
         for item in values:
             if wrapping == "text":
                 items.append({"output": _output_text(item), "value": item})
@@ -617,7 +628,7 @@ def _unserved_reader_reason(
         for entry in entries:
             if (
                 entry.node == op.node_id
-                and served_column(hit, entry, _wrap(op)) is None
+                and served_column(hit, entry, _wrap(op), _grouped_items(op)) is None
             ):
                 return "value not servable"
     return None
