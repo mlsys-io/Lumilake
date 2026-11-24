@@ -10,7 +10,7 @@ Pass the format with the CLI `--format` option or the `Workflow-Format` HTTP hea
 
 ## YAML Structure
 
-A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, required `ops`, and optional `outputs`.
+A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, optional `functions`, required `ops`, and optional `outputs`.
 
 ```yaml
 name: example
@@ -56,6 +56,24 @@ ops:
 Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
+
+### Shared functions (`functions:` and `uses:`)
+
+The top-level `functions:` mapping holds Python source keyed by name, and a `LambdaOp`'s `uses:` list names the blocks it runs. Each entry is one or more top-level `def`s, classes, imports, assignments or compound statements.
+
+```yaml
+functions:
+  seed: |
+    def seed_value(row):
+        return row["name"]
+
+ops:
+  - {id: first, op: LambdaOp, inputs: [rows], fn_name: seed_value, uses: [seed]}
+```
+
+A block is appended after the op's `code`, or becomes its whole code when `code` is absent, and the op behaves as if that source were written in it. `uses` needs a top-level `def`, so it cannot pair with a lambda-expression `code`.
+
+A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where only a module docstring may follow the `def`, so a shared block is refused there. Submission is refused, naming the op and the function, when `uses` names an undefined function, names one twice, sits on a non-`LambdaOp`, a `functions:` entry does not parse, or two blocks or a block and the op's own code define one name. `functions:` and `uses:` are YAML-only and apply to static workflows.
 
 ## n8n code-node notes
 
