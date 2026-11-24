@@ -137,6 +137,19 @@ ops:
 outputs: [{name: ranked, ref: Rank}]
 """
 
+_PARSE_JOINED = """\
+name: parse-joined
+inputs: {Rows: %s}
+ops:
+  - {id: Mark, op: LambdaOp, inputs: [Rows], mode: row, fn_name: mark,
+     key: {node: Rows, path: id},
+     code: "lambda c: json.dumps({'u': json.loads(c[0][0])['id']})"}
+  - {id: Parsed, op: ParseOp, inputs: [Mark], format: json}
+  - {id: Lit, op: DataOp, data: ['{"u": "p1"}']}
+  - {id: M, op: JoinOp, inputs: [Parsed, Lit], by: u}
+outputs: [{name: merged, ref: M}]
+"""
+
 _LITERAL_GROUPS = """\
 name: literal
 inputs: {K: %s}
@@ -490,6 +503,24 @@ async def test_a_reduce_over_a_workflow_input_reads_the_rows_it_grouped() -> Non
             },
             "Rank",
         )
+
+
+@pytest.mark.asyncio
+async def test_a_marked_join_row_reads_a_parsed_parents_filled_key() -> None:
+    """A join weighing a parse step's rows keys its marked row from that parent's
+    key at the same position, which the keying pass fills first."""
+    text = _PARSE_JOINED % repr([json.dumps({"id": "p1"})])
+    storage = await _write(
+        _graph(text),
+        {
+            "Mark": _items('{"u": "p1"}'),
+            "Parsed": _items({"u": "p1"}),
+            "M": _items({"_fail": {"op": "M", "reason": "boom"}}),
+        },
+    )
+    stored = _records(_entries(storage), "M")
+    assert list(stored) == ["p1"]
+    assert stored["p1"].status == "failed"
 
 
 @pytest.mark.asyncio
