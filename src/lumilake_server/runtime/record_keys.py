@@ -8,7 +8,6 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
-from lumilake_server.data_specs import JoinDescription
 from lumilake_server.runtime.record_store import is_marker, key_text
 
 CHILD_KEY_SEPARATOR = "\x1f"
@@ -48,13 +47,3 @@ def child_key(parent_key: str, child: int) -> str:
     """An expand child's record key: its parent's key and its index among that
     parent's children."""
     return f"{parent_key}{CHILD_KEY_SEPARATOR}{child}"
-
-
-def join_key_paths(join: JoinDescription) -> list[str]:
-    """The paths a join's rows are keyed by: its ``by``, one path or a composite."""
-    return list(join.by)
-
-
-def join_row_key_paths(join: JoinDescription) -> list[str]:
-    """The paths that keep a broadcast join's rows apart, or nothing without one."""
-    return list(join.row_key or [])

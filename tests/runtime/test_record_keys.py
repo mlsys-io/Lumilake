@@ -352,6 +352,8 @@ async def test_an_unkeyed_attach_source_names_every_join_row() -> None:
     ]
     assert positions == [0, 0, 0, 0]
     assert _attach_value_position(source, values, 0) == 0
+    keyed = NodeRecords(keyed=True, values=["n1", "n2"], keys=["1", "2"])
+    assert _attach_value_position(source, keyed, 0) is None
 
 
 @pytest.mark.asyncio

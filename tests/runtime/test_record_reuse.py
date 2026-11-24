@@ -133,19 +133,23 @@ async def _run(
     graph: Any = None,
     content_nodes: frozenset[str] = frozenset(),
     task_ids: dict[str, str] | None = None,
+    items: dict[str, list[Any]] | None = None,
 ) -> None:
-    """Write one job's finished tasks the way dispatch does."""
+    """Write one job's finished tasks the way dispatch does; ``items`` are raw items."""
     graph = _runtime_graph(workflow) if graph is None else graph
     tasks = {
         f"task-{n}": {"items": [{"output": r} for r in v]} for n, v in results.items()
     }
+    tasks |= {f"task-{n}": {"items": v} for n, v in (items or {}).items()}
     await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
         job_id=job_id,
         member_job_ids=[job_id],
         round_number=0,
         runtime_graph=graph,
         node_task_map=task_ids
-        or {_node(graph, name): f"task-{name}" for name in results},
+        or {
+            _node(graph, name): f"task-{name}" for name in {**results, **(items or {})}
+        },
         task_worker={},
         results=tasks,
         served=served,
@@ -281,24 +285,10 @@ async def test_a_bare_int_seed_op_is_served_under_reuse() -> None:
         graph.nodes[join], data_spec=spec.model_copy(update={"seeds": seeds})
     )
     graph.record_keys.pop(mark)
-    ints = [{"output": str(n), "value": n} for n in (7, 9)]
+    ints = {"Mark": [{"output": str(n), "value": n} for n in (7, 9)]}
     storage = InMemoryJobStorage()
-    await _run(
-        storage,
-        _FOUR_OPS,
-        {"Mark": _ROWS["Mark"], "Join": _ROWS["Join"]},
-        "req-1",
-        graph=graph,
-    )
-    await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
-        job_id="req-1",
-        member_job_ids=["req-1"],
-        round_number=0,
-        runtime_graph=graph,
-        node_task_map={mark: "task-Mark"},
-        task_worker={},
-        results={"task-Mark": {"items": ints}},
-    )
+    rows = {"Join": _ROWS["Join"]}
+    await _run(storage, _FOUR_OPS, rows, "req-1", graph=graph, items=ints)
     plan, _ = _planned(storage, graph)
     assert _decisions(plan)["Join"] == ("hit", None), _decisions(plan)
     changed = _chat_graph(_BASE_ROWS)
@@ -333,6 +323,29 @@ async def test_a_node_bound_seed_answers_a_chat_op_under_reuse() -> None:
         runtime_graph=graph, round_number=0, job_id="req-2"
     )
     assert _decisions(plan)["Join"] == ("hit", None)
+
+
+@pytest.mark.asyncio
+async def test_a_list_mode_seed_op_is_served_under_reuse() -> None:
+    """A list-mode seed node serves its chat from the list's own item shape."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    read = NodeRead(node=mark, path="value.items.output")
+    graph.nodes[join] = replace(
+        graph.nodes[join], data_spec=spec.model_copy(update={"seeds": read})
+    )
+    assert isinstance(mark_spec := graph.nodes[mark].data_spec, PythonData)
+    graph.nodes[mark] = replace(
+        graph.nodes[mark], data_spec=mark_spec.model_copy(update={"mode": "list"})
+    )
+    graph.record_keys.pop(mark)
+    items = {"Mark": [{"output": 11}, {"output": 12}]}
+    rows = {"Join": _ROWS["Join"]}
+    storage = InMemoryJobStorage()
+    await _run(storage, _FOUR_OPS, rows, "req-1", graph=graph, items=items)
+    plan, _ = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None), _decisions(plan)
 
 
 @pytest.mark.asyncio
@@ -505,7 +518,7 @@ def _model_workflow(path: str | None, code: str) -> Any:
 
 _MODEL_CASES = [
     ("items.output.q", _CODE_PROMPT, _ONE, ["/one"]),
-    (None, _CODE_PROMPT, _ONE, _ONE),
+    (None, _CODE_PROMPT, _ONE, [json.dumps(row) for row in _ONE]),
     ("items.output.q", _LIST_PROMPT, [{"id": "a", "q": ["one"]}], [["one"]]),
     ("items.output", _ROW_LIST_PROMPT, [["one"]], None),
 ]

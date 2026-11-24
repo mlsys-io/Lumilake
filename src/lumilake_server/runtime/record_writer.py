@@ -22,12 +22,7 @@ from lumilake_server.data_specs import (
     PythonData,
 )
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
-from lumilake_server.runtime.record_keys import (
-    child_key,
-    composite_key,
-    join_key_paths,
-    join_row_key_paths,
-)
+from lumilake_server.runtime.record_keys import child_key, composite_key
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -1185,10 +1180,12 @@ def _attach_value_position(
     source_position: int | None,
 ) -> int | None:
     """The attach value paired with one source row, by position or among live rows."""
-    if source is None or values is None or source_position is None:
+    if source is None or values is None:
         return None
-    if not source.keyed:
+    if not values.keyed:
         return 0
+    if not source.keyed or source_position is None:
+        return None
     rows = source.values
     if len(values.values) == len(rows):
         return source_position
@@ -1369,8 +1366,8 @@ def _resolve_plans(
             op=op,
             op_name=names.get(node_id, node_id),
             key_path=_key_path(runtime_graph, node_id, plans),
-            key_paths=[] if join is None else join_key_paths(join),
-            row_key_paths=[] if join is None else join_row_key_paths(join),
+            key_paths=[] if join is None else join.by,
+            row_key_paths=[] if join is None else join.row_key or [],
             join_inputs=join_input_nodes(op),
             join_attaches=join_attach_nodes(op),
             column=retrieval_key_column(op.data_spec),
@@ -1555,8 +1552,13 @@ def _keyed_mode_records(
             continue
         if plan.mode == "join":
             key_paths = _join_row_paths(plan)
+            typed = typed_row_step(plan.op)
             node_records.keys = [
-                (composite_key(_item_output(item), key_paths) if key_paths else None)
+                (
+                    composite_key(_item_output(item, typed), key_paths)
+                    if key_paths
+                    else None
+                )
                 for item in items_of[node_id]
             ]
             continue
@@ -1715,26 +1717,6 @@ def _inherit_marker_keys(
                 node_records.keys[position] = inherited.keys[position]
 
 
-def record_values(response: Any) -> list[Any]:
-    """The values one task produced, in order: ``items`` outputs, or grouped rows."""
-    values: list[Any] = []
-    payload = response
-    if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
-        payload = payload["value"]
-    if not isinstance(payload, Mapping):
-        return []
-    items = payload.get("items")
-    if not isinstance(items, list):
-        return []
-    for item in items:
-        rows = item.get("rows") if isinstance(item, Mapping) else None
-        if isinstance(rows, list):
-            values.extend(_row_value(row) for row in rows)
-        else:
-            values.append(_item_output(item))
-    return values
-
-
 def _record_values(
     response: Any, plan: RecordPlan, items: Sequence[Mapping[str, Any]]
 ) -> list[Any]:
@@ -1743,12 +1725,13 @@ def _record_values(
     values: list[Any] = []
     if plan.column is not None:
         return [row for item in items for row in _table_rows(item.get("table"))]
+    typed = typed_row_step(plan.op)
     for item in items:
         rows = item.get("rows")
         if isinstance(rows, list):
             values.extend(_row_value(row) for row in rows)
         else:
-            values.append(_item_output(item))
+            values.append(_item_output(item, typed))
     return values
 
 
@@ -1768,7 +1751,20 @@ def _row_value(row: Any) -> Any:
     return row if text is None else text
 
 
-def _item_output(item: Any) -> Any:
+def typed_row_step(op: RuntimeOp) -> bool:
+    """Whether ``op`` emits one item per row with the typed value under ``value``."""
+    spec = op.data_spec
+    return (
+        op.task_type == _LAMBDA_TASK_TYPE
+        and isinstance(spec, PythonData)
+        and spec.mode in (None, "row", "parse")
+    )
+
+
+def _item_output(item: Any, typed: bool) -> Any:
+    """The record value an item carries: a row step's typed value, else its output."""
+    if typed and isinstance(item, Mapping) and "value" in item:
+        return item["value"]
     if isinstance(item, Mapping) and "output" in item:
         return item["output"]
     return item
