@@ -11,10 +11,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.record_store import RecordEntry
 from lumilake_server.runtime.record_writer import (
-    NodeRecords,
     RecordWriter,
-    _attach_source_position,
-    _attach_value_position,
     read_entry,
     read_index,
 )
@@ -64,6 +61,18 @@ ops:
   - {id: Labels, op: LambdaOp, inputs: [Docs], mode: row, fn_name: read,
      key: {node: Docs, path: id}, code: "lambda c: json.loads(c[0])"}
   - {id: M, op: JoinOp, inputs: [Cases, Labels], by: id}
+outputs: [{name: merged, ref: M}]
+"""
+
+_ATTACHED_UNKEYED = """\
+name: attached-unkeyed
+inputs: {Rows: %s}
+ops:
+  - {id: S, op: LambdaOp, inputs: [Rows], mode: list, fn_name: read,
+     code: "lambda c: [json.loads(t) for t in c]"}
+  - {id: Tag, op: LambdaOp, inputs: [S], mode: row, fn_name: tag,
+     key: {node: S, path: id}, code: "lambda c: 'n'"}
+  - {id: M, op: JoinOp, inputs: [S, Tag], by: id, attach: {tag: Tag}}
 outputs: [{name: merged, ref: M}]
 """
 
@@ -342,18 +351,17 @@ async def test_a_joins_first_input_is_the_one_its_columns_name_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_unkeyed_attach_source_names_every_join_row() -> None:
-    """An unkeyed source names its whole-op record at every join row."""
-    source = NodeRecords(keyed=False, values=["a", "b"], keys=None)
-    values = NodeRecords(keyed=False, values=["a", "b"], keys=None)
-    positions = [
-        _attach_source_position(source, {}, position, None, False)
-        for position in range(4)
-    ]
-    assert positions == [0, 0, 0, 0]
-    assert _attach_value_position(source, values, 0) == 0
-    keyed = NodeRecords(keyed=True, values=["n1", "n2"], keys=["1", "2"])
-    assert _attach_value_position(source, keyed, 0) is None
+async def test_an_unkeyed_attach_source_names_every_value_record() -> None:
+    """A keyed value over an unkeyed source names all its records at each row."""
+    rows = [{"id": 1}, {"id": 2}]
+    graph = _graph(_ATTACHED_UNKEYED % _rows_text(rows))
+    tasks = {"S": _items(*rows), "Tag": _items("n", "m"), "M": _items(*rows)}
+    tag_digests = {
+        entry.digest for entry in (await _records_of(graph, tasks, "Tag")).values()
+    }
+    assert len(tag_digests) == 2
+    joined = await _records_of(graph, tasks, "M")
+    assert all(tag_digests <= set(entry.input_digests) for entry in joined.values())
 
 
 @pytest.mark.asyncio

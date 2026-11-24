@@ -1150,12 +1150,7 @@ def _attach_records(
                 found.append(record)
         if values is None:
             continue
-        if source is not None and not source.keyed and values.keyed:
-            positions: Sequence[int] = range(len(values.values))
-        else:
-            value_position = _attach_value_position(source, values, source_position)
-            positions = [] if value_position is None else [value_position]
-        for at in positions:
+        for at in _attach_value_positions(source, values, source_position):
             record = values.identity_at(at, round_number)
             if record is not None:
                 found.append(record)
@@ -1179,23 +1174,23 @@ def _attach_source_position(
     return None if key is None else index.get(key)
 
 
-def _attach_value_position(
+def _attach_value_positions(
     source: NodeRecords | None,
-    values: NodeRecords | None,
+    values: NodeRecords,
     source_position: int | None,
-) -> int | None:
-    """The attach value paired with one source row, by position or among live rows."""
-    if source is None or values is None:
-        return None
+) -> Sequence[int]:
+    """The attach value records one row names; every one over an unkeyed source."""
     if not values.keyed:
-        return 0
-    if not source.keyed or source_position is None:
-        return None
+        return [0]
+    if source is not None and not source.keyed:
+        return range(len(values.values))
+    if source is None or source_position is None:
+        return []
     rows = source.values
     if len(values.values) == len(rows):
-        return source_position
+        return [source_position]
     live = [index for index, row in enumerate(rows) if not _is_marker_row(row)]
-    return None if source_position not in live else live.index(source_position)
+    return [] if source_position not in live else [live.index(source_position)]
 
 
 def _is_marker_row(row: Any) -> bool:
