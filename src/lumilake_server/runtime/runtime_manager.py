@@ -53,6 +53,7 @@ from lumilake_server.runtime.record_writer import (
     RecordWriter,
     content_addressed,
     record_values,
+    typed_row_step,
 )
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
@@ -321,7 +322,7 @@ def _read_back_records(
         response = results.get(task_id)
         if response is None:
             continue
-        values = record_values(response)
+        values = record_values(response, typed_row_step(runtime_graph.nodes[node_id]))
         key_path = runtime_graph.record_keys.get(node_id)
         records[node_id] = NodeRecords(
             keyed=key_path is not None,

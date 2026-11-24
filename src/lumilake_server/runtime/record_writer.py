@@ -9,6 +9,7 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
+from lumilake_server.data_specs import PythonData
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -754,7 +755,7 @@ def _collect_node_records(
         response = results.get(task_id)
         if response is None or plans.get(node_id) is None:
             continue
-        found = _record_values(response)
+        found = _record_values(response, typed_row_step(runtime_graph.nodes[node_id]))
         produced[node_id] = [value for value, _ in found]
         raw_items[node_id] = [item for _, item in found]
     records: dict[str, NodeRecords] = {}
@@ -851,12 +852,12 @@ def _inherit_marker_keys(
                 node_records.keys[position] = inherited.keys[position]
 
 
-def record_values(response: Any) -> list[Any]:
+def record_values(response: Any, typed: bool) -> list[Any]:
     """The values one task produced, in order: ``items`` outputs, or grouped rows."""
-    return [value for value, _ in _record_values(response)]
+    return [value for value, _ in _record_values(response, typed)]
 
 
-def _record_values(response: Any) -> list[tuple[Any, Any]]:
+def _record_values(response: Any, typed: bool) -> list[tuple[Any, Any]]:
     """The values one task produced, in order, each with its result item."""
     payload = response
     if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
@@ -872,7 +873,7 @@ def _record_values(response: Any) -> list[tuple[Any, Any]]:
         if isinstance(rows, list):
             found.extend((_row_value(row), row) for row in rows)
         else:
-            found.append((_item_output(item), item))
+            found.append((_item_output(item, typed), item))
     return found
 
 
@@ -892,7 +893,20 @@ def _row_value(row: Any) -> Any:
     return row if text is None else text
 
 
-def _item_output(item: Any) -> Any:
+def typed_row_step(op: RuntimeOp) -> bool:
+    """Whether ``op`` emits one item per row with the typed value under ``value``."""
+    spec = op.data_spec
+    return (
+        op.task_type == _LAMBDA_TASK_TYPE
+        and isinstance(spec, PythonData)
+        and spec.mode in (None, "row", "parse")
+    )
+
+
+def _item_output(item: Any, typed: bool) -> Any:
+    """The record value an item carries: a row step's typed value, else its output."""
+    if typed and isinstance(item, Mapping) and "value" in item:
+        return item["value"]
     if isinstance(item, Mapping) and "output" in item:
         return item["output"]
     return item
