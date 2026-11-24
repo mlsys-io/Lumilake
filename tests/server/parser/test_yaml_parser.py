@@ -672,3 +672,13 @@ def test_messages_column_is_refused_beside_prompt_fields_and_outside_chat(
     with pytest.raises(ValueError, match=message):
         graph_dict = parse_yaml_payload(payload)["messages_column"]["graph"]
         Graph.from_json(graph_dict)
+
+
+def test_column_without_data_or_node_names_the_field() -> None:
+    """A column with neither ``data`` nor ``node`` is refused, naming the field."""
+    payload = _messages_payload(
+        messages=[{"role": "user", "content": ""}],
+        rowwise_columns=[{"label": "topic"}],
+    )
+    with pytest.raises(ValueError, match=r"rowwise_columns\[0\]\.node"):
+        parse_yaml_payload(payload)

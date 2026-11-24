@@ -2,7 +2,16 @@
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+)
+
+from lumilake_server.common import InputRef
 
 PYTHON_TASK_TYPE = "python"
 RETRIEVAL_TASK_TYPE = "data_retrieval"
@@ -101,6 +110,55 @@ class Column(DataSpecModel):
     data: DataFrame | ListData | None = None
     node: str | None = None
     path: str | None = None
+    input_ref: InputRef | None = None
+
+    @field_serializer("input_ref")
+    def _keep_ref_path(self, value: InputRef | None) -> Any:
+        """Serialize the ref whole: a dump would drop its null path."""
+        return value
+
+
+class LiteralColumn(Column):
+    """A ``rowwise_columns`` or ``aggregate_table`` entry holding its own list."""
+
+    label: str
+    data: DataFrame | ListData
+    node: None = None
+    path: None = None
+
+
+class NodeColumn(Column):
+    """A rowwise table entry read from a node's output at an optional path."""
+
+    label: str
+    node: str
+    data: None = None
+
+
+ColumnTable = list[LiteralColumn | NodeColumn]
+
+
+_ColumnTableEntry = Annotated[
+    NodeColumn | LiteralColumn, Field(union_mode="left_to_right")
+]
+_COLUMN_TABLE: TypeAdapter[ColumnTable] = TypeAdapter(list[_ColumnTableEntry])
+
+
+def build_column_table(table: Any, field: str) -> ColumnTable | None:
+    """Validate one ``rowwise_columns`` or ``aggregate_table`` table."""
+    if table is None:
+        return None
+    try:
+        return _COLUMN_TABLE.validate_python(table)
+    except ValidationError as exc:
+        error = exc.errors(include_url=False)[0]
+        where = "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error["loc"]
+            if part not in ("NodeColumn", "LiteralColumn")
+        )
+        message = error["msg"].removeprefix("Value error, ")
+        raise ValueError(f"{field}{where}: {message}") from exc
 
 
 class GraphTemplate(DataSpecModel):

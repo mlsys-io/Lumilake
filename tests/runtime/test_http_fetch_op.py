@@ -10,7 +10,7 @@ import yaml
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PythonData, build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -23,7 +23,6 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from tests.support.data_specs import wire
 
 
 @pytest.fixture(autouse=True)
@@ -87,7 +86,7 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
     )
     [node] = [node for node in runtime_graph.nodes.values() if node.task_type == "api"]
 
-    assert wire(node) == {
+    assert node.data_spec.model_dump(exclude_none=True) == {
         "type": "list",
         "items": ["graph retrieval"],
     }
@@ -128,7 +127,7 @@ def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     node = runtime_graph.nodes[fetch.id]
 
-    assert wire(node) == {
+    assert node.data_spec.model_dump(exclude_none=True) == {
         "type": "list",
         "node": retrieval.id,
         "path": "items.table",
@@ -151,7 +150,9 @@ def test_fetch_flattens_a_grouped_upstream_to_one_query_per_row(
             model="org/llm", api=ApiConfig() if upstream == "api" else None
         ),
         rowwise_template="{prompt}",
-        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+        rowwise_columns=build_column_table(
+            [{"label": "prompt", "node": prompt.id, "path": ""}], "rowwise_columns"
+        ),
     )
     fetch = HttpFetchOp("http://fixture.test/search?q={query}", rowwise)
     compiled = Graph.from_ops([as_output("candidates", fetch)]).compile(
