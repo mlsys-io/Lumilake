@@ -2,6 +2,7 @@ import contextlib
 import json
 import struct
 from pathlib import Path
+from typing import Any
 
 import httpx2
 import pytest
@@ -802,7 +803,7 @@ def test_disable_data_profile_drops_supplied_results(
     assert build_calls == [{}]
 
 
-def _gpu_python_graph() -> RuntimeGraph:
+def _gpu_python_graph(gpu: dict[str, Any] | None = None) -> RuntimeGraph:
     graph = _python_graph()
     op = graph.nodes["p1"]
     graph.nodes["p1"] = runtime_op(
@@ -810,7 +811,10 @@ def _gpu_python_graph() -> RuntimeGraph:
         task_type="python",
         backend="python",
         model="",
-        data_spec={**op.data_spec.model_dump(exclude_none=True), "gpu": {"count": 1}},
+        data_spec={
+            **op.data_spec.model_dump(exclude_none=True),
+            "gpu": gpu or {"count": 1},
+        },
         model_spec={},
         inference_spec={},
     )
@@ -840,3 +844,48 @@ def test_halo_optimizer_refuses_a_gpu_python_step_without_a_gpu_python_worker() 
                 "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
             },
         )
+
+
+def _gpu_cards(*names: str) -> dict[str, Any]:
+    return {
+        "devices": [
+            {"name": name, "memory_total_bytes": 24 * 1024**3} for name in names
+        ]
+    }
+
+
+_GPU_PYTHON_PROFILES = {
+    "gpu-small": {
+        "has_gpu": True,
+        "supported_task_types": ["python"],
+        "gpu": _gpu_cards("RTX 4090"),
+    },
+    "gpu-big": {
+        "has_gpu": True,
+        "supported_task_types": ["python"],
+        "gpu": _gpu_cards("H100", "H100"),
+    },
+    "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+}
+
+
+def test_halo_optimizer_pins_a_gpu_python_step_to_a_worker_carrying_the_request() -> (
+    None
+):
+    schedule = HaloOptimizer().generate_schedule(
+        graph=_gpu_python_graph({"count": 2, "type": "H100"}),
+        worker_names=["gpu-small", "gpu-big", "cpu-python"],
+        worker_profiles=_GPU_PYTHON_PROFILES,
+    )
+    assert schedule.worker_assignment["gpu-big"] == ["p1"]
+    assert schedule.worker_assignment["gpu-small"] == []
+
+
+def test_halo_optimizer_refuses_a_gpu_python_step_no_worker_can_carry() -> None:
+    with pytest.raises(RuntimeError, match="Halo optimizer failed") as excinfo:
+        HaloOptimizer().generate_schedule(
+            graph=_gpu_python_graph({"count": 4, "type": "H100"}),
+            worker_names=["gpu-small", "gpu-big", "cpu-python"],
+            worker_profiles=_GPU_PYTHON_PROFILES,
+        )
+    assert "carries the GPUs node 'p1' requests" in str(excinfo.value.__cause__)

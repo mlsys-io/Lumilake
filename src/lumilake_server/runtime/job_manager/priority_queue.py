@@ -15,6 +15,7 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.runtime.worker_capability import (
+    gated_nodes_gpu_requests,
     requires_cpu_worker,
     split_required_task_types,
 )
@@ -278,6 +279,7 @@ class PriorityJobManager(BaseJobManager):
             hardware=self._hardware_from_signature(partition[4]),
             required_task_types=cpu_task_types,
             required_gpu_task_types=gpu_task_types,
+            required_gpu_requests=gated_nodes_gpu_requests(nodes),
         )
 
     def _partition_eligible(

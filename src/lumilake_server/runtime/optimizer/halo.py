@@ -32,6 +32,8 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     fraction_holds_utilization,
     gpu_memory_fraction,
+    profile_fits_gpu_request,
+    python_step_gpu_request,
     python_step_requests_gpu,
     split_required_task_types,
 )
@@ -226,6 +228,7 @@ class HaloOptimizer(BaseOptimizer):
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
                     requires_gpu=python_step_requests_gpu(op.data_spec),
+                    gpu_request=python_step_gpu_request(op.data_spec),
                     raw=raw,
                 )
                 for dep in deps:
@@ -246,7 +249,9 @@ class HaloOptimizer(BaseOptimizer):
                 sum(1 for worker in workers.values() if worker.kind == "gpu"),
                 sum(1 for worker in workers.values() if worker.kind != "gpu"),
             )
-            node_worker_options = self._build_node_worker_options(halo_graph, workers)
+            node_worker_options = self._build_node_worker_options(
+                halo_graph, workers, worker_profiles
+            )
             gpu_worker_ids = tuple(
                 wid for wid, worker in workers.items() if worker.kind == "gpu"
             )
@@ -418,6 +423,7 @@ class HaloOptimizer(BaseOptimizer):
         self,
         graph: GraphSpec,
         workers: Mapping[str, Worker],
+        worker_profiles: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, tuple[str, ...]]:
         gpu_workers = tuple(
             worker_id for worker_id, worker in workers.items() if worker.kind == "gpu"
@@ -449,6 +455,17 @@ class HaloOptimizer(BaseOptimizer):
                     tuple(w for w in tier if node.type in workers[w].task_types)
                     for tier in tiers
                 )
+            if node.gpu_request is not None:
+                tiers = tuple(
+                    tuple(
+                        w
+                        for w in tier
+                        if profile_fits_gpu_request(
+                            worker_profiles.get(w, {}), node.gpu_request
+                        )
+                    )
+                    for tier in tiers
+                )
             utilization = node.gpu_memory_utilization
             if utilization is not None:
                 tiers = tuple(
@@ -464,6 +481,11 @@ class HaloOptimizer(BaseOptimizer):
                 )
             eligible = next((tier for tier in tiers if tier), ())
             if not eligible:
+                if node.gpu_request is not None:
+                    raise ValueError(
+                        f"No GPU worker carries the GPUs node '{node_id}' requests"
+                        f" (gpu={node.gpu_request.model_dump(exclude_none=True)})."
+                    )
                 if utilization is not None:
                     raise ValueError(
                         f"No GPU worker has the memory fraction for node '{node_id}',"

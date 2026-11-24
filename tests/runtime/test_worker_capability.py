@@ -178,3 +178,52 @@ def test_gpu_worker_advertising_ignores_cpu_workers() -> None:
     )
     assert not free.has_gpu_worker_advertising(frozenset({"python"}))
     assert free.has_gpu_worker_advertising(frozenset({"echo"}))
+
+
+_GPU_WITH_H100 = {
+    "has_gpu": True,
+    "supported_task_types": ["python"],
+    "gpu": {"devices": [{"name": "H100", "memory_total_bytes": 24 * 1024**3}]},
+}
+_GPU_WITH_RTX = {
+    "has_gpu": True,
+    "supported_task_types": ["python"],
+    "gpu": {"devices": [{"name": "RTX 4090", "memory_total_bytes": 24 * 1024**3}]},
+}
+
+
+def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
+    return FreeCapacity(
+        cpu_worker_ids=("cpu-python",),
+        gpu_worker_ids=tuple(profiles),
+        profiles={"cpu-python": _PYTHON, **profiles},
+    )
+
+
+def test_gpu_group_skips_a_worker_that_cannot_carry_the_step_s_request() -> None:
+    free = _gpu_free({"gpu-rtx": _GPU_WITH_RTX, "gpu-h100": _GPU_WITH_H100})
+    selected = free.eligible_workers(
+        cpu_group_size=1,
+        gpu_group_size=1,
+        worker_meets_hardware=_meets_everything,
+        hardware=None,
+        required_gpu_requests=(GpuRequest(count=1, type="H100"),),
+    )
+    assert selected is not None
+    assert selected[1] == ["gpu-h100"]
+
+
+def test_gpu_group_waits_when_no_worker_carries_the_step_s_request() -> None:
+    free = _gpu_free({"gpu-rtx": _GPU_WITH_RTX})
+    assert (
+        free.eligible_workers(
+            cpu_group_size=1,
+            gpu_group_size=1,
+            worker_meets_hardware=_meets_everything,
+            hardware=None,
+            required_gpu_requests=(GpuRequest(count=1, type="H100"),),
+        )
+        is None
+    )
+    assert free.has_gpu_worker_carrying((GpuRequest(count=1, type="H100"),)) is False
+    assert free.has_gpu_worker_carrying((GpuRequest(count=1, type="RTX"),))

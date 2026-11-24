@@ -2,6 +2,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from lumilake_server.data_specs import GpuRequest
+
 
 @dataclass(frozen=True, slots=True)
 class DBQuery:
@@ -42,6 +44,7 @@ class Node:
     db_queries: Sequence[DBQuery] = field(default_factory=tuple)
     gpu_memory_utilization: float | None = None
     requires_gpu: bool = False
+    gpu_request: GpuRequest | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 

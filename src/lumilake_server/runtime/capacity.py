@@ -1,11 +1,14 @@
 """Capacity snapshot for capacity-aware batch selection."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     holds_gpu_utilizations,
+    profile_fits_gpu_request,
 )
 
 
@@ -47,6 +50,16 @@ class FreeCapacity:
             for w in self.gpu_worker_ids
         )
 
+    def has_gpu_worker_carrying(self, requests: Sequence[GpuRequest]) -> bool:
+        """True when some GPU worker in this snapshot carries every request."""
+        return any(
+            all(
+                profile_fits_gpu_request(self.profiles.get(w, {}), request)
+                for request in requests
+            )
+            for w in self.gpu_worker_ids
+        )
+
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
         """True when some GPU worker in this snapshot holds every utilization."""
         return any(
@@ -67,6 +80,7 @@ class FreeCapacity:
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
         required_gpu_task_types: frozenset[str] = frozenset(),
+        required_gpu_requests: Sequence[GpuRequest] = (),
     ) -> int:
         """Number of whole dispatches the idle workers can serve at once.
 
@@ -79,8 +93,9 @@ class FreeCapacity:
         each dispatch's group holds an eligible worker advertising all of them,
         so the count is also bounded by the number of such workers, and is
         ``0`` when there is none, no group of that class, or no profiles (the
-        cases in which :meth:`eligible_workers` returns ``None``). ``0`` when no
-        class is claimed.
+        cases in which :meth:`eligible_workers` returns ``None``). The count is
+        ``0`` the same way when no GPU worker carries a step's own
+        ``required_gpu_requests``. ``0`` when no class is claimed.
         """
         eligible_cpu = self._meeting_hardware(
             self.cpu_worker_ids, worker_meets_hardware, hardware
@@ -96,17 +111,26 @@ class FreeCapacity:
             )
             if group_size > 0
         ]
-        for task_types, ids, group_size in (
-            (required_task_types, eligible_cpu, cpu_group_size),
-            (required_gpu_task_types, eligible_gpu, gpu_group_size),
+        for task_types, requests, ids, group_size in (
+            (required_task_types, frozenset(), eligible_cpu, cpu_group_size),
+            (
+                required_gpu_task_types,
+                required_gpu_requests,
+                eligible_gpu,
+                gpu_group_size,
+            ),
         ):
-            if not task_types:
+            if not task_types and not requests:
                 continue
             if group_size < 1 or not self.profiles:
                 return 0
             counts.append(
                 sum(
                     task_types <= advertised_task_types(self.profiles.get(w, {}))
+                    and all(
+                        profile_fits_gpu_request(self.profiles.get(w, {}), request)
+                        for request in requests
+                    )
                     for w in ids
                 )
             )
@@ -135,6 +159,7 @@ class FreeCapacity:
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
         required_gpu_task_types: frozenset[str] = frozenset(),
+        required_gpu_requests: Sequence[GpuRequest] = (),
     ) -> bool:
         """True when enough idle workers of each class also meet ``hardware``.
 
@@ -151,6 +176,7 @@ class FreeCapacity:
                 hardware=hardware,
                 required_task_types=required_task_types,
                 required_gpu_task_types=required_gpu_task_types,
+                required_gpu_requests=required_gpu_requests,
             )
             is not None
         )
@@ -164,18 +190,21 @@ class FreeCapacity:
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
         required_gpu_task_types: frozenset[str] = frozenset(),
+        required_gpu_requests: Sequence[GpuRequest] = (),
         required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
         ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
         worker advertising a required task type, no GPU worker advertising a required
-        GPU task type, or no GPU worker whose memory fraction holds the batch's largest
-        utilization."""
+        GPU task type or carrying the step's own GPU request, or no GPU worker whose
+        memory fraction holds the batch's largest utilization."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
             return None
-        if required_gpu_task_types and (gpu_group_size < 1 or not self.profiles):
+        if (required_gpu_task_types or required_gpu_requests) and (
+            gpu_group_size < 1 or not self.profiles
+        ):
             return None
         fraction_gate = required_gpu_utilizations if gpu_group_size > 0 else frozenset()
         if fraction_gate and not self.profiles:
@@ -206,13 +235,18 @@ class FreeCapacity:
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
         selected_gpu = eligible_gpu[:gpu_group_size]
-        if required_gpu_task_types:
-            capable_gpu = [
-                w
-                for w in eligible_gpu
-                if required_gpu_task_types
-                <= advertised_task_types(self.profiles.get(w, {}))
-            ]
+        if required_gpu_task_types or required_gpu_requests:
+
+            def capable_gpu_worker(worker: str) -> bool:
+                profile = self.profiles.get(worker, {})
+                return required_gpu_task_types <= advertised_task_types(
+                    profile
+                ) and all(
+                    profile_fits_gpu_request(profile, request)
+                    for request in required_gpu_requests
+                )
+
+            capable_gpu = [w for w in eligible_gpu if capable_gpu_worker(w)]
             if not capable_gpu:
                 return None
             if not any(w in capable_gpu for w in selected_gpu):

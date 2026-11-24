@@ -7,9 +7,16 @@ fraction of a card its engine reserves. An optimizer compares the two.
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, DataSpecModel, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    DataSpecModel,
+    GpuRequest,
+    PythonData,
+)
+from lumilake_server.utils.utils import parse_memory_to_bytes
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
@@ -37,9 +44,102 @@ def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
     return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
 
 
+def python_step_gpu_request(data_spec: DataSpecModel) -> GpuRequest | None:
+    """The GPU request a python step's own data spec carries, if any."""
+    if isinstance(data_spec, PythonData):
+        return data_spec.gpu
+    return None
+
+
 def python_step_requests_gpu(data_spec: DataSpecModel) -> bool:
     """True when a python step's own data spec asks FlowMesh for GPUs."""
-    return isinstance(data_spec, PythonData) and data_spec.gpu is not None
+    return python_step_gpu_request(data_spec) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class GpuDevice:
+    """One card a worker reports: its name and total memory, either may be unknown."""
+
+    name: str | None = None
+    memory_total_bytes: int | None = None
+
+
+def gpu_devices(profile: Mapping[str, Any]) -> tuple[GpuDevice, ...] | None:
+    """The cards a raw worker profile lists, ``None`` when it reports no detail."""
+    devices = (profile.get("gpu") or {}).get("devices")
+    if not isinstance(devices, list):
+        return None
+    listed: list[GpuDevice] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        name = device.get("name")
+        vram = device.get("memory_total_bytes")
+        listed.append(
+            GpuDevice(
+                name=name if isinstance(name, str) else None,
+                memory_total_bytes=vram if isinstance(vram, int) else None,
+            )
+        )
+    return tuple(listed)
+
+
+def gpu_request_fits(
+    devices: tuple[GpuDevice, ...] | None, request: GpuRequest | None
+) -> bool:
+    """True when ``devices`` hold ``request``: count, type substring and memory.
+
+    ``None`` devices mean the worker reports no per-device detail, so the check
+    degrades to "no constraint" rather than a stall.
+    """
+    if request is None:
+        return True
+    if devices is None:
+        return True
+    matches = 0
+    for device in devices:
+        if not device_matches_request(device, request):
+            continue
+        matches += 1
+    return matches >= request.count
+
+
+def profile_fits_gpu_request(
+    profile: Mapping[str, Any], request: GpuRequest | None
+) -> bool:
+    """True when a raw worker profile is a GPU worker that carries ``request``."""
+    if request is None:
+        return True
+    if not profile.get("has_gpu"):
+        return False
+    return gpu_request_fits(gpu_devices(profile), request)
+
+
+def device_matches_request(device: GpuDevice, request: GpuRequest) -> bool:
+    """True when one card meets the request's type substring and memory floor."""
+    wanted = request.type.strip().lower() if request.type else None
+    if wanted and device.name is not None and wanted not in device.name.lower():
+        return False
+    required_bytes = parse_memory_to_bytes(request.memory) if request.memory else None
+    return (
+        required_bytes is None
+        or device.memory_total_bytes is None
+        or device.memory_total_bytes >= required_bytes
+    )
+
+
+def gated_nodes_gpu_requests(
+    nodes: Iterable[tuple[str, DataSpecModel]],
+) -> tuple[GpuRequest, ...]:
+    """The distinct GPU requests among the python steps of ``nodes``, in order."""
+    requests: dict[str, GpuRequest] = {}
+    for task_type, data_spec in nodes:
+        if task_type not in CAPABILITY_GATED_TASK_TYPES:
+            continue
+        request = python_step_gpu_request(data_spec)
+        if request is not None:
+            requests.setdefault(request.model_dump_json(), request)
+    return tuple(requests.values())
 
 
 def split_required_task_types(
