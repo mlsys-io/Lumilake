@@ -17,7 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import PythonData, RetrievalData
+from lumilake_server.data_specs import RetrievalData
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -32,7 +32,8 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     fraction_holds_utilization,
     gpu_memory_fraction,
-    required_task_types,
+    python_step_requests_gpu,
+    split_required_task_types,
 )
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
@@ -224,7 +225,7 @@ class HaloOptimizer(BaseOptimizer):
                     outputs=tuple(),
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
-                    requires_gpu=self._python_step_requests_gpu(op),
+                    requires_gpu=python_step_requests_gpu(op.data_spec),
                     raw=raw,
                 )
                 for dep in deps:
@@ -387,7 +388,7 @@ class HaloOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
     ) -> dict[str, Worker]:
         requires_gpu = any(
-            self._is_gpu_backend(op.backend) or self._python_step_requests_gpu(op)
+            self._is_gpu_backend(op.backend) or python_step_requests_gpu(op.data_spec)
             for op in graph.nodes.values()
         )
 
@@ -983,10 +984,6 @@ class HaloOptimizer(BaseOptimizer):
             )
 
     @staticmethod
-    def _python_step_requests_gpu(op: RuntimeOp) -> bool:
-        return isinstance(op.data_spec, PythonData) and op.data_spec.gpu is not None
-
-    @staticmethod
     def _is_gpu_backend(backend: str) -> bool:
         return backend.strip().lower() in {
             "vllm",
@@ -995,9 +992,8 @@ class HaloOptimizer(BaseOptimizer):
             "omni",
         }
 
-    @classmethod
+    @staticmethod
     def _validate_task_type_workers(
-        cls,
         graph: RuntimeGraph,
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, Mapping[str, Any]],
@@ -1009,7 +1005,10 @@ class HaloOptimizer(BaseOptimizer):
         task types in ``CAPABILITY_GATED_TASK_TYPES`` are checked; other nodes
         are placed by engine alone.
         """
-        for on_gpu in (False, True):
+        cpu_types, gpu_types = split_required_task_types(
+            (op.task_type, op.data_spec) for op in graph.nodes.values()
+        )
+        for on_gpu, needed in ((False, cpu_types), (True, gpu_types)):
             names = [
                 name
                 for name in worker_names
@@ -1018,15 +1017,12 @@ class HaloOptimizer(BaseOptimizer):
             advertised: set[str] = set()
             for name in names:
                 advertised |= advertised_task_types(worker_profiles.get(name, {}))
-            ops = {
-                node_id: op
-                for node_id, op in graph.nodes.items()
-                if cls._python_step_requests_gpu(op) == on_gpu
-            }
-            needed = required_task_types(op.task_type for op in ops.values())
             for task_type in sorted(needed - advertised):
                 nodes = sorted(
-                    node_id for node_id, op in ops.items() if op.task_type == task_type
+                    node_id
+                    for node_id, op in graph.nodes.items()
+                    if op.task_type == task_type
+                    and python_step_requests_gpu(op.data_spec) == on_gpu
                 )
                 kind = "GPU" if on_gpu else "CPU"
                 raise ValueError(

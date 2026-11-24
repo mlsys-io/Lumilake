@@ -9,12 +9,12 @@ import math
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from lumilake_server.data_specs import PYTHON_TASK_TYPE
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, DataSpecModel, PythonData
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
-"""Task types that run on a CPU worker only (HALO's CPU-only engines)."""
+"""Task types that run on a CPU worker, unless the node asks for GPUs."""
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -35,6 +35,32 @@ def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
 def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
     """The gated task types among ``task_types``."""
     return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
+
+
+def python_step_requests_gpu(data_spec: DataSpecModel) -> bool:
+    """True when a python step's own data spec asks FlowMesh for GPUs."""
+    return isinstance(data_spec, PythonData) and data_spec.gpu is not None
+
+
+def split_required_task_types(
+    nodes: Iterable[tuple[str, DataSpecModel]],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """The gated task types ``nodes`` need from the CPU group and from the GPU group.
+
+    ``nodes`` yields a ``(task_type, data_spec)`` pair per node. A python step
+    that requests GPUs runs on a GPU worker, so its task type is a GPU
+    requirement; every other gated step is a CPU requirement.
+    """
+    cpu_types: set[str] = set()
+    gpu_types: set[str] = set()
+    for task_type, data_spec in nodes:
+        if task_type not in CAPABILITY_GATED_TASK_TYPES:
+            continue
+        if python_step_requests_gpu(data_spec):
+            gpu_types.add(task_type)
+        else:
+            cpu_types.add(task_type)
+    return frozenset(cpu_types), frozenset(gpu_types)
 
 
 def model_spec_gpu_memory_utilization(model_spec: Mapping[str, Any]) -> float | None:
@@ -67,13 +93,15 @@ def holds_gpu_utilizations(
     )
 
 
-def requires_cpu_worker(task_types: Iterable[str]) -> bool:
-    """True when any of ``task_types`` runs on a CPU worker only.
+def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
+    """True when any of ``nodes`` needs a CPU worker.
 
-    A batch with such a node claims a CPU worker even when the configured CPU
-    group size is zero.
+    ``nodes`` yields a ``(task_type, data_spec)`` pair per node. A batch with
+    such a node claims a CPU worker even when the configured CPU group size is
+    zero.
     """
     return any(
         (task_type or "").strip().lower() in CPU_ONLY_TASK_TYPES
-        for task_type in task_types
+        and not python_step_requests_gpu(data_spec)
+        for task_type, data_spec in nodes
     )

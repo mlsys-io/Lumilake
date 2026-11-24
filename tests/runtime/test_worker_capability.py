@@ -2,11 +2,13 @@
 
 from typing import Any
 
+from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     required_task_types,
     requires_cpu_worker,
+    split_required_task_types,
 )
 
 
@@ -15,12 +17,33 @@ def test_only_python_is_gated_today() -> None:
     assert required_task_types(["api", "data_retrieval"]) == frozenset()
 
 
+def test_split_puts_a_gpu_python_step_on_the_gpu_side() -> None:
+    nodes = [
+        ("python", PythonData(code="x", gpu=GpuRequest(count=1))),
+        ("data_retrieval", EmptyData()),
+    ]
+    assert split_required_task_types(nodes) == (frozenset(), frozenset({"python"}))
+
+
+def test_split_keeps_a_plain_python_step_on_the_cpu_side() -> None:
+    nodes = [("python", PythonData(code="x")), ("python", EmptyData())]
+    assert split_required_task_types(nodes) == (frozenset({"python"}), frozenset())
+
+
 def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
-    assert requires_cpu_worker(["inference", "api"])
-    assert requires_cpu_worker([" Data_Retrieval "])
-    assert requires_cpu_worker(["python"])
-    assert not requires_cpu_worker(["inference", "embedding", "diffusion"])
+    assert requires_cpu_worker([("inference", EmptyData()), ("api", EmptyData())])
+    assert requires_cpu_worker([(" Data_Retrieval ", EmptyData())])
+    assert requires_cpu_worker([("python", PythonData(code="x"))])
+    assert not requires_cpu_worker(
+        [("inference", EmptyData()), ("embedding", EmptyData())]
+    )
     assert not requires_cpu_worker([])
+
+
+def test_requires_cpu_worker_is_false_for_a_gpu_python_step() -> None:
+    assert not requires_cpu_worker(
+        [("python", PythonData(code="x", gpu=GpuRequest(count=1)))]
+    )
 
 
 def test_advertised_task_types_reads_the_profile() -> None:
@@ -110,3 +133,48 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     )
     assert not free.has_cpu_worker_advertising(frozenset({"python"}))
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
+
+
+def test_gpu_group_swaps_in_a_worker_that_advertises_the_gpu_task_type() -> None:
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-python",),
+        gpu_worker_ids=("gpu-vllm", "gpu-python"),
+        profiles={"cpu-python": _PYTHON, "gpu-vllm": _PLAIN, "gpu-python": _PYTHON},
+    )
+    selected = free.eligible_workers(
+        cpu_group_size=1,
+        gpu_group_size=1,
+        worker_meets_hardware=_meets_everything,
+        hardware=None,
+        required_gpu_task_types=frozenset({"python"}),
+    )
+    assert selected is not None
+    assert selected[1] == ["gpu-python"]
+
+
+def test_gpu_group_waits_when_no_gpu_worker_advertises_the_task_type() -> None:
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-python",),
+        gpu_worker_ids=("gpu-vllm",),
+        profiles={"cpu-python": _PYTHON, "gpu-vllm": _PLAIN},
+    )
+    assert (
+        free.eligible_workers(
+            cpu_group_size=1,
+            gpu_group_size=1,
+            worker_meets_hardware=_meets_everything,
+            hardware=None,
+            required_gpu_task_types=frozenset({"python"}),
+        )
+        is None
+    )
+
+
+def test_gpu_worker_advertising_ignores_cpu_workers() -> None:
+    free = FreeCapacity(
+        cpu_worker_ids=("cpu-python",),
+        gpu_worker_ids=("gpu-vllm",),
+        profiles={"cpu-python": _PYTHON, "gpu-vllm": _PLAIN},
+    )
+    assert not free.has_gpu_worker_advertising(frozenset({"python"}))
+    assert free.has_gpu_worker_advertising(frozenset({"echo"}))

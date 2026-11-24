@@ -40,6 +40,13 @@ class FreeCapacity:
             for w in self.cpu_worker_ids
         )
 
+    def has_gpu_worker_advertising(self, task_types: frozenset[str]) -> bool:
+        """True when some GPU worker in this snapshot advertises every task type."""
+        return any(
+            task_types <= advertised_task_types(self.profiles.get(w, {}))
+            for w in self.gpu_worker_ids
+        )
+
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
         """True when some GPU worker in this snapshot holds every utilization."""
         return any(
@@ -59,6 +66,7 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
+        required_gpu_task_types: frozenset[str] = frozenset(),
     ) -> int:
         """Number of whole dispatches the idle workers can serve at once.
 
@@ -66,12 +74,13 @@ class FreeCapacity:
         GPU workers (a class with group size ``0`` is not claimed). The count is
         the smallest ``eligible // group size`` over the claimed classes, where
         eligible workers meet ``hardware`` when the snapshot carries profiles.
-        ``required_task_types`` are the gated task types the dispatch needs:
-        each dispatch's CPU group must hold an eligible worker advertising all
-        of them, so the count is also bounded by the number of such workers, and
-        is ``0`` when there is none, no CPU group, or no profiles (the cases in
-        which :meth:`eligible_workers` returns ``None``). ``0`` when no class is
-        claimed.
+        ``required_task_types`` are the gated task types the CPU group must
+        cover and ``required_gpu_task_types`` those the GPU group must cover:
+        each dispatch's group holds an eligible worker advertising all of them,
+        so the count is also bounded by the number of such workers, and is
+        ``0`` when there is none, no group of that class, or no profiles (the
+        cases in which :meth:`eligible_workers` returns ``None``). ``0`` when no
+        class is claimed.
         """
         eligible_cpu = self._meeting_hardware(
             self.cpu_worker_ids, worker_meets_hardware, hardware
@@ -87,14 +96,18 @@ class FreeCapacity:
             )
             if group_size > 0
         ]
-        if required_task_types:
-            if cpu_group_size < 1 or not self.profiles:
+        for task_types, ids, group_size in (
+            (required_task_types, eligible_cpu, cpu_group_size),
+            (required_gpu_task_types, eligible_gpu, gpu_group_size),
+        ):
+            if not task_types:
+                continue
+            if group_size < 1 or not self.profiles:
                 return 0
             counts.append(
                 sum(
-                    required_task_types
-                    <= advertised_task_types(self.profiles.get(w, {}))
-                    for w in eligible_cpu
+                    task_types <= advertised_task_types(self.profiles.get(w, {}))
+                    for w in ids
                 )
             )
         return min(counts, default=0)
@@ -120,6 +133,8 @@ class FreeCapacity:
         gpu_group_size: int,
         worker_meets_hardware: Any,
         hardware: Any,
+        required_task_types: frozenset[str] = frozenset(),
+        required_gpu_task_types: frozenset[str] = frozenset(),
     ) -> bool:
         """True when enough idle workers of each class also meet ``hardware``.
 
@@ -134,6 +149,8 @@ class FreeCapacity:
                 gpu_group_size=gpu_group_size,
                 worker_meets_hardware=worker_meets_hardware,
                 hardware=hardware,
+                required_task_types=required_task_types,
+                required_gpu_task_types=required_gpu_task_types,
             )
             is not None
         )
@@ -146,15 +163,19 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
+        required_gpu_task_types: frozenset[str] = frozenset(),
         required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
         ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
-        worker advertising a required task type, or no GPU worker whose memory fraction
-        holds the batch's largest utilization."""
+        worker advertising a required task type, no GPU worker advertising a required
+        GPU task type, or no GPU worker whose memory fraction holds the batch's largest
+        utilization."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
+            return None
+        if required_gpu_task_types and (gpu_group_size < 1 or not self.profiles):
             return None
         fraction_gate = required_gpu_utilizations if gpu_group_size > 0 else frozenset()
         if fraction_gate and not self.profiles:
@@ -185,6 +206,17 @@ class FreeCapacity:
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
         selected_gpu = eligible_gpu[:gpu_group_size]
+        if required_gpu_task_types:
+            capable_gpu = [
+                w
+                for w in eligible_gpu
+                if required_gpu_task_types
+                <= advertised_task_types(self.profiles.get(w, {}))
+            ]
+            if not capable_gpu:
+                return None
+            if not any(w in capable_gpu for w in selected_gpu):
+                selected_gpu[-1] = capable_gpu[0]
         if fraction_gate:
             # A worker's memory fraction holds every utilization at or below it, so a
             # group covering the largest one covers them all.
