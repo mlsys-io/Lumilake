@@ -324,16 +324,34 @@ async def test_failed_record_keys_on_its_own_inputs(graph: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_parse_step_keys_each_row_from_its_keyed_input() -> None:
-    """A parse step is 1:1, so its rows keep their record keys."""
+async def test_a_1_to_1_node_takes_its_input_keys_only_when_it_declares_none() -> None:
+    """A parse step keeps its keyed input's keys; a node with its own key does
+    not take them for a row that lacks the field it declares."""
     payload = _payload()
     payload["ops"].append(_op("P", "ParseOp", inputs=["Mark"], format="json"))
+    payload["ops"].append(
+        _op(
+            "Pick",
+            inputs=["Mark"],
+            fn_name="pick",
+            code="def pick(c):\n    return [{'doc': '2'}, {}]\n",
+            key={"node": "Rows", "path": "doc"},
+        )
+    )
     parsed = {"kind": "x"}
     failed = {"_fail": {"op": "P", "reason": "boom"}}
-    rows = {"Mark": _TWO_ROWS, "P": [parsed, failed]}
+    rows = {"Mark": _TWO_ROWS, "P": [parsed, failed], "Pick": [{"doc": "2"}, {}]}
     found = await _store(_runtime_graph(payload), rows)
-    stored = [(e.address.record, e.status) for e in found if e.address.op == "P"]
-    assert stored == [("a", "ok"), ("b", "failed")]
+    stored = [
+        (e.address.op, e.address.record, e.status)
+        for e in found
+        if e.address.op != "Mark"
+    ]
+    assert stored == [
+        ("P", "a", "ok"),
+        ("P", "b", "failed"),
+        ("Pick", "2", "ok"),
+    ]
 
 
 def test_an_unlisted_workflow_input_keys_from_any_position() -> None:

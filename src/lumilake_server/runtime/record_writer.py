@@ -21,6 +21,7 @@ from lumilake_server.data_specs import (
     JoinDescription,
     PythonData,
 )
+from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import child_key, composite_key
 from lumilake_server.runtime.record_store import (
@@ -258,10 +259,8 @@ class RecordWriter:
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order)
         records, items_of = _collect_node_records(
-            runtime_graph, plans, order, node_task_map, results
+            runtime_graph, plans, order, node_task_map, results, served
         )
-        for node_id, served_records_of_node in (served or {}).items():
-            records.setdefault(node_id, served_records_of_node)
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
@@ -1486,7 +1485,7 @@ def read_back_records(
     order = runtime_graph.topological_order()
     plans = _resolve_plans(runtime_graph, order)
     records, _ = _collect_node_records(
-        runtime_graph, plans, order, node_task_map, results
+        runtime_graph, plans, order, node_task_map, results, None
     )
     return records
 
@@ -1497,8 +1496,11 @@ def _collect_node_records(
     order: Sequence[str],
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
+    served: Mapping[str, NodeRecords] | None,
 ) -> tuple[dict[str, NodeRecords], dict[str, list[Mapping[str, Any]]]]:
-    """Read every finished node's records and items in the order it produced them."""
+    """Read every finished node's records and items in the order it produced
+    them, and the records a reuse plan served, so a keyed node reads a served
+    input's keys."""
     produced: dict[str, list[Any]] = {}
     items_of: dict[str, list[Mapping[str, Any]]] = {}
     for node_id, task_id in node_task_map.items():
@@ -1509,7 +1511,11 @@ def _collect_node_records(
         items = _node_items(response)
         items_of[node_id] = items
         produced[node_id] = _record_values(response, plan, items)
-    records: dict[str, NodeRecords] = {}
+    records: dict[str, NodeRecords] = {
+        node_id: node_records
+        for node_id, node_records in (served or {}).items()
+        if node_id not in produced
+    }
     for node_id in order:
         values = produced.get(node_id)
         if values is None:
@@ -1592,8 +1598,8 @@ def _key_marked_join_rows(
     that, the first input's key at its position; a marked output row carries no
     fields of its own but keeps its address."""
     for node_id, node_records in records.items():
-        plan = plans[node_id]
-        if plan.mode != _JOIN_MODE or node_records.keys is None:
+        plan = plans.get(node_id)
+        if plan is None or plan.mode != _JOIN_MODE or node_records.keys is None:
             continue
         first = _first_input(plan, records)
         node_records.keys = [
@@ -1634,13 +1640,8 @@ def _node_keys(
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
 ) -> list[str | None] | None:
-    """The key of each record of one node, in row order, read from its rows.
-
-    A 1:1 op whose own row carries no key reads it from the node it declares, at
-    the same position, else from the literal list the op carries for that
-    input; every other keyed node (a keyed retrieval, an op inheriting its
-    single keyed input's key, which takes it at the same position) reads its
-    own rows."""
+    """The key of each record of one node, in row order: its own, else its
+    declared input's, else its one keyed input's at the same position."""
     if plan.column is not None:
         return [
             None if value.get(plan.column) is None else key_text(value[plan.column])
@@ -1654,25 +1655,60 @@ def _node_keys(
     declared = runtime_graph.record_keys.get(plan.op.node_id)
     if declared is not None and declared.node != plan.op.node_id:
         if _one_to_one(plan.op):
-            rows = produced.get(declared.node)
-            if rows is None:
-                rows = _declared_rows(plan, declared.path, len(values))
-            if rows is not None:
+            source = _declared_keys(plan, declared, len(values), produced, records)
+            if source is not None:
                 return [
-                    (
-                        composite_key(rows[position], [declared.path])
-                        if key is None and position < len(rows)
-                        else key
-                    )
+                    source[position] if key is None and position < len(source) else key
                     for position, key in enumerate(own or [None] * len(values))
                 ]
         return own
     if own is not None:
-        return own
+        return _own_keys(own, plan, records)
     inherited = None if plan.inherits_key is None else records.get(plan.inherits_key)
-    if inherited is None:
+    if inherited is None or inherited.keys is None:
+        return None
+    if len(inherited.keys) != len(values):
         return None
     return [record_key_at(inherited.keys, position) for position in range(len(values))]
+
+
+def _own_keys(
+    own: list[str | None], plan: RecordPlan, records: Mapping[str, NodeRecords]
+) -> list[str | None]:
+    """A 1:1 node's own keys, each None taken from its keyed input at the same
+    position when the counts match."""
+    inherited = None if plan.inherits_key is None else records.get(plan.inherits_key)
+    if inherited is None or inherited.keys is None:
+        return own
+    if len(inherited.keys) != len(own):
+        return own
+    return [
+        inherited.keys[position] if key is None else key
+        for position, key in enumerate(own)
+    ]
+
+
+def _declared_keys(
+    plan: RecordPlan,
+    declared: RecordKey,
+    count: int,
+    produced: Mapping[str, Sequence[Any]],
+    records: Mapping[str, NodeRecords],
+) -> Sequence[str | None] | None:
+    """The key each row of a declared input carries: its produced rows' keys, the
+    keys a reuse plan served for it, or its literal rows' keys."""
+    rows = produced.get(declared.node)
+    if rows is not None:
+        return [composite_key(row, [declared.path]) for row in rows]
+    served = records.get(declared.node)
+    if served is not None and served.keys is not None:
+        return served.keys
+    literal = _declared_rows(plan, declared.path, count)
+    return (
+        None
+        if literal is None
+        else [composite_key(row, [declared.path]) for row in literal]
+    )
 
 
 def _declared_rows(plan: RecordPlan, path: str, count: int) -> Sequence[Any] | None:
@@ -1699,18 +1735,22 @@ def _inherit_input_keys(
     runtime_graph: RuntimeGraph,
     records: dict[str, NodeRecords],
 ) -> None:
-    """Every row of a 1:1 node takes its keyed input's key at the same position,
-    when the counts match: a parsed or failed row keeps its input row's address."""
+    """Give a failed row its input row's key: a marker carries no key of its
+    own, and every other row is already keyed in ``_node_keys``."""
     for node_id in order:
         node_records = records.get(node_id)
         source = _keyed_input(runtime_graph, node_id, plans)
-        inherited = None if source is None else records.get(source)
-        if node_records is None or node_records.keys is None or inherited is None:
+        if node_records is None or node_records.keys is None or source is None:
             continue
-        if inherited.keys is None or len(inherited.keys) != len(node_records.keys):
+        inherited = records.get(source)
+        if inherited is None or inherited.keys is None:
+            continue
+        if len(inherited.keys) != len(node_records.keys):
             continue
         for position, key in enumerate(node_records.keys):
-            if key is None:
+            value = node_records.values[position]
+            marker = is_marker(value) or is_marker(_decoded(value))
+            if key is None and marker:
                 node_records.keys[position] = inherited.keys[position]
 
 
