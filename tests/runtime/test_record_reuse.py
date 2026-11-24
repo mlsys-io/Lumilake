@@ -280,9 +280,23 @@ async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     input's keys, so the next run hits it."""
     rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
     parsed = [{"text": row["text"]} for row in rows]
-    text = _PARSE_TEXT % [json.dumps(row) for row in rows]
-    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
-    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
+    mark = {
+        "id": "Mark",
+        "op": "LambdaOp",
+        "inputs": ["Rows"],
+        "mode": "row",
+        "fn_name": "mark",
+        "code": "lambda c: json.loads(c[0][0])",
+        "key": {"node": "Rows", "path": "id"},
+    }
+    parse = {"id": "Parsed", "op": "ParseOp", "inputs": ["Mark"]}
+    workflow: dict[str, Any] = {
+        "name": "parse",
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": [mark, parse],
+        "outputs": [{"name": "p", "ref": "Parsed"}],
+    }
+    changed = {**workflow, "ops": [mark, {**parse, "on_fail": "raw"}]}
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
     planner, graph = _planner(storage), _runtime_graph(changed)
