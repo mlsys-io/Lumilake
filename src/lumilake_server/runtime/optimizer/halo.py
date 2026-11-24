@@ -241,7 +241,7 @@ class HaloOptimizer(BaseOptimizer):
                 edges=tuple(halo_edges),
             )
 
-            workers = self._build_workers(workers_input, worker_profiles, graph)
+            workers = self._build_workers(workers_input, worker_profiles, halo_graph)
             worker_ids = tuple(workers.keys())
             self.logger.info(
                 "Halo worker pool: total=%d gpu=%d cpu=%d",
@@ -390,11 +390,10 @@ class HaloOptimizer(BaseOptimizer):
         self,
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, Mapping[str, Any]],
-        graph: RuntimeGraph,
+        graph: GraphSpec,
     ) -> dict[str, Worker]:
         requires_gpu = any(
-            self._is_gpu_backend(op.backend) or python_step_requests_gpu(op.data_spec)
-            for op in graph.nodes.values()
+            node.engine == "vllm" or node.requires_gpu for node in graph.nodes.values()
         )
 
         workers: dict[str, Worker] = {}

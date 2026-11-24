@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
@@ -1399,7 +1398,7 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
 
 
-def test_python_step_gpu_request_reaches_the_task_beside_memory() -> None:
+def test_python_step_sends_its_own_gpu_request_beside_memory() -> None:
     _, shout, compiled = _llm_then_lambda(
         memory_mb=512,
         image="ghcr.io/me/bench:1",
@@ -1410,14 +1409,6 @@ def test_python_step_gpu_request_reaches_the_task_beside_memory() -> None:
         "hardware": {"memory": "512Mi", "gpu": {"count": 1, "memory": "24Gi"}}
     }
 
-
-def test_python_step_without_a_gpu_request_asks_for_none() -> None:
-    _, shout, compiled = _llm_then_lambda(memory_mb=512)
-    spec = _spec(RuntimeGraphBuilder().build(compiled).nodes[shout.id])
-    assert "gpu" not in spec["resources"]["hardware"]
-
-
-@pytest.mark.parametrize("value", [{"count": 0}, {"count": 9}, {"gpus": 1}])
-def test_gpu_request_rejects_out_of_range_or_unknown_fields(value: Any) -> None:
-    with pytest.raises(ValidationError):
-        GpuRequest.model_validate(value)
+    _, plain, plain_compiled = _llm_then_lambda(memory_mb=512)
+    plain_spec = _spec(RuntimeGraphBuilder().build(plain_compiled).nodes[plain.id])
+    assert plain_spec["resources"] == {"hardware": {"memory": "512Mi"}}

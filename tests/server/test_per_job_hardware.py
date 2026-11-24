@@ -12,7 +12,6 @@ Covers:
 """
 
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -335,11 +334,8 @@ def test_per_node_hints_keep_a_python_step_s_own_gpu_request() -> None:
     (node_id,) = graph.nodes
     own = {"hardware": {"gpu": {"count": 1, "type": "RTX 5090"}}}
     nodes: list[dict[str, Any]] = [{"name": node_id, "spec": {"resources": own}}]
-    stub = SimpleNamespace(
-        logger=logging.getLogger("test"),
-        _python_step_requests_gpu=FlowmeshRuntimeManager._python_step_requests_gpu,
-        _runtime_op_requires_gpu=FlowmeshRuntimeManager._runtime_op_requires_gpu,
-    )
     # No job-level GPU: a vLLM node would be refused, the python step keeps its request.
-    FlowmeshRuntimeManager._apply_per_node_resource_hints(stub, nodes, graph, None)  # type: ignore[arg-type]
+    FlowmeshRuntimeManager(
+        logger=logging.getLogger("test")
+    )._apply_per_node_resource_hints(nodes, graph, None)
     assert nodes[0]["spec"]["resources"] == own
