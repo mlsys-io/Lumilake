@@ -90,7 +90,7 @@ A python step, chat, classification or embedding op is kept when the store holds
 
 A retrieval re-runs, so its consumers hit while its rows are unchanged; a retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a model op that reads a retrieval keeps that retrieval dispatched.
 
-A job records one decision per op, `hit` or `miss` with the first reason it missed; see [`docs/API.md`](API.md).
+A job records one decision per op, `hit` or `miss`, and one row per record naming that record's own decision and miss cause (`spec changed`, `input changed`, `membership changed`, `version changed`, `no entry`, and the rest); see [`docs/API.md`](API.md). A record's stored entry names the ordered input keys it read and the model revision and image it ran with, so a deleted key, an added key or a key that moved to another router branch misses only the affected group and leaves every other record served.
 
 ## n8n code-node notes
 

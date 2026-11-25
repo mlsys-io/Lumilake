@@ -80,6 +80,17 @@ class OutputShape:
         return [_output_text(value) for value in selected]
 
 
+class RecordOutcome(BaseModel):
+    """One record's decision: served by the store, or the reason it ran."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    record: str | None = None
+    """The record key; ``None`` for an op whose rows carry no logical key."""
+    decision: Literal["hit", "miss"]
+    reason: str | None = None
+
+
 class OpDecision(BaseModel):
     """One op's reported decision, without the internal planned node."""
 
@@ -89,6 +100,9 @@ class OpDecision(BaseModel):
     decision: Literal["hit", "miss"]
     reason: str | None = None
     records: int = 0
+    outcomes: list[RecordOutcome] = Field(default_factory=list)
+    """One row per record, each served or missed on its own, so a revision that
+    touched one key names that key."""
 
 
 class RecordDecision(OpDecision):
@@ -147,6 +161,9 @@ class _Input:
 
     named: RecordInput
     keys: list[str | None]
+    declared_node: str | None = None
+    """The runtime node the op declares this input as, so a join can tell its
+    first input from a literal column or a further one."""
 
 
 class ReusePlanner:
@@ -180,8 +197,10 @@ class ReusePlanner:
                 self._serve_content(decision, plan, content[node_id], runtime_graph)
                 continue
             inputs = _planner_inputs(plan, decision, plans, content)
-            records = _record_keys(plan, inputs)
-            reason, hit = self._decide(
+            records = _group_record_keys(self._storage, plan, round_number) or (
+                _record_keys(plan, inputs)
+            )
+            reason, hit, outcomes = self._decide(
                 plan,
                 inputs,
                 records,
@@ -202,6 +221,7 @@ class ReusePlanner:
                     records=(
                         len(hit) if hit is not None else _counted(plan, records, inputs)
                     ),
+                    outcomes=outcomes,
                 )
             )
             if hit is None:
@@ -210,7 +230,16 @@ class ReusePlanner:
             unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
             if unserved is not None:
                 decision.decisions[-1] = decision.decisions[-1].model_copy(
-                    update={"decision": "miss", "reason": unserved}
+                    update={
+                        "decision": "miss",
+                        "reason": unserved,
+                        "outcomes": [
+                            RecordOutcome(
+                                record=outcome.record, decision="miss", reason=unserved
+                            )
+                            for outcome in decision.decisions[-1].outcomes
+                        ],
+                    }
                 )
                 misses.add(node_id)
                 continue
@@ -242,13 +271,24 @@ class ReusePlanner:
         runtime_graph: RuntimeGraph,
     ) -> None:
         """Record one unversioned read this plan re-ran."""
+        keys = (
+            [records.keys[position] for position in range(len(records.values))]
+            if records.keyed and records.keys is not None
+            else [None]
+        )
         decision.decisions.append(
             RecordDecision(
                 op=plan.op_name,
                 node=plan.op.node_id,
                 decision="miss",
                 reason="unversioned upstream",
-                records=len(records.values) if records.keyed else 1,
+                records=len(keys),
+                outcomes=[
+                    RecordOutcome(
+                        record=key, decision="miss", reason="unversioned upstream"
+                    )
+                    for key in keys
+                ],
             )
         )
         decision.content[plan.op.node_id] = ContentRecords(
@@ -279,25 +319,26 @@ class ReusePlanner:
         stored: Mapping[str, list[RecordEntry]],
         runtime_graph: RuntimeGraph,
         node_id: str,
-    ) -> tuple[str | None, list[RecordEntry] | None]:
-        """One op's ``(first miss reason, stored entries)``."""
+    ) -> tuple[str | None, list[RecordEntry] | None, list[RecordOutcome]]:
+        """One op's ``(first miss reason, stored entries, per-record outcomes)``."""
         if reads_unversioned(plan.op):
-            return "unversioned upstream", None
+            return "unversioned upstream", None, _whole_op_outcomes(records, None)
         if plan.op.task_type not in _SERVED_TASKS:
-            return "value not servable", None
+            return "value not servable", None, _whole_op_outcomes(records, None)
         if any(node in misses for node in input_nodes(plan)):
-            return "upstream miss", None
+            return "upstream miss", None, _whole_op_outcomes(records, None)
         if records is None:
-            return "unkeyed row", None
+            return "unkeyed row", None, []
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
+        outcomes: list[RecordOutcome] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
         seeded = _seeded_records(plan, stored, runtime_graph)
         versions = effect_versions(plan.op)
         for position, record in enumerate(records):
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
-                return "no realization", None
+                return "no realization", None, _missed_from(outcomes, records, position)
             input_digests, input_value_digests, membership = position_inputs(
                 named, position, keyed=plan.keyed
             )
@@ -317,7 +358,7 @@ class ReusePlanner:
             )
             reason = _entry_miss_reason(entry)
             if reason is not None or entry is None:
-                return (
+                cause = (
                     _changed_reason(
                         read_address_entry(
                             self._storage, plan.op_name, record, round_number
@@ -326,11 +367,13 @@ class ReusePlanner:
                         input_values=input_value_digests,
                         membership=membership,
                     )
-                    or reason,
-                    None,
+                    or reason
                 )
+                missed = _missed_from(outcomes, records, position, cause)
+                return cause, None, missed
+            outcomes.append(RecordOutcome(record=record, decision="hit"))
             entries.append(entry)
-        return None, entries
+        return None, entries, outcomes
 
 
 def rebuilt_output(plan: ReusePlan, node_id: str) -> list[str]:
@@ -699,7 +742,14 @@ def _keep_seed_nodes_dispatched(runtime_graph: RuntimeGraph, plan: ReusePlan) ->
         name = runtime_graph.op_names.get(reader, reader)
         decision = plan.decisions[placed[node_id]]
         reason = f"read by dispatched '{name}'"
-        update = {"decision": "miss", "reason": reason}
+        update = {
+            "decision": "miss",
+            "reason": reason,
+            "outcomes": [
+                RecordOutcome(record=outcome.record, decision="miss", reason=reason)
+                for outcome in decision.outcomes
+            ],
+        }
         plan.decisions[placed[node_id]] = decision.model_copy(update=update)
         del plan.hits[node_id]
 
@@ -777,10 +827,10 @@ def _planner_inputs(
         name = plan.logical_names.get(node, node)
         hit = decision.hits.get(node)
         if hit is not None:
-            inputs.append(_served_input(hit, name))
+            inputs.append(_served_input(hit, name, node))
             continue
         if node in decision.content:
-            inputs.append(_content_input(decision.content[node], name))
+            inputs.append(_content_input(decision.content[node], name, node))
             continue
         values = input_values(plan.op, node)
         inputs.append(
@@ -792,14 +842,34 @@ def _planner_inputs(
                     ],
                 ),
                 keys=[None],
+                declared_node=node,
             )
         )
     for rows in literal_rows(plan):
+        if plan.key_paths:
+            inputs.append(_join_literal_input(rows, plan.key_paths))
+            continue
         inputs.append(_literal_input(rows, plan.key_path))
     return inputs
 
 
-def _served_input(records: Sequence[RecordEntry], node: str) -> _Input:
+def _join_literal_input(rows: Sequence[Any], key_paths: list[str]) -> _Input:
+    """A join's literal rows, each named by its own key as the writer names it:
+    one record per row, digests over the single row a key selects."""
+    keys = [row_key(row, ".".join(key_paths)) for row in rows]
+    return _Input(
+        named=RecordInput(
+            keyed=True,
+            records=[(digest_of({"values": [row]}), digest_of(row)) for row in rows],
+            keys=keys,
+        ),
+        keys=keys,
+    )
+
+
+def _served_input(
+    records: Sequence[RecordEntry], node: str, declared: str | None = None
+) -> _Input:
     """A served input, named by the entry each of its records read."""
     keys = [entry.address.record for entry in records]
     return _Input(
@@ -810,10 +880,13 @@ def _served_input(records: Sequence[RecordEntry], node: str) -> _Input:
             keys=keys,
         ),
         keys=keys,
+        declared_node=None if declared is None else declared,
     )
 
 
-def _content_input(records: ContentRecords, node: str) -> _Input:
+def _content_input(
+    records: ContentRecords, node: str, declared: str | None = None
+) -> _Input:
     """An unversioned read the plan re-ran, named by the value it returned."""
     positions = range(len(records.values)) if records.keyed else range(1)
     named: list[tuple[str, str] | None] = []
@@ -826,6 +899,7 @@ def _content_input(records: ContentRecords, node: str) -> _Input:
     return _Input(
         named=RecordInput(keyed=records.keyed, records=named, node=node, keys=keys),
         keys=keys,
+        declared_node=declared,
     )
 
 
@@ -848,7 +922,8 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
         return [None]
     keys: list[str | None] = []
     seen: set[str] = set()
-    for item in inputs:
+    scoped = _first_input_only(plan, inputs)
+    for item in scoped:
         if all(key is None for key in item.keys):
             continue
         for key in item.keys:
@@ -858,6 +933,32 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
                 seen.add(key)
                 keys.append(key)
     return keys or None
+
+
+def _first_input_only(plan: RecordPlan, inputs: Sequence[_Input]) -> Sequence[_Input]:
+    """A join's records are one per first-input row, so a further or literal
+    input adds no record of its own. A keyed first input keeps only its own
+    records; a literal first input has no rows of its own to drop."""
+    nodes = plan.join_inputs
+    if not nodes or nodes[0] is None or len(inputs) <= 1:
+        return inputs
+    scoped = [item for item in inputs if item.declared_node == nodes[0]]
+    return scoped or inputs
+
+
+def _group_record_keys(
+    storage: JobStorage, plan: RecordPlan, round_number: int
+) -> list[str | None] | None:
+    """A grouping op's record keys from the entries it wrote: one record per
+    group, keyed by the group's ``by`` value."""
+    if not plan.groups_keyed:
+        return None
+    try:
+        body, _ = storage.load_blob(address_object_name(plan.op_name, round_number))
+        listed = RecordAddressIndex.from_body(body)
+    except (ArchiveNotFound, KeyError, ValueError):
+        return None
+    return list(listed.records) or None
 
 
 def _seeded_records(
@@ -991,6 +1092,30 @@ def _reads_literal_ref(
     return True
 
 
+def _whole_op_outcomes(
+    records: list[str | None] | None, reason: str | None
+) -> list[RecordOutcome]:
+    """One miss row per record of an op that missed without probing."""
+    return _missed_from([], [None] if records is None else records, 0, reason)
+
+
+def _missed_from(
+    served: Sequence[RecordOutcome],
+    records: Sequence[str | None],
+    position: int,
+    reason: str | None = None,
+) -> list[RecordOutcome]:
+    """The rows already served, then every record from ``position`` as a miss
+    carrying ``reason``."""
+    return [
+        *served,
+        *(
+            RecordOutcome(record=record, decision="miss", reason=reason)
+            for record in records[position:]
+        ),
+    ]
+
+
 def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
     """Why a stored entry cannot answer, or ``None`` when it can."""
     if entry is None:
@@ -1025,17 +1150,18 @@ def _changed_reason(
     """Why this record misses beside a stored entry at its own address.
 
     The entry's own facts are compared in the order a revision changes them:
-    the versions it ran with, the values it read, the membership it read, and,
+    the versions it ran with, the membership it read, the values it read, and,
     with those equal, its op spec, which is the only part of the signature
-    left."""
+    left. Membership is read before values because a deletion or an addition
+    changes both, and the cause a reader needs is the membership."""
     if previous is None:
         return None
     if _version_changed(previous, versions):
         return "version changed"
-    if previous.input_values != input_values:
-        return "input changed"
     if previous.membership != membership:
         return "membership changed"
+    if previous.input_values != input_values:
+        return "input changed"
     return "spec changed"
 
 
