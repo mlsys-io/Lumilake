@@ -28,6 +28,11 @@ def test_binding_requires_a_uuid_job_id() -> None:
         LumidJobBinding.model_validate({"job_id": "../../admin"})
 
 
+def test_binding_refuses_a_data_url() -> None:
+    with pytest.raises(ValidationError, match="data_url"):
+        LumidJobBinding.model_validate({"job_id": _JOB_ID, "data_url": "https://x"})
+
+
 def test_submit_request_accepts_an_optional_binding() -> None:
     req = JobSubmitRequest.model_validate(
         {

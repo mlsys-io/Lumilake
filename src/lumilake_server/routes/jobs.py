@@ -51,7 +51,14 @@ from flowmesh.models.result import (
 )
 from flowmesh.models.workflows import Workflow
 from lumid_hooks import PrincipalContext
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
@@ -888,6 +895,8 @@ class LumidJobBinding(BaseModel):
     """Binds a submission to a lum.id/data job. Its data steps then read with a
     token scoped to that job's declared sources (revoked when it ends) instead
     of the server's LUMID_DATA_TOKEN."""
+
+    model_config = ConfigDict(extra="forbid")
 
     job_id: uuid.UUID = Field(description="lum.id/data job id.")
 
