@@ -5,15 +5,14 @@ from typing import Any
 from lumilake_server.data_specs import EmptyData, GpuRequest
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
+    CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
-    required_task_types,
     requires_cpu_worker,
 )
 
 
 def test_only_python_is_gated_today() -> None:
-    assert required_task_types(["api", "python", "inference"]) == {"python"}
-    assert required_task_types(["api", "data_retrieval"]) == frozenset()
+    assert CAPABILITY_GATED_TASK_TYPES == frozenset({"python"})
 
 
 def test_requires_cpu_worker_for_cpu_only_task_types() -> None:

@@ -55,10 +55,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.runtime.worker_capability import (
-    python_step_gpu_request,
-    python_step_requests_gpu,
-)
+from lumilake_server.runtime.worker_capability import python_step_requests_gpu
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
@@ -2043,8 +2040,7 @@ class FlowmeshRuntimeManager:
             runtime_op = runtime_graph.nodes.get(node_name)
             if runtime_op is None:
                 continue
-            gpu_request = python_step_gpu_request(runtime_op.data_spec)
-            if gpu_request is not None:
+            if python_step_requests_gpu(runtime_op.data_spec):
                 # The step carries its own GPU request in its task spec.
                 gpu_nodes += 1
                 continue
@@ -2053,7 +2049,7 @@ class FlowmeshRuntimeManager:
                     raise ValueError(
                         f"hardware.gpu={gpu_count} but runtime node {node_name!r}"
                         " requires a GPU worker (vLLM / transformers / diffusers /"
-                        " text-to-image, or a python step that sets 'gpu')."
+                        " text-to-image)."
                     )
                 gpu_nodes += 1
                 node_spec = node.setdefault("spec", {})

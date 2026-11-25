@@ -42,11 +42,6 @@ def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
     return None
 
 
-def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
-    """The gated task types among ``task_types``."""
-    return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
-
-
 def python_step_gpu_request(data_spec: DataSpecModel) -> GpuRequest | None:
     """The GPU request a python step's own data spec carries, if any."""
     if isinstance(data_spec, PythonData):
@@ -60,26 +55,26 @@ def python_step_requests_gpu(data_spec: DataSpecModel) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class GpuDevice:
+class _GpuDevice:
     """One card a worker reports: its name and total memory, either may be unknown."""
 
     name: str | None = None
     memory_total_bytes: int | None = None
 
 
-def gpu_devices(profile: Mapping[str, Any]) -> tuple[GpuDevice, ...] | None:
+def _gpu_devices(profile: Mapping[str, Any]) -> tuple[_GpuDevice, ...] | None:
     """The cards a raw worker profile lists, ``None`` when it reports no detail."""
     devices = (profile.get("gpu") or {}).get("devices")
     if not isinstance(devices, list):
         return None
-    listed: list[GpuDevice] = []
+    listed: list[_GpuDevice] = []
     for device in devices:
         if not isinstance(device, dict):
             continue
         name = device.get("name")
         vram = device.get("memory_total_bytes")
         listed.append(
-            GpuDevice(
+            _GpuDevice(
                 name=name if isinstance(name, str) else None,
                 memory_total_bytes=vram if isinstance(vram, int) else None,
             )
@@ -87,39 +82,7 @@ def gpu_devices(profile: Mapping[str, Any]) -> tuple[GpuDevice, ...] | None:
     return tuple(listed)
 
 
-def gpu_request_fits(
-    devices: tuple[GpuDevice, ...] | None, request: GpuRequest | None
-) -> bool:
-    """True when ``devices`` hold ``request``: count, type substring and memory.
-
-    ``None`` devices mean the worker reports no per-device detail, so the check
-    degrades to "no constraint" rather than a stall.
-    """
-    if request is None:
-        return True
-    if devices is None:
-        return True
-    matches = 0
-    for device in devices:
-        if not device_matches_request(device, request):
-            continue
-        matches += 1
-    return matches >= request.count
-
-
-def profile_fits_gpu_request(
-    profile: Mapping[str, Any], request: GpuRequest | None
-) -> bool:
-    """True when a raw GPU worker profile carries ``request``.
-
-    Callers pass GPU workers only; the raw profile carries no ``has_gpu`` flag.
-    """
-    if request is None:
-        return True
-    return gpu_request_fits(gpu_devices(profile), request)
-
-
-def device_matches_request(device: GpuDevice, request: GpuRequest) -> bool:
+def _device_matches_request(device: _GpuDevice, request: GpuRequest) -> bool:
     """True when one card meets the request's type substring and memory floor."""
     wanted = request.type.strip().lower() if request.type else ""
     if (
@@ -134,6 +97,26 @@ def device_matches_request(device: GpuDevice, request: GpuRequest) -> bool:
         required_bytes is None
         or device.memory_total_bytes is None
         or device.memory_total_bytes >= required_bytes
+    )
+
+
+def profile_fits_gpu_request(
+    profile: Mapping[str, Any], request: GpuRequest | None
+) -> bool:
+    """True when a raw GPU worker profile carries ``request``: count, type and memory.
+
+    Callers pass GPU workers only; the raw profile carries no ``has_gpu`` flag.
+    A worker that reports no per-device detail passes, so the check degrades to
+    "no constraint" rather than a stall.
+    """
+    if request is None:
+        return True
+    devices = _gpu_devices(profile)
+    if devices is None:
+        return True
+    return (
+        sum(1 for device in devices if _device_matches_request(device, request))
+        >= request.count
     )
 
 

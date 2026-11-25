@@ -43,7 +43,6 @@ class Node:
     outputs: Sequence[str] = field(default_factory=tuple)
     db_queries: Sequence[DBQuery] = field(default_factory=tuple)
     gpu_memory_utilization: float | None = None
-    requires_gpu: bool = False
     gpu_request: GpuRequest | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 

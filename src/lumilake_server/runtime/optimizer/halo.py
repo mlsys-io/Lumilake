@@ -227,7 +227,6 @@ class HaloOptimizer(BaseOptimizer):
                     outputs=tuple(),
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
-                    requires_gpu=python_step_requests_gpu(op.data_spec),
                     gpu_request=python_step_gpu_request(op.data_spec),
                     raw=raw,
                 )
@@ -393,7 +392,8 @@ class HaloOptimizer(BaseOptimizer):
         graph: GraphSpec,
     ) -> dict[str, Worker]:
         requires_gpu = any(
-            node.engine == "vllm" or node.requires_gpu for node in graph.nodes.values()
+            node.engine == "vllm" or node.gpu_request is not None
+            for node in graph.nodes.values()
         )
 
         workers: dict[str, Worker] = {}
@@ -443,7 +443,9 @@ class HaloOptimizer(BaseOptimizer):
             elif node.engine == "http":
                 tiers = (cpu_workers,)
             elif node.engine == "python":
-                tiers = (gpu_workers,) if node.requires_gpu else (cpu_workers,)
+                tiers = (
+                    (gpu_workers,) if node.gpu_request is not None else (cpu_workers,)
+                )
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "

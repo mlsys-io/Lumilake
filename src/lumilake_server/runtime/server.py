@@ -30,6 +30,7 @@ from lumilake.log import (
 from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
+    DataSpecModel,
     GpuRequest,
     ListData,
     LiteralColumn,
@@ -86,8 +87,8 @@ from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     gated_nodes_gpu_requests,
     gpu_memory_fraction,
+    gpu_worker_can_run,
     holds_gpu_utilizations,
-    profile_fits_gpu_request,
     requires_cpu_worker,
     split_required_task_types,
 )
@@ -1280,33 +1281,27 @@ class LumilakeServer:
                     f"{max(gpu_utilizations):g} gpu_memory_utilization the graph "
                     "requests for schedule preview"
                 )
-            if needed_gpu_task_types:
+            if needed_gpu_task_types or needed_gpu_requests:
                 holding = [
                     worker
                     for worker in holding
-                    if needed_gpu_task_types
-                    <= advertised_task_types(normalized_profiles[worker])
+                    if gpu_worker_can_run(
+                        normalized_profiles[worker],
+                        needed_gpu_task_types,
+                        tuple(needed_gpu_requests),
+                    )
                 ]
                 if not holding:
+                    if needed_gpu_requests:
+                        raise RuntimeError(
+                            "No GPU worker carries the GPUs a standalone python step "
+                            "requests for schedule preview"
+                        )
                     raise RuntimeError(
                         "No GPU worker that advertises the "
                         f"{' and '.join(sorted(needed_gpu_task_types))} task type "
                         "meets the requested hardware for schedule preview, but "
                         "graph contains nodes of that type"
-                    )
-            if needed_gpu_requests:
-                holding = [
-                    worker
-                    for worker in holding
-                    if all(
-                        profile_fits_gpu_request(normalized_profiles[worker], request)
-                        for request in needed_gpu_requests
-                    )
-                ]
-                if not holding:
-                    raise RuntimeError(
-                        "No GPU worker carries the GPUs a standalone python step "
-                        "requests for schedule preview"
                     )
             selected_workers.append(holding[0])
         if requires_cpu:
@@ -1464,7 +1459,9 @@ class LumilakeServer:
         return False
 
     @classmethod
-    def _batch_gated_nodes(cls, batch: BatchSelection) -> list[tuple[str, Any]]:
+    def _batch_gated_nodes(
+        cls, batch: BatchSelection
+    ) -> list[tuple[str, DataSpecModel]]:
         """The batch's ``(task_type, data_spec)`` pairs, one per runtime node."""
         return [
             (op.task_type, op.data_spec)
@@ -1505,7 +1502,7 @@ class LumilakeServer:
     def _normalize_worker_profile(
         cls, worker_profile: dict[str, Any]
     ) -> dict[str, Any]:
-        """The profile a capacity snapshot carries.
+        """The profile an optimizer receives: the fields placement reads.
 
         A GPU worker's per-device detail rides along so the scheduler can check a
         python step's own GPU request against the worker's cards.
@@ -1513,14 +1510,16 @@ class LumilakeServer:
         has_gpu = worker_profile.get("has_gpu")
         if not isinstance(has_gpu, bool):
             has_gpu = cls._has_gpu(worker_profile)
-        return {
-            **worker_profile,
+        profile: dict[str, Any] = {
             "has_gpu": has_gpu,
             "supported_task_types": list(
                 worker_profile.get("supported_task_types", ())
             ),
             "gpu_memory_fraction": gpu_memory_fraction(worker_profile),
         }
+        if has_gpu:
+            profile["gpu"] = worker_profile.get("gpu")
+        return profile
 
     @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:

@@ -81,7 +81,9 @@ class BaseSchedulingPolicy(ABC):
         node. When the candidates need a gated task type, the CPU side is also
         bounded by the eligible CPU workers advertising every such type (a
         conservative bound: the union over all candidates), and the count is
-        ``0`` without worker profiles. It is ``0`` when no class is claimed.
+        ``0`` without worker profiles. The GPU side is bounded the same way by
+        each gated task type and by each of a python step's own GPU requests,
+        one requirement per worker. It is ``0`` when no class is claimed.
 
         ``None`` means the count is unknown: ``reserve_batch`` was called
         without free capacity (the server passes it only while capacity-aware
