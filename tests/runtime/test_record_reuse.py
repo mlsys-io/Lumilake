@@ -154,7 +154,7 @@ async def _run(
     carrying the reason it returns."""
     graph = _runtime_graph(workflow) if graph is None else graph
     names = _names(graph)
-    raw = {n: v for n, v in (items or {}).items()}
+    raw = items or {}
     if fail is not None:
         raw = {
             n: [_markered(names[n], item, fail) for item in v] for n, v in raw.items()
@@ -185,7 +185,7 @@ def _markered(
     op: str,
     item: Mapping[str, Any],
     fail: Callable[[str, Mapping[str, Any]], str | None],
-) -> Any:
+) -> Mapping[str, Any]:
     """One task item with its output replaced by a marker when ``fail`` names it."""
     reason = fail(op, item)
     if reason is None:
@@ -1401,7 +1401,7 @@ def _reduce_unkeyed_workflow() -> dict[str, Any]:
     ],
 )
 @pytest.mark.asyncio
-async def test_a_recomputed_failed_record_replaces_its_marker(
+async def test_a_failed_record_is_recomputed_and_then_served(
     op: str, record: str, reason: str, make: str
 ) -> None:
     """A reduce group and an expand child whose task fails in run 1 are stored as
