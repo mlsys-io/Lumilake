@@ -50,6 +50,7 @@ from lumilake_server.runtime.record_writer import (
     group_inputs,
     input_nodes,
     input_values,
+    join_description,
     join_indexes,
     join_inputs,
     join_row_key,
@@ -179,8 +180,7 @@ class _Input:
     """The input's records in order, when the plan holds them, so a reduce can
     group its rows before it runs."""
     plan_entry: int | None = None
-    """The plan index a literal input is, so a join can tell its first column
-    from a further one."""
+    """The plan index of a literal input, so a join can tell its column apart."""
 
 
 class ReusePlanner:
@@ -958,23 +958,18 @@ def _content_input(
 ) -> _Input:
     """An unversioned read the plan re-ran, named by the value it returned."""
     positions = range(len(records.values)) if records.keyed else range(1)
-    named: list[tuple[str, str] | None] = []
-    for position in positions:
-        value = content_value(records.value_at(position))
-        named.append((digest_of({"value": value}), digest_of(value)))
+    contents = [content_value(records.value_at(position)) for position in positions]
+    named: list[tuple[str, str] | None] = [
+        (digest_of({"value": value}), digest_of(value)) for value in contents
+    ]
     keys: list[str | None] = (
         [records.keys[position] for position in positions] if records.keyed else [None]
-    )
-    values = (
-        [content_value(records.value_at(position)) for position in positions]
-        if records.keyed
-        else None
     )
     return _Input(
         named=RecordInput(keyed=records.keyed, records=named, node=node, keys=keys),
         keys=keys,
         declared_node=declared,
-        values=values,
+        values=contents if records.keyed else None,
     )
 
 
@@ -1016,10 +1011,8 @@ def _join_record_keys(
 ) -> list[str | None] | None:
     """A join's records, keyed as its writer keys them: one per first-input row."""
     first = _first_input(plan, inputs)
-    if first is None:
+    if first is None or first.values is None:
         return None
-    if first.values is None:
-        return None if any(key is None for key in first.keys) else list(first.keys)
     keys = [
         join_row_key(None, row, join_row_paths(plan), _key_at(first.keys, position))
         for position, row in enumerate(first.values)
@@ -1045,10 +1038,10 @@ def _first_input(plan: RecordPlan, inputs: Sequence[_Input]) -> _Input | None:
 
 def _first_literal_entry(plan: RecordPlan) -> int | None:
     """The plan index a join's first column reads, when that column is a literal."""
-    spec = plan.op.data_spec
-    if not isinstance(spec, PythonData) or spec.join is None:
+    join = join_description(plan.op)
+    if join is None:
         return None
-    return spec.join.inputs[0] if spec.join.inputs else None
+    return join.inputs[0] if join.inputs else None
 
 
 def records_from_groups(groups: Mapping[str, list[int]]) -> list[str | None]:
@@ -1119,13 +1112,7 @@ def _join_lookup_key(
         return None
     first = _first_input(plan, inputs)
     values = None if first is None else first.values
-    if values is None:
-        if first is not None:
-            first_key = _key_at(first.keys, position)
-            if first_key is not None:
-                return first_key
-        return record
-    if position >= len(values):
+    if values is None or position >= len(values):
         return record
     return composite_key(values[position], plan.key_paths)
 

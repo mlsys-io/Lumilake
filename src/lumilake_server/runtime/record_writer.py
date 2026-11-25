@@ -909,7 +909,7 @@ def _entry_node(entries: Sequence[ColumnPlanEntry], index: int) -> str | None:
     return entries[index].node if 0 <= index < len(entries) else None
 
 
-def _join(op: RuntimeOp) -> JoinDescription | None:
+def join_description(op: RuntimeOp) -> JoinDescription | None:
     """The join description a python step's spec carries, when it is a join."""
     spec = op.data_spec
     return spec.join if isinstance(spec, PythonData) else None
@@ -1593,7 +1593,7 @@ def _resolve_plans(
     plans: dict[str, RecordPlan] = {}
     for node_id in order:
         op = runtime_graph.nodes[node_id]
-        join = _join(op)
+        join = join_description(op)
         plans[node_id] = RecordPlan(
             op=op,
             op_name=names.get(node_id, node_id),
