@@ -80,6 +80,8 @@ class _AllowAllIdentity:
     async def resolve(
         self, token: str, logger: logging.Logger
     ) -> PrincipalContext | None:
+        if token == "unscoped":
+            return _DEMO_PRINCIPAL.model_copy(update={"scopes": ["admin"]})
         return _DEMO_PRINCIPAL.model_copy(deep=True) if token == "token" else None
 
 
@@ -514,6 +516,27 @@ async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
         for child in record.child_job_ids
     )
     assert job_id in manager.cleared
+
+
+@pytest.mark.anyio
+async def test_binding_without_the_scope_is_refused_before_a_token_fetch(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fetched(binding: Any) -> DataCredential:
+        raise AssertionError("the jobs API must not be called")
+
+    monkeypatch.setattr(job_routes, "_lumid_job_credential", fetched)
+    body = _submit_body(_VALID_DYNAMIC_YAML)
+    body["lumid_job"] = {"job_id": "3f2b8c1e-8d4a-4f6b-9c2d-1a2b3c4d5e6f"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer unscoped", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 403
+    assert "lumid-job:bind" in resp.json()["detail"]
 
 
 @pytest.mark.anyio
