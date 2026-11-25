@@ -73,8 +73,7 @@ _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"}
 or fetch task archives its value as an artifact instead."""
 
 _UPSTREAM_MISS = "upstream miss"
-"""The op-level reason of a node that missed because an input did; a record
-carries it prefixed to the input's own cause."""
+"""The op-level reason of a node that missed because an input did."""
 
 
 @dataclass(frozen=True)
@@ -1015,9 +1014,7 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
 def _join_record_keys(
     plan: RecordPlan, inputs: Sequence[_Input]
 ) -> list[str | None] | None:
-    """A join's records, keyed as its writer keys them: each row's ``row_key``
-    values (or ``by`` values), else the first input's record key at its
-    position; one record per first-input row."""
+    """A join's records, keyed as its writer keys them: one per first-input row."""
     first = _first_input(plan, inputs)
     if first is None:
         return None
@@ -1117,9 +1114,7 @@ def _join_lookup_key(
     position: int,
     record: str | None,
 ) -> str | None:
-    """The key a join row's further inputs are looked up by, as the writer reads
-    it off the row: its ``by`` values, which a ``row_key`` join's record key is
-    not; ``record`` answers only when the first input's rows are not held."""
+    """The key a join row's further inputs are looked up by."""
     if not plan.key_paths:
         return None
     first = _first_input(plan, inputs)
@@ -1299,9 +1294,7 @@ def _whole_op_outcomes(
 
 
 def _upstream_cause(plan: RecordPlan, missing: Mapping[str, str]) -> str | None:
-    """The first upstream node's own miss cause, so a dependent of any depth
-    names the same real cause: the cause is stored unprefixed and prefixed once
-    when it reaches a record's outcome."""
+    """The first upstream node's own miss cause."""
     for node in input_nodes(plan):
         found = missing.get(node)
         if found is not None:
@@ -1312,9 +1305,7 @@ def _upstream_cause(plan: RecordPlan, missing: Mapping[str, str]) -> str | None:
 def _miss_cause(
     plan: RecordPlan, missing: Mapping[str, str], reason: str | None
 ) -> str:
-    """The cause a missed node hands its dependents: an ``upstream miss`` hands
-    on the cause it missed for, so a dependent any number of levels down names
-    the same real cause, and any other reason is its own."""
+    """The cause a missed node hands its dependents."""
     if reason is None:
         return "no entry"
     if reason == _UPSTREAM_MISS:
