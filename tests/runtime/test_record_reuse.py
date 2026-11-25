@@ -355,11 +355,9 @@ _MOUNT: dict[str, Path] = {}
 
 
 def _mount_root() -> Path:
-    """A mount root under the worktree for the blobs a generated step reads."""
+    """A mount root under the system temp dir for the blobs a generated step reads."""
     if "root" not in _MOUNT:
-        scratch = Path(__file__).parents[2] / "tmp-step-mounts"
-        scratch.mkdir(exist_ok=True)
-        root = Path(tempfile.mkdtemp(dir=scratch))
+        root = Path(tempfile.mkdtemp(prefix="lumilake-step-mounts-"))
         atexit.register(shutil.rmtree, root, True)
         _MOUNT["root"] = root
     return _MOUNT["root"]

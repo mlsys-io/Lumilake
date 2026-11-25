@@ -140,7 +140,7 @@ def _without_data_data_spec(
         if key in dropped:
             continue
         if key == "plan" and isinstance(item, list):
-            entries = [
+            kept[key] = [
                 (
                     _without_values(entry, logical_names)
                     if isinstance(entry, Mapping)
@@ -149,21 +149,18 @@ def _without_data_data_spec(
                 for entry in item
                 if not (isinstance(entry, Mapping) and entry.get("role") == "served")
             ]
-            # An entry that keeps only its kind carries no work: a reuse slot is per-run
-            # data, so a reuse slot must never change an op's stored digest.
-            kept[key] = [entry for entry in entries if entry != {"kind": "stage"}]
             continue
         kept[key] = _drop_literal_rows(_without_data(item, logical_names))
     return kept
 
 
 def _without_values(entry: Mapping[str, Any], logical_names: Mapping[str, str]) -> Any:
-    """A plan entry without the rows it reads and its per-run role, its node
-    reference named by the logical op so a sliced graph hashes the same."""
+    """A plan entry without the rows it reads, its node reference named by the
+    logical op so a sliced graph hashes the same."""
     kept: dict[str, Any] = {}
     for key, item in entry.items():
-        if key in ("values", "role") or item is None:
-            # A plan's rows and reuse role differ per run.
+        if key == "values" or item is None:
+            # A plan's rows differ per run.
             continue
         if key == "node" and isinstance(item, str):
             kept[key] = logical_names.get(item, item)

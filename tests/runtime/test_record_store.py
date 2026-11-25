@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
+from lumilake_server.data_specs import PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import RecordKey
 from lumilake_server.parser import parse_yaml_payload
@@ -523,6 +524,18 @@ async def test_a_coalesced_batch_keeps_its_keys_through_dedupe(second: bool) -> 
     assert _indexed(storage, "req-one") == _INDEXED_TWO_ROWS
     other = _indexed(storage, "req-two") if second else read_index(storage, "req-two")
     assert other == (_INDEXED_TWO_ROWS if second else None)
+
+
+def test_a_seed_entry_digests_differently_from_a_data_entry() -> None:
+    """A plan entry tagged as a seed names a column the step draws with, not one
+    it reads, so it hashes as its own computation."""
+    graph = _runtime_graph(_WORKFLOW)
+    node = graph.nodes[_node_id(graph, "Join")]
+    spec = node.data_spec
+    assert isinstance(spec, PythonData)
+    seeded = spec.plan[0].model_copy(update={"role": "seed"})
+    drawn = replace(node, data_spec=spec.model_copy(update={"plan": [seeded]}))
+    assert op_spec_digest(drawn, graph.op_names) != op_spec_digest(node, graph.op_names)
 
 
 def test_two_chat_ops_reading_different_prompts_differ() -> None:
