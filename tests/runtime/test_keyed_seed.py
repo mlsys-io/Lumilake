@@ -321,9 +321,34 @@ def test_a_native_sample_count_keys_each_sample() -> None:
 
 def test_a_whole_cell_column_keeps_the_raw_cell() -> None:
     """A column with no path hands the chat the cell as it stands, as n = 1 does."""
-    fn, _ = _fan_out(_whole_cell(3))
-    samples = [item["whole"] for cell in _COLUMN for item in fn((cell,))]
-    assert samples == [cell for cell in _COLUMN for _ in range(3)]
+    loaded = copy.deepcopy(_ANSWER)
+    loaded["inputs"] = ["Load"]
+    loaded["rowwise_template"] = "{whole}"
+    loaded["rowwise_columns"] = [{"label": "whole", "node": "Load", "path": ""}]
+    loaded["rowwise_seed"] = {"key": {"node": "Load", "path": "items.output.case_id"}}
+    loaded["config"] = {"model": "m", "n": 3}
+    payload = {
+        "seed": 7,
+        "ops": [
+            {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN},
+            {
+                "id": "Load",
+                "op": "LambdaOp",
+                "inputs": ["Cases"],
+                "fn_name": "load",
+                "code": "def load(row):\n    return row[0]\n",
+            },
+            loaded,
+        ],
+    }
+    for source in (_whole_cell(3), payload):
+        spec = next(
+            wire(node)
+            for node in _graph(source).nodes.values()
+            if wire(node).get("fn_name") == SAMPLE_FN_NAME
+        )
+        # Each whole-cell entry reads as it stands, not the JSON it decodes to.
+        assert [entry.get("whole") for entry in spec["plan"]] == [True]
 
 
 def test_a_sample_count_needs_local_columns() -> None:
