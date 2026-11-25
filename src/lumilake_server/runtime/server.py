@@ -753,6 +753,7 @@ class LumilakeServer:
                 ),
             )
             counted.records += decision.records
+            counted.outcomes.extend(decision.outcomes)
         return list(merged.values())
 
     def optimization_seconds_for_request(self, request_id: str) -> float | None:

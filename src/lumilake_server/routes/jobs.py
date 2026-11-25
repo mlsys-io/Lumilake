@@ -806,7 +806,8 @@ class JobStatusPayload(BaseModel):
         default_factory=list,
         description=(
             "One hit-or-miss decision per op when the job asked to reuse the record"
-            " store, each with the first reason a miss ran; empty otherwise."
+            " store, each with the first reason a miss ran and one row per record"
+            " naming that record's own decision; empty otherwise."
         ),
     )
 

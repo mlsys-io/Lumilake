@@ -1324,7 +1324,8 @@ def _join_input_keys(
             keys = [record_key_at(produced.keys, position)]
         else:
             keys = _joined_keys(produced, indexes.get(node, {}), key)
-        found.extend(membership_of([(node, keys)]))
+        name = plan.logical_names.get(node, node)
+        found.extend(membership_of([(name, keys)]))
     return found
 
 
@@ -1362,7 +1363,14 @@ def _attach_keys(
         if source is not None and source_position is not None:
             found.extend(
                 membership_of(
-                    [(source_node or "", [record_key_at(source.keys, source_position)])]
+                    [
+                        (
+                            plan.logical_names.get(
+                                source_node or "", source_node or ""
+                            ),
+                            [record_key_at(source.keys, source_position)],
+                        )
+                    ]
                 )
             )
         if values is None:
@@ -1371,7 +1379,7 @@ def _attach_keys(
             membership_of(
                 [
                     (
-                        value_node or "",
+                        plan.logical_names.get(value_node or "", value_node or ""),
                         [
                             record_key_at(values.keys, at)
                             for at in _attach_value_positions(
