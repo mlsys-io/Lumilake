@@ -877,18 +877,17 @@ def _inherit_input_keys(
 
 def record_values(response: Any, typed: bool) -> list[Any]:
     """The values one task produced, in order: ``items`` outputs, or grouped rows."""
-    return [value for value, _ in _item_values(response, typed)]
+    return [value for value, _ in _item_values(response, typed, False)]
 
 
 def _record_values(response: Any, plan: RecordPlan) -> list[tuple[Any, Any]]:
     """Each value one task produced, in order, with its own result item."""
-    return _item_values(response, typed_row_step(plan.op), plan)
+    grouped = grouped_local_chat(plan.op)
+    return _item_values(response, typed_row_step(plan.op), grouped)
 
 
-def _item_values(
-    response: Any, typed: bool, plan: RecordPlan | None = None
-) -> list[tuple[Any, Any]]:
-    """Each value one task produced with its item, grouped when ``plan`` says so."""
+def _item_values(response: Any, typed: bool, grouped: bool) -> list[tuple[Any, Any]]:
+    """Each value one task produced with its item, split when ``grouped``."""
     payload = response
     if isinstance(payload, Mapping) and isinstance(payload.get("value"), Mapping):
         payload = payload["value"]
@@ -902,20 +901,16 @@ def _item_values(
         rows = item.get("rows") if isinstance(item, Mapping) else None
         if isinstance(rows, list):
             found.extend((_row_value(row), row) for row in rows)
-        elif plan is not None and _grouped_model_output(item, plan):
+        elif grouped and _grouped_output(item):
             found.extend((text, item) for text in _item_output(item, typed))
         else:
             found.append((_item_output(item, typed), item))
     return found
 
 
-def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
-    """Whether an item holds a rowwise model task's per-row outputs as one list."""
-    return (
-        grouped_local_chat(plan.op)
-        and isinstance(item, Mapping)
-        and isinstance(item.get("output"), list)
-    )
+def _grouped_output(item: Any) -> bool:
+    """Whether an item carries its per-row values as one ``output`` list."""
+    return isinstance(item, Mapping) and isinstance(item.get("output"), list)
 
 
 def _row_value(row: Any) -> Any:
