@@ -102,6 +102,15 @@ def _stored(value: Any, op: str, record: str | None = None) -> RecordEntry:
     )
 
 
+def _read_at(graph: Any, node: str, path: str) -> Any:
+    """The op reading its first served column at ``path``."""
+    assert isinstance(spec := graph.nodes[node].data_spec, PythonData)
+    entry = spec.plan[0].model_copy(update={"path": path})
+    return replace(
+        graph.nodes[node], data_spec=spec.model_copy(update={"plan": [entry]})
+    )
+
+
 def _node(graph: Any, name: str) -> str:
     return next(node for node in graph.nodes if graph.op_names.get(node) == name)
 
@@ -292,6 +301,17 @@ async def test_a_served_local_chat_keeps_its_grouped_item_shape() -> None:
 )
 async def test_a_row_steps_served_item_equals_its_live_item(value: Any) -> None:
     """A served row step's item is the live one, typed ``value`` under it."""
+    graph = _runtime_graph(_WORKFLOW)
+    join = _node(graph, "Join")
+    text = value if isinstance(value, str) else json.dumps(value)
+    graph.nodes[join] = _read_at(graph, join, "value")
+    items = {"Mark": [{"output": text, "value": value}] * 2}
+    storage = InMemoryJobStorage()
+    await _run(storage, _WORKFLOW, {"Mark": [value] * 2}, "req-1", items=items)
+    plan, sent = _planned(storage, graph)
+    served = sent.nodes[join].data_spec
+    assert _decisions(plan)["Mark"] == ("hit", None)
+    assert isinstance(served, PythonData) and served.plan[0].values == [value, value]
 
 
 @pytest.mark.asyncio
@@ -339,6 +359,28 @@ def _parse_workflow(rows: list[dict[str, Any]], *more: dict[str, Any]) -> Any:
         "ops": ops,
         "outputs": [{"name": "o", "ref": ref}],
     }
+
+
+@pytest.mark.asyncio
+async def test_a_parse_steps_field_is_served_under_reuse() -> None:
+    """A parse step's stored record serves a reader of ``items.output.<field>``."""
+    rows = [{"id": "a", "text": "one"}]
+    grade = {
+        "id": "Grade",
+        "op": "LambdaOp",
+        "inputs": ["Parsed"],
+        "mode": "row",
+        "fn_name": "grade",
+        "key": {"node": "Parsed", "path": "id"},
+        "code": "lambda c: ['ok' for v in c[0]]",
+    }
+    graph = _runtime_graph(_parse_workflow(rows, grade))
+    node = _node(graph, "Grade")
+    graph.nodes[node] = _read_at(graph, node, "value.text")
+    storage = InMemoryJobStorage()
+    await _run(storage, {}, {"Mark": rows, "Parsed": rows}, "req-1", graph=graph)
+    plan, _ = _planned(storage, graph)
+    assert _decisions(plan)["Parsed"] == ("hit", None), _decisions(plan)
 
 
 @pytest.mark.asyncio
