@@ -99,6 +99,7 @@ from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.common import read_workflow_seed
 from lumilake_server.parser.keyed_seed import SAMPLE_FN_NAME, rewrite_native_keys
 from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -1231,7 +1232,7 @@ def _validate_list_lambda_slice_span(
                 )
             else:
                 continue
-            if _reads_a_sample_fan_out(graph, node_id):
+            if _reads_a_sample_fan_out(graph, node_id, list_lambda_dependent):
                 produced = (
                     "by the per-sample fan-out the parser generates for a keyed chat"
                     " op whose config.n is greater than one, which emits one item per"
@@ -1248,8 +1249,10 @@ def _validate_list_lambda_slice_span(
             )
 
 
-def _reads_a_sample_fan_out(graph: RuntimeGraph, node_id: str) -> bool:
-    """Whether the value archived at ``node_id`` comes from a sample fan-out."""
+def _reads_a_sample_fan_out(
+    graph: RuntimeGraph, node_id: str, whole_result: set[str]
+) -> bool:
+    """Whether the whole-result node behind ``node_id`` is the per-sample fan-out."""
     seen: set[str] = set()
     pending = [node_id]
     while pending:
@@ -1260,13 +1263,14 @@ def _reads_a_sample_fan_out(graph: RuntimeGraph, node_id: str) -> bool:
         node = graph.nodes.get(current)
         if node is None:
             continue
-        if node.task_type == PYTHON_TASK_TYPE and (
-            isinstance(node.data_spec, PythonData)
-            and node.data_spec.mode == "expand"
-            and node.data_spec.fn_name == SAMPLE_FN_NAME
+        if node.task_type == PYTHON_TASK_TYPE and isinstance(
+            node.data_spec, PythonData
         ):
-            return True
-        pending.extend(node.dependencies)
+            if node.data_spec.mode in python_step.WHOLE_RESULT_MODES:
+                return node.data_spec.mode == "expand" and (
+                    node.data_spec.fn_name == SAMPLE_FN_NAME
+                )
+        pending.extend(dep for dep in node.dependencies if dep in whole_result)
     return False
 
 
