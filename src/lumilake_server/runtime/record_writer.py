@@ -942,6 +942,14 @@ def _position_inputs(
     return digests, values
 
 
+def split_inputs(
+    inputs: Sequence[RecordInput],
+) -> tuple[list[RecordInput], list[RecordInput]]:
+    """A reduce's inputs split into the ones it reads one row of per member and
+    the ones it reads whole."""
+    return _split_inputs(inputs)
+
+
 def _split_inputs(
     inputs: Sequence[RecordInput],
 ) -> tuple[list[RecordInput], list[RecordInput]]:

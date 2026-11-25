@@ -50,6 +50,7 @@ from lumilake_server.runtime.record_writer import (
     reads_unversioned,
     realization,
     resolve_plans,
+    split_inputs,
     typed_row_step,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -576,16 +577,10 @@ class ReusePlanner:
         groups = _group_members(plan, rows)
         if groups is None:
             return "unkeyed row"
-        named = [item.named for item in inputs]
         slots: list[GroupSlot] = []
         entries: dict[str, RecordEntry] = {}
         for group_key, members in groups:
-            input_digests: list[str] = []
-            input_values: list[str] = []
-            for member in members:
-                read_digests, read_values = position_inputs(named, member, keyed=True)
-                input_digests.extend(read_digests)
-                input_values.extend(read_values)
+            input_digests, input_values = _group_inputs(inputs, members)
             entry = read_entry(
                 self._storage,
                 entry_digest(
@@ -1300,7 +1295,7 @@ def _served_input(records: Sequence[RecordEntry]) -> _Input:
     """A served input, named by the entry each of its records read."""
     return _Input(
         named=RecordInput(
-            keyed=True,
+            keyed=records[0].address.record is not None,
             records=[(entry.digest, entry.value_digest or "") for entry in records],
         ),
         keys=[entry.address.record for entry in records],
@@ -1326,6 +1321,24 @@ def _group_members(
             return None
         groups.setdefault(key_text(found), []).append(position)
     return list(groups.items())
+
+
+def _group_inputs(
+    inputs: Sequence[_Input], members: Sequence[int]
+) -> tuple[list[str], list[str]]:
+    """What one reduce group read, named in the order the writer names it: each
+    keyed input's record at each member, then every whole input once."""
+    keyed, whole = split_inputs([item.named for item in inputs])
+    digests: list[str] = []
+    values: list[str] = []
+    for member in members:
+        read_digests, read_values = position_inputs(keyed, member, keyed=True)
+        digests.extend(read_digests)
+        values.extend(read_values)
+    whole_digests, whole_values = position_inputs(whole, 0, keyed=False)
+    digests.extend(whole_digests)
+    values.extend(whole_values)
+    return digests, values
 
 
 def _content_input(records: ContentRecords) -> _Input:

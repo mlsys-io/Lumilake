@@ -1469,6 +1469,46 @@ async def test_a_partial_reduce_with_a_per_row_literal_runs_on_the_worker() -> N
     assert [item["key"] for item in items] == ["p1", "p2", "p3"]
 
 
+def _reduce_unkeyed_workflow() -> dict[str, Any]:
+    """A keyed row step whose two rows share a group, a whole-op list step, and a
+    reduce that groups the keyed input and reads the whole-op value as an
+    unkeyed input."""
+    tag, rank = _REDUCE_OPS
+    rank = {**rank, "inputs": ["Tag", "Globals"]}
+    globals_op = {
+        "id": "Globals",
+        "op": "LambdaOp",
+        "inputs": ["Rows"],
+        "mode": "list",
+        "fn_name": "globs",
+        "code": "lambda c: [len(c[0])]",
+    }
+    return {
+        "name": "reduce-unkeyed",
+        "inputs": {
+            "Rows": [
+                json.dumps({"id": "t1", "patient": "p1"}),
+                json.dumps({"id": "t2", "patient": "p1"}),
+            ]
+        },
+        "ops": [globals_op, tag, rank],
+        "outputs": [{"name": "ranked", "ref": "Rank"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_reduce_reading_an_unkeyed_input_serves_its_group() -> None:
+    """The planner names each group's inputs the way the writer does, so a
+    reduce whose group reads an unkeyed input beside its keyed rows serves that
+    group on an unchanged rerun. Covers finding 6."""
+    cycle, workflow = _Cycle(InMemoryJobStorage()), _reduce_unkeyed_workflow()
+    await cycle.full(workflow)
+    plan, dispatched = cycle.plan(workflow)
+    rank = _node(_runtime_graph(workflow), "Rank")
+    assert plan.hits.get(rank), _decisions(plan)
+    assert rank not in dispatched.nodes
+
+
 def _seeded_expand_workflow() -> dict[str, Any]:
     """A keyed row step read by an expand whose row function draws a seed from
     the same input's ``seed`` column."""
