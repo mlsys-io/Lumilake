@@ -89,6 +89,7 @@ from lumilake_server.hooks.security import (
     get_runtime_token,
     register_resource,
     require_permission,
+    require_scope,
     resolve_accessible_ids,
     run_submission_guards,
 )
@@ -877,6 +878,9 @@ class JobSubmitItem(BaseModel):
         if not self.inputs:
             raise ValueError("inputs is required")
         return self
+
+
+LUMID_JOB_BIND_SCOPE = "lumid-job:bind"
 
 
 class LumidJobBinding(BaseModel):
@@ -3568,6 +3572,8 @@ async def submit_job(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="data must contain at least one entry",
         )
+    if submit_request.lumid_job is not None:
+        require_scope(principal, LUMID_JOB_BIND_SCOPE)
     data_credential = (
         await _lumid_job_credential(submit_request.lumid_job)
         if submit_request.lumid_job is not None
