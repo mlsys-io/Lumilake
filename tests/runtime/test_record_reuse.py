@@ -378,7 +378,7 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     assert _decisions(plan) == {
         "Mark": ("hit", None),
         "Join": ("hit", None),
-        "Final": ("miss", "no entry"),
+        "Final": ("miss", "spec changed"),
     }
     assert list(dispatched.nodes) == [_node(graph, "Final")]
     await _run(
@@ -397,7 +397,11 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     ("rows", "seeds", "expected"),
     [
         (_BASE_ROWS, None, ("hit", None)),
-        ([{"id": "a", "q": "X"}, {"id": "b", "q": "two"}], None, ("miss", "no entry")),
+        (
+            [{"id": "a", "q": "X"}, {"id": "b", "q": "two"}],
+            None,
+            ("miss", "input changed"),
+        ),
         ([{"q": "x"}, {"q": "y"}], None, ("miss", "unkeyed row")),
         (_BASE_ROWS, [7, 9], ("hit", None)),
     ],
@@ -465,7 +469,7 @@ async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
     planner, graph = _planner(storage), _runtime_graph(changed)
     plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
-    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    assert _decisions(plan)["Parsed"] == ("miss", "spec changed"), _decisions(plan)
     served = served_records(plan)
     await _run(
         storage, changed, {"Parsed": parsed}, "req-2", graph=dispatched, served=served
@@ -798,7 +802,7 @@ async def test_a_served_prompt_feeds_a_model_op(
         (_ROWS["Mark"], ("hit", None), ("hit", None)),
         (
             [{**_ROWS["Mark"][0], "text": "X"}, _ROWS["Mark"][1]],
-            ("miss", "no entry"),
+            ("miss", "input changed"),
             ("miss", "upstream miss"),
         ),
     ],

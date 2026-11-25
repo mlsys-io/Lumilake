@@ -2,6 +2,7 @@
 
 A hit is a whole op whose every record the store already holds; it leaves the
 graph, and its readers carry the stored values in their column-plan entries.
+A miss names its cause from the newest entry the address holds.
 """
 
 import json
@@ -26,12 +27,17 @@ from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_keys import child_count_key, child_key
 from lumilake_server.runtime.record_store import (
     EffectVersions,
+    InputMembership,
     RecordAddress,
+    RecordAddressIndex,
     RecordEntry,
     RecordRealization,
     RecordSource,
+    address_object_name,
+    address_text,
     data_spec_dict,
     digest_of,
+    effect_versions,
     entry_digest,
     is_marker,
     key_text,
@@ -41,6 +47,7 @@ from lumilake_server.runtime.record_writer import (
     NodeRecords,
     RecordInput,
     RecordPlan,
+    _MembershipOrder,
     _decoded,
     content_input,
     input_nodes,
@@ -56,7 +63,7 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.utils.job_storage import JobStorage
+from lumilake_server.utils.job_storage import ArchiveNotFound, JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
 """Task types whose stored value a served op carries whole; an api, diffusion
@@ -502,7 +509,9 @@ class ReusePlanner:
         missed: list[int] = []
         counts: dict[int, RecordEntry] = {}
         for position, parent_key in enumerate(parent_keys):
-            read_digests, read_values = position_inputs(named, position, keyed=True)
+            read_digests, read_values, read_membership = position_inputs(
+                named, position, keyed=True
+            )
             count = read_entry(
                 self._storage,
                 entry_digest(
@@ -515,7 +524,8 @@ class ReusePlanner:
                     input_digests=read_digests,
                     input_values=read_values,
                     realization=RecordRealization(),
-                    versions=EffectVersions(),
+                    versions=effect_versions(plan.op),
+                    membership=read_membership,
                 ),
             )
             children: list[RecordEntry] = []
@@ -537,7 +547,8 @@ class ReusePlanner:
                             input_digests=read_digests,
                             input_values=read_values,
                             realization=RecordRealization(),
-                            versions=EffectVersions(),
+                            versions=effect_versions(plan.op),
+                            membership=read_membership,
                         ),
                     )
                     if child is None or _entry_miss_reason(child) is not None:
@@ -609,8 +620,9 @@ class ReusePlanner:
             return "unkeyed row"
         slots: list[GroupSlot] = []
         entries: dict[str, RecordEntry] = {}
+        versions = effect_versions(plan.op)
         for group_key, members in groups:
-            input_digests, input_values = _group_inputs(inputs, members)
+            input_digests, input_values, membership = _group_inputs(inputs, members)
             entry = read_entry(
                 self._storage,
                 entry_digest(
@@ -621,7 +633,8 @@ class ReusePlanner:
                     input_digests=input_digests,
                     input_values=input_values,
                     realization=RecordRealization(),
-                    versions=EffectVersions(),
+                    versions=versions,
+                    membership=membership,
                 ),
             )
             answered = _entry_miss_reason(entry) is None
@@ -663,6 +676,7 @@ class ReusePlanner:
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
         seeded = _seeded_records(plan, stored, runtime_graph)
+        versions = effect_versions(plan.op)
         served = _partially_servable(plan)
         first_reason: str | None = None
         slots: list[Any] = []
@@ -671,7 +685,7 @@ class ReusePlanner:
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
                 return _Decision("no realization")
-            input_digests, input_value_digests = position_inputs(
+            input_digests, input_value_digests, membership = position_inputs(
                 named, position, keyed=plan.keyed
             )
             entry = read_entry(
@@ -684,7 +698,8 @@ class ReusePlanner:
                     input_digests=input_digests,
                     input_values=input_value_digests,
                     realization=draw,
-                    versions=EffectVersions(),
+                    versions=versions,
+                    membership=membership,
                 ),
             )
             reason = _entry_miss_reason(entry)
@@ -693,10 +708,21 @@ class ReusePlanner:
                 entries.append(found)
                 slots.append(found.value)
                 continue
+            cause = (
+                _changed_reason(
+                    read_address_entry(
+                        self._storage, plan.op_name, record, round_number
+                    ),
+                    versions=versions,
+                    input_values=input_value_digests,
+                    membership=membership,
+                )
+                or reason
+            )
             if not served:
-                return _Decision(reason)
+                return _Decision(cause)
             if first_reason is None:
-                first_reason = reason
+                first_reason = cause
             missed.append(position)
             slots.append(_MISSED)
         if not missed:
@@ -1255,12 +1281,13 @@ def _planner_inputs(
     """The inputs one op's records read, named the way the writer names them."""
     inputs: list[_Input] = []
     for node in input_nodes(plan):
+        name = plan.logical_names.get(node, node)
         hit = decision.hits.get(node)
         if hit is not None:
-            inputs.append(_served_input(hit))
+            inputs.append(_served_input(hit, name))
             continue
         if node in decision.content:
-            inputs.append(_content_input(decision.content[node]))
+            inputs.append(_content_input(decision.content[node], name))
             continue
         values = input_values(plan.op, node)
         inputs.append(
@@ -1279,14 +1306,17 @@ def _planner_inputs(
     return inputs
 
 
-def _served_input(records: Sequence[RecordEntry]) -> _Input:
+def _served_input(records: Sequence[RecordEntry], node: str) -> _Input:
     """A served input, named by the entry each of its records read."""
+    keys = [entry.address.record for entry in records]
     return _Input(
         named=RecordInput(
             keyed=records[0].address.record is not None,
             records=[(entry.digest, entry.value_digest or "") for entry in records],
+            node=node,
+            keys=keys,
         ),
-        keys=[entry.address.record for entry in records],
+        keys=keys,
     )
 
 
@@ -1313,36 +1343,44 @@ def _group_members(
 
 def _group_inputs(
     inputs: Sequence[_Input], members: Sequence[int]
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], list[InputMembership]]:
     """What one reduce group read, named in the order the writer names it: each
     keyed input's record at each member, then every whole input once."""
     keyed, whole = split_inputs([item.named for item in inputs])
     digests: list[str] = []
     values: list[str] = []
+    read = _MembershipOrder()
     for member in members:
-        read_digests, read_values = position_inputs(keyed, member, keyed=True)
+        read_digests, read_values, member_membership = position_inputs(
+            keyed, member, keyed=True
+        )
         digests.extend(read_digests)
         values.extend(read_values)
-    whole_digests, whole_values = position_inputs(whole, 0, keyed=False)
+        read.extend(member_membership)
+    whole_digests, whole_values, whole_membership = position_inputs(
+        whole, 0, keyed=False
+    )
     digests.extend(whole_digests)
     values.extend(whole_values)
-    return digests, values
+    read.extend(whole_membership)
+    return digests, values, read.groups()
 
 
-def _content_input(records: ContentRecords) -> _Input:
+def _content_input(records: ContentRecords, node: str) -> _Input:
     """An unversioned read the plan re-ran, named by the writer's own rule: each
     row by the value the read returned, so the two sides share one identity."""
     named = content_input(
         NodeRecords(keyed=records.keyed, values=records.values, keys=records.keys)
     )
     positions = range(len(records.values)) if records.keyed else range(1)
+    keys: list[str | None] = (
+        [records.keys[position] for position in positions] if records.keyed else [None]
+    )
     return _Input(
-        named=named,
-        keys=(
-            [records.keys[position] for position in positions]
-            if records.keyed
-            else [None]
+        named=RecordInput(
+            keyed=named.keyed, records=named.records, node=node, keys=keys
         ),
+        keys=keys,
     )
 
 
@@ -1517,3 +1555,46 @@ def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
     if digest_of(entry.value) != entry.value_digest:
         return "value not servable"
     return None
+
+
+def read_address_entry(
+    storage: JobStorage, op: str, record: str | None, round_number: int
+) -> RecordEntry | None:
+    """The newest entry written at one address, whatever its signature."""
+    try:
+        body, _ = storage.load_blob(address_object_name(op, round_number))
+        listed = RecordAddressIndex.from_body(body)
+    except (ArchiveNotFound, KeyError, ValueError):
+        return None
+    found = listed.records.get(address_text(record))
+    return None if found is None else read_entry(storage, found.digest)
+
+
+def _changed_reason(
+    previous: RecordEntry | None,
+    *,
+    versions: EffectVersions,
+    input_values: list[str],
+    membership: list[InputMembership],
+) -> str | None:
+    """Why this record misses beside a stored entry at its own address.
+
+    The entry's own facts are compared in the order a revision changes them:
+    the versions it ran with, the values it read, the membership it read, and,
+    with those equal, its op spec, which is the only part of the signature
+    left."""
+    if previous is None:
+        return None
+    if _version_changed(previous, versions):
+        return "version changed"
+    if previous.input_values != input_values:
+        return "input changed"
+    if previous.membership != membership:
+        return "membership changed"
+    return "spec changed"
+
+
+def _version_changed(previous: RecordEntry, versions: EffectVersions) -> bool:
+    """A model revision or image the record was made with differs from this run's."""
+    before = previous.versions
+    return before.revision != versions.revision or before.image != versions.image
