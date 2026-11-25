@@ -49,6 +49,7 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.job_storage import JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
@@ -528,20 +529,25 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
 
 
 def _seed_first_order(runtime_graph: RuntimeGraph) -> list[str]:
-    """The nodes in topological order, each seed node just ahead of the first
-    chat that seeds from it, so that chat reads the seed node's records."""
-    order = runtime_graph.topological_order()
-    for node_id in list(order):
-        node = runtime_graph.nodes[node_id]
+    """Topological order with each seed node ordered ahead of the chat reading it."""
+    graph: dict[str, set[str]] = {node_id: set() for node_id in runtime_graph.nodes}
+    for node_id, node in runtime_graph.nodes.items():
+        for dep in node.dependencies:
+            if dep in graph:
+                graph[dep].add(node_id)
         spec = node.data_spec
-        if not isinstance(spec, DataFrame) or not isinstance(spec.seeds, NodeRead):
-            continue
-        seed = spec.seeds.node
-        if seed not in order or order.index(seed) < order.index(node_id):
-            continue
-        order.remove(seed)
-        order.insert(order.index(node_id), seed)
-    return order
+        if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
+            if spec.seeds.node in graph:
+                graph[spec.seeds.node].add(node_id)
+    order_index = {node: idx for idx, node in enumerate(runtime_graph.node_order)}
+    return [
+        node_id
+        for node_id in topological_sort(
+            graph,
+            secondary_key=lambda node_id: order_index.get(node_id, len(order_index)),
+        )
+        if node_id in runtime_graph.nodes
+    ]
 
 
 def _seeded_records(

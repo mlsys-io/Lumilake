@@ -30,6 +30,7 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
+    _seed_first_order,
     served_column,
     served_records,
 )
@@ -529,3 +530,28 @@ async def test_a_reuse_run_stores_the_seeded_chat_it_redispatched() -> None:
     assert {e.record for e in stored} == {"a", "b"}
     again, _ = _planned(storage, changed, job_id="req-3")
     assert _decisions(again)["Join"] == ("hit", None), _decisions(again)
+
+
+def test_a_seed_node_that_depends_on_a_later_node_stays_after_it() -> None:
+    """A seed node ordered after its chat but reading a node between them keeps
+    that node ahead of it, so the plan order stays topological."""
+    base = _chat_graph(_BASE_ROWS)
+    mark, join = _node(base, "Mark"), _node(base, "Join")
+    between = replace(base.nodes[mark], node_id="b", dependencies=(mark,))
+    seed = replace(base.nodes[mark], node_id="s", dependencies=("b",))
+    graph = replace(
+        base,
+        nodes={**base.nodes, "b": between, "s": seed},
+        node_order=[mark, join, "b", "s"],
+    )
+    graph.op_names["s"] = "Seed"
+    spec = graph.nodes[join].data_spec
+    assert isinstance(spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(update={"seeds": NodeRead(node="s")}),
+    )
+    order = _seed_first_order(graph)
+    assert order.index(mark) < order.index(join)
+    assert order.index("b") < order.index("s")
+    assert order.index("s") < order.index(join)
