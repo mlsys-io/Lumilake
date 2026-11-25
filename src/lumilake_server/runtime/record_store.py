@@ -13,7 +13,6 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from lumilake import envs
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 RECORD_PREFIX = "records"
@@ -62,6 +61,50 @@ def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
         "data_spec": _without_data_data_spec(data_spec_dict(op), logical_names),
     }
     return digest_of({"digest_version": DIGEST_VERSION, "spec": spec})
+
+
+_SHAPE_KEYS = ("mode", "by", "join", "attach", "row_key")
+"""The data-spec fields that say how an op reads its inputs."""
+
+
+def op_namespace(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
+    """The workflow's logical identity of the op: its declared name, the nodes
+    it reads and how it reads them, so two workflows that name an op alike keep
+    their addresses apart, while an edit inside the op's own spec keeps its
+    address so a probe there can say the spec changed."""
+    spec = _without_code(_without_data_data_spec(data_spec_dict(op), logical_names))
+    shape = {key: spec[key] for key in _SHAPE_KEYS if key in spec}
+    plan = spec.get("plan")
+    if isinstance(plan, list):
+        shape["plan"] = _plan_shape(plan)
+    return digest_of(
+        {
+            "digest_version": DIGEST_VERSION,
+            "op": logical_names.get(op.node_id, op.node_id),
+            "reads": shape,
+        }
+    )
+
+
+def _plan_shape(plan: Sequence[Any]) -> list[Any]:
+    """Each plan entry's kind and the node it reads, without its rows."""
+    return [
+        (
+            {
+                "kind": entry.get("kind"),
+                "node": entry.get("node"),
+                "label": entry.get("label"),
+            }
+            if isinstance(entry, Mapping)
+            else entry
+        )
+        for entry in plan
+    ]
+
+
+def _without_code(data_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A data spec without the code it runs, which its signature already covers."""
+    return {key: item for key, item in data_spec.items() if key != "code"}
 
 
 _DATA_KEYS = frozenset({"items", "values"})
@@ -254,7 +297,7 @@ def marker_reason(value: Any) -> Any:
 
 
 class RecordAddress(BaseModel):
-    """Where a record is: its op, its key at that op, and the semantic round."""
+    """Where a record is: its op, the spec that computed it, its key and round."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -262,6 +305,11 @@ class RecordAddress(BaseModel):
     record: str | None = None
     """``None`` for an op whose rows carry no logical key: one whole-op entry."""
     round: int = 0
+    spec: str | None = None
+    """The op spec digest: the op's computation, so two workflows that name an op
+    alike do not share an address."""
+    scope: str = ""
+    """The index scope the op's address objects live under, set on a stored entry."""
 
 
 class RecordRealization(BaseModel):
@@ -293,7 +341,8 @@ class EffectVersions(BaseModel):
     revision: str | None = None
     """The model revision the record was computed with, when the op pins one."""
     image: str | None = None
-    """The runtime image the record was computed on, when the deployment names one."""
+    """The image the record ran in, when the op pins one: a standalone python
+    task's declared image, the only image the dispatched task spec names."""
 
 
 def model_revision(op: RuntimeOp) -> str | None:
@@ -306,19 +355,20 @@ def model_revision(op: RuntimeOp) -> str | None:
     return revision if isinstance(revision, str) and revision else None
 
 
-def runtime_image() -> str | None:
-    """The runtime image this server runs, as the deployment names it."""
-    tag = envs.LUMILAKE_IMAGE_TAG
-    return tag or None
+def op_image(op: RuntimeOp) -> str | None:
+    """The image the op's task runs in, when its spec pins one: a standalone
+    python step's declared image."""
+    image = data_spec_dict(op).get("image")
+    return image if isinstance(image, str) and image else None
 
 
 def effect_versions(op: RuntimeOp, *, unversioned: bool = False) -> EffectVersions:
     """The versions a record of ``op`` depends on: its snapshot state, the model
-    revision the op pins and the image it ran on."""
+    revision and the image the op itself pins."""
     return EffectVersions(
         unversioned=unversioned,
         revision=model_revision(op),
-        image=runtime_image(),
+        image=op_image(op),
     )
 
 
@@ -408,7 +458,7 @@ def _record_body(
     return {
         "digest_version": DIGEST_VERSION,
         "spec": spec_digest,
-        "address": address.model_dump(mode="json"),
+        "address": address.model_dump(mode="json", exclude={"spec", "scope"}),
         "inputs": input_digests,
         "input_values": input_values,
         "membership": [group.model_dump(mode="json") for group in membership or []],
@@ -486,13 +536,17 @@ def index_object_name(job_id: str) -> str:
     return f"{RECORD_PREFIX}/jobs/{job_id}.json"
 
 
-def address_object_name(op: str, round_number: int) -> str:
-    """The entries written at one op's addresses, whatever their signatures.
+def address_object_name(scope: str, record: str | None, round_number: int) -> str:
+    """The newest entry written at one record's address, at one op scope and round.
 
     An entry is content addressed, so a changed input gives a new key and the
-    old one stays; an address object names the newest one at each record, which
-    is what a probe compares against to say why a record missed."""
-    return f"{RECORD_PREFIX}/addresses/{op}/{round_number}.json"
+    old one stays; this object names the newest one at the address, which is
+    what a probe compares against to say why a record missed. Each address gets
+    its own object, so a writer never reads and rewrites another writer's."""
+    return (
+        f"{RECORD_PREFIX}/addresses/{scope}/{round_number}"
+        f"/{digest_of({'record': address_text(record)})}.json"
+    )
 
 
 class RecordIndexEntry(BaseModel):
@@ -542,7 +596,7 @@ class RecordIndex(BaseModel):
 
 
 class RecordAddressEntry(BaseModel):
-    """The newest digest written at one logical address, listed beside it."""
+    """The newest digest written at one logical address."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -555,33 +609,6 @@ class RecordAddressEntry(BaseModel):
     @classmethod
     def from_body(cls, body: bytes) -> Self:
         return cls.model_validate(json.loads(body.decode("utf-8")))
-
-
-class RecordAddressIndex(BaseModel):
-    """One op's newest entry per record, at one round, so a probe reads the
-    entry a changed input left behind without scanning the archive.
-
-    Each batch merges its own writes into the object once, under the job's
-    index lock, the same way the job index is kept.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    op: str
-    round: int = 0
-    records: dict[str, RecordAddressEntry] = Field(default_factory=dict)
-    """Record key text -> its newest entry; the whole-op record has no key here."""
-
-    def body(self) -> bytes:
-        return canonical_json(self.model_dump(mode="json")).encode("utf-8")
-
-    @classmethod
-    def from_body(cls, body: bytes) -> Self:
-        return cls.model_validate(json.loads(body.decode("utf-8")))
-
-    def newest(self, record: str | None) -> RecordAddressEntry | None:
-        """The newest entry at ``record``, never older than the round asked for."""
-        return self.records.get(address_text(record))
 
 
 def address_text(record: str | None) -> str:
