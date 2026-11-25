@@ -541,7 +541,8 @@ async def test_binding_without_the_scope_is_refused_before_a_token_fetch(
         )
     assert resp.status_code == 403
     assert "lumid-job:bind" in resp.json()["detail"]
-    monkeypatch.setattr(job_routes, "IDENTITY_PROVIDERS", [])
+    # Without an identity plugin the default principal passes the scope check.
+    hooks.IDENTITY_PROVIDERS.clear()
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/jobs",

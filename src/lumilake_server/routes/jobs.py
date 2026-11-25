@@ -3610,6 +3610,7 @@ async def submit_job(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="data must contain at least one entry",
         )
+    data_credential: DataCredential | None = None
     if submit_request.lumid_job is not None:
         require_scope(principal, LUMID_JOB_BIND_SCOPE)
         if not IDENTITY_PROVIDERS:
@@ -3617,11 +3618,9 @@ async def submit_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="lumid_job requires an authenticated lum.id principal",
             )
-    data_credential = (
-        await _lumid_job_credential(submit_request.lumid_job, principal.external_id)
-        if submit_request.lumid_job is not None
-        else None
-    )
+        data_credential = await _lumid_job_credential(
+            submit_request.lumid_job, principal.external_id
+        )
     if data_credential is not None:
         data_token_var.set(data_credential.token)
     job_id = f"req-{unique_id()}"
