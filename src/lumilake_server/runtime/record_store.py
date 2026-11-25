@@ -543,10 +543,8 @@ def address_object_name(scope: str, record: str | None, round_number: int) -> st
     old one stays; this object names the newest one at the address, which is
     what a probe compares against to say why a record missed. Each address gets
     its own object, so a writer never reads and rewrites another writer's."""
-    return (
-        f"{RECORD_PREFIX}/addresses/{scope}/{round_number}"
-        f"/{digest_of({'record': address_text(record)})}.json"
-    )
+    address = digest_of({"record": address_text(record)})
+    return f"{RECORD_PREFIX}/addresses/{scope}/{round_number}/{address}.json"
 
 
 class RecordIndexEntry(BaseModel):
