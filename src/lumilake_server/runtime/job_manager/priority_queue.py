@@ -41,18 +41,36 @@ omit the override co-batch with each other.
 """
 
 PartitionKey = (
-    tuple[str, str | None, str | None, str, HardwareSignature]
-    | tuple[str, str | None, str | None, str, HardwareSignature, bool]
+    tuple[str, str | None, str | None, str | None, str, HardwareSignature]
+    | tuple[str, str | None, str | None, str | None, str, HardwareSignature, bool]
 )
-"""``(principal_id, dispatch_token, api_credential_digest, optimizer_type,
-hardware_signature[, requires_gpu])`` — two requests share a FlowMesh dispatch
-iff their partition keys are equal. The API credential digest is included so a
-batch never mixes jobs with different caller-supplied credentials. When
+"""``(principal_id, dispatch_token, api_credential_digest,
+data_credential_digest, optimizer_type, hardware_signature[, requires_gpu])`` —
+two requests share a FlowMesh dispatch iff their partition keys are equal. The
+API and data credential digests are included so a batch never mixes jobs with
+different caller-supplied credentials or different lum.id/data job tokens. When
 capacity-aware selection is on, ``requires_gpu`` is appended so a busy GPU group
 never suppresses CPU-only items in the same principal/token/credential/
 optimizer/hardware class; with it off the key omits ``requires_gpu``, so CPU
 and GPU items share a partition.
 """
+
+
+def _partition_hardware(partition: PartitionKey) -> HardwareSignature:
+    """The hardware signature of a partition, by name rather than position."""
+    _principal, _token, _api_digest, _data_digest, _optimizer, hardware, *_rest = (
+        partition
+    )
+    return hardware
+
+
+def _partition_requires_gpu(partition: PartitionKey) -> bool:
+    """Whether a capacity-aware partition is the GPU class (``False`` when the
+    key carries no CPU/GPU element)."""
+    _principal, _token, _api_digest, _data_digest, _optimizer, _hardware, *rest = (
+        partition
+    )
+    return bool(rest[0]) if rest else False
 
 
 def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
@@ -167,13 +185,12 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
-        # Round-robin order of (principal_id, dispatch_token,
-        # api_credential_digest, optimizer_type, hardware_signature,
-        # requires_gpu) partitions across all priorities. select_batch picks one
-        # partition per round so a single FlowMesh dispatch never spans
-        # principals, tokens, API credentials, optimizer types, hardware
-        # requirements, or CPU/GPU class.
-        # Set mirrors the deque for O(1) membership.
+        # Round-robin order of (principal_id, dispatch_token, api_credential_digest,
+        # data_credential_digest, optimizer_type, hardware_signature, requires_gpu)
+        # partitions across all priorities. select_batch picks one partition per round
+        # so a single FlowMesh dispatch never spans principals, tokens, API or data
+        # credentials, optimizer types, hardware requirements, or CPU/GPU class. Set
+        # mirrors the deque for O(1) membership.
         self._rr_partition_order: deque[PartitionKey] = deque()
         self._rr_partition_members: set[PartitionKey] = set()
         self._items: dict[str, WorkflowItem] = {}
@@ -192,15 +209,16 @@ class PriorityJobManager(BaseJobManager):
     def _redact_partition(
         partition: PartitionKey,
     ) -> (
-        tuple[str, str, str, str, HardwareSignature]
-        | tuple[str, str, str, str, HardwareSignature, bool]
+        tuple[str, str, str, str, str, HardwareSignature]
+        | tuple[str, str, str, str, str, HardwareSignature, bool]
     ):
         """Render a partition for logs without leaking the bearer token or the
-        API credential digest."""
+        credential digests."""
         (
             principal_id,
             token,
             credential_digest,
+            data_credential_digest,
             optimizer_type,
             hardware,
             *rest,
@@ -214,10 +232,16 @@ class PriorityJobManager(BaseJobManager):
             credential_rendered = "no-credential"
         else:
             credential_rendered = f"cred:{credential_digest[:8]}"
-        redacted: tuple[str, str, str, str, HardwareSignature] = (
+        data_rendered = (
+            "no-data-credential"
+            if data_credential_digest is None
+            else f"data:{data_credential_digest[:8]}"
+        )
+        redacted: tuple[str, str, str, str, str, HardwareSignature] = (
             principal_id,
             token_rendered,
             credential_rendered,
+            data_rendered,
             optimizer_type,
             hardware,
         )
@@ -230,6 +254,7 @@ class PriorityJobManager(BaseJobManager):
             item.config.principal_id,
             item.dispatch_token,
             item.api_credential_digest,
+            item.data_credential_digest,
             item.config.optimizer_type or self._default_optimizer_type,
             _hardware_signature(item.config.hardware_requirements),
         )
@@ -239,7 +264,7 @@ class PriorityJobManager(BaseJobManager):
 
     def _partition_group_sizes(self, partition: PartitionKey) -> tuple[int, int]:
         """``(cpu_group_size, gpu_group_size)`` one dispatch of ``partition`` claims."""
-        requires_gpu = partition[5] if len(partition) > 5 else False
+        requires_gpu = _partition_requires_gpu(partition)
         return (
             self._cpu_worker_group_size,
             self._gpu_worker_group_size if requires_gpu else 0,
@@ -273,7 +298,7 @@ class PriorityJobManager(BaseJobManager):
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
-            hardware=self._hardware_from_signature(partition[4]),
+            hardware=self._hardware_from_signature(_partition_hardware(partition)),
             required_task_types=required_task_types(task_types),
         )
 
@@ -298,7 +323,7 @@ class PriorityJobManager(BaseJobManager):
             return False
         if not capacity.profiles:
             return True
-        hardware = self._hardware_from_signature(partition[4])
+        hardware = self._hardware_from_signature(_partition_hardware(partition))
         return capacity.can_satisfy_hardware(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
@@ -375,6 +400,8 @@ class PriorityJobManager(BaseJobManager):
                     enqueued_at=now,
                     dispatch_token=job.dispatch_token,
                     api_credential_digest=job.api_credential_digest,
+                    data_credential_digest=job.data_credential_digest,
+                    data_token=job.data_token,
                     requires_gpu=job.requires_gpu.get(graph_name, False),
                 )
             )
@@ -931,6 +958,7 @@ class PriorityJobManager(BaseJobManager):
             principal_id,
             dispatch_token,
             api_credential_digest,
+            data_credential_digest,
             optimizer_type,
             hardware_signature,
             *rest,
@@ -947,6 +975,7 @@ class PriorityJobManager(BaseJobManager):
                 if item.config.principal_id == principal_id
                 and item.dispatch_token == dispatch_token
                 and item.api_credential_digest == api_credential_digest
+                and item.data_credential_digest == data_credential_digest
                 and (item.config.optimizer_type or self._default_optimizer_type)
                 == optimizer_type
                 and _hardware_signature(item.config.hardware_requirements)

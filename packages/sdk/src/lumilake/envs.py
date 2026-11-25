@@ -214,6 +214,9 @@ LUMID_DATA_WORKER_URL: str = os.environ.get("LUMID_DATA_WORKER_URL", "").strip()
 LUMID_DATA_TOKEN: str | None = (
     os.environ.get("LUMID_DATA_TOKEN") or RUNTIME_TOKEN or None
 )
+# lum.id/data jobs API for submissions that carry ``lumid_job`` (docs/ENV.md).
+LUMID_JOBS_URL: str = os.environ.get("LUMID_JOBS_URL", "").strip() or LUMID_DATA_URL
+LUMID_JOBS_RUNTIME_KEY: str | None = os.environ.get("LUMID_JOBS_RUNTIME_KEY") or None
 # ``or "<default>"`` covers the LUMID_DATA_TIMEOUT_SECONDS="" case —
 # ``os.environ.get(k, default)`` returns "" if the key is set to empty,
 # bypassing the default and crashing ``float("")``.

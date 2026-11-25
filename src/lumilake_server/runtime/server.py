@@ -75,6 +75,7 @@ from lumilake_server.runtime.runtime_graph import (
     make_chunk_group_key,
 )
 from lumilake_server.runtime.runtime_manager import (
+    DataCredential,
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
@@ -91,6 +92,7 @@ from lumilake_server.runtime.worker_capability import (
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.lumid_data_client import data_token_var
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
@@ -793,6 +795,14 @@ class LumilakeServer:
             return None
         return hashlib.sha256(credential.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _data_credential_digest(credential: DataCredential | None) -> str | None:
+        """Hex digest of a lum.id/data job credential, never the token."""
+        if credential is None:
+            return None
+        material = f"{credential.url}\n{credential.token}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -850,6 +860,7 @@ class LumilakeServer:
         )
         self._requests[request.request_id] = state
 
+        data_credential = self.runtime_manager.get_data_credential(request.request_id)
         job = Job(
             request_id=request.request_id,
             runtime_graphs=request.query,
@@ -861,6 +872,8 @@ class LumilakeServer:
             api_credential_digest=self._api_credential_digest(
                 self.runtime_manager.get_api_credential(request.request_id)
             ),
+            data_credential_digest=self._data_credential_digest(data_credential),
+            data_token=data_credential.token if data_credential is not None else None,
             requires_gpu={
                 graph_name: any(
                     self._requires_gpu(op) for op in runtime_graph.nodes.values()
@@ -2061,6 +2074,11 @@ class LumilakeServer:
         )
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
+        )
+        # Queue partitions share one data credential per batch, so the batch's graph
+        # build and data profile read with that job's token.
+        data_token_var.set(
+            next((w.data_token for w in batch.workflows if w.data_token), None)
         )
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
