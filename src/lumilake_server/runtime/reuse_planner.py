@@ -343,14 +343,22 @@ class ReusePlanner:
                     )
                     misses.add(node_id)
                     continue
+                answered_hit = [answered[key] for key in hit_groups]
                 decision.decisions.append(
                     RecordDecision(
                         op=plan.op_name,
                         node=node_id,
                         decision="hit",
-                        records=len(hit_groups),
+                        records=len(answered_hit),
                     )
                 )
+                if not self._accept_hit(
+                    decision, plan, node_id, answered_hit, runtime_graph
+                ):
+                    misses.add(node_id)
+                    continue
+                decision.hits[node_id] = answered_hit
+                stored[node_id] = answered_hit
                 continue
             records = _record_keys(plan, inputs)
             outcome = self._decide(
@@ -393,22 +401,9 @@ class ReusePlanner:
             if hit is None:
                 misses.add(node_id)
                 continue
-            unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
-            if unserved is not None:
-                decision.decisions[-1] = decision.decisions[-1].model_copy(
-                    update={"decision": "miss", "reason": unserved}
-                )
+            if not self._accept_hit(decision, plan, node_id, hit, runtime_graph):
                 misses.add(node_id)
                 continue
-            if node_id in runtime_graph.output_node_map:
-                shape = output_shape(plan, runtime_graph.output_paths.get(node_id))
-                if shape is None or output_runs(shape, hit):
-                    decision.decisions[-1] = decision.decisions[-1].model_copy(
-                        update={"decision": "miss", "reason": "value not servable"}
-                    )
-                    misses.add(node_id)
-                    continue
-                decision.output_shapes[node_id] = shape
             decision.hits[node_id] = hit
             stored[node_id] = hit
         _keep_seed_nodes_dispatched(runtime_graph, decision)
@@ -419,6 +414,30 @@ class ReusePlanner:
             len(decision.decisions) - len(decision.hits),
         )
         return decision, _without_hits(runtime_graph, decision)
+
+    def _accept_hit(
+        self,
+        decision: ReusePlan,
+        plan: RecordPlan,
+        node_id: str,
+        hit: Sequence[RecordEntry],
+        runtime_graph: RuntimeGraph,
+    ) -> bool:
+        """Whether a hit may leave the graph: every reader takes the stored values
+        and an output archives them; else the decision becomes a miss."""
+        unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
+        if unserved is None and node_id in runtime_graph.output_node_map:
+            shape = output_shape(plan, runtime_graph.output_paths.get(node_id))
+            if shape is None or output_runs(shape, hit):
+                unserved = "value not servable"
+            else:
+                decision.output_shapes[node_id] = shape
+        if unserved is None:
+            return True
+        decision.decisions[-1] = decision.decisions[-1].model_copy(
+            update={"decision": "miss", "reason": unserved}
+        )
+        return False
 
     def _serve_content(
         self,
