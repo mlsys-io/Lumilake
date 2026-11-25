@@ -117,28 +117,26 @@ def _empty_runtime_graph() -> RuntimeGraph:
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
 
 
-def _param_list_writer(param: RetrievalParam) -> _ListSpecWriter:
+def _param_list_writer(param: RetrievalParam, data: ListData) -> _ListSpecWriter:
     """Write a rewritten list back into a retrieval param's typed spec."""
 
     def write(items: list[Any], grouped: bool) -> None:
-        assert param.data is not None
         update: dict[str, Any] = {"items": items}
         if grouped:
             update["grouped"] = True
-        param.data = param.data.model_copy(update=update)
+        param.data = data.model_copy(update=update)
 
     return write
 
 
-def _column_list_writer(column: LiteralColumn) -> _ListSpecWriter:
+def _column_list_writer(column: LiteralColumn, data: ListData) -> _ListSpecWriter:
     """Write a rewritten list back into a rowwise column's typed spec."""
 
     def write(items: list[Any], grouped: bool) -> None:
-        assert isinstance(column.data, ListData)
         update: dict[str, Any] = {"items": items}
         if grouped:
             update["grouped"] = True
-        column.data = column.data.model_copy(update=update)
+        column.data = data.model_copy(update=update)
 
     return write
 
@@ -1806,7 +1804,7 @@ class LumilakeServer:
                         label,
                         data.items,
                         param.input_ref,
-                        _param_list_writer(param),
+                        _param_list_writer(param, data),
                     )
             if isinstance(op, LLMChatOp):
                 for column in op.rowwise_columns or []:
@@ -1821,7 +1819,7 @@ class LumilakeServer:
                         column.label,
                         column_data.items,
                         column.input_ref,
-                        _column_list_writer(column),
+                        _column_list_writer(column, column_data),
                     )
 
     @classmethod
@@ -1932,15 +1930,13 @@ class LumilakeServer:
                 continue
             replacement = merged_inputs[rewrite_target_key]
             if input_ref is not None:
-                data = list(
-                    project_input_values(
-                        replacement,
-                        input_ref["path"],
-                        input_ref["key"],
-                    )
+                data = project_input_values(
+                    replacement,
+                    input_ref["path"],
+                    input_ref["key"],
                 )
             else:
-                data = list(replacement)
+                data = replacement.copy()
             write(data, len(replacement) > 1)
             rewrite_hits[rewrite_target_key] += 1
 
