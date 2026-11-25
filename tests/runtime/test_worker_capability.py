@@ -154,7 +154,6 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(free, required_gpu_task_types=required) == ["gpu-python"]
     plain = _gpu_free({"gpu-vllm": _GPU_VLLM})
     assert _gpu_claim(plain, required_gpu_task_types=required) is None
-    assert not plain.gpu_group_serves(required)
 
     cards = {
         "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
@@ -164,7 +163,18 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
     small = _gpu_free({"gpu-rtx": _gpu_profile([_H100], ["python"])})
     assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
-    assert not small.gpu_group_serves(requests=(passes,))
+    # The request and the task type bind to one worker: an H100 that runs only
+    # models beside a python RTX worker runs no H100 python step.
+    split = _gpu_free(
+        {"gpu-h100": _gpu_profile([_H100], []), "gpu-rtx": cards["gpu-rtx"]}
+    )
+    h100 = GpuRequest(type="H100")
+    assert (
+        _group_claim(
+            split, 2, required_gpu_task_types=required, required_gpu_requests=(h100,)
+        )
+        is None
+    )
 
 
 def _group_claim(
@@ -250,10 +260,6 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
         "gpu-h100",
     ]
     assert _group_claim(free, 1, required_gpu_requests=(h100, a100)) is None
-    assert free.gpu_group_serves(requests=(h100, a100))
-    assert not _gpu_free({"gpu-h100": profiles["gpu-h100"]}).gpu_group_serves(
-        requests=(h100, a100)
-    )
     # One slot is enough when the same worker carries both requests.
     both = _gpu_free({"gpu-two": _gpu_profile([_H100, _A100], ["python"])})
     assert _group_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]

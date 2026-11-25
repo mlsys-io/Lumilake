@@ -1116,16 +1116,20 @@ class LumilakeServer:
         required = required_cpu | required_gpu
         required_gpu_requests = self._batch_gpu_requests(batch)
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
-        selected = free.eligible_workers(
-            cpu_group_size=cpu_group_size,
-            gpu_group_size=gpu_group_size,
-            worker_meets_hardware=self._worker_meets_hardware,
-            hardware=hardware,
-            required_task_types=required_cpu,
-            required_gpu_task_types=required_gpu,
-            required_gpu_requests=required_gpu_requests,
-            required_gpu_utilizations=required_gpu_utilizations,
-        )
+
+        def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
+            return capacity.eligible_workers(
+                cpu_group_size=cpu_group_size,
+                gpu_group_size=gpu_group_size,
+                worker_meets_hardware=self._worker_meets_hardware,
+                hardware=hardware,
+                required_task_types=required_cpu,
+                required_gpu_task_types=required_gpu,
+                required_gpu_requests=required_gpu_requests,
+                required_gpu_utilizations=required_gpu_utilizations,
+            )
+
+        selected = claim(free)
         enough_by_count = (
             free.gpu_count >= gpu_group_size and free.cpu_count >= cpu_group_size
         )
@@ -1137,14 +1141,7 @@ class LumilakeServer:
             # Only a refusal from a gate can be permanent; too few idle workers
             # is capacity, so the batch just waits without a cluster read.
             total = await self._snapshot_total_capacity()
-            if not (
-                (not required_cpu or total.has_cpu_worker_advertising(required_cpu))
-                and total.gpu_group_serves(required_gpu, required_gpu_requests)
-                and (
-                    not required_gpu_utilizations
-                    or total.has_gpu_worker_holding(required_gpu_utilizations)
-                )
-            ):
+            if claim(total) is None:
                 # No worker in the cluster can ever run this batch: claim as if
                 # unconstrained so the optimizer fails it with a clear error
                 # instead of leaving it waiting for capacity that never appears.

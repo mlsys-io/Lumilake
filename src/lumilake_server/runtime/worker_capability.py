@@ -141,12 +141,11 @@ GpuRequirement = tuple[frozenset[str], tuple[GpuRequest, ...]]
 def gated_nodes_gpu_requirements(
     task_types: frozenset[str], requests: Iterable[GpuRequest]
 ) -> tuple[GpuRequirement, ...]:
-    """The requirements a GPU group must hold, one per task type and per request."""
-    requirements: list[GpuRequirement] = [
-        (frozenset({task_type}), ()) for task_type in sorted(task_types)
-    ]
-    requirements.extend((frozenset(), (request,)) for request in requests)
-    return tuple(requirements)
+    """One requirement per request, paired with the task types its step needs."""
+    paired = tuple((task_types, (request,)) for request in requests)
+    if paired or not task_types:
+        return paired
+    return ((task_types, ()),)
 
 
 def gpu_worker_can_run(
@@ -157,21 +156,6 @@ def gpu_worker_can_run(
     """True when a GPU worker advertises ``task_types`` and carries ``requests``."""
     return task_types <= advertised_task_types(profile) and all(
         profile_fits_gpu_request(profile, request) for request in requests
-    )
-
-
-def gpu_group_holds(
-    profiles: Mapping[str, Mapping[str, Any]],
-    workers: Iterable[str],
-    requirements: Iterable[GpuRequirement],
-) -> bool:
-    """True when every requirement has some worker of ``workers`` that can run it."""
-    return all(
-        any(
-            gpu_worker_can_run(profiles.get(worker, {}), task_types, requests)
-            for worker in workers
-        )
-        for task_types, requests in requirements
     )
 
 

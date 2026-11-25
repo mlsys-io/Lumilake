@@ -8,7 +8,6 @@ from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     gated_nodes_gpu_requirements,
-    gpu_group_holds,
     gpu_worker_can_run,
     holds_gpu_utilizations,
 )
@@ -45,18 +44,6 @@ class FreeCapacity:
             for w in self.cpu_worker_ids
         )
 
-    def gpu_group_serves(
-        self,
-        task_types: frozenset[str] = frozenset(),
-        requests: Sequence[GpuRequest] = (),
-    ) -> bool:
-        """True when each GPU task type and request has a worker in this snapshot."""
-        return gpu_group_holds(
-            self.profiles,
-            self.gpu_worker_ids,
-            gated_nodes_gpu_requirements(task_types, requests),
-        )
-
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
         """True when some GPU worker in this snapshot holds every utilization."""
         return any(
@@ -90,10 +77,9 @@ class FreeCapacity:
         each dispatch's group holds an eligible worker advertising all of them,
         so the count is also bounded by the number of such workers, and is
         ``0`` when there is none, no group of that class, or no profiles (the
-        cases in which :meth:`eligible_workers` returns ``None``). The count is
-        ``0`` the same way when no single worker carries every one of a step's
-        own ``required_gpu_requests``, or the GPU group cannot cover them one
-        requirement per worker. ``0`` when no class is claimed.
+        cases in which :meth:`eligible_workers` returns ``None``). Each GPU
+        requirement (a step's own request with the task types it needs) bounds
+        the count by the workers that run it. ``0`` when no class is claimed.
         """
         eligible_cpu = self._meeting_hardware(
             self.cpu_worker_ids, worker_meets_hardware, hardware
@@ -239,7 +225,8 @@ class FreeCapacity:
                 shared = frozenset.intersection(*gates)
                 if not shared:
                     return None
-                selected_gpu[0] = min(shared)
+                if selected_gpu[0] not in shared:
+                    selected_gpu[0] = next(w for w in eligible_gpu if w in shared)
             else:
                 for index, gate in enumerate(gates):
                     if any(w in gate for w in selected_gpu):
@@ -255,7 +242,7 @@ class FreeCapacity:
                     )
                     if slot is None:
                         return None
-                    selected_gpu[slot] = min(gate)
+                    selected_gpu[slot] = next(w for w in eligible_gpu if w in gate)
         if fraction_gate:
             # A worker's memory fraction holds every utilization at or below it, so a
             # group covering the largest one covers them all.
