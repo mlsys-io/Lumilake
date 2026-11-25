@@ -163,7 +163,7 @@ class PartialRecords(BaseModel):
     served: list[Any] = Field(default_factory=list)
     """Each slot's stored value, or the missed marker for one it must compute."""
     missed: list[int] = Field(default_factory=list)
-    """The live positions the dispatched op computes, in the order it reads them."""
+    """The live positions the dispatched op computes, for the plan's record count."""
     groups: list[GroupSlot] | None = None
     """A reduce's live groups in group order; ``None`` for an op of records."""
     children: list[ParentSlot] | None = None
@@ -773,7 +773,7 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
             )
         served[node_id] = records
     for node_id, partial in plan.partial.items():
-        entries = [entry for entry in partial.stored]
+        entries = partial.stored.copy()
         if partial.children is not None:
             entries = [
                 slot.count for slot in partial.children if slot.count is not None
@@ -841,7 +841,7 @@ def _rewritten(
         return op
     spec = op.data_spec
     if isinstance(spec, PythonData) and spec.plan:
-        return _rewritten_plan(op, spec, plan, runtime_graph)
+        return replace(op, data_spec=_rewritten_plan(op, spec, plan, runtime_graph))
     if _reads_literal_lists(op):
         literals = _replace_with_literals(data_spec_dict(op), plan, runtime_graph)
         return replace(op, data_spec=parse_data_spec(op.task_type, literals))
@@ -853,7 +853,7 @@ def _rewritten_plan(
     spec: PythonData,
     plan: ReusePlan,
     runtime_graph: RuntimeGraph,
-) -> RuntimeOp:
+) -> PythonData:
     """A python step whose plan entries read the values of served inputs."""
     rewritten: list[ColumnPlanEntry] = []
     for entry in spec.plan:
@@ -865,7 +865,7 @@ def _rewritten_plan(
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
         rewritten.append(entry.model_copy(update={"values": column}))
-    return replace(op, data_spec=spec.model_copy(update={"plan": rewritten}))
+    return spec.model_copy(update={"plan": rewritten})
 
 
 def _rewritten_slots(
@@ -881,18 +881,14 @@ def _rewritten_slots(
     spec = op.data_spec
     if not isinstance(spec, PythonData) or not spec.plan:
         raise ValueError(f"op '{op.node_id}' cannot rewrite a partial run")
+    rewritten = _rewritten_plan(op, spec, plan, runtime_graph)
     slots = _partial_slots(partial)
-    if slots is None:
-        raise ValueError(f"op '{op.node_id}' cannot rewrite a partial run")
-    rebuilt = _rewritten_plan(op, spec, plan, runtime_graph)
-    data = rebuilt.data_spec
-    assert isinstance(data, PythonData)
     return replace(
-        rebuilt, data_spec=data.model_copy(update={"plan": [*data.plan, slots]})
+        op, data_spec=rewritten.model_copy(update={"plan": [*rewritten.plan, slots]})
     )
 
 
-def _partial_slots(partial: PartialRecords) -> ColumnPlanEntry | None:
+def _partial_slots(partial: PartialRecords) -> ColumnPlanEntry:
     """The served slot entry for a partial op: one per group or child, else one
     record per live position."""
     if partial.groups is not None:

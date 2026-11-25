@@ -549,8 +549,6 @@ def _served_group(slots, by_value):
     )
 
 
-
-
 def _served_item(slot):
     return {{
         "output": slot["served"],

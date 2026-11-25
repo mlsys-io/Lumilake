@@ -551,6 +551,8 @@ class RecordWriter:
     ) -> list[RecordEntry]:
         """One entry per live parent holding its child count, so a parent that
         expanded to nothing is still answered from the store."""
+        if parent is None:
+            return []
         counts: dict[int, int] = {}
         served: set[int] = set()
         for item in items:
@@ -560,8 +562,6 @@ class RecordWriter:
                 continue
             counts[parent_index] = counts.get(parent_index, 0) + 1
         entries: list[RecordEntry] = []
-        if parent is None:
-            return entries
         for parent_index in range(len(parent.keys or [])):
             parent_key = record_key_at(parent.keys or [], parent_index)
             if parent_key is None or parent_index in served:
