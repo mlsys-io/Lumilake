@@ -2011,6 +2011,12 @@ async def _submit_dynamic_child(
     return child_job_id
 
 
+def _release_parent_credentials(parent_job_id: str) -> None:
+    """Drop the credentials a dynamic parent held for its rounds."""
+    server = LumilakeServer.get_started_instance()
+    server.runtime_manager.clear_dispatch_token(parent_job_id)
+
+
 async def _fire_parent_terminal_hooks(
     record: JobRecord,
     principal: PrincipalContext,
@@ -2500,6 +2506,7 @@ async def _run_dynamic_job(
                 save_exc,
             )
     finally:
+        _release_parent_credentials(parent_job_id)
         await _fire_parent_terminal_hooks(
             record, principal, parent_job_id, runtime_token
         )
@@ -2757,6 +2764,7 @@ async def _run_template_job(
                 save_exc,
             )
     finally:
+        _release_parent_credentials(parent_job_id)
         await _fire_parent_terminal_hooks(
             record, principal, parent_job_id, runtime_token
         )
