@@ -21,6 +21,8 @@ The bearer that `IdentityProvider.resolve` accepts is forwarded to FlowMesh as t
 - A token an `IdentityProvider` plugin chooses to accept must also authenticate against the configured FlowMesh deployment, since the same string is what FlowMesh sees on the runtime side.
 - Local deployments with no `IdentityProvider` plugin installed dispatch to FlowMesh with no `Authorization` header, matching FlowMesh's local-mode behavior. Set `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1` in cloud deploys to refuse this fallback.
 
+A principal allowed to bind a submission to a lum.id/data job (`lumid_job`) must carry the `lumid-job:bind` scope; `*` passes.
+
 Workflows that share a `PrincipalContext.principal_id` may coalesce into one FlowMesh submission; workflows from different principals always dispatch separately so each carries the originating principal's bearer.
 
 `principal_id` is a **security boundary**. Two requests resolving to the same `principal_id` are treated as one ownership scope — their workflows can be merged into one FlowMesh submission with a single bearer, and FlowMesh attribution falls on that principal. An `IdentityProvider` plugin must therefore guarantee one `principal_id` per ownership scope. Collisions (two distinct users mapped to one id) enable cross-tenant data flow; collisions are the plugin's responsibility to prevent, not Lumilake's.
