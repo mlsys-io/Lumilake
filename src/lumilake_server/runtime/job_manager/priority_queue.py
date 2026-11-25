@@ -185,13 +185,12 @@ class PriorityJobManager(BaseJobManager):
         self._rr_user_order: dict[Priority, deque[str]] = {
             priority: deque() for priority in Priority
         }
-        # Round-robin order of (principal_id, dispatch_token,
-        # api_credential_digest, data_credential_digest, optimizer_type,
-        # hardware_signature, requires_gpu) partitions across all priorities.
-        # select_batch picks one partition per round so a single FlowMesh
-        # dispatch never spans principals, tokens, API or data credentials,
-        # optimizer types, hardware requirements, or CPU/GPU class.
-        # Set mirrors the deque for O(1) membership.
+        # Round-robin order of (principal_id, dispatch_token, api_credential_digest,
+        # data_credential_digest, optimizer_type, hardware_signature, requires_gpu)
+        # partitions across all priorities. select_batch picks one partition per round
+        # so a single FlowMesh dispatch never spans principals, tokens, API or data
+        # credentials, optimizer types, hardware requirements, or CPU/GPU class. Set
+        # mirrors the deque for O(1) membership.
         self._rr_partition_order: deque[PartitionKey] = deque()
         self._rr_partition_members: set[PartitionKey] = set()
         self._items: dict[str, WorkflowItem] = {}

@@ -2075,8 +2075,8 @@ class LumilakeServer:
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
         )
-        # Queue partitions share one data credential per batch, so the batch's
-        # graph build and data profile read with that job's token.
+        # Queue partitions share one data credential per batch, so the batch's graph
+        # build and data profile read with that job's token.
         data_token_var.set(
             next((w.data_token for w in batch.workflows if w.data_token), None)
         )

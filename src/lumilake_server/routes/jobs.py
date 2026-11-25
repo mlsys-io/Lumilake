@@ -946,8 +946,8 @@ async def _lumid_job_credential(
     if resp.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"lum.id/data refused a token for job {binding.job_id}"
-            f" (HTTP {resp.status_code})",
+            detail=f"lum.id/data refused a token for job {binding.job_id} (HTTP"
+            f" {resp.status_code})",
         )
     try:
         body = LumidJobTokenResponse.model_validate_json(resp.content)
@@ -1064,8 +1064,8 @@ class JobPreviewRequest(BaseModel):
     lumid_job: LumidJobBinding | None = Field(
         default=None,
         description=(
-            "Accepted for payload compatibility; ignored during preview, which"
-            " reads with the server's data token."
+            "Accepted for payload compatibility; ignored during preview, which reads"
+            " with the server's data token."
         ),
     )
 

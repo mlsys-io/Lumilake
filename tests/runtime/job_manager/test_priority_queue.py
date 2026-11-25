@@ -1400,8 +1400,8 @@ async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
     on_key = on_manager._partition_of(on_item)
     off_key = off_manager._partition_of(off_item)
 
-    # The on-mode key carries requires_gpu (7 elements); the off-mode key does
-    # not (6 elements), so the two keys differ in shape.
+    # The on-mode key carries requires_gpu (7 elements); the off-mode key does not (6
+    # elements), so the two keys differ in shape.
     assert len(on_key) == 7
     assert len(off_key) == 6
     assert on_key[:6] == off_key[:6]
