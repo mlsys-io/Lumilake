@@ -1021,7 +1021,7 @@ class JobPreviewItem(BaseModel):
 class JobPreviewRequest(BaseModel):
     """Preview request accepting the same fields as ``JobSubmitRequest``, so
     one payload works against both ``/jobs`` and ``/jobs/preview``.
-    ``priority`` is accepted but ignored during preview."""
+    ``priority`` and ``lumid_job`` are accepted but ignored during preview."""
 
     data: list[JobPreviewItem] = Field(description="Workflow preview entries.")
     priority: Priority = Field(
