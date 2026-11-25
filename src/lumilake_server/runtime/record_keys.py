@@ -1,7 +1,8 @@
 """Record keys: how one op's rows are addressed.
 
-An expand child is ``(parent key, child index)``; a reduce group, a join row
-and a composite read their key through `key_text`.
+An expand child is ``(parent key, child index)`` and its parent's count is
+``(parent key, "count")``; a reduce group, a join row and a composite read
+their key through `key_text`.
 """
 
 import json
@@ -47,3 +48,9 @@ def child_key(parent_key: str, child: int) -> str:
     """An expand child's record key: its parent's key and its index among that
     parent's children."""
     return f"{parent_key}{CHILD_KEY_SEPARATOR}{child}"
+
+
+def child_count_key(parent_key: str) -> str:
+    """An expand parent's record key, holding how many children it has, so a
+    parent that expands to nothing still has a record to serve."""
+    return f"{parent_key}{CHILD_KEY_SEPARATOR}count"

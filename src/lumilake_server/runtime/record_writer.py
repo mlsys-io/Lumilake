@@ -23,7 +23,11 @@ from lumilake_server.data_specs import (
 )
 from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
-from lumilake_server.runtime.record_keys import child_key, composite_key
+from lumilake_server.runtime.record_keys import (
+    child_count_key,
+    child_key,
+    composite_key,
+)
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -472,7 +476,9 @@ class RecordWriter:
         source: RecordSource,
     ) -> list[RecordEntry]:
         """One entry per expand child, keyed by its parent's key and its index
-        among that parent's children, as the step reports them."""
+        among that parent's children, as the step reports them, and one per
+        parent this run expanded, holding how many children it has, so a parent
+        that expands to nothing still has a record the next run can serve."""
         entries: list[RecordEntry] = []
         for item in items:
             if item.get("served"):
@@ -513,6 +519,75 @@ class RecordWriter:
                         unversioned=row_versions.unversioned,
                     ),
                     versions=row_versions,
+                    source=source,
+                    node_records=node_records,
+                )
+            )
+        entries.extend(
+            self._count_entries(
+                plan=plan,
+                node_records=node_records,
+                records=records,
+                inputs=inputs,
+                items=items,
+                parent=parent,
+                versions=versions,
+                source=source,
+            )
+        )
+        return entries
+
+    def _count_entries(
+        self,
+        *,
+        plan: RecordPlan,
+        node_records: NodeRecords,
+        records: Mapping[str, NodeRecords],
+        inputs: Sequence[RecordInput],
+        items: Sequence[Mapping[str, Any]],
+        parent: NodeRecords | None,
+        versions: EffectVersions,
+        source: RecordSource,
+    ) -> list[RecordEntry]:
+        """One entry per live parent holding its child count, so a parent that
+        expanded to nothing is still answered from the store."""
+        counts: dict[int, int] = {}
+        served: set[int] = set()
+        for item in items:
+            parent_index = _index_field(item, "parent")
+            if item.get("served"):
+                served.add(parent_index)
+                continue
+            counts[parent_index] = counts.get(parent_index, 0) + 1
+        entries: list[RecordEntry] = []
+        if parent is None:
+            return entries
+        for parent_index in range(len(parent.keys or [])):
+            parent_key = record_key_at(parent.keys or [], parent_index)
+            if parent_key is None or parent_index in served:
+                continue
+            count = counts.get(parent_index, 0)
+            input_digests, input_values = _position_inputs(
+                inputs, parent_index, keyed=True
+            )
+            entries.append(
+                self._entry(
+                    plan=plan,
+                    record=child_count_key(parent_key),
+                    value=count,
+                    value_hash=digest_of(count),
+                    failed=False,
+                    input_digests=input_digests,
+                    input_values=input_values,
+                    realization=_realization(
+                        plan,
+                        node_records,
+                        records,
+                        parent_index,
+                        source,
+                        unversioned=False,
+                    ),
+                    versions=versions,
                     source=source,
                     node_records=node_records,
                 )

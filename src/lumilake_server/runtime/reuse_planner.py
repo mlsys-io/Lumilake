@@ -22,7 +22,7 @@ from lumilake_server.data_specs import (
 )
 from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import items_column
-from lumilake_server.runtime.record_keys import child_key
+from lumilake_server.runtime.record_keys import child_count_key, child_key
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -140,13 +140,17 @@ class GroupSlot(BaseModel):
 
 
 class ParentSlot(BaseModel):
-    """One live parent of a partially served expand: its live position and the
-    children the store holds for it, or ``None`` to re-expand."""
+    """One live parent of a partially served expand: its live position, the
+    store's count entry for it, and the children the store holds for it, or
+    ``None`` to re-expand."""
 
     model_config = ConfigDict(extra="forbid")
 
     parent: int
     children: list[Any] | None = None
+    count: RecordEntry | None = None
+    """The store's count entry for this parent, indexed so a parent answered
+    with no children keeps its count."""
 
 
 class PartialRecords(BaseModel):
@@ -256,7 +260,7 @@ class ReusePlanner:
                 plan, decision, inputs, stored, round_number=round_number
             )
             if expanded is not None:
-                children, missed_parents = expanded
+                children, missed_parents, counts = expanded
                 if missed_parents:
                     missed = set(missed_parents)
                     decision.served_children[node_id] = children
@@ -269,6 +273,7 @@ class ReusePlanner:
                                     if position in missed
                                     else [entry.value for entry in children[position]]
                                 ),
+                                count=counts.get(position),
                             )
                             for position in range(len(children))
                         ],
@@ -293,6 +298,12 @@ class ReusePlanner:
                         records=len(answered_children),
                     )
                 )
+                if not answered_children:
+                    decision.decisions[-1] = decision.decisions[-1].model_copy(
+                        update={"decision": "miss", "reason": "no children"}
+                    )
+                    misses.add(node_id)
+                    continue
                 if not self._accept_hit(
                     decision, plan, node_id, answered_children, runtime_graph
                 ):
@@ -473,42 +484,67 @@ class ReusePlanner:
         inputs: Sequence[_Input],
         *,
         round_number: int,
-    ) -> tuple[list[list[RecordEntry]], list[int]]:
-        """Each live parent's stored children, in child order, and the parent
-        positions the store does not answer.
+    ) -> tuple[list[list[RecordEntry]], list[int], dict[int, RecordEntry]]:
+        """Each live parent's stored children, in child order, the parent
+        positions the store does not answer, and each answered parent's count
+        entry.
 
         A child's key is its parent key and its index, so each is probed by its
-        own address: a parent is served when child 0 answers and the chain of
-        contiguous children ends where the store has no next one."""
+        own address: a parent is served when its own count entry answers and
+        every child the count names answers, so a parent that expands to nothing
+        is answered too."""
         named = [item.named for item in inputs]
         served: list[list[RecordEntry]] = [[] for _ in parent_keys]
         missed: list[int] = []
+        counts: dict[int, RecordEntry] = {}
         for position, parent_key in enumerate(parent_keys):
-            children: list[RecordEntry] = []
-            while True:
-                child = child_key(parent_key, len(children))
-                read_digests, read_values = position_inputs(named, position, keyed=True)
-                entry = read_entry(
-                    self._storage,
-                    entry_digest(
-                        spec_digest=plan.spec_digest,
-                        address=RecordAddress(
-                            op=plan.op_name, record=child, round=round_number
-                        ),
-                        input_digests=read_digests,
-                        input_values=read_values,
-                        realization=RecordRealization(),
-                        versions=EffectVersions(),
+            read_digests, read_values = position_inputs(named, position, keyed=True)
+            count = read_entry(
+                self._storage,
+                entry_digest(
+                    spec_digest=plan.spec_digest,
+                    address=RecordAddress(
+                        op=plan.op_name,
+                        record=child_count_key(parent_key),
+                        round=round_number,
                     ),
-                )
-                if entry is None or _entry_miss_reason(entry) is not None:
-                    break
-                children.append(entry)
-            if children:
-                served[position] = children
-            else:
+                    input_digests=read_digests,
+                    input_values=read_values,
+                    realization=RecordRealization(),
+                    versions=EffectVersions(),
+                ),
+            )
+            children: list[RecordEntry] = []
+            if (
+                count is not None
+                and _entry_miss_reason(count) is None
+                and isinstance(count.value, int)
+            ):
+                for index in range(count.value):
+                    child = read_entry(
+                        self._storage,
+                        entry_digest(
+                            spec_digest=plan.spec_digest,
+                            address=RecordAddress(
+                                op=plan.op_name,
+                                record=child_key(parent_key, index),
+                                round=round_number,
+                            ),
+                            input_digests=read_digests,
+                            input_values=read_values,
+                            realization=RecordRealization(),
+                            versions=EffectVersions(),
+                        ),
+                    )
+                    if child is None or _entry_miss_reason(child) is not None:
+                        break
+                    children.append(child)
+            if count is None or len(children) != count.value:
                 missed.append(position)
-        return served, missed
+                continue
+            served[position] = children
+            counts[position] = count
+        return served, missed, counts
 
     def _expand_outcome(
         self,
@@ -518,9 +554,10 @@ class ReusePlanner:
         stored: Mapping[str, Sequence[RecordEntry]],
         *,
         round_number: int,
-    ) -> tuple[list[list[RecordEntry]], list[int]] | None:
-        """An expand's ``(served children per parent, missed parents)``, or
-        ``None`` when it is not an expand or its parent runs in this batch."""
+    ) -> tuple[list[list[RecordEntry]], list[int], dict[int, RecordEntry]] | None:
+        """An expand's ``(served children per parent, missed parents, answered
+        counts by parent)``, or ``None`` when it is not an expand or its parent
+        runs in this batch."""
         spec = plan.op.data_spec
         if not isinstance(spec, PythonData) or spec.mode != "expand":
             return None
@@ -719,7 +756,8 @@ def _output_text(value: Any) -> str:
 
 def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
     """The records every hit serves, shaped as the writer reads a finished node,
-    plus the groups a partial reduce already holds, so the run indexes them."""
+    plus the groups a partial reduce and the children and child counts a partial
+    expand already holds, so the run indexes them."""
     served: dict[str, NodeRecords] = {}
     for node_id, entries in plan.hits.items():
         keyed = entries[0].address.record is not None
@@ -738,13 +776,18 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
             )
         served[node_id] = records
     for node_id, partial in plan.partial.items():
-        if not partial.stored:
+        entries = [entry for entry in partial.stored]
+        if partial.children is not None:
+            entries = [
+                slot.count for slot in partial.children if slot.count is not None
+            ] + entries
+        if not entries:
             continue
         records = NodeRecords(
             keyed=True,
-            values=[entry.value for entry in partial.stored],
-            keys=[entry.address.record for entry in partial.stored],
-            entries=partial.stored.copy(),
+            values=[entry.value for entry in entries],
+            keys=[entry.address.record for entry in entries],
+            entries=entries,
         )
         served[node_id] = records
     for node_id, groups in plan.served_children.items():

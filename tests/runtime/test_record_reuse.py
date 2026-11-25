@@ -1247,7 +1247,7 @@ async def test_an_expand_decides_each_parent() -> None:
     assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
     assert split not in dispatched.nodes and fill not in dispatched.nodes
 
-    # Run 2 stored the first parent's children only, so p2's are missing.
+    # Run 1's second child of p2 is only a marker, so p2's children are missing.
     partial = InMemoryJobStorage()
     await _run(
         partial,
@@ -1258,9 +1258,12 @@ async def test_an_expand_decides_each_parent() -> None:
             "Split": [
                 {"output": "p1a", "parent": 0, "child": 0},
                 {"output": "p1b", "parent": 0, "child": 1},
+                {"output": "p2a", "parent": 1, "child": 0},
+                {"output": "p2b", "parent": 1, "child": 1},
             ]
         },
     )
+    _mark_stored_entry(partial, "Split", "p2\x1f1")
     plan, dispatched = _planned(partial, graph)
     assert _decisions(plan)["Split"] == ("miss", "partial children"), _decisions(plan)
     items = _run_step(dispatched.nodes[split], {})
@@ -1279,14 +1282,35 @@ async def test_an_expand_decides_each_parent() -> None:
     )
     index = read_index(partial, "req-2")
     assert index is not None
-    assert {item.record for item in index.entries if item.op == "Split"} == {
+    written = [item.record for item in index.entries if item.op == "Split"]
+    assert {record for record in written if not str(record).endswith("count")} == {
         "p1\x1f0",
         "p1\x1f1",
         "p2\x1f0",
         "p2\x1f1",
     }
-    again, _ = _planned(partial, graph)
-    assert _decisions(again)["Split"] == ("hit", None), _decisions(again)
+    now, _ = _planned(partial, graph)
+    assert _decisions(now)["Split"] == ("miss", "partial children"), _decisions(now)
+
+
+@pytest.mark.asyncio
+async def test_an_expand_cycle_serves_a_parent_that_expands_to_nothing() -> None:
+    """An expand whose second parent returns no child is served on an unchanged
+    rerun, and a third run still serves every node."""
+    workflow = _expand_workflow()
+    workflow["ops"][1] = {
+        **workflow["ops"][1],
+        "code": "lambda row: [] if row[0]['id'] == 'p2' else [row[0]['id'] + 'a']",
+    }
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    plan, dispatched = cycle.plan(workflow)
+    split = _node(_runtime_graph(workflow), "Split")
+    assert plan.hits.get(split), _decisions(plan)
+    assert split not in dispatched.nodes
+    third, dispatched = cycle.third(workflow)
+    assert third.hits.get(split), _decisions(third)
+    assert dispatched.nodes == {}
 
 
 @pytest.mark.asyncio
