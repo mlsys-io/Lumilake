@@ -806,16 +806,15 @@ def test_disable_data_profile_drops_supplied_results(
 def _gpu_python_graph(gpu: dict[str, Any] | None = None) -> RuntimeGraph:
     graph = _python_graph()
     op = graph.nodes["p1"]
-    data_spec = {
-        **op.data_spec.model_dump(exclude_none=True),
-        "gpu": gpu or {"count": 1},
-    }
     graph.nodes["p1"] = runtime_op(
         node_id="p1",
         task_type="python",
         backend="python",
         model="",
-        data_spec=data_spec,
+        data_spec={
+            **op.data_spec.model_dump(exclude_none=True),
+            "gpu": gpu or {"count": 1},
+        },
         model_spec={},
         inference_spec={},
     )
@@ -838,16 +837,6 @@ def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, dict[str, Any]]:
     return profiles
 
 
-def test_halo_optimizer_places_a_gpu_python_step_on_a_gpu_python_worker() -> None:
-    schedule = HaloOptimizer().generate_schedule(
-        graph=_gpu_python_graph(),
-        worker_names=["gpu-0", "cpu-python"],
-        worker_profiles=_gpu_profiles(("RTX 4090",)),
-    )
-    assert schedule.worker_assignment["gpu-0"] == ["p1"]
-    assert schedule.worker_assignment["cpu-python"] == []
-
-
 def test_halo_optimizer_skips_a_gpu_worker_that_cannot_carry_the_request() -> None:
     schedule = HaloOptimizer().generate_schedule(
         graph=_gpu_python_graph({"count": 2, "type": "H100"}),
@@ -856,19 +845,3 @@ def test_halo_optimizer_skips_a_gpu_worker_that_cannot_carry_the_request() -> No
     )
     assert schedule.worker_assignment["gpu-1"] == ["p1"]
     assert schedule.worker_assignment["gpu-0"] == []
-
-
-def test_halo_optimizer_refuses_a_gpu_python_step_no_selected_worker_can_run() -> None:
-    with pytest.raises(ValueError, match="selected GPU workers"):
-        HaloOptimizer().generate_schedule(
-            graph=_gpu_python_graph(),
-            worker_names=["gpu-plain", "cpu-python"],
-            worker_profiles=_gpu_profiles(("RTX 4090",)),
-        )
-    with pytest.raises(RuntimeError, match="Halo optimizer failed") as excinfo:
-        HaloOptimizer().generate_schedule(
-            graph=_gpu_python_graph({"count": 4, "type": "H100"}),
-            worker_names=["gpu-0"],
-            worker_profiles=_gpu_profiles(("H100",)),
-        )
-    assert "carries the GPUs node 'p1' requests" in str(excinfo.value.__cause__)

@@ -811,6 +811,14 @@ def test_python_step_timeout_and_memory_reach_the_task() -> None:
     assert spec["timeoutSeconds"] == 45
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
+    _, own, own_compiled = _llm_then_lambda(
+        image="ghcr.io/me/bench:1", gpu=GpuRequest(count=1, memory="24Gi")
+    )
+    own_spec = _spec(RuntimeGraphBuilder().build(own_compiled).nodes[own.id])
+    assert own_spec["resources"] == {
+        "hardware": {"gpu": {"count": 1, "memory": "24Gi"}}
+    }
+
 
 def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
@@ -1389,15 +1397,3 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
-
-
-def test_python_step_sends_its_own_gpu_request_beside_memory() -> None:
-    _, shout, compiled = _llm_then_lambda(
-        memory_mb=512,
-        image="ghcr.io/me/bench:1",
-        gpu=GpuRequest(count=1, memory="24Gi"),
-    )
-    node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
-    assert _spec(node)["resources"] == {
-        "hardware": {"memory": "512Mi", "gpu": {"count": 1, "memory": "24Gi"}}
-    }

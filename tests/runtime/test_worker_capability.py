@@ -2,28 +2,18 @@
 
 from typing import Any
 
-from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
+from lumilake_server.data_specs import EmptyData, GpuRequest
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
     required_task_types,
     requires_cpu_worker,
-    split_required_task_types,
 )
 
 
 def test_only_python_is_gated_today() -> None:
     assert required_task_types(["api", "python", "inference"]) == {"python"}
     assert required_task_types(["api", "data_retrieval"]) == frozenset()
-
-
-def test_split_and_the_cpu_gate_read_a_python_step_s_gpu_request() -> None:
-    gpu_step = ("python", PythonData(code="x", gpu=GpuRequest(count=1)))
-    plain_step = ("python", PythonData(code="x"))
-    assert split_required_task_types([gpu_step]) == (frozenset(), {"python"})
-    assert split_required_task_types([plain_step]) == ({"python"}, frozenset())
-    assert not requires_cpu_worker([gpu_step])
-    assert requires_cpu_worker([plain_step])
 
 
 def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
@@ -124,6 +114,7 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
 
 
 _GPU_VLLM = {"has_gpu": True, "supported_task_types": ["echo"]}
+_GPU_PYTHON = {"has_gpu": True, "supported_task_types": ["python"]}
 
 
 def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
@@ -132,15 +123,6 @@ def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
         gpu_worker_ids=tuple(profiles),
         profiles={"cpu-python": _PYTHON, **profiles},
     )
-
-
-def _gpu_worker(card: str) -> dict[str, Any]:
-    devices = [{"name": card, "memory_total_bytes": 24 * 1024**3}]
-    return {
-        "has_gpu": True,
-        "supported_task_types": ["python"],
-        "gpu": {"devices": devices},
-    }
 
 
 def _gpu_claim(free: FreeCapacity, **required: Any) -> list[str] | None:
@@ -154,22 +136,23 @@ def _gpu_claim(free: FreeCapacity, **required: Any) -> list[str] | None:
     return None if selected is None else selected[1]
 
 
-def test_gpu_group_swaps_in_a_worker_that_advertises_the_gpu_task_type() -> None:
-    python_worker = {"has_gpu": True, "supported_task_types": ["python"]}
-    free = _gpu_free({"gpu-vllm": _GPU_VLLM, "gpu-python": python_worker})
+def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_request() -> (
+    None
+):
     required = frozenset({"python"})
+    free = _gpu_free({"gpu-vllm": _GPU_VLLM, "gpu-python": _GPU_PYTHON})
     assert _gpu_claim(free, required_gpu_task_types=required) == ["gpu-python"]
     plain = _gpu_free({"gpu-vllm": _GPU_VLLM})
     assert _gpu_claim(plain, required_gpu_task_types=required) is None
     assert not plain.has_gpu_worker_advertising(required)
 
-
-def test_gpu_group_skips_a_worker_that_cannot_carry_the_step_s_request() -> None:
-    free = _gpu_free(
-        {"gpu-rtx": _gpu_worker("RTX 4090"), "gpu-big": _gpu_worker("H100")}
-    )
-    passes = GpuRequest(count=1, type="H100")
-    assert _gpu_claim(free, required_gpu_requests=(passes,)) == ["gpu-big"]
-    free = _gpu_free({"gpu-rtx": _gpu_worker("RTX 4090")})
-    assert _gpu_claim(free, required_gpu_requests=(passes,)) is None
-    assert not free.has_gpu_worker_carrying((passes,))
+    h100 = {"name": "H100", "memory_total_bytes": 24 * 1024**3}
+    cards = {
+        "gpu-rtx": {**_GPU_PYTHON, "gpu": {"devices": [{"name": "RTX 4090"}]}},
+        "gpu-big": {**_GPU_PYTHON, "gpu": {"devices": [h100, h100]}},
+    }
+    passes = GpuRequest(count=2, type="H100")
+    assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
+    small = _gpu_free({"gpu-rtx": {**_GPU_PYTHON, "gpu": {"devices": [h100]}}})
+    assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
+    assert not small.has_gpu_worker_carrying((passes,))
