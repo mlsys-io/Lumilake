@@ -96,7 +96,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dependencies.append(dep)
 
         row_count = self._python_step_row_count(op.id, row_counts, combines_rows=True)
-        nodes.append(self._python_step(op, plan, row_count, dependencies, ctx))
+        nodes.append(self._python_step(op, plan, whole, row_count, dependencies, ctx))
         return nodes
 
     def _tag_seed_entry(
@@ -133,10 +133,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         return [*plan[:index], seeded, *plan[index + 1 :]]
 
     def _tag_whole_columns(
-        self, op: LambdaOp, plan: list[ColumnPlanEntry]
+        self, op: LambdaOp, plan: list[ColumnPlanEntry], whole: set[str]
     ) -> list[ColumnPlanEntry]:
         """Mark the plan entries a generated fan-out reads as they stand."""
-        whole = set(op.whole_columns)
         marked = [
             (
                 entry.model_copy(update={"whole": True})
@@ -157,6 +156,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         self,
         op: LambdaOp,
         plan: list[ColumnPlanEntry],
+        whole: set[str],
         row_count: int | None,
         dependencies: list[str],
         ctx: LoweringContext,
@@ -166,7 +166,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             code=op.code,
             fn_name=op.fn.__name__,
             plan=self._tag_whole_columns(
-                op, self._tag_seed_entry(op, plan, ctx, dependencies)
+                op, self._tag_seed_entry(op, plan, ctx, dependencies), whole
             ),
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS

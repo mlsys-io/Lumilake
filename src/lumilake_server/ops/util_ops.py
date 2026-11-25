@@ -365,9 +365,9 @@ class LambdaOp(Op):
         return bool(self.spec.clears_markers)
 
     @property
-    def whole_columns(self) -> list[str]:
+    def whole_columns(self) -> Sequence[str]:
         """Parser-owned: the inputs a generated fan-out keeps undecoded."""
-        return list(self.spec.whole_columns or [])
+        return self.spec.whole_columns or ()
 
     @property
     def takes_whole_columns(self) -> bool:
