@@ -103,12 +103,7 @@ def _device_matches_request(device: _GpuDevice, request: GpuRequest) -> bool:
 def profile_fits_gpu_request(
     profile: Mapping[str, Any], request: GpuRequest | None
 ) -> bool:
-    """True when a raw GPU worker profile carries ``request``: count, type and memory.
-
-    Callers pass GPU workers only; the raw profile carries no ``has_gpu`` flag.
-    A worker that reports no per-device detail passes, so the check degrades to
-    "no constraint" rather than a stall.
-    """
+    """True when a GPU worker's profile carries ``request``; no device detail passes."""
     if request is None:
         return True
     devices = _gpu_devices(profile)

@@ -213,3 +213,18 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
         }
     )
     assert _gpu_claim(order, 2, required_gpu_requests=(a100, h100)) == ["a", "c"]
+    # Leading workers in no gate give way to both python workers.
+    lead = {
+        "v1": _GPU_VLLM,
+        "v2": _GPU_VLLM,
+        "a": profiles["gpu-a100"],
+        "c": profiles["gpu-h100"],
+    }
+    python = frozenset({"python"})
+    claim = _gpu_claim(
+        _gpu_free(lead),
+        2,
+        required_gpu_task_types=python,
+        required_gpu_requests=(a100, h100),
+    )
+    assert sorted(claim or []) == ["a", "c"]

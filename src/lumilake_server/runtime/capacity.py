@@ -278,13 +278,14 @@ def _swap_into(
     gate: frozenset[str],
     gates: Sequence[frozenset[str]],
 ) -> bool:
-    """Put a worker of ``gate`` into ``selected`` at a slot no other gate needs."""
+    """Put a worker of ``gate`` into ``selected`` at a slot no covered gate needs."""
     candidate = next((w for w in workers if w in gate and w not in selected), None)
     if candidate is None:
         return False
+    covered = [g for g in gates if g != gate and any(w in g for w in selected)]
     for slot in reversed(range(len(selected))):
         rest = selected[:slot] + selected[slot + 1 :]
-        if all(any(w in other for w in rest) for other in gates if other != gate):
+        if all(any(w in g for w in rest) for g in covered):
             selected[slot] = candidate
             return True
     return False
