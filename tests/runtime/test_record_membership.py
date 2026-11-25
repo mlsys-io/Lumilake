@@ -55,6 +55,17 @@ ops:
 outputs: [{{name: ranked, ref: Rank}}]
 """
 
+_OTHER_CODE = """\
+name: groups
+inputs: {K: []}
+ops:
+  - {id: Pairs, op: LambdaOp, inputs: [K], mode: row, fn_name: p,
+     key: {node: K, path: pair}, code: "lambda row: json.loads(row[0]) | {'tag': 1}"}
+  - {id: Rank, op: LambdaOp, inputs: [Pairs], mode: reduce, by: patient,
+     fn_name: r, code: "lambda rows: rows"}
+outputs: [{name: ranked, ref: Rank}]
+"""
+
 _WEIGHTED = f"""\
 name: weighted
 inputs: {{K: []}}
@@ -191,8 +202,9 @@ def _outputs(values: list[Any]) -> list[dict[str, Any]]:
 
 
 def test_an_address_scope_separates_two_workflows_naming_one_op() -> None:
-    """Two workflows that both name an op ``Rank`` read their own addresses, so
-    the second one's records miss as new ones and never cite the first's entry."""
+    """Two workflows that share an op name and its read shape read their own
+    addresses, so the second one's records miss as new ones and never cite the
+    first's entry."""
     storage = InMemoryJobStorage()
     asyncio.run(
         _write(
@@ -203,6 +215,24 @@ def test_an_address_scope_separates_two_workflows_naming_one_op() -> None:
     )
     ranked = _plan(storage, _graph(_OTHER_GROUPED, K=_PAIRS))["Rank"]
     assert _rows(ranked) == [("p1", "miss", "no entry"), ("p2", "miss", "no entry")]
+
+
+def test_a_shared_op_name_reports_a_differing_spec_not_a_changed_input() -> None:
+    """Two workflows that name an op alike share its address, so a differing op
+    spec is the record's miss reason ahead of its differing input, and nothing
+    the first workflow stored answers the second."""
+    storage = InMemoryJobStorage()
+    asyncio.run(
+        _write(
+            storage,
+            _graph(_GROUPED, K=_PAIRS),
+            {"Pairs": _outputs(_pairs(_PAIRS)), "Rank": _RANKED},
+        )
+    )
+    rows = [{"pair": "p1t1", "patient": "p1", "trial": "t9"}]
+    outcomes = _plan(storage, _graph(_OTHER_CODE, K=rows))
+    assert _rows(outcomes["Pairs"]) == [("p1t1", "miss", "spec changed")]
+    assert _rows(outcomes["Rank"]) == [(None, "miss", "upstream miss: spec changed")]
 
 
 def test_a_deleted_member_misses_only_its_group() -> None:
