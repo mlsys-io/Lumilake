@@ -24,7 +24,11 @@ from lumilake_server.data_specs import (
 from lumilake_server.ops import RecordKey
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.lambda_task_helpers import items_column
-from lumilake_server.runtime.record_keys import child_count_key, child_key
+from lumilake_server.runtime.record_keys import (
+    child_count_key,
+    child_key,
+    composite_key,
+)
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     InputMembership,
@@ -55,6 +59,8 @@ from lumilake_server.runtime.record_writer import (
     input_values,
     join_indexes,
     join_inputs,
+    join_row_key,
+    join_row_paths,
     literal_rows,
     position_inputs,
     read_entry,
@@ -71,6 +77,10 @@ from lumilake_server.utils.job_storage import ArchiveNotFound, JobStorage
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
 """Task types whose stored value a served op carries whole; an api, diffusion
 or fetch task archives its value as an artifact instead."""
+
+_UPSTREAM_MISS = "upstream miss"
+"""The op-level reason of a node that missed because an input did; a record
+carries it prefixed to the input's own cause."""
 
 _MISSED = "\x00lumilake-missed"
 """The slot a partially served op's dispatched run fills; the merge step reads
@@ -278,7 +288,6 @@ class ReusePlanner:
     ) -> tuple[ReusePlan, RuntimeGraph]:
         """Decide every op in topological order and return the graph to dispatch."""
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
-        misses: set[str] = set()
         missing: dict[str, str] = {}
         """Each missed node's own first reason, so what it feeds names that."""
         order = runtime_graph.topological_order()
@@ -432,7 +441,6 @@ class ReusePlanner:
                 records,
                 round_number=round_number,
                 job_id=job_id,
-                misses=misses,
                 missing=missing,
                 decision=decision,
                 stored=stored,
@@ -468,8 +476,7 @@ class ReusePlanner:
                 )
             )
             if hit is None:
-                misses.add(node_id)
-                missing[node_id] = reason or "no entry"
+                missing[node_id] = _miss_cause(plan, missing, reason)
                 continue
             unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
             if unserved is not None:
@@ -485,7 +492,6 @@ class ReusePlanner:
                         ],
                     }
                 )
-                misses.add(node_id)
                 missing[node_id] = unserved
                 continue
             if node_id in runtime_graph.output_node_map:
@@ -494,7 +500,6 @@ class ReusePlanner:
                     decision.decisions[-1] = decision.decisions[-1].model_copy(
                         update={"decision": "miss", "reason": "value not servable"}
                     )
-                    misses.add(node_id)
                     missing[node_id] = "value not servable"
                     continue
                 decision.output_shapes[node_id] = shape
@@ -752,7 +757,6 @@ class ReusePlanner:
         *,
         round_number: int,
         job_id: str,
-        misses: set[str],
         missing: Mapping[str, str],
         decision: ReusePlan,
         stored: Mapping[str, list[RecordEntry]],
@@ -772,10 +776,13 @@ class ReusePlanner:
                 "value not servable",
                 outcomes=_whole_op_outcomes(records, "value not servable"),
             )
-        upstream = _upstream_miss(plan, missing)
+        upstream = _upstream_cause(plan, missing)
         if upstream is not None:
             return _Decision(
-                "upstream miss", outcomes=_whole_op_outcomes(records, upstream)
+                _UPSTREAM_MISS,
+                outcomes=_whole_op_outcomes(
+                    records, f"{_UPSTREAM_MISS}: {upstream}"
+                ),
             )
         if records is None:
             return _Decision(
@@ -1468,8 +1475,7 @@ def _join_literal_input(rows: Sequence[Any], key_paths: list[str]) -> _Input:
 def _served_input(
     records: Sequence[RecordEntry], node: str, declared: str | None = None
 ) -> _Input:
-    """A served input, named by the entry each of its records read; a whole-op
-    entry serves one record, so a reduce reads it whole as the writer does."""
+    """A served input, named by the entry each record read."""
     keys = [entry.address.record for entry in records]
     keyed = records[0].address.record is not None
     return _Input(
@@ -1569,10 +1575,11 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     """Every record an op has before it ran, or ``None`` when a keyed op lacks one."""
     if not plan.keyed:
         return [None]
+    if plan.join_inputs:
+        return _join_record_keys(plan, inputs)
     keys: list[str | None] = []
     seen: set[str] = set()
-    scoped = _first_input_only(plan, inputs)
-    for item in scoped:
+    for item in inputs:
         if all(key is None for key in item.keys):
             continue
         for key in item.keys:
@@ -1584,15 +1591,32 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
-def _first_input_only(plan: RecordPlan, inputs: Sequence[_Input]) -> Sequence[_Input]:
-    """A join's records are one per first-input row, so a further or literal
-    input adds no record of its own. A keyed first input keeps only its own
-    records; a literal first input has no rows of its own to drop."""
+def _join_record_keys(
+    plan: RecordPlan, inputs: Sequence[_Input]
+) -> list[str | None] | None:
+    """A join's records, keyed as its writer keys them: each row's ``row_key``
+    values (or ``by`` values), else the first input's record key at its
+    position; one record per first-input row."""
+    first = _first_input(plan, inputs)
+    if first is None or first.values is None:
+        return None
+    keys = [
+        join_row_key(None, row, join_row_paths(plan), _key_at(first.keys, position))
+        for position, row in enumerate(first.values)
+    ]
+    return None if any(key is None for key in keys) else keys
+
+
+def _first_input(plan: RecordPlan, inputs: Sequence[_Input]) -> _Input | None:
+    """The input the join's first declared node names, when the plan holds it."""
     nodes = plan.join_inputs
-    if not nodes or nodes[0] is None or len(inputs) <= 1:
-        return inputs
-    scoped = [item for item in inputs if item.declared_node == nodes[0]]
-    return scoped or inputs
+    first = nodes[0] if nodes else None
+    if first is None:
+        return None
+    for item in inputs:
+        if item.declared_node == first:
+            return item
+    return None
 
 
 def records_from_groups(groups: Mapping[str, list[int]]) -> list[str | None]:
@@ -1647,16 +1671,33 @@ def _join_row_inputs(
         records,
         join_indexes(plan, records),
         position,
-        record,
+        _join_lookup_key(plan, inputs, position, record),
         round_number,
     )
+
+
+def _join_lookup_key(
+    plan: RecordPlan,
+    inputs: Sequence[_Input],
+    position: int,
+    record: str | None,
+) -> str | None:
+    """The key a join row's further inputs are looked up by, as the writer reads
+    it off the row: its ``by`` values, which a ``row_key`` join's record key is
+    not; ``record`` answers only when the first input's rows are not held."""
+    if not plan.key_paths:
+        return None
+    first = _first_input(plan, inputs)
+    values = None if first is None else first.values
+    if values is None or position >= len(values):
+        return record
+    return composite_key(values[position], plan.key_paths)
 
 
 def _planned_records(
     inputs: Sequence[_Input], round_number: int
 ) -> dict[str, NodeRecords]:
-    """Each node input the plan holds, as the writer reads a finished node: its
-    rows in order and each row's record signature."""
+    """Each node input the plan holds, as the writer reads a finished node."""
     records: dict[str, NodeRecords] = {}
     for item in inputs:
         node = item.declared_node
@@ -1812,19 +1853,32 @@ def _reads_literal_ref(
 def _whole_op_outcomes(
     records: list[str | None] | None, reason: str
 ) -> list[RecordOutcome]:
-    """One miss row per record of an op that missed without probing, each
-    carrying the reason the op missed for."""
+    """One miss row per record of an op that missed without probing."""
     return _missed_from([], [None] if records is None else records, 0, reason)
 
 
-def _upstream_miss(plan: RecordPlan, missing: Mapping[str, str]) -> str | None:
-    """What a record of ``plan`` says it missed for what it reads: the first
-    upstream node's own reason, so a dependent names its real cause."""
+def _upstream_cause(plan: RecordPlan, missing: Mapping[str, str]) -> str | None:
+    """The first upstream node's own miss cause, so a dependent of any depth
+    names the same real cause: the cause is stored unprefixed and prefixed once
+    when it reaches a record's outcome."""
     for node in input_nodes(plan):
         found = missing.get(node)
         if found is not None:
-            return f"upstream miss: {found}"
+            return found
     return None
+
+
+def _miss_cause(
+    plan: RecordPlan, missing: Mapping[str, str], reason: str | None
+) -> str:
+    """The cause a missed node hands its dependents: an ``upstream miss`` hands
+    on the cause it missed for, so a dependent any number of levels down names
+    the same real cause, and any other reason is its own."""
+    if reason is None:
+        return "no entry"
+    if reason == _UPSTREAM_MISS:
+        return _upstream_cause(plan, missing) or reason
+    return reason
 
 
 def _missed_from(
@@ -1882,8 +1936,7 @@ def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
 def read_address_entry(
     storage: JobStorage, scope: str, record: str | None, round_number: int
 ) -> RecordEntry | None:
-    """The newest entry written at one address, whatever its signature; an
-    address object that does not parse raises rather than reading as absent."""
+    """The newest entry written at one address; a corrupt object raises."""
     try:
         body, _ = storage.load_blob(address_object_name(scope, record, round_number))
     except (ArchiveNotFound, KeyError):
@@ -1900,18 +1953,13 @@ def _changed_reason(
     input_values: list[str],
     membership: list[InputMembership],
 ) -> str | None:
-    """Why this record misses beside a stored entry at its own address, naming
-    the first fact that differs in the order a revision changes it: the
-    versions it ran with, the draw it used, the membership it read, the values
-    it read, and its own spec. Membership is read before the input digests
-    because a deletion or an addition changes both, and the cause a reader
-    needs is the membership."""
+    """Why this record misses: the first fact that differs from its stored entry."""
     if previous is None:
         return None
     if _version_changed(previous, versions):
         return "version changed"
     if previous.realization != realization:
-        return "no realization"
+        return "realization changed"
     if previous.membership != membership:
         return "membership changed"
     if previous.input_values != input_values:

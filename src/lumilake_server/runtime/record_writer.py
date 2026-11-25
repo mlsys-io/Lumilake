@@ -384,16 +384,13 @@ class RecordWriter:
         return len(entries)
 
     async def _write_addresses(self, entries: Sequence[RecordEntry]) -> None:
-        """Point each written record's address at its newest entry."""
-        for entry in entries:
-            await asyncio.to_thread(self._save_address, entry)
+        """Point each written record's address at its newest entry, concurrently."""
+        await asyncio.gather(
+            *(asyncio.to_thread(self._save_address, entry) for entry in entries)
+        )
 
     def _save_address(self, entry: RecordEntry) -> None:
-        """Save one record's newest entry at its address, replacing the one there.
-
-        Each address is its own object, so a writer never rewrites another
-        writer's object and two jobs finishing together never lose a pointer;
-        the later write wins the address it shares."""
+        """Save one record's newest entry at its own address object."""
         self._storage.save_blob(
             address_object_name(
                 entry.address.scope, entry.address.record, entry.address.round
@@ -736,7 +733,7 @@ class RecordWriter:
     ) -> list[RecordEntry]:
         """One entry per join output row, under the key it was given when the
         node's records were keyed."""
-        indexes = _join_indexes(plan, records)
+        indexes = join_indexes(plan, records)
         entries: list[RecordEntry] = []
         for position, unfailed in enumerate(node_records.values):
             record = None if node_records.keys is None else node_records.keys[position]
@@ -749,7 +746,7 @@ class RecordWriter:
                 value_hash=value_hash,
                 failed=failed,
             )
-            input_digests, input_values, read = _join_inputs(
+            input_digests, input_values, read = join_inputs(
                 plan,
                 records,
                 indexes,
@@ -797,7 +794,6 @@ class RecordWriter:
             op=plan.op_name,
             record=record,
             round=source.round,
-            spec=plan.spec_digest,
             scope=plan.scope,
         )
         signature = failed_record_digest if failed else entry_digest
@@ -1160,8 +1156,7 @@ def group_inputs(
     whole: Sequence[RecordInput],
     members: Sequence[int],
 ) -> tuple[list[str], list[str], list[InputMembership]]:
-    """What one reduce group read: each member's keyed rows in order, then the
-    inputs the group reads whole once, with each input's keys in read order."""
+    """What one reduce group read: its members' keyed rows, then whole inputs."""
     digests: list[str] = []
     values: list[str] = []
     read = _MembershipOrder()
@@ -1179,26 +1174,6 @@ def group_inputs(
     values.extend(whole_values)
     read.extend(whole_membership)
     return digests, values, read.groups()
-
-
-def join_inputs(
-    plan: RecordPlan,
-    records: Mapping[str, NodeRecords],
-    indexes: Mapping[str, Mapping[str, int]],
-    position: int,
-    key: str | None,
-    round_number: int,
-) -> tuple[list[str], list[str], list[InputMembership]]:
-    """What one join row read: its first input by position, each further input
-    and attach at the row its key selects, and its literal columns by that key."""
-    return _join_inputs(plan, records, indexes, position, key, round_number)
-
-
-def join_indexes(
-    plan: RecordPlan, records: Mapping[str, NodeRecords]
-) -> dict[str, dict[str, int]]:
-    """For each keyed input a join looks a row up in, the first row per key."""
-    return _join_indexes(plan, records)
 
 
 def record_inputs(
@@ -1284,7 +1259,7 @@ def _named_input(named: RecordInput, node: str, produced: NodeRecords) -> Record
     )
 
 
-def _join_indexes(
+def join_indexes(
     plan: RecordPlan, records: Mapping[str, NodeRecords]
 ) -> dict[str, dict[str, int]]:
     """For each keyed further input, the position of the first row carrying each
@@ -1314,7 +1289,7 @@ def _join_looked_up_nodes(plan: RecordPlan) -> list[str]:
     ]
 
 
-def _join_inputs(
+def join_inputs(
     plan: RecordPlan,
     records: Mapping[str, NodeRecords],
     indexes: Mapping[str, Mapping[str, int]],
@@ -1922,7 +1897,7 @@ def _keyed_mode_records(
             ]
             continue
         if plan.mode == "join":
-            key_paths = _join_row_paths(plan)
+            key_paths = join_row_paths(plan)
             node_records.keys = [
                 (
                     composite_key(_item_output(item, False), key_paths)
@@ -1968,22 +1943,22 @@ def _key_marked_join_rows(
             continue
         first = _first_input(plan, records)
         node_records.keys = [
-            _join_row_key(
+            join_row_key(
                 key,
                 node_records.values[position],
-                _join_row_paths(plan),
+                join_row_paths(plan),
                 None if first is None else record_key_at(first.keys, position),
             )
             for position, key in enumerate(node_records.keys)
         ]
 
 
-def _join_row_paths(plan: RecordPlan) -> list[str]:
+def join_row_paths(plan: RecordPlan) -> list[str]:
     """The paths that address a join's rows: its ``row_key``, else its ``by``."""
     return plan.row_key_paths or plan.key_paths
 
 
-def _join_row_key(
+def join_row_key(
     key: str | None,
     value: Any,
     key_paths: Sequence[str],
