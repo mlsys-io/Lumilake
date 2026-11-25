@@ -1,0 +1,139 @@
+"""Binding a submission to a lum.id/data job: validation and token fetch."""
+
+from typing import Any
+
+import httpx
+import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
+
+from lumilake import envs
+from lumilake_server.routes import jobs as jobs_routes
+from lumilake_server.routes.jobs import JobSubmitRequest, LumidJobBinding
+
+_JOB_ID = "3f2b8c1e-8d4a-4f6b-9c2d-1a2b3c4d5e6f"
+
+
+def test_binding_requires_a_uuid_job_id() -> None:
+    assert LumidJobBinding(job_id=_JOB_ID).job_id == _JOB_ID
+    with pytest.raises(ValidationError):
+        LumidJobBinding(job_id="../../admin")
+
+
+def test_submit_request_accepts_an_optional_binding() -> None:
+    req = JobSubmitRequest.model_validate(
+        {
+            "data": [
+                {
+                    "workflow": "{}",
+                    "inputs": {"x": ["1"]},
+                    "output_location": {"type": "s3", "prefix": "out/"},
+                }
+            ],
+            "lumid_job": {"job_id": _JOB_ID, "data_url": "http://192.168.7.155:5101"},
+        }
+    )
+    assert req.lumid_job is not None
+    assert req.lumid_job.data_url == "http://192.168.7.155:5101"
+    unbound = JobSubmitRequest.model_validate(
+        {
+            "data": [
+                {
+                    "workflow": "{}",
+                    "inputs": {"x": ["1"]},
+                    "output_location": {"type": "s3", "prefix": "out/"},
+                }
+            ]
+        }
+    )
+    assert unbound.lumid_job is None
+
+
+def _patch_client(monkeypatch: pytest.MonkeyPatch, handler: Any) -> list[httpx.Request]:
+    seen: list[httpx.Request] = []
+    real = httpx.AsyncClient
+
+    def wrapped(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return handler(request)
+
+    def factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = httpx.MockTransport(wrapped)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(jobs_routes.httpx, "AsyncClient", factory)
+    return seen
+
+
+@pytest.fixture
+def jobs_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(envs, "LUMID_JOBS_URL", "https://lum.id/data")
+    monkeypatch.setattr(envs, "LUMID_JOBS_RUNTIME_KEY", "rt-key")
+    monkeypatch.setattr(envs, "LUMID_DATA_WORKER_URL", "https://lum.id/data")
+
+
+@pytest.mark.asyncio
+async def test_token_is_fetched_with_the_runtime_key(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None
+) -> None:
+    seen = _patch_client(
+        monkeypatch,
+        lambda r: httpx.Response(200, json={"token": "ljt_abc", "job_id": _JOB_ID}),
+    )
+    cred = await jobs_routes._lumid_job_credential(
+        LumidJobBinding(job_id=_JOB_ID, data_url="http://192.168.7.155:5101/")
+    )
+    assert cred.token == "ljt_abc"
+    assert cred.url == "http://192.168.7.155:5101"
+    assert str(seen[0].url) == f"https://lum.id/data/jobs/v1/jobs/{_JOB_ID}/token"
+    assert seen[0].headers["authorization"] == "Bearer rt-key"
+
+
+@pytest.mark.asyncio
+async def test_data_url_falls_back_to_the_worker_url(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None
+) -> None:
+    _patch_client(monkeypatch, lambda r: httpx.Response(200, json={"token": "t"}))
+    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+    assert cred.url == "https://lum.id/data"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [httpx.Response(404, json={}), httpx.Response(200, json={"token": ""})],
+)
+async def test_refused_or_empty_token_is_a_502(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None, response: httpx.Response
+) -> None:
+    _patch_client(monkeypatch, lambda r: response)
+    with pytest.raises(HTTPException) as exc:
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_unreachable_jobs_api_is_a_502(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None
+) -> None:
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down", request=request)
+
+    _patch_client(monkeypatch, boom)
+    with pytest.raises(HTTPException) as exc:
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_missing_runtime_key_is_refused_before_any_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "LUMID_JOBS_RUNTIME_KEY", None)
+    seen = _patch_client(
+        monkeypatch, lambda r: httpx.Response(200, json={"token": "t"})
+    )
+    with pytest.raises(HTTPException) as exc:
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+    assert exc.value.status_code == 422
+    assert seen == []

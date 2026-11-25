@@ -54,6 +54,7 @@ def _build_job(
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
     requires_gpu: dict[str, bool] | None = None,
+    data_credential_digest: str | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -73,6 +74,7 @@ def _build_job(
         ),
         dispatch_token=dispatch_token,
         api_credential_digest=api_credential_digest,
+        data_credential_digest=data_credential_digest,
         requires_gpu=requires_gpu or {},
     )
 
@@ -209,6 +211,38 @@ async def test_select_batch_partitions_same_principal_by_dispatch_token() -> Non
         "tok-old",
         "tok-new",
     }
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_same_principal_by_data_credential() -> None:
+    """Two lum.id/data jobs from the same principal+token with DIFFERENT data
+    credentials must land in separate batches: ``_resolve_data_credentials``
+    applies one credential per batch, so mixing them would let job B's data
+    steps read with job A's job-scoped token."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+    for request_id, digest in (("req-a", "data-a"), ("req-b", "data-b")):
+        await manager.enqueue(
+            _build_job(
+                request_id,
+                f"graph-{request_id}",
+                principal_id="p-1",
+                dispatch_token="tok-shared",
+                data_credential_digest=digest,
+            )
+        )
+
+    first = await manager.select_batch(2)
+    second = await manager.select_batch(2)
+    assert first is not None and second is not None
+    assert len({item.data_credential_digest for item in first.workflows}) == 1
+    assert len({item.data_credential_digest for item in second.workflows}) == 1
+    assert (
+        first.workflows[0].data_credential_digest
+        != second.workflows[0].data_credential_digest
+    )
 
 
 @pytest.mark.asyncio
@@ -1366,11 +1400,11 @@ async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
     on_key = on_manager._partition_of(on_item)
     off_key = off_manager._partition_of(off_item)
 
-    # The on-mode key carries requires_gpu (6 elements); the off-mode key does
-    # not (5 elements), so the two keys differ in shape.
-    assert len(on_key) == 6
-    assert len(off_key) == 5
-    assert on_key[:5] == off_key[:5]
+    # The on-mode key carries requires_gpu (7 elements); the off-mode key does
+    # not (6 elements), so the two keys differ in shape.
+    assert len(on_key) == 7
+    assert len(off_key) == 6
+    assert on_key[:6] == off_key[:6]
     assert on_key != off_key
 
 

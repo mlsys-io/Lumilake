@@ -38,6 +38,7 @@ class WorkflowItem:
     whole_set: bool = False
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
+    data_credential_digest: str | None = None
     miss_count: int = 0
     requires_gpu: bool = False
 
@@ -92,6 +93,7 @@ class Job:
     config: LumilakeRequestConfig
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
+    data_credential_digest: str | None = None
     requires_gpu: dict[str, bool] = field(default_factory=dict)
 
 

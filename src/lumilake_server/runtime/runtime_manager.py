@@ -61,13 +61,38 @@ TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
+@dataclass(frozen=True)
+class DataCredential:
+    """A lum.id/data job's worker-facing data URL and job-scoped token."""
+
+    url: str
+    token: str
+
+
 @dataclass
 class DispatchCredentials:
-    """Per-request in-process credentials: the FlowMesh transport token and the
-    caller-supplied API credential, resolved at dispatch and never persisted."""
+    """Per-request in-process credentials: the FlowMesh transport token, the
+    caller-supplied API credential, and the lum.id/data job's data credential,
+    resolved at dispatch and never persisted."""
 
     runtime_token: str | None = None
     api_credential: str | None = None
+    data_credential: DataCredential | None = None
+
+
+def _rewrite_data_credentials(value: Any, credential: DataCredential) -> None:
+    """Replace ``lumid_data_token`` / ``lumid_data_url`` in every dict of a task
+    spec (DataRetrievalOp ``data`` specs and s3 list-input ``lumid_cfg``)."""
+    if isinstance(value, dict):
+        if "lumid_data_token" in value:
+            value["lumid_data_token"] = credential.token
+            if "lumid_data_url" in value:
+                value["lumid_data_url"] = credential.url
+        for item in value.values():
+            _rewrite_data_credentials(item, credential)
+    elif isinstance(value, list):
+        for item in value:
+            _rewrite_data_credentials(item, credential)
 
 
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
@@ -370,6 +395,19 @@ class FlowmeshRuntimeManager:
         with self._dispatch_tokens_lock:
             entry = self._dispatch_tokens.get(request_id)
             return entry.api_credential if entry is not None else None
+
+    def set_data_credential(
+        self, request_id: str, credential: DataCredential | None
+    ) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).data_credential = credential
+
+    def get_data_credential(self, request_id: str) -> DataCredential | None:
+        with self._dispatch_tokens_lock:
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.data_credential if entry is not None else None
 
     def clear_dispatch_token(self, request_id: str) -> None:
         with self._dispatch_tokens_lock:
@@ -1491,6 +1529,7 @@ class FlowmeshRuntimeManager:
             schedule=schedule,
         )
         self._resolve_api_credentials(request_info.member_request_ids, task_spec)
+        self._resolve_data_credentials(request_info.member_request_ids, task_spec)
         submit_id = uuid.uuid4().hex
         task_spec["metadata"]["annotations"]["custom"] = {
             "lumilake_submit_id": submit_id
@@ -2019,6 +2058,24 @@ class FlowmeshRuntimeManager:
                 )
             if resolved:
                 headers["Authorization"] = _with_auth_scheme(resolved)
+
+    def _resolve_data_credentials(
+        self, member_request_ids: set[str], task_spec: dict[str, Any]
+    ) -> None:
+        """Point every data spec in the task at the batch's lum.id/data job
+        credential. The queue partitions by data-credential digest, so all
+        members of a batch share one credential (or none, in which case the
+        server's LUMID_DATA_TOKEN built into the graph stays)."""
+        credential = next(
+            (
+                self.get_data_credential(request_id)
+                for request_id in member_request_ids
+                if self.get_data_credential(request_id) is not None
+            ),
+            None,
+        )
+        if credential is not None:
+            _rewrite_data_credentials(task_spec, credential)
 
     def _apply_per_node_resource_hints(
         self,

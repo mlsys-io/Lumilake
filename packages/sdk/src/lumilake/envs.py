@@ -214,6 +214,13 @@ LUMID_DATA_WORKER_URL: str = os.environ.get("LUMID_DATA_WORKER_URL", "").strip()
 LUMID_DATA_TOKEN: str | None = (
     os.environ.get("LUMID_DATA_TOKEN") or RUNTIME_TOKEN or None
 )
+# lum.id/data jobs API. A job submitted with ``lumid_job`` reads its data with a
+# job-scoped token issued by that API (limited to the job's declared sources,
+# revoked when the job ends) instead of LUMID_DATA_TOKEN. LUMID_JOBS_URL
+# defaults to LUMID_DATA_URL; LUMID_JOBS_RUNTIME_KEY is this server's runtime
+# service key on the hub (a local key labelled ``runtime:lumilake``).
+LUMID_JOBS_URL: str = os.environ.get("LUMID_JOBS_URL", "").strip() or LUMID_DATA_URL
+LUMID_JOBS_RUNTIME_KEY: str | None = os.environ.get("LUMID_JOBS_RUNTIME_KEY") or None
 # ``or "<default>"`` covers the LUMID_DATA_TIMEOUT_SECONDS="" case —
 # ``os.environ.get(k, default)`` returns "" if the key is set to empty,
 # bypassing the default and crashing ``float("")``.

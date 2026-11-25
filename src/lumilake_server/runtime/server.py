@@ -75,6 +75,7 @@ from lumilake_server.runtime.runtime_graph import (
     make_chunk_group_key,
 )
 from lumilake_server.runtime.runtime_manager import (
+    DataCredential,
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
@@ -793,6 +794,14 @@ class LumilakeServer:
             return None
         return hashlib.sha256(credential.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _data_credential_digest(credential: DataCredential | None) -> str | None:
+        """Hex digest of a lum.id/data job credential, never the token."""
+        if credential is None:
+            return None
+        material = f"{credential.url}\n{credential.token}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -860,6 +869,9 @@ class LumilakeServer:
             dispatch_token=self.runtime_manager.get_dispatch_token(request.request_id),
             api_credential_digest=self._api_credential_digest(
                 self.runtime_manager.get_api_credential(request.request_id)
+            ),
+            data_credential_digest=self._data_credential_digest(
+                self.runtime_manager.get_data_credential(request.request_id)
             ),
             requires_gpu={
                 graph_name: any(
