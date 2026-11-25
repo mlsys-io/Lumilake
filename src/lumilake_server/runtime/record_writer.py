@@ -369,13 +369,9 @@ class RecordWriter:
                 )
 
     def _save_entry_once(self, entry: RecordEntry) -> None:
-        """Write an entry unless its object already holds this value. A record
-        that failed at this digest and now succeeds replaces its marker, so a
-        later run serves it; any other existing object is the same body."""
-        known = read_entry(self._storage, entry.digest)
-        if known is not None and not (
-            is_marker(known.value) and not is_marker(entry.value)
-        ):
+        """Write an entry unless its object already exists. Best effort: a
+        concurrent writer of the same digest writes the same body."""
+        if read_entry(self._storage, entry.digest) is not None:
             return
         self._storage.save_blob(
             entry_object_name(entry.digest),

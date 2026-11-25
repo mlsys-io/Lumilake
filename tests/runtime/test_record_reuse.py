@@ -7,6 +7,7 @@ import logging
 import posixpath
 import shutil
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +36,6 @@ from lumilake_server.runtime.record_store import (
     RecordAddress,
     RecordEntry,
     RecordSource,
-    entry_object_name,
     is_marker,
 )
 from lumilake_server.runtime.record_writer import (
@@ -147,13 +147,22 @@ async def _run(
     content_nodes: frozenset[str] = frozenset(),
     task_ids: dict[str, str] | None = None,
     items: dict[str, list[Any]] | None = None,
+    fail: Callable[[str, Mapping[str, Any]], str | None] | None = None,
 ) -> None:
-    """Write one job's finished tasks the way dispatch does; ``items`` are raw items."""
+    """Write one job's finished tasks the way dispatch does; ``items`` are raw
+    items, and ``fail`` names the records whose task failed, written as a marker
+    carrying the reason it returns."""
     graph = _runtime_graph(workflow) if graph is None else graph
+    names = _names(graph)
+    raw = {n: v for n, v in (items or {}).items()}
+    if fail is not None:
+        raw = {
+            n: [_markered(names[n], item, fail) for item in v] for n, v in raw.items()
+        }
     tasks = {
         f"task-{n}": {"items": [{"output": r} for r in v]} for n, v in results.items()
     }
-    tasks |= {f"task-{n}": {"items": v} for n, v in (items or {}).items()}
+    tasks |= {f"task-{n}": {"items": v} for n, v in raw.items()}
     await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
         job_id=job_id,
         member_job_ids=[job_id],
@@ -162,14 +171,26 @@ async def _run(
         node_task_map=task_ids
         or {
             node: f"task-{name}"
-            for node, name in _names(graph).items()
-            if name in {**results, **(items or {})}
+            for node, name in names.items()
+            if name in {**results, **raw}
         },
         task_worker={},
         results=tasks,
         served=served,
         content_nodes=content_nodes,
     )
+
+
+def _markered(
+    op: str,
+    item: Mapping[str, Any],
+    fail: Callable[[str, Mapping[str, Any]], str | None],
+) -> Any:
+    """One task item with its output replaced by a marker when ``fail`` names it."""
+    reason = fail(op, item)
+    if reason is None:
+        return item
+    return {**item, "output": {"_fail": {"op": op, "reason": reason}}}
 
 
 def _reusing(graph: Any) -> RequestInfo:
@@ -227,12 +248,18 @@ class _Cycle:
         self.run = 0
         self.items: dict[str, list[Any]] = {}
 
-    async def full(self, workflow: dict[str, Any]) -> Any:
+    async def full(
+        self,
+        workflow: dict[str, Any],
+        fail: Callable[[str, Mapping[str, Any]], str | None] | None = None,
+    ) -> Any:
         """Run 1: every python step of the workflow, run as its worker does over
-        its upstreams, written the way dispatch writes it."""
+        its upstreams, written the way dispatch writes it. ``fail(op, item)``
+        names the records whose task failed, which the writer receives as a
+        marker carrying the reason it returns."""
         self.run += 1
         self.items = self._steps(_runtime_graph(workflow))
-        await self._write(_runtime_graph(workflow), workflow)
+        await self._write(_runtime_graph(workflow), workflow, fail=fail)
         return self.plan(workflow)
 
     def plan(self, workflow: dict[str, Any]) -> Any:
@@ -260,7 +287,11 @@ class _Cycle:
         return plan, dispatched, items
 
     async def _write(
-        self, graph: Any, workflow: dict[str, Any], served: dict[str, Any] | None = None
+        self,
+        graph: Any,
+        workflow: dict[str, Any],
+        served: dict[str, Any] | None = None,
+        fail: Callable[[str, Mapping[str, Any]], str | None] | None = None,
     ) -> None:
         await _run(
             self.storage,
@@ -271,6 +302,7 @@ class _Cycle:
             served=served,
             items=self.items,
             task_ids={node: f"task-{node}" for node in self.items},
+            fail=fail,
         )
 
     def _steps(self, graph: Any) -> dict[str, list[Any]]:
@@ -1348,16 +1380,15 @@ def _reduce_unkeyed_workflow() -> dict[str, Any]:
 async def test_a_recomputed_failed_record_replaces_its_marker(
     op: str, record: str, reason: str, make: str
 ) -> None:
-    """A reduce group and an expand child the store holds as a marker are holes,
-    so run 2 recomputes each; the computed value replaces the stored marker, so
-    run 3 serves the op whole. A marker left in place would keep the record a
-    hole forever."""
+    """A reduce group and an expand child whose task fails in run 1 are stored as
+    markers, so run 2 recomputes each; the computed value lands under the success
+    key, so run 3 serves the op whole."""
     workflow = (
         _reduce_workflow(_REDUCE_ROWS) if make == "reduce" else _expand_workflow()
     )
     cycle = _Cycle(InMemoryJobStorage())
-    await cycle.full(workflow)
-    _stored_entry(cycle.storage, "req-1", op, record, mark=True)
+    await cycle.full(workflow, fail=_fails(op, make))
+    assert is_marker(_stored_entry(cycle.storage, "req-1", op, record).value)
     plan, _, _ = await cycle.rerun(workflow)
     assert _decisions(plan)[op] == ("miss", reason), _decisions(plan)
     stored = _stored_entry(cycle.storage, "req-2", op, record)
@@ -1365,31 +1396,34 @@ async def test_a_recomputed_failed_record_replaces_its_marker(
     cycle.serves(workflow, op)
 
 
+def _fails(op: str, make: str) -> Callable[[str, Mapping[str, Any]], str | None]:
+    """Run 1's task fails the one record of ``op`` its case reads: the reduce's
+    ``p2`` group, or the expand's second child of the ``p2`` parent."""
+
+    def fail(name: str, item: Mapping[str, Any]) -> str | None:
+        if name != op:
+            return None
+        hit = (
+            item.get("key") == "p2"
+            if make == "reduce"
+            else (item.get("parent"), item.get("child")) == (1, 1)
+        )
+        return "boom" if hit else None
+
+    return fail
+
+
 def _stored_entry(
-    storage: InMemoryJobStorage,
-    job_id: str,
-    op: str,
-    record: str,
-    *,
-    mark: bool = False,
+    storage: InMemoryJobStorage, job_id: str, op: str, record: str
 ) -> RecordEntry:
-    """One job's stored entry for one record; ``mark`` rewrites its value to a
-    failed record's marker, keeping the success key the planner finds it at."""
+    """One job's stored entry for one record."""
     index = read_index(storage, job_id)
     assert index is not None
     found = index.find(op=op, record=record, round_number=0)
     assert found is not None
     entry = read_entry(storage, found.digest)
     assert entry is not None
-    if not mark:
-        return entry
-    marker = {"_fail": {"op": op, "reason": "boom"}}
-    storage.save_blob(
-        entry_object_name(entry.digest),
-        entry.model_copy(update={"value": marker}).body(),
-        "application/json",
-    )
-    return entry.model_copy(update={"value": marker})
+    return entry
 
 
 def _expand_workflow(
