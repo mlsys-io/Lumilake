@@ -36,6 +36,7 @@ from lumilake_server.runtime.record_store import (
     RecordEntry,
     RecordSource,
     entry_object_name,
+    is_marker,
 )
 from lumilake_server.runtime.record_writer import (
     NodeRecords,
@@ -1393,24 +1394,53 @@ async def test_a_reduce_reading_an_unkeyed_input_serves_its_group() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
-    """A group the store holds only as a marker is a hole, like a group with no
-    entry: both are recomputed, so a reduce with a marked group and a group the
-    store lacks plans and dispatches instead of failing on a marker's value.
-    Covers finding 3."""
-    workflow = _reduce_workflow(_REDUCE_ROWS)
+async def test_a_recomputed_failed_record_replaces_its_marker() -> None:
+    """A reduce group and an expand child the store holds as a marker are holes,
+    so run 2 recomputes each; the computed value replaces the stored marker, so
+    run 3 serves the op whole. A marker left in place would keep the record a
+    hole forever."""
+    reduce_workflow = _reduce_workflow(_REDUCE_ROWS)
     cycle = _Cycle(InMemoryJobStorage())
-    await cycle.full(workflow)
+    await cycle.full(reduce_workflow)
     _mark_stored_entry(cycle.storage, "Rank", "p2")
-    plan, dispatched = cycle.plan(workflow)
-    rank = _node(_runtime_graph(workflow), "Rank")
+    plan, _, _ = await cycle.rerun(reduce_workflow)
+    rank = _node(_runtime_graph(reduce_workflow), "Rank")
     assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
         plan
     )
     slots = plan.partial[rank].groups
     assert slots is not None
     assert [slot.key for slot in slots if slot.served is None] == ["p2"]
-    assert rank in dispatched.nodes
+    stored = _stored_entry(cycle.storage, "req-2", "Rank", "p2")
+    assert not is_marker(stored.value), stored.value
+    third, dispatched = cycle.plan(reduce_workflow)
+    assert third.hits.get(rank), _decisions(third)
+    assert rank not in dispatched.nodes
+
+    child_cycle, expand_workflow = _Cycle(InMemoryJobStorage()), _expand_workflow()
+    await child_cycle.full(expand_workflow)
+    _mark_stored_entry(child_cycle.storage, "Split", "p2\x1f1")
+    plan, _, _ = await child_cycle.rerun(expand_workflow)
+    split = _node(_runtime_graph(expand_workflow), "Split")
+    assert _decisions(plan)["Split"] == ("miss", "partial children"), _decisions(plan)
+    stored = _stored_entry(child_cycle.storage, "req-2", "Split", "p2\x1f1")
+    assert not is_marker(stored.value), stored.value
+    third, dispatched = child_cycle.plan(expand_workflow)
+    assert third.hits.get(split), _decisions(third)
+    assert split not in dispatched.nodes
+
+
+def _stored_entry(
+    storage: InMemoryJobStorage, job_id: str, op: str, record: str
+) -> RecordEntry:
+    """One job's stored entry for one record."""
+    index = read_index(storage, job_id)
+    assert index is not None
+    found = index.find(op=op, record=record, round_number=0)
+    assert found is not None
+    entry = read_entry(storage, found.digest)
+    assert entry is not None
+    return entry
 
 
 def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> None:
