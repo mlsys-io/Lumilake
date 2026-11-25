@@ -2,6 +2,7 @@
 
 A hit is a whole op whose every record the store already holds; it leaves the
 graph, and its readers carry the stored values in their column-plan entries.
+A miss names its cause from the newest entry the address holds.
 """
 
 import json
@@ -24,12 +25,17 @@ from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_store import (
     EffectVersions,
+    InputMembership,
     RecordAddress,
+    RecordAddressIndex,
     RecordEntry,
     RecordRealization,
     RecordSource,
+    address_object_name,
+    address_text,
     data_spec_dict,
     digest_of,
+    effect_versions,
     entry_digest,
     is_marker,
     row_key,
@@ -52,7 +58,7 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.utils.job_storage import JobStorage
+from lumilake_server.utils.job_storage import ArchiveNotFound, JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
 """Task types whose stored value a served op carries whole; an api, diffusion
@@ -287,11 +293,12 @@ class ReusePlanner:
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
         seeded = _seeded_records(plan, stored, runtime_graph)
+        versions = effect_versions(plan.op)
         for position, record in enumerate(records):
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
                 return "no realization", None
-            input_digests, input_value_digests = position_inputs(
+            input_digests, input_value_digests, membership = position_inputs(
                 named, position, keyed=plan.keyed
             )
             entry = read_entry(
@@ -304,12 +311,24 @@ class ReusePlanner:
                     input_digests=input_digests,
                     input_values=input_value_digests,
                     realization=draw,
-                    versions=EffectVersions(),
+                    versions=versions,
+                    membership=membership,
                 ),
             )
             reason = _entry_miss_reason(entry)
             if reason is not None or entry is None:
-                return reason, None
+                return (
+                    _changed_reason(
+                        read_address_entry(
+                            self._storage, plan.op_name, record, round_number
+                        ),
+                        versions=versions,
+                        input_values=input_value_digests,
+                        membership=membership,
+                    )
+                    or reason,
+                    None,
+                )
             entries.append(entry)
         return None, entries
 
@@ -755,12 +774,13 @@ def _planner_inputs(
     """The inputs one op's records read, named the way the writer names them."""
     inputs: list[_Input] = []
     for node in input_nodes(plan):
+        name = plan.logical_names.get(node, node)
         hit = decision.hits.get(node)
         if hit is not None:
-            inputs.append(_served_input(hit))
+            inputs.append(_served_input(hit, name))
             continue
         if node in decision.content:
-            inputs.append(_content_input(decision.content[node]))
+            inputs.append(_content_input(decision.content[node], name))
             continue
         values = input_values(plan.op, node)
         inputs.append(
@@ -779,31 +799,33 @@ def _planner_inputs(
     return inputs
 
 
-def _served_input(records: Sequence[RecordEntry]) -> _Input:
+def _served_input(records: Sequence[RecordEntry], node: str) -> _Input:
     """A served input, named by the entry each of its records read."""
+    keys = [entry.address.record for entry in records]
     return _Input(
         named=RecordInput(
             keyed=True,
             records=[(entry.digest, entry.value_digest or "") for entry in records],
+            node=node,
+            keys=keys,
         ),
-        keys=[entry.address.record for entry in records],
+        keys=keys,
     )
 
 
-def _content_input(records: ContentRecords) -> _Input:
+def _content_input(records: ContentRecords, node: str) -> _Input:
     """An unversioned read the plan re-ran, named by the value it returned."""
     positions = range(len(records.values)) if records.keyed else range(1)
     named: list[tuple[str, str] | None] = []
     for position in positions:
         value = content_value(records.value_at(position))
         named.append((digest_of({"value": value}), digest_of(value)))
+    keys: list[str | None] = (
+        [records.keys[position] for position in positions] if records.keyed else [None]
+    )
     return _Input(
-        named=RecordInput(keyed=records.keyed, records=named),
-        keys=(
-            [records.keys[position] for position in positions]
-            if records.keyed
-            else [None]
-        ),
+        named=RecordInput(keyed=records.keyed, records=named, node=node, keys=keys),
+        keys=keys,
     )
 
 
@@ -978,3 +1000,46 @@ def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
     if digest_of(entry.value) != entry.value_digest:
         return "value not servable"
     return None
+
+
+def read_address_entry(
+    storage: JobStorage, op: str, record: str | None, round_number: int
+) -> RecordEntry | None:
+    """The newest entry written at one address, whatever its signature."""
+    try:
+        body, _ = storage.load_blob(address_object_name(op, round_number))
+        listed = RecordAddressIndex.from_body(body)
+    except (ArchiveNotFound, KeyError, ValueError):
+        return None
+    found = listed.records.get(address_text(record))
+    return None if found is None else read_entry(storage, found.digest)
+
+
+def _changed_reason(
+    previous: RecordEntry | None,
+    *,
+    versions: EffectVersions,
+    input_values: list[str],
+    membership: list[InputMembership],
+) -> str | None:
+    """Why this record misses beside a stored entry at its own address.
+
+    The entry's own facts are compared in the order a revision changes them:
+    the versions it ran with, the values it read, the membership it read, and,
+    with those equal, its op spec, which is the only part of the signature
+    left."""
+    if previous is None:
+        return None
+    if _version_changed(previous, versions):
+        return "version changed"
+    if previous.input_values != input_values:
+        return "input changed"
+    if previous.membership != membership:
+        return "membership changed"
+    return "spec changed"
+
+
+def _version_changed(previous: RecordEntry, versions: EffectVersions) -> bool:
+    """A model revision or image the record was made with differs from this run's."""
+    before = previous.versions
+    return before.revision != versions.revision or before.image != versions.image
