@@ -36,6 +36,7 @@ from lumilake_server.runtime.record_writer import (
     NodeRecords,
     RecordInput,
     RecordPlan,
+    grouped_local_chat,
     input_nodes,
     input_values,
     key_path,
@@ -316,7 +317,7 @@ def _rewritten(
             plan.hits[node],
             entry,
             _wrap(producer),
-            _grouped_items(producer),
+            grouped_local_chat(producer),
         )
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
@@ -339,11 +340,6 @@ def _wrap(op: RuntimeOp) -> _Wrapping | None:
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
-def _grouped_items(op: RuntimeOp) -> bool:
-    """Whether a local rowwise chat groups every row's reply into one item."""
-    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
-
-
 def served_lists(entries: Sequence[RecordEntry], grouped: bool) -> list[list[Any]]:
     """A hit producer's item outputs: one list per keyed row, one whole-op value,
     or every keyed row folded into the one grouped list a local chat emits."""
@@ -358,7 +354,7 @@ def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
     wrapping: _Wrapping | None,
-    grouped: bool = False,
+    grouped: bool,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
@@ -655,7 +651,7 @@ def _unserved_reader_reason(
         for entry in entries:
             if (
                 entry.node == op.node_id
-                and served_column(hit, entry, _wrap(op), _grouped_items(op)) is None
+                and served_column(hit, entry, _wrap(op), grouped_local_chat(op)) is None
             ):
                 return "value not servable"
     return None

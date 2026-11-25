@@ -447,16 +447,18 @@ async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
     (entry,) = consumer.data_spec.plan
     (hit,) = plan.hits.values()
     staged = ColumnPlanEntry(kind="stage", node="x")
-    assert entry.values == served_column(hit, staged, "output") == ["ab", 3]
+    assert entry.values == served_column(hit, staged, "output", False) == ["ab", 3]
     run = PythonData(plan=[entry], code="", fn_name="", timeout_s=60)
     blob = python_step.runtime_blob()
     assert "inputs" not in python_step.flowmesh_spec("Consume", run, {blob.key: blob})
     flat, flatten = [_stored([["x", "y"]], "Expand")], staged.model_copy(
         update={"flatten": True}
     )
-    assert served_column(flat, flatten, "output") == ["x", "y"]
+    assert served_column(flat, flatten, "output", False) == ["x", "y"]
     score = staged.model_copy(update={"path": "score"})
-    assert served_column([_stored({"score": 0.5}, "E", "a")], score, None) == [0.5]
+    assert served_column([_stored({"score": 0.5}, "E", "a")], score, None, False) == [
+        0.5
+    ]
 
 
 @pytest.mark.asyncio
