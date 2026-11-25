@@ -35,6 +35,7 @@ from lumilake_server.runtime.record_store import (
     RecordAddress,
     RecordEntry,
     RecordSource,
+    entry_object_name,
 )
 from lumilake_server.runtime.record_writer import (
     NodeRecords,
@@ -1363,6 +1364,56 @@ def _expand_reduce_workflow() -> dict[str, Any]:
         "ops": [fill, split, fold],
         "outputs": [{"name": "folded", "ref": "Fold"}],
     }
+
+
+@pytest.mark.asyncio
+async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
+    """A group the store holds only as a marker is a hole, like a group with no
+    entry: both are recomputed, so a reduce with a marked group and a group the
+    store lacks plans and dispatches instead of failing on a marker's value.
+    Covers finding 3."""
+    workflow = _reduce_workflow(_REDUCE_ROWS)
+    graph = _runtime_graph(workflow)
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        workflow,
+        {"Tag": _REDUCE_ROWS},
+        "req-1",
+        graph=graph,
+        items={
+            "Rank": [
+                {"output": ["t1"], "key": "p1", "members": [0]},
+                {"output": ["p2-rank"], "key": "p2", "members": [1]},
+            ]
+        },
+        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
+    )
+    rank = _node(graph, "Rank")
+    _mark_stored_entry(storage, "Rank", "p2")
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
+    )
+    assert plan.missed_groups.get(rank) == ["p2", "p3"], plan.missed_groups
+    assert rank in dispatched.nodes
+
+
+def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> None:
+    """Rewrite one stored entry's value to a failed record's marker, keeping its
+    success key so the planner finds it where it stored it."""
+    index = read_index(storage, "req-1")
+    assert index is not None
+    found = index.find(op=op, record=record, round_number=0)
+    assert found is not None
+    entry = read_entry(storage, found.digest)
+    assert entry is not None
+    marker = {"_fail": {"op": op, "reason": "boom"}}
+    storage.save_blob(
+        entry_object_name(entry.digest),
+        entry.model_copy(update={"value": marker}).body(),
+        "application/json",
+    )
 
 
 def _seeded_expand_workflow() -> dict[str, Any]:

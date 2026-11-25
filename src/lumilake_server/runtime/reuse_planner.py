@@ -599,13 +599,14 @@ class ReusePlanner:
                     versions=EffectVersions(),
                 ),
             )
-            if _entry_miss_reason(entry) is None and entry is not None:
+            answered = _entry_miss_reason(entry) is None
+            if answered and entry is not None:
                 entries[group_key] = entry
             slots.append(
                 GroupSlot(
                     key=group_key,
                     members=members,
-                    served=None if entry is None else entry.value,
+                    served=entry.value if answered and entry is not None else None,
                 )
             )
         return slots, entries
