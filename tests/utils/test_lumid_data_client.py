@@ -451,9 +451,11 @@ def test_job_token_covers_reads_but_not_the_archive(
     _base_url_and_token(monkeypatch)
     reset = m.data_token_var.set("job-token")
     try:
-        assert m._default_headers()["Authorization"] == "Bearer job-token"
+        assert (
+            m._default_headers(job_scoped=True)["Authorization"] == "Bearer job-token"
+        )
         archive = m._default_headers(job_scoped=False)
         assert archive["Authorization"] == "Bearer test-token"
     finally:
         m.data_token_var.reset(reset)
-    assert m._default_headers()["Authorization"] == "Bearer test-token"
+    assert m._default_headers(job_scoped=True)["Authorization"] == "Bearer test-token"
