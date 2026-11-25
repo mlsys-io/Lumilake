@@ -133,6 +133,7 @@ from lumilake_server.utils.job_storage import JobStorage, get_job_storage
 from lumilake_server.utils.lumid_data_client import (
     acatalog_column_exists,
     alist_blob_keys,
+    data_token_var,
     put_blob,
 )
 from lumilake_server.utils.parsing import split_bucket_prefix
@@ -3579,6 +3580,8 @@ async def submit_job(
         if submit_request.lumid_job is not None
         else None
     )
+    if data_credential is not None:
+        data_token_var.set(data_credential.token)
     job_id = f"req-{unique_id()}"
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}

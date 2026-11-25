@@ -443,3 +443,17 @@ class TestRetrieveSampleMaterializedUri:
         monkeypatch.setattr(m, "post_json", _fake_post_json)
         with pytest.raises(RuntimeError, match="missing 'materialized_uri'"):
             m.retrieve_sample("SELECT 1")
+
+
+def test_job_token_covers_reads_but_not_the_archive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _base_url_and_token(monkeypatch)
+    reset = m.data_token_var.set("job-token")
+    try:
+        assert m._default_headers()["Authorization"] == "Bearer job-token"
+        archive = m._default_headers(job_scoped=False)
+        assert archive["Authorization"] == "Bearer test-token"
+    finally:
+        m.data_token_var.reset(reset)
+    assert m._default_headers()["Authorization"] == "Bearer test-token"
