@@ -3,7 +3,12 @@ already holds and dispatches the rest."""
 
 import json
 import logging
+import posixpath
+import shutil
+import tempfile
+from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -31,7 +36,13 @@ from lumilake_server.runtime.record_store import (
     RecordEntry,
     RecordSource,
 )
-from lumilake_server.runtime.record_writer import NodeRecords, RecordWriter, read_index
+from lumilake_server.runtime.record_writer import (
+    NodeRecords,
+    RecordWriter,
+    read_entry,
+    read_index,
+    resolve_plans,
+)
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
@@ -200,6 +211,51 @@ def _planned(storage: InMemoryJobStorage, graph: Any, job_id="req-2", **kw: Any)
     return _planner(storage).plan(
         runtime_graph=graph, round_number=0, job_id=job_id, **kw
     )
+
+
+def _run_step(op: Any, inputs: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    """Run one dispatched op's generated step as its worker does, over upstreams."""
+    plan = op.data_spec.plan
+    blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
+    spec = python_step.flowmesh_spec(
+        op.node_id, op.data_spec, {b.key: b for b in blobs}
+    )
+    mounts = {blob.mount_path: blob for blob in blobs}
+    for mounted in mounts.values():
+        relative = mounted.mount_path.removeprefix(_BLOBS_ROOT).lstrip("/")
+        path = Path(_MOUNT["root"]) / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(mounted.body)
+    code = spec["code"].replace(_BLOBS_ROOT, _MOUNT["root"])
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    return namespace["main"](_stage_inputs(inputs))["items"]
+
+
+_BLOBS_ROOT = posixpath.dirname(python_step.TASK_RUNTIME_MOUNT)
+_MOUNT: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _mount_root() -> Iterator[None]:
+    """A mount root under the worktree for the blobs a generated step reads."""
+    scratch = Path(__file__).parents[2] / "tmp-step-mounts"
+    scratch.mkdir(exist_ok=True)
+    _MOUNT["root"] = tempfile.mkdtemp(dir=scratch)
+    yield
+    shutil.rmtree(_MOUNT["root"], ignore_errors=True)
+
+
+def _stage_inputs(inputs: dict[str, list[Any]]) -> dict[str, str]:
+    """Each upstream's items as a finished task stage the step reads back."""
+    staged: dict[str, str] = {}
+    for node, items in inputs.items():
+        directory = Path(tempfile.mkdtemp(dir=_MOUNT["root"]))
+        (directory / "results.json").write_text(
+            json.dumps({"task_id": "t", "result": {"items": items}})
+        )
+        staged[node] = str(directory)
+    return staged
 
 
 @pytest.mark.asyncio
@@ -656,6 +712,72 @@ def _keyed_read_graph() -> Any:
     return _runtime_graph(workflow)
 
 
+_KEYED_TAG: dict[str, Any] = {
+    "name": "keyed-tag",
+    "ops": [
+        {
+            **_READ,
+            "data_spec": {
+                **_SQL,
+                "template": "SELECT case_id, t FROM cases",
+                "key": {"column": "case_id"},
+            },
+        },
+        {
+            "id": "Tag",
+            "op": "LambdaOp",
+            "inputs": ["Read"],
+            "mode": "row",
+            "fn_name": "tag",
+            "code": (
+                "def tag(c):\n    import json\n"
+                "    return json.loads(c[0][0])['t'].upper()\n"
+            ),
+            "key": {"node": "Read", "path": "case_id"},
+        },
+    ],
+    "outputs": [{"name": "tag", "ref": "Tag"}],
+}
+
+
+def _keyed_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A keyed retrieval's response, one table column set per row key."""
+    columns: dict[str, dict[str, str]] = {}
+    for position, row in enumerate(rows):
+        for name, value in row.items():
+            columns.setdefault(name, {})[str(position)] = value
+    return {"items": [{"table": {"df": json.dumps(columns)}}]}
+
+
+def _keyed_content(read: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A keyed read re-run, as the plan reads one reread row per key."""
+    return {
+        read: NodeRecords(keyed=True, values=rows, keys=[r["case_id"] for r in rows])
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
+    """A keyed retrieval is versioned per row, so a changed row's consumer
+    misses on that key alone while every other key's record still hits."""
+    rows = [{"case_id": "c1", "t": "x"}, {"case_id": "c2", "t": "y"}]
+    changed = [rows[0], {"case_id": "c2", "t": "y!"}]
+    graph = _runtime_graph(_KEYED_TAG)
+    read = _node(graph, "Read")
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _KEYED_TAG,
+        {"Tag": ["X", "Y"]},
+        "req-1",
+        items={"Read": _keyed_table(rows)["items"]},
+    )
+    plan, _ = _planned(storage, graph, content_values=_keyed_content(read, rows))
+    assert _decisions(plan)["Tag"] == ("hit", None), _decisions(plan)
+    plan, _ = _planned(storage, graph, content_values=_keyed_content(read, changed))
+    assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
+
+
 @pytest.mark.asyncio
 async def test_a_reuse_sub_run_reads_a_keyed_retrieval_back_by_its_key(
     monkeypatch: pytest.MonkeyPatch,
@@ -852,3 +974,265 @@ async def test_a_read_with_an_upstream_stays_in_the_main_graph(
         _reusing(graph), Schedule({"w": [key, read]})
     )
     assert reads == {}
+
+
+def _tag_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """One keyed row step over a literal input, so its own step reads the rows."""
+    return {
+        "name": "tag",
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": [
+            {
+                "id": "Tag",
+                "op": "LambdaOp",
+                "inputs": ["Rows"],
+                "mode": "row",
+                "fn_name": "tag",
+                "key": {"node": "Rows", "path": "id"},
+                "code": "def tag(c):\n    return c[0]['t'].upper()\n",
+            }
+        ],
+        "outputs": [{"name": "tag", "ref": "Tag"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_partial_run_computes_what_a_full_run_does_and_a_third_hits() -> None:
+    """The step fills only the missed slot, keeps the served one, and writes every
+    live key, so a third run over the same rows hits the op whole."""
+    rows = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
+    amended = [rows[0], {"id": "b", "t": "y!"}]
+    graph, storage = _runtime_graph(_tag_workflow(amended)), InMemoryJobStorage()
+    await _run(storage, _tag_workflow(rows), {"Tag": ["X", "Y"]}, "req-1")
+    plan, dispatched = _planned(storage, graph)
+    tag = _node(graph, "Tag")
+    assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
+    items = _run_step(dispatched.nodes[tag], {})
+    served = [(item["output"], item["value"]) for item in items]
+    full = [(item["output"], item["value"]) for item in _run_step(graph.nodes[tag], {})]
+    assert served == full
+    await _run(
+        storage,
+        _tag_workflow(amended),
+        {},
+        "req-2",
+        graph=dispatched,
+        served=writer_records(plan, {}),
+        items={"Tag": items},
+    )
+    index = read_index(storage, "req-2")
+    assert index is not None
+    written = {
+        item.record: read_entry(storage, item.digest)
+        for item in index.entries
+        if item.op == "Tag"
+    }
+    assert {record for record in written if record} == {"a", "b"}
+    again, _ = _planned(storage, graph)
+    assert _decisions(again)["Tag"] == ("hit", None), _decisions(again)
+
+
+@pytest.mark.asyncio
+async def test_a_partial_runs_spec_digest_equals_a_full_runs() -> None:
+    """A literal column's extra fields, and the served slot beside it, stay out of
+    one rule, so a partial run's op digests the same op a full run would."""
+    rows = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
+    amended = [rows[0], {"id": "b", "t": "y!"}]
+    storage = InMemoryJobStorage()
+    stored = _with_tag_entry(_tag_workflow(rows))
+    await _run(
+        storage,
+        _tag_workflow(rows),
+        {"Tag": ["X", "Y"]},
+        "req-1",
+        graph=stored,
+    )
+    graph = _with_tag_entry(_tag_workflow(amended))
+    tag = _node(graph, "Tag")
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
+    full = resolve_plans(graph, graph.topological_order())[tag].spec_digest
+    partial = resolve_plans(dispatched, dispatched.topological_order())[tag].spec_digest
+    assert partial == full
+
+
+def _with_tag_entry(workflow: dict[str, Any]) -> Any:
+    """The tag graph with a labelled, flattening literal entry a slot could clone."""
+    graph = _runtime_graph(workflow)
+    tag = _node(graph, "Tag")
+    spec = graph.nodes[tag].data_spec
+    assert isinstance(spec, PythonData)
+    entry = spec.plan[0].model_copy(update={"label": "v", "flatten": True})
+    graph.nodes[tag] = replace(
+        graph.nodes[tag], data_spec=spec.model_copy(update={"plan": [entry]})
+    )
+    return graph
+
+
+_REDUCE_OPS: list[dict[str, Any]] = [
+    {
+        "id": "Tag",
+        "op": "LambdaOp",
+        "inputs": ["Rows"],
+        "mode": "row",
+        "fn_name": "tag",
+        "key": {"node": "Rows", "path": "id"},
+        "code": "lambda row: row[0]",
+    },
+    {
+        "id": "Rank",
+        "op": "LambdaOp",
+        "inputs": ["Tag"],
+        "mode": "reduce",
+        "by": "patient",
+        "fn_name": "rank",
+        "code": "def rank(rows):\n    return [r[0]['id'] for r in rows]\n",
+    },
+]
+_REDUCE_ROWS = [
+    {"id": "t1", "patient": "p1"},
+    {"id": "t2", "patient": "p2"},
+    {"id": "t3", "patient": "p3"},
+]
+_REDUCE_GROUPS = [
+    {"output": ["t1"], "key": "p1", "members": [0]},
+    {"output": ["t2"], "key": "p2", "members": [1]},
+]
+
+
+def _reduce_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The reduce fixture over ``rows`` as a workflow input."""
+    return {
+        "name": "reduce-reuse",
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": _REDUCE_OPS,
+        "outputs": [{"name": "ranked", "ref": "Rank"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_reduce_reuses_its_unchanged_groups() -> None:
+    """A reduce over a served input keeps every group in group order: the stored
+    output of one the store answered, the recomputed output of one it did not; a
+    reduce whose producer is dispatched has no groups yet and misses whole."""
+    workflow = _reduce_workflow(_REDUCE_ROWS)
+    graph = _runtime_graph(workflow)
+    rank_id, tag_id = _node(graph, "Rank"), _node(graph, "Tag")
+    storage = InMemoryJobStorage()
+    # Run 1 stored only the first two groups, so p3 has no entry.
+    await _run(
+        storage,
+        workflow,
+        {"Tag": _REDUCE_ROWS},
+        "req-1",
+        items={"Rank": _REDUCE_GROUPS},
+    )
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records")
+    assert plan.hit_groups[rank_id] == ["p1", "p2"]
+    assert plan.missed_groups[rank_id] == ["p3"]
+    items = _run_step(dispatched.nodes[rank_id], {})
+    full = _run_step(graph.nodes[rank_id], {tag_id: _run_step(graph.nodes[tag_id], {})})
+    assert [(item["key"], item["output"]) for item in items] == [
+        (item["key"], item["output"]) for item in full
+    ]
+    moved = [*_REDUCE_ROWS[:2], {**_REDUCE_ROWS[2], "id": "t3b"}]
+    plan, _ = _planned(storage, _runtime_graph(_reduce_workflow(moved)))
+    assert _decisions(plan)["Rank"] == ("miss", "input dispatched"), _decisions(plan)
+
+
+@pytest.mark.asyncio
+async def test_an_expand_decides_each_parent() -> None:
+    """An expand whose parents are all served hits every child; one parent whose
+    children the store lacks re-expands under its live index while the served
+    parent's children keep theirs."""
+    workflow = _expand_workflow()
+    graph = _runtime_graph(workflow)
+    fill, split = _node(graph, "Fill"), _node(graph, "Split")
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        workflow,
+        {"Fill": [{"id": "p1"}, {"id": "p2"}]},
+        "req-1",
+        items={
+            "Split": [
+                {"output": "p1a", "parent": 0, "child": 0},
+                {"output": "p1b", "parent": 0, "child": 1},
+                {"output": "p2a", "parent": 1, "child": 0},
+                {"output": "p2b", "parent": 1, "child": 1},
+            ]
+        },
+    )
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
+    assert split not in dispatched.nodes and fill not in dispatched.nodes
+
+    # Run 2 stored the first parent's children only, so p2's are missing.
+    partial = InMemoryJobStorage()
+    await _run(
+        partial,
+        workflow,
+        {"Fill": [{"id": "p1"}, {"id": "p2"}]},
+        "req-1",
+        items={
+            "Split": [
+                {"output": "p1a", "parent": 0, "child": 0},
+                {"output": "p1b", "parent": 0, "child": 1},
+            ]
+        },
+    )
+    plan, dispatched = _planned(partial, graph)
+    assert _decisions(plan)["Split"] == ("miss", "partial children"), _decisions(plan)
+    items = _run_step(dispatched.nodes[split], {})
+    full = _run_step(graph.nodes[split], {fill: _run_step(graph.nodes[fill], {})})
+    assert [(item["parent"], item["child"], item["output"]) for item in items] == [
+        (item["parent"], item["child"], item["output"]) for item in full
+    ]
+    await _run(
+        partial,
+        workflow,
+        {},
+        "req-2",
+        graph=dispatched,
+        served=writer_records(plan, {}),
+        items={"Split": items},
+    )
+    index = read_index(partial, "req-2")
+    assert index is not None
+    assert {item.record for item in index.entries if item.op == "Split"} == {
+        "p1\x1f0",
+        "p1\x1f1",
+        "p2\x1f0",
+        "p2\x1f1",
+    }
+    again, _ = _planned(partial, graph)
+    assert _decisions(again)["Split"] == ("hit", None), _decisions(again)
+
+
+def _expand_workflow() -> dict[str, Any]:
+    """A keyed row step read by an expand that splits every row into two children."""
+    return {
+        "name": "expand-reuse",
+        "inputs": {"Rows": ['{"id": "p1"}', '{"id": "p2"}']},
+        "ops": [
+            {
+                "id": "Fill",
+                "op": "LambdaOp",
+                "inputs": ["Rows"],
+                "mode": "row",
+                "fn_name": "fill",
+                "key": {"node": "Rows", "path": "id"},
+                "code": "lambda row: row[0]",
+            },
+            {
+                "id": "Split",
+                "op": "LambdaOp",
+                "inputs": ["Fill"],
+                "mode": "expand",
+                "fn_name": "split",
+                "code": "lambda row: [row[0]['id'] + 'a', row[0]['id'] + 'b']",
+            },
+        ],
+        "outputs": [{"name": "split", "ref": "Split"}],
+    }

@@ -180,7 +180,7 @@ _ROW_MAIN = """\
 def main(inputs):
     (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
     fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
-    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    data = [entry for entry in _PLAN if entry.get("role") not in ("seed", "served")]
     columns = [_column(entry, inputs, decode) for entry in data]
     n = max((len(c) for c in columns), default=1)
     for entry, col in zip(data, columns):
@@ -206,7 +206,8 @@ def main(inputs):
                 "%s: seed column has %d rows; expected one per row, so %d"
                 % ({op_id!r}, len(seeds), n)
             )
-    items = []
+    served = _served_slots(inputs)
+    computed = []
     for i, row in enumerate(rows):
         marked = next(
             (value for value in map(failure_of, row) if value is not None), None
@@ -215,12 +216,40 @@ def main(inputs):
             marked = failure_of(cells[i])
         if marked is not None:
             # A marked row keeps its position and passes the marker on.
-            items.append({{"output": marked, "value": marked}})
+            computed.append((marked, marked))
             continue
         value = fn(row) if seeds is None else fn(row, seeds[i])
         reject_reserved_key(value, _NODE)
-        items.append({{"output": text(value), "value": value}})
+        computed.append((text(value), value))
+    if served is None:
+        return {{"items": [{{"output": out, "value": val}} for out, val in computed]}}
+    fill = iter(computed)
+    items = []
+    for key, slot in served:
+        if slot == _MISSED:
+            out, val = next(fill)
+        else:
+            out, val = text(slot), slot
+        items.append({{"output": out, "value": val, "key": key}})
+    rest = list(fill)
+    if rest:
+        raise ValueError(
+            "%s: %d computed row(s) over %d slot(s)"
+            % (_NODE, len(computed), len(served))
+        )
     return {{"items": items}}
+
+
+_MISSED = "\\x00lumilake-missed"
+
+
+def _served_slots(inputs):
+    # A partial reuse run's slot list: a served value per live position, the marker
+    # where this run computes the row, and None for a run that serves no slot.
+    (entry,) = [e for e in _PLAN if e.get("role") == "served"] or [None]
+    if entry is None:
+        return None
+    return _column(entry, inputs, lambda v: v)
 """
 
 _LIST_MAIN = """\
@@ -290,7 +319,7 @@ _ON_EMPTY = {on_empty!r}
 def main(inputs):
     (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
     fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
-    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    data = [entry for entry in _PLAN if entry.get("role") not in ("seed", "served")]
     columns = [_column(entry, inputs, decode) for entry in data]
     rows = _rows(columns, data, {op_id!r})
     cells = None
@@ -310,13 +339,31 @@ def main(inputs):
                 % ({op_id!r}, len(seeds), len(rows))
             )
     items = []
+    parents = _served_parents(inputs)
+    missed = None
+    if parents is not None:
+        missed = [slot["parent"] for slot in parents if slot.get("children") is None]
+        # A served parent's children keep their own order under its live position, so
+        # this run neither runs nor loses them.
+        for slot in parents:
+            for child, output in enumerate(slot.get("children") or []):
+                items.append(
+                    {{
+                        "output": output,
+                        "parent": slot["parent"],
+                        "child": child,
+                        "served": True,
+                    }}
+                )
+        items.sort(key=lambda item: item["parent"])
     for index, row in enumerate(rows):
         marked = carried_marker(row)
         if marked is None and seeds is not None and seeds[index] is None:
             marked = failure_of(cells[index])
+        live = index if missed is None else missed[index]
         if marked is not None:
             # A marked row keeps one defined slot, so no child is run or lost.
-            items.append({{"output": marked, "parent": index, "child": 0}})
+            items.append({{"output": marked, "parent": live, "child": 0}})
             continue
         values = fn(row) if seeds is None else fn(row, seeds[index])
         if not isinstance(values, list):
@@ -331,16 +378,27 @@ def main(inputs):
                     "output": {{
                         "_fail": {{"op": {op_id!r}, "reason": "empty expansion"}}
                     }},
-                    "parent": index,
+                    "parent": live,
                     "child": 0,
                 }}
             )
             continue
         items.extend(
-            {{"output": v, "parent": index, "child": child}}
+            {{"output": v, "parent": live, "child": child}}
             for child, v in enumerate(values)
         )
+    if parents is not None:
+        items.sort(key=lambda item: item["parent"])
     return {{"items": items}}
+
+
+def _served_parents(inputs):
+    # A partial run's live parent slots in order: each one's live position and its
+    # stored children in child order, or None for a parent this run re-expands.
+    (entry,) = [e for e in _PLAN if e.get("role") == "served"] or [None]
+    if entry is None:
+        return None
+    return _column(entry, inputs, lambda v: v)
 """
 
 
@@ -352,8 +410,9 @@ _ON_FAIL = {on_fail!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, decode) for entry in _PLAN]
-    decoded_rows = _rows(columns, _PLAN, {op_id!r})
+    data = [entry for entry in _PLAN if entry.get("role") != "served"]
+    columns = [_column(entry, inputs, decode) for entry in data]
+    decoded_rows = _rows(columns, data, {op_id!r})
     entries = []
     by_key = {{}}
     for i, row in enumerate(decoded_rows):
@@ -380,12 +439,21 @@ def main(inputs):
             by_key[key] = len(entries)
             entries.append((key, value, [], None))
         entries[by_key[key]][2].append(i)
+    slots = _served_groups(inputs)
     items = []
     for _, by_value, members, own in entries:
+        if _served_group(slots, by_value) is not None:
+            continue
         if own is not None:
             # The group is the one row without a key, and it emits its marker, which
             # names the op that failed rather than this one.
-            items.append({{"output": own, "key": by_value, "members": members}})
+            items.append(
+                {{
+                    "output": own,
+                    "key": by_value,
+                    "members": _live_members(slots, by_value, members),
+                }}
+            )
             continue
         rows = [decoded_rows[i] for i in members]
         markers = [m for m in map(carried_marker, rows) if m is not None]
@@ -395,7 +463,7 @@ def main(inputs):
                     {{
                         "output": markers[0],
                         "key": by_value,
-                        "members": members,
+                        "members": _live_members(slots, by_value, members),
                     }}
                 )
                 continue
@@ -415,8 +483,80 @@ def main(inputs):
                     }}
                 )
                 continue
-        items.append({{"output": fn(rows), "key": by_value, "members": members}})
-    return {{"items": items}}
+        items.append(
+            {{
+                "output": fn(rows),
+                "key": by_value,
+                "members": _live_members(slots, by_value, members),
+            }}
+        )
+    if slots is None:
+        return {{"items": items}}
+    # A partial run emits every live group in group order: a served one holds the
+    # store's own output, a missed one the item this run computed for it.
+    computed = iter(items)
+    merged = []
+    for slot in slots:
+        if slot.get("served") is not None:
+            merged.append(_served_item(slot))
+            continue
+        item = next(computed, None)
+        if item is None:
+            raise ValueError("%s: no computed group for %r" % (_NODE, slot["key"]))
+        merged.append(item)
+    rest = list(computed)
+    if rest:
+        raise ValueError(
+            "%s: %d computed group(s) over %d live group(s)"
+            % (_NODE, len(items), len(slots))
+        )
+    return {{"items": merged}}
+
+
+def _served_groups(inputs):
+    # A partial run's live groups in order: each one's key and live members, and the
+    # store's own output for a group it answered.
+    (entry,) = [e for e in _PLAN if e.get("role") == "served"] or [None]
+    if entry is None:
+        return None
+    return _column(entry, inputs, lambda v: v)
+
+
+def _group_text(value):
+    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+
+
+def _served_group(slots, by_value):
+    if slots is None:
+        return None
+    record = _group_text(by_value)
+    return next(
+        (
+            slot
+            for slot in slots
+            if slot["key"] == record and slot.get("served") is not None
+        ),
+        None,
+    )
+
+
+def _live_members(slots, by_value, members):
+    # A narrowed run numbers its members inside the rows it reads; the slot list holds
+    # each live group's own positions, so a computed group reports those.
+    if slots is None:
+        return members
+    record = _group_text(by_value)
+    slot = next((slot for slot in slots if slot["key"] == record), None)
+    return members if slot is None else slot["members"]
+
+
+def _served_item(slot):
+    return {{
+        "output": slot["served"],
+        "key": slot["key"],
+        "members": slot["members"],
+        "served": True,
+    }}
 """
 
 

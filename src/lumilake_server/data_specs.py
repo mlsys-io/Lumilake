@@ -139,7 +139,7 @@ class ColumnPlanEntry(DataSpecModel):
     node: str | None = None
     path: str | None = None
     flatten: Literal[True] | None = None
-    role: Literal["seed"] | None = None
+    role: Literal["seed", "served"] | None = None
     values: list[Any] | None = None
     label: str | None = None
     grouped: bool | None = None

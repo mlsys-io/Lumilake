@@ -475,6 +475,9 @@ class RecordWriter:
         among that parent's children, as the step reports them."""
         entries: list[RecordEntry] = []
         for item in items:
+            if item.get("served"):
+                # The store answered this parent's child; the plan indexes its entry.
+                continue
             parent_index = _index_field(item, "parent")
             parent_key = (
                 None if parent is None else record_key_at(parent.keys, parent_index)
@@ -532,6 +535,9 @@ class RecordWriter:
         keyed, whole = _split_inputs(inputs)
         entries: list[RecordEntry] = []
         for item in items:
+            if item.get("served"):
+                # The store answered this group; the plan indexes its own entry.
+                continue
             record = _group_key(item, groups)
             if record is None:
                 continue
@@ -1249,6 +1255,7 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
         for entry in entries
         if isinstance(entry, Mapping)
         and entry.get("kind") == "literal"
+        and entry.get("role") != "served"
         and isinstance(entry.get("values"), list)
     ]
 
@@ -1454,7 +1461,13 @@ def _mode_source(
     op = runtime_graph.nodes[node_id]
     if _mode_of(op) != "expand":
         return None
-    keyed = [node for node in op.dependencies if node in plans and plans[node].keyed]
+    keyed = [
+        node
+        for node in op.dependencies
+        # A served parent leaves the dispatched graph, so its absence from the plans
+        # marks it; its children still key by the keys the plan served for it.
+        if node not in plans or plans[node].keyed
+    ]
     if len(keyed) != 1:
         return None
     return keyed[0]
@@ -1571,7 +1584,7 @@ def _keyed_mode_records(
             groups = _first_input(plan, records)
             node_records.keys = [_group_key(item, groups) for item in items_of[node_id]]
             continue
-        node_records.keys = _node_keys(
+        node_records.keys = _reuse_keys(items_of.get(node_id, [])) or _node_keys(
             runtime_graph, plans, plan, node_records.values, produced, records
         )
     _key_marked_join_rows(records, plans)
@@ -1630,6 +1643,15 @@ def _join_row_key(
         return key
     found = composite_key(value, key_paths) if key_paths else None
     return found if found is not None else fallback
+
+
+def _reuse_keys(items: Sequence[Mapping[str, Any]]) -> list[str | None] | None:
+    """The keys a merged partial run's items carry, or ``None`` when the run did
+    not merge, so a partial op's records land on the live keys they address."""
+    keys = [item.get("key") for item in items]
+    if not keys or any(key is None for key in keys):
+        return None
+    return [str(key) for key in keys]
 
 
 def _node_keys(

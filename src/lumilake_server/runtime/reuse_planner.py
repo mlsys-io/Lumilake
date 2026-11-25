@@ -22,6 +22,7 @@ from lumilake_server.data_specs import (
 )
 from lumilake_server.ops import RecordKey
 from lumilake_server.runtime.lambda_task_helpers import items_column
+from lumilake_server.runtime.record_keys import child_key
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -32,6 +33,7 @@ from lumilake_server.runtime.record_store import (
     digest_of,
     entry_digest,
     is_marker,
+    key_text,
     row_key,
 )
 from lumilake_server.runtime.record_writer import (
@@ -39,7 +41,7 @@ from lumilake_server.runtime.record_writer import (
     RecordInput,
     RecordPlan,
     _decoded,
-    content_value,
+    content_input,
     input_nodes,
     input_values,
     literal_rows,
@@ -57,6 +59,25 @@ from lumilake_server.utils.job_storage import JobStorage
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
 """Task types whose stored value a served op carries whole; an api, diffusion
 or fetch task archives its value as an artifact instead."""
+
+_MISSED = "\x00lumilake-missed"
+"""The slot a partially served op's dispatched run fills; the merge step reads
+it back as the position of a computed row."""
+
+
+def _served_entry(values: list[Any]) -> ColumnPlanEntry:
+    """The slot list a partial run reads back: one entry, its own literal, so no
+    plan entry clones a stage reference into a data column."""
+    return ColumnPlanEntry(kind="literal", role="served", values=values)
+
+
+def _partially_servable(plan: RecordPlan) -> bool:
+    """Whether an op can run on only its missed records and be merged back: a
+    keyed one-to-one python step, whose rows a merge step can place by key."""
+    if not plan.keyed or plan.op.task_type != PYTHON_TASK_TYPE:
+        return False
+    spec = plan.op.data_spec
+    return isinstance(spec, PythonData) and spec.mode in (None, "row", "parse")
 
 
 @dataclass(frozen=True)
@@ -106,6 +127,48 @@ class ContentRecords(BaseModel):
         return self.values[position] if self.keyed else self.values
 
 
+class GroupSlot(BaseModel):
+    """One live group of a partially served reduce: its key, its live member
+    positions, and the output the store holds for it, or ``None`` to compute."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    members: list[int] = Field(default_factory=list)
+    served: Any = None
+
+
+class ParentSlot(BaseModel):
+    """One live parent of a partially served expand: its live position and the
+    children the store holds for it, or ``None`` to re-expand."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent: int
+    children: list[Any] | None = None
+
+
+class PartialRecords(BaseModel):
+    """A partially served op: every live record slot, the ones the store
+    answered, and the positions the dispatched op must compute."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    keys: list[str | None] = Field(default_factory=list)
+    """Every live record's key, in the order the op emits them."""
+    served: list[Any] = Field(default_factory=list)
+    """Each slot's stored value, or the missed marker for one it must compute."""
+    missed: list[int] = Field(default_factory=list)
+    """The live positions the dispatched op computes, in the order it reads them."""
+    groups: list[GroupSlot] | None = None
+    """A reduce's live groups in group order; ``None`` for an op of records."""
+    children: list[ParentSlot] | None = None
+    """An expand's live parents in parent order, each with the children the
+    store holds for it, or ``None`` for a parent this run re-expands."""
+    stored: list[RecordEntry] = Field(default_factory=list)
+    """The entries the store answered for this op, so the run indexes them."""
+
+
 class ReusePlan(BaseModel):
     """One reusing job's plan: what the store answers and every decision."""
 
@@ -130,6 +193,16 @@ class ReusePlan(BaseModel):
     output_shapes: dict[str, OutputShape] = Field(default_factory=dict)
     """Node id -> how its archived output reads its stored values, for every
     output node the plan serves."""
+    partial: dict[str, PartialRecords] = Field(default_factory=dict)
+    """Node id -> the records a partially served op keeps and the ones it runs."""
+    hit_groups: dict[str, list[str]] = Field(default_factory=dict)
+    """Node id -> the reduce groups the store answers, in group order."""
+    missed_groups: dict[str, list[str]] = Field(default_factory=dict)
+    """Node id -> the reduce groups its dispatched run recomputes."""
+    partial_children: dict[str, list[int]] = Field(default_factory=dict)
+    """Node id -> the live parent positions an expand recomputes children for."""
+    served_children: dict[str, list[list[RecordEntry]]] = Field(default_factory=dict)
+    """Node id -> each live parent position's stored children, in child order."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -141,6 +214,16 @@ class _Input:
 
     named: RecordInput
     keys: list[str | None]
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """One op's outcome: a reason it misses whole, its entries when it hits, or
+    the earlier records a partially served op keeps."""
+
+    reason: str | None = None
+    entries: list[RecordEntry] | None = None
+    partial: PartialRecords | None = None
 
 
 class ReusePlanner:
@@ -174,8 +257,103 @@ class ReusePlanner:
                 self._serve_content(decision, plan, content[node_id], runtime_graph)
                 continue
             inputs = _planner_inputs(plan, decision, plans, content)
+            expanded = self._expand_outcome(
+                plan, decision, inputs, stored, round_number=round_number
+            )
+            if expanded is not None:
+                children, missed_parents = expanded
+                if missed_parents:
+                    missed = set(missed_parents)
+                    decision.partial_children[node_id] = list(missed_parents)
+                    decision.served_children[node_id] = children
+                    decision.partial[node_id] = PartialRecords(
+                        children=[
+                            ParentSlot(
+                                parent=position,
+                                children=(
+                                    None
+                                    if position in missed
+                                    else [entry.value for entry in children[position]]
+                                ),
+                            )
+                            for position in range(len(children))
+                        ],
+                    )
+                    decision.decisions.append(
+                        RecordDecision(
+                            op=plan.op_name,
+                            node=node_id,
+                            decision="miss",
+                            reason="partial children",
+                            records=len(missed_parents),
+                        )
+                    )
+                    misses.add(node_id)
+                    continue
+                decision.hits[node_id] = [
+                    entry for group in children for entry in group
+                ]
+                decision.decisions.append(
+                    RecordDecision(
+                        op=plan.op_name,
+                        node=node_id,
+                        decision="hit",
+                        records=sum(len(group) for group in children),
+                    )
+                )
+                continue
+            grouped = self._reduce_outcome(
+                plan,
+                inputs,
+                _reduce_rows(plan, decision, stored),
+                round_number=round_number,
+            )
+            if grouped is not None:
+                group_reason, slots, answered = grouped
+                hit_groups = [slot.key for slot in slots if slot.served is not None]
+                missed_groups = [slot.key for slot in slots if slot.served is None]
+                decision.hit_groups[node_id] = hit_groups
+                if group_reason != "partial group records":
+                    decision.decisions.append(
+                        RecordDecision(
+                            op=plan.op_name,
+                            node=node_id,
+                            decision="miss",
+                            reason=group_reason,
+                        )
+                    )
+                    misses.add(node_id)
+                    continue
+                if missed_groups:
+                    decision.missed_groups[node_id] = missed_groups
+                    decision.partial[node_id] = PartialRecords(
+                        keys=[str(key) for key in missed_groups],
+                        missed=list(range(len(missed_groups))),
+                        groups=slots,
+                        stored=[answered[key] for key in hit_groups],
+                    )
+                    decision.decisions.append(
+                        RecordDecision(
+                            op=plan.op_name,
+                            node=node_id,
+                            decision="miss",
+                            reason=group_reason,
+                            records=len(missed_groups),
+                        )
+                    )
+                    misses.add(node_id)
+                    continue
+                decision.decisions.append(
+                    RecordDecision(
+                        op=plan.op_name,
+                        node=node_id,
+                        decision="hit",
+                        records=len(hit_groups),
+                    )
+                )
+                continue
             records = _record_keys(plan, inputs)
-            reason, hit = self._decide(
+            outcome = self._decide(
                 plan,
                 inputs,
                 records,
@@ -187,6 +365,20 @@ class ReusePlanner:
                 runtime_graph=runtime_graph,
                 node_id=node_id,
             )
+            reason, hit = outcome.reason, outcome.entries
+            if outcome.partial is not None:
+                decision.partial[node_id] = outcome.partial
+                decision.decisions.append(
+                    RecordDecision(
+                        op=plan.op_name,
+                        node=node_id,
+                        decision="miss",
+                        reason="partial records",
+                        records=len(outcome.partial.missed),
+                    )
+                )
+                misses.add(node_id)
+                continue
             decision.decisions.append(
                 RecordDecision(
                     op=plan.op_name,
@@ -260,6 +452,140 @@ class ReusePlanner:
         if _content_servable(runtime_graph, decision, plan.op.node_id):
             decision.content_served.add(plan.op.node_id)
 
+    def _decide_children(
+        self,
+        plan: RecordPlan,
+        parent_keys: Sequence[str],
+        inputs: Sequence[_Input],
+        *,
+        round_number: int,
+    ) -> tuple[list[list[RecordEntry]], list[int]]:
+        """Each live parent's stored children, in child order, and the parent
+        positions the store does not answer.
+
+        A child's key is its parent key and its index, so each is probed by its
+        own address: a parent is served when child 0 answers and the chain of
+        contiguous children ends where the store has no next one."""
+        named = [item.named for item in inputs]
+        served: list[list[RecordEntry]] = [[] for _ in parent_keys]
+        missed: list[int] = []
+        for position, parent_key in enumerate(parent_keys):
+            children: list[RecordEntry] = []
+            while True:
+                child = child_key(parent_key, len(children))
+                read_digests, read_values = position_inputs(named, position, keyed=True)
+                entry = read_entry(
+                    self._storage,
+                    entry_digest(
+                        spec_digest=plan.spec_digest,
+                        address=RecordAddress(
+                            op=plan.op_name, record=child, round=round_number
+                        ),
+                        input_digests=read_digests,
+                        input_values=read_values,
+                        realization=RecordRealization(),
+                        versions=EffectVersions(),
+                    ),
+                )
+                if entry is None or _entry_miss_reason(entry) is not None:
+                    break
+                children.append(entry)
+            if children:
+                served[position] = children
+            else:
+                missed.append(position)
+        return served, missed
+
+    def _expand_outcome(
+        self,
+        plan: RecordPlan,
+        decision: ReusePlan,
+        inputs: Sequence[_Input],
+        stored: Mapping[str, Sequence[RecordEntry]],
+        *,
+        round_number: int,
+    ) -> tuple[list[list[RecordEntry]], list[int]] | None:
+        """An expand's ``(served children per parent, missed parents)``, or
+        ``None`` when it is not an expand or its parent runs in this batch."""
+        spec = plan.op.data_spec
+        if not isinstance(spec, PythonData) or spec.mode != "expand":
+            return None
+        parent_keys = _expand_parent_keys(plan, stored)
+        if parent_keys is None:
+            return None
+        return self._decide_children(
+            plan, parent_keys, inputs, round_number=round_number
+        )
+
+    def _reduce_outcome(
+        self,
+        plan: RecordPlan,
+        inputs: Sequence[_Input],
+        rows: Sequence[Any] | None,
+        *,
+        round_number: int,
+    ) -> tuple[str, list[GroupSlot], dict[str, RecordEntry]] | None:
+        """A reduce's ``(reason, live groups, answered entries)`` or ``None`` when
+        it is not a reduce; all groups hitting serves the op, the rest dispatch it."""
+        spec = plan.op.data_spec
+        if not isinstance(spec, PythonData) or spec.mode != "reduce":
+            return None
+        if rows is None:
+            # The input is dispatched in this batch, so its groups are not known yet.
+            return "input dispatched", [], {}
+        decided = self._decide_groups(plan, inputs, rows, round_number=round_number)
+        if isinstance(decided, str):
+            return decided, [], {}
+        slots, answered = decided
+        return "partial group records", slots, answered
+
+    def _decide_groups(
+        self,
+        plan: RecordPlan,
+        inputs: Sequence[_Input],
+        rows: Sequence[Any] | None,
+        *,
+        round_number: int,
+    ) -> tuple[list[GroupSlot], dict[str, RecordEntry]] | str:
+        """A reduce's live groups in group order, each holding the output the
+        store answers it with, and the entries that answered, by group key."""
+        groups = _group_members(plan, rows)
+        if groups is None:
+            return "unkeyed row"
+        named = [item.named for item in inputs]
+        slots: list[GroupSlot] = []
+        entries: dict[str, RecordEntry] = {}
+        for group_key, members in groups:
+            input_digests: list[str] = []
+            input_values: list[str] = []
+            for member in members:
+                read_digests, read_values = position_inputs(named, member, keyed=True)
+                input_digests.extend(read_digests)
+                input_values.extend(read_values)
+            entry = read_entry(
+                self._storage,
+                entry_digest(
+                    spec_digest=plan.spec_digest,
+                    address=RecordAddress(
+                        op=plan.op_name, record=group_key, round=round_number
+                    ),
+                    input_digests=input_digests,
+                    input_values=input_values,
+                    realization=RecordRealization(),
+                    versions=EffectVersions(),
+                ),
+            )
+            if _entry_miss_reason(entry) is None and entry is not None:
+                entries[group_key] = entry
+            slots.append(
+                GroupSlot(
+                    key=group_key,
+                    members=members,
+                    served=None if entry is None else entry.value,
+                )
+            )
+        return slots, entries
+
     def _decide(
         self,
         plan: RecordPlan,
@@ -273,24 +599,28 @@ class ReusePlanner:
         stored: Mapping[str, list[RecordEntry]],
         runtime_graph: RuntimeGraph,
         node_id: str,
-    ) -> tuple[str | None, list[RecordEntry] | None]:
-        """One op's ``(first miss reason, stored entries)``."""
+    ) -> _Decision:
+        """One op's outcome: a miss reason, its entries, or its kept records."""
         if reads_unversioned(plan.op):
-            return "unversioned upstream", None
+            return _Decision("unversioned upstream")
         if plan.op.task_type not in _SERVED_TASKS:
-            return "value not servable", None
+            return _Decision("value not servable")
         if any(node in misses for node in input_nodes(plan)):
-            return "upstream miss", None
+            return _Decision("upstream miss")
         if records is None:
-            return "unkeyed row", None
+            return _Decision("unkeyed row")
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
         seeded = _seeded_records(plan, stored, runtime_graph)
+        served = _partially_servable(plan)
+        first_reason: str | None = None
+        slots: list[Any] = []
+        missed: list[int] = []
         for position, record in enumerate(records):
             draw = _planned_realization(plan, records, position, source, seeded)
             if draw is None:
-                return "no realization", None
+                return _Decision("no realization")
             input_digests, input_value_digests = position_inputs(
                 named, position, keyed=plan.keyed
             )
@@ -308,10 +638,58 @@ class ReusePlanner:
                 ),
             )
             reason = _entry_miss_reason(entry)
-            if reason is not None or entry is None:
-                return reason, None
-            entries.append(entry)
-        return None, entries
+            found = None if reason is not None else entry
+            if found is not None:
+                entries.append(found)
+                slots.append(found.value)
+                continue
+            if not served:
+                return _Decision(reason)
+            if first_reason is None:
+                first_reason = reason
+            missed.append(position)
+            slots.append(_MISSED)
+        if not missed:
+            return _Decision(entries=entries)
+        if len(missed) == len(records):
+            # No record of this op survives, so it re-runs whole.
+            return _Decision(first_reason)
+        return _Decision(
+            partial=PartialRecords(keys=list(records), served=slots, missed=missed)
+        )
+
+
+def _reduce_rows(
+    plan: RecordPlan,
+    decision: ReusePlan,
+    stored: Mapping[str, Sequence[RecordEntry]],
+) -> list[Any] | None:
+    """The rows a reduce groups: its one keyed input's records, served or
+    stored, in the order the worker zips them; ``None`` when no input is known."""
+    sources = [node for node in input_nodes(plan) if node in stored]
+    if sources:
+        rows = [entry.value for entry in stored[sources[0]]]
+        return rows if rows else None
+    # A reduce whose input runs in this batch groups that input's own rows, which its
+    # spec read names; those group keys are not known until that input finishes.
+    return None
+
+
+def _expand_parent_keys(
+    plan: RecordPlan,
+    stored: Mapping[str, Sequence[RecordEntry]],
+) -> list[str] | None:
+    """A live parent key per row an expand reads, from its served parent's keys;
+    ``None`` when that parent runs in this batch, whole or in part, since a
+    parent this run computes has no recorded identity to probe its children at."""
+    sources = [node for node in input_nodes(plan) if node in stored]
+    if not sources:
+        return None
+    source = sources[0]
+    keys = [entry.address.record for entry in stored[source]]
+    if not keys or any(key is None for key in keys):
+        return None
+    return [str(key) for key in keys]
 
 
 def rebuilt_output(plan: ReusePlan, node_id: str) -> list[str]:
@@ -331,7 +709,8 @@ def _output_text(value: Any) -> str:
 
 
 def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
-    """The records every hit serves, shaped as the writer reads a finished node."""
+    """The records every hit serves, shaped as the writer reads a finished node,
+    plus the groups a partial reduce already holds, so the run indexes them."""
     served: dict[str, NodeRecords] = {}
     for node_id, entries in plan.hits.items():
         keyed = entries[0].address.record is not None
@@ -349,6 +728,26 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
                 entry.value_digest,
             )
         served[node_id] = records
+    for node_id, partial in plan.partial.items():
+        if not partial.stored:
+            continue
+        records = NodeRecords(
+            keyed=True,
+            values=[entry.value for entry in partial.stored],
+            keys=[entry.address.record for entry in partial.stored],
+            entries=partial.stored.copy(),
+        )
+        served[node_id] = records
+    for node_id, groups in plan.served_children.items():
+        entries = [entry for group in groups for entry in group]
+        if not entries:
+            continue
+        served[node_id] = NodeRecords(
+            keyed=True,
+            values=[entry.value for entry in entries],
+            keys=[entry.address.record for entry in entries],
+            entries=entries,
+        )
     return served
 
 
@@ -392,7 +791,15 @@ def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
 def _rewritten(
     op: RuntimeOp, plan: ReusePlan, runtime_graph: RuntimeGraph
 ) -> RuntimeOp:
-    """An op reading its served inputs' values, each entry gaining values."""
+    """An op reading its served inputs' values, each entry gaining values, and a
+    partially served op reading only the rows its plan did not answer."""
+    partial = plan.partial.get(op.node_id)
+    if partial is not None:
+        if partial.groups is not None:
+            return _narrowed_groups(op, partial, plan, runtime_graph)
+        if partial.children is not None:
+            return _narrowed_children(op, partial, plan, runtime_graph)
+        return _narrowed(op, partial, plan, runtime_graph)
     served = [node for node in op.dependencies if _served_node(plan, node)]
     if not served:
         return op
@@ -423,6 +830,138 @@ def _rewritten_plan(
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
         rewritten.append(entry.model_copy(update={"values": column}))
     return replace(op, data_spec=spec.model_copy(update={"plan": rewritten}))
+
+
+def _narrowed(
+    op: RuntimeOp,
+    partial: PartialRecords,
+    plan: ReusePlan,
+    runtime_graph: RuntimeGraph,
+) -> RuntimeOp:
+    """A partially served op reading only its missed rows: each input column is
+    cut to the missed positions, so the step runs on exactly the rows it owes."""
+    spec = op.data_spec
+    if not isinstance(spec, PythonData) or not spec.plan:
+        raise ValueError(f"op '{op.node_id}' cannot narrow a partial run")
+    missed = partial.missed
+    live = len(partial.keys)
+    narrowed: list[ColumnPlanEntry] = []
+    for entry in spec.plan:
+        node = entry.node
+        if node is None:
+            narrowed.append(_narrowed_literal(entry, missed, live))
+            continue
+        if not _served_node(plan, node):
+            narrowed.append(entry)
+            continue
+        column = _plan_column(plan, node, entry, runtime_graph)
+        if column is None:
+            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
+        narrowed.append(
+            entry.model_copy(update={"values": [_cut(column, at, op) for at in missed]})
+        )
+    slots = _served_entry(
+        [[key, value] for key, value in zip(partial.keys, partial.served)]
+    )
+    return replace(op, data_spec=spec.model_copy(update={"plan": [*narrowed, slots]}))
+
+
+def _narrowed_literal(
+    entry: ColumnPlanEntry, missed: Sequence[int], live: int
+) -> ColumnPlanEntry:
+    """A literal column cut to the missed positions; a one-value column stays, so
+    it broadcasts over the rows this run computes."""
+    values = entry.values
+    if values is None or not values or (len(values) == 1 and live != 1):
+        return entry
+    return entry.model_copy(
+        update={"values": [_cut(values, at, None) for at in missed]}
+    )
+
+
+def _cut(column: Sequence[Any], position: int, op: RuntimeOp | None) -> Any:
+    """One live position's value, raising when the column is too short to hold it."""
+    if position >= len(column):
+        where = "" if op is None else f"op '{op.node_id}' "
+        raise ValueError(
+            f"{where}reads a column of {len(column)} row(s) at live position {position}"
+        )
+    return column[position]
+
+
+def _narrowed_groups(
+    op: RuntimeOp,
+    partial: PartialRecords,
+    plan: ReusePlan,
+    runtime_graph: RuntimeGraph,
+) -> RuntimeOp:
+    """A reduce reading only the members of its missed groups: each input column
+    keeps the rows of those groups, so the step recomputes those groups alone,
+    and the slot list carries the live groups for it to emit in order."""
+    spec = op.data_spec
+    if not isinstance(spec, PythonData) or not spec.plan or partial.groups is None:
+        raise ValueError(f"op '{op.node_id}' cannot narrow a partial reduce")
+    wanted = {slot.key for slot in partial.groups if slot.served is None}
+    spec_by = spec.by or ""
+    narrowed: list[ColumnPlanEntry] = []
+    for entry in spec.plan:
+        node = entry.node
+        if node is None or not _served_node(plan, node):
+            narrowed.append(entry)
+            continue
+        column = _plan_column(plan, node, entry, runtime_graph)
+        if column is None:
+            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
+        rows = [_decoded(value) for value in column]
+        keep = [
+            position
+            for position, row in enumerate(rows)
+            if _value_at_path(row, spec_by) is not _UNSET
+            and key_text(_value_at_path(row, spec_by)) in wanted
+        ]
+        narrowed.append(
+            entry.model_copy(update={"values": [column[at] for at in keep]})
+        )
+    slots = _served_entry(
+        [slot.model_dump(exclude_none=True) for slot in partial.groups]
+    )
+    return replace(op, data_spec=spec.model_copy(update={"plan": [*narrowed, slots]}))
+
+
+def _narrowed_children(
+    op: RuntimeOp,
+    partial: PartialRecords,
+    plan: ReusePlan,
+    runtime_graph: RuntimeGraph,
+) -> RuntimeOp:
+    """An expand reading only the parent rows whose children the store does not
+    hold, so it re-expands exactly those parents, and the slot list carrying
+    every live parent so it emits the served children in place."""
+    spec = op.data_spec
+    if not isinstance(spec, PythonData) or not spec.plan or partial.children is None:
+        raise ValueError(f"op '{op.node_id}' cannot narrow a partial expand")
+    missed = [slot.parent for slot in partial.children if slot.children is None]
+    narrowed: list[ColumnPlanEntry] = []
+    for entry in spec.plan:
+        node = entry.node
+        if node is None:
+            narrowed.append(entry)
+            continue
+        if not _served_node(plan, node):
+            # A partially served parent emits only the rows this very run computes,
+            # which are exactly the parents whose children this run re-expands.
+            narrowed.append(entry)
+            continue
+        column = _plan_column(plan, node, entry, runtime_graph)
+        if column is None:
+            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
+        narrowed.append(
+            entry.model_copy(update={"values": [_cut(column, at, op) for at in missed]})
+        )
+    slots = _served_entry(
+        [slot.model_dump(exclude_none=True) for slot in partial.children]
+    )
+    return replace(op, data_spec=spec.model_copy(update={"plan": [*narrowed, slots]}))
 
 
 def _reads_literal_lists(op: RuntimeOp) -> bool:
@@ -700,7 +1239,8 @@ def _dispatched_seed_readers(
 
 
 def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
-    """The graph to dispatch, with every served node reading its value instead."""
+    """The graph to dispatch, with every served node reading its value instead
+    and every partial op carrying the slots its run has to fill."""
     nodes: dict[str, RuntimeOp] = {}
     for node_id in runtime_graph.node_order:
         if node_id in plan.served_nodes():
@@ -790,15 +1330,36 @@ def _served_input(records: Sequence[RecordEntry]) -> _Input:
     )
 
 
+def _group_members(
+    plan: RecordPlan, rows: Sequence[Any] | None
+) -> list[tuple[str, list[int]]] | None:
+    """A reduce's groups as ``(by value, member positions)`` in first-appearance
+    order, from the rows it groups; ``None`` when those rows are not known
+    before the op runs, so the group is a whole-op miss.
+
+    Members are positions in the op's rows, so they name the same input records
+    the writer zips into each group."""
+    spec = plan.op.data_spec
+    if not isinstance(spec, PythonData) or not spec.by or rows is None:
+        return None
+    groups: dict[str, list[int]] = {}
+    for position, row in enumerate(rows):
+        found = _value_at_path(_decoded(row), spec.by)
+        if found is _UNSET:
+            return None
+        groups.setdefault(key_text(found), []).append(position)
+    return list(groups.items())
+
+
 def _content_input(records: ContentRecords) -> _Input:
-    """An unversioned read the plan re-ran, named by the value it returned."""
+    """An unversioned read the plan re-ran, named by the writer's own rule: each
+    row by the value the read returned, so the two sides share one identity."""
+    named = content_input(
+        NodeRecords(keyed=records.keyed, values=records.values, keys=records.keys)
+    )
     positions = range(len(records.values)) if records.keyed else range(1)
-    named: list[tuple[str, str] | None] = []
-    for position in positions:
-        value = content_value(records.value_at(position))
-        named.append((digest_of({"value": value}), digest_of(value)))
     return _Input(
-        named=RecordInput(keyed=records.keyed, records=named),
+        named=named,
         keys=(
             [records.keys[position] for position in positions]
             if records.keyed
