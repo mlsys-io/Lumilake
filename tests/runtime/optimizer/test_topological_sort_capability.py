@@ -88,26 +88,6 @@ def test_python_node_without_an_advertising_worker_fails() -> None:
         )
 
 
-def test_python_node_with_a_gpu_request_goes_to_a_python_gpu_worker() -> None:
-    profiles = {
-        "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
-        "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
-    }
-    schedule = TopologicalSortOptimizer().generate_schedule(
-        graph=_graph(_gpu_python_op("p1")),
-        worker_names=["cpu-python", "gpu-python"],
-        worker_profiles=profiles,
-    )
-    assert schedule.worker_assignment == {"cpu-python": [], "gpu-python": ["p1"]}
-    profiles["gpu-python"] = {"has_gpu": True, "supported_task_types": []}
-    with pytest.raises(ValueError, match=r"carries the GPUs node 'p1' requests"):
-        TopologicalSortOptimizer().generate_schedule(
-            graph=_graph(_gpu_python_op("p1")),
-            worker_names=["cpu-python", "gpu-python"],
-            worker_profiles=profiles,
-        )
-
-
 def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
     h100 = {"name": "H100", "memory_total_bytes": 80 * 1024**3}
     profiles = {

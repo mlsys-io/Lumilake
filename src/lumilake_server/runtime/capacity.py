@@ -108,8 +108,8 @@ class FreeCapacity:
         if required_gpu_task_types or required_gpu_requests:
             if gpu_group_size < 1 or not self.profiles:
                 return 0
-            # Concurrent dispatches draw their groups from the same workers, so
-            # each requirement bounds the count by the workers that serve it.
+            # Concurrent dispatches draw their groups from the same workers, so each
+            # requirement bounds the count by the workers that serve it.
             gates = self._gpu_gates(
                 eligible_gpu, required_gpu_task_types, required_gpu_requests
             )
