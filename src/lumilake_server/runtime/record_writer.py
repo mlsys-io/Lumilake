@@ -729,6 +729,7 @@ class RecordWriter:
         return RecordEntry(
             digest=digest,
             address=address,
+            spec_digest=plan.spec_digest,
             status="failed" if failed else "ok",
             value=redact_sensitive(value),
             value_digest=value_hash,

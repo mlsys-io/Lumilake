@@ -395,6 +395,9 @@ class RecordEntry(BaseModel):
 
     digest: str
     address: RecordAddress
+    spec_digest: str
+    """The op spec digest the record was computed with, so a miss beside it
+    names a differing spec ahead of a differing input."""
     status: Literal["ok", "failed"] = "ok"
     value: Any = None
     value_digest: str | None = None

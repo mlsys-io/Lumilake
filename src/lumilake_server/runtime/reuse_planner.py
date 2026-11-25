@@ -417,6 +417,7 @@ class ReusePlanner:
                         read_address_entry(
                             self._storage, plan.scope, record, round_number
                         ),
+                        spec_digest=plan.spec_digest,
                         versions=versions,
                         realization=draw,
                         input_digests=input_digests,
@@ -1342,6 +1343,7 @@ def read_address_entry(
 def _changed_reason(
     previous: RecordEntry | None,
     *,
+    spec_digest: str,
     versions: EffectVersions,
     realization: RecordRealization,
     input_digests: list[str],
@@ -1353,6 +1355,8 @@ def _changed_reason(
         return None
     if _version_changed(previous, versions):
         return "version changed"
+    if previous.spec_digest != spec_digest:
+        return "spec changed"
     if previous.realization != realization:
         return "realization changed"
     if previous.membership != membership:

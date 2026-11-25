@@ -106,6 +106,7 @@ def _entry(
             versions=EffectVersions(),
         ),
         address=address,
+        spec_digest=digest_of({"op": op}),
         value=value,
         value_digest=digest_of(value),
         input_digests=inputs,
