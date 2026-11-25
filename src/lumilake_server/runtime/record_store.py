@@ -68,10 +68,7 @@ _SHAPE_KEYS = ("mode", "by", "join", "attach", "row_key")
 
 
 def op_namespace(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
-    """The workflow's logical identity of the op: its declared name, the nodes
-    it reads and how it reads them, so two workflows that name an op alike keep
-    their addresses apart, while an edit inside the op's own spec keeps its
-    address so a probe there can say the spec changed."""
+    """A stored address's scope: the op's name and its own plan's read shape."""
     spec = _without_code(_without_data_data_spec(data_spec_dict(op), logical_names))
     shape = {key: spec[key] for key in _SHAPE_KEYS if key in spec}
     plan = spec.get("plan")
@@ -303,9 +300,6 @@ class RecordAddress(BaseModel):
     record: str | None = None
     """``None`` for an op whose rows carry no logical key: one whole-op entry."""
     round: int = 0
-    spec: str | None = None
-    """The op spec digest: the op's computation, so two workflows that name an op
-    alike do not share an address."""
     scope: str = ""
     """The index scope the op's address objects live under, set on a stored entry."""
 
@@ -535,12 +529,7 @@ def index_object_name(job_id: str) -> str:
 
 
 def address_object_name(scope: str, record: str | None, round_number: int) -> str:
-    """The newest entry written at one record's address, at one op scope and round.
-
-    An entry is content addressed, so a changed input gives a new key and the
-    old one stays; this object names the newest one at the address, which is
-    what a probe compares against to say why a record missed. Each address gets
-    its own object, so a writer never reads and rewrites another writer's."""
+    """One record's address object: the newest entry written there."""
     address = digest_of({"record": address_text(record)})
     return f"{RECORD_PREFIX}/addresses/{scope}/{round_number}/{address}.json"
 

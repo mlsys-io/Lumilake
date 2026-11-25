@@ -78,11 +78,17 @@ ops:
 outputs: [{name: merged, ref: M}]
 """
 
-_REROUTED = _JOIN.replace(
-    '  - {id: X, op: DataOp, data: [\'{"id": "a", "v": 1}\','
-    ' \'{"id": "b", "v": 1}\']}',
-    "  - {id: X, op: DataOp, data: %s}\n  - {id: Y, op: DataOp, data: %s}",
-).replace("inputs: [D, X], by: id", "inputs: [D, X, Y], by: id")
+_REROUTED = """\
+name: rerouted
+inputs: {Docs: []}
+ops:
+  - {id: D, op: LambdaOp, inputs: [Docs], mode: row, fn_name: r,
+     key: {node: Docs, path: id}, code: "lambda row: json.loads(row[0])"}
+  - {id: X, op: DataOp, data: %s}
+  - {id: Y, op: DataOp, data: %s}
+  - {id: M, op: JoinOp, inputs: [D, X, Y], by: id}
+outputs: [{name: merged, ref: M}]
+"""
 
 _ATTACHED = """\
 name: attached
@@ -103,7 +109,22 @@ ops:
   - {id: Pairs, op: LambdaOp, inputs: [K], mode: row, fn_name: p,
      key: {node: K, path: pair}, code: "lambda row: json.loads(row[0])",
      image: %s}
-outputs: [{name: pairs, ref: Pairs}]
+  - {id: Rank, op: LambdaOp, inputs: [Pairs], mode: row, fn_name: r,
+     code: "lambda row: json.loads(row[0])"}
+  - {id: Summary, op: LambdaOp, inputs: [Rank], mode: row, fn_name: s,
+     code: "lambda row: json.loads(row[0])"}
+outputs: [{name: summary, ref: Summary}]
+"""
+
+_BROADCAST = """\
+name: broadcast
+inputs: {Docs: []}
+ops:
+  - {id: D, op: LambdaOp, inputs: [Docs], mode: row, fn_name: r,
+     key: {node: Docs, path: id}, code: "lambda row: json.loads(row[0])"}
+  - {id: E, op: DataOp, data: ['{"unit": "u1", "n": 1}']}
+  - {id: M, op: JoinOp, inputs: [D, E], by: unit, row_key: [unit, id]}
+outputs: [{name: merged, ref: M}]
 """
 
 _DOCS = [{"id": "a"}, {"id": "b"}]
@@ -189,9 +210,9 @@ def test_a_deleted_member_misses_only_its_group() -> None:
     assert _rows(ranked) == [("p1", "miss", "membership changed"), ("p2", "hit", None)]
 
 
-def test_an_added_group_is_computed_beside_the_served_ones() -> None:
-    """A group this run has and the previous run lacked is a record here: the
-    rows the previous run had stay served, and the added group is computed."""
+def test_an_added_group_runs_a_reduce_whole() -> None:
+    """A group this run has and the previous run lacked is a record here, so a
+    reduce over the groups runs whole rather than serving the old groups."""
     storage = InMemoryJobStorage()
     asyncio.run(
         _write(
@@ -274,7 +295,7 @@ def test_an_attach_join_hits_on_the_next_run() -> None:
     assert _rows(_plan(storage, built)["M"]) == [("a", "hit", None), ("b", "hit", None)]
 
 
-def test_a_rerouted_row_misses_only_its_own_record() -> None:
+def test_a_row_moved_between_join_columns_misses_alone() -> None:
     """A row that moved into another join column misses that record alone."""
     storage = InMemoryJobStorage()
     an, bn = '{"id": "a", "v": 1}', '{"id": "b", "v": 1}'
@@ -294,24 +315,53 @@ def test_a_rerouted_row_misses_only_its_own_record() -> None:
     assert _rows(decision) == [("a", "miss", "input changed"), ("b", "hit", None)]
 
 
-def test_a_changed_op_image_misses_its_records() -> None:
-    """A standalone task's declared image is the version its records ran with,
-    so a different image misses those records with reason ``version changed``."""
+def test_a_changed_op_image_misses_its_records_and_every_dependent() -> None:
+    """A standalone task's declared image is the version its records ran with, so
+    a different image misses those records with ``version changed``, and each
+    dependent, however deep, names that same cause rather than ``upstream miss``."""
     storage = InMemoryJobStorage()
     asyncio.run(
         _write(
             storage,
             _graph(_PYTHON_IMAGE % "ghcr.io/x/py:one", K=_PAIRS),
-            {"Pairs": _outputs(_pairs(_PAIRS))},
+            {
+                "Pairs": _outputs(_pairs(_PAIRS)),
+                "Rank": _outputs(_pairs(_PAIRS)),
+                "Summary": _outputs(_pairs(_PAIRS)),
+            },
         )
     )
-    pairs = _plan(storage, _graph(_PYTHON_IMAGE % "ghcr.io/x/py:two", K=_PAIRS))[
-        "Pairs"
-    ]
-    assert _rows(pairs) == [
+    outcomes = _plan(storage, _graph(_PYTHON_IMAGE % "ghcr.io/x/py:two", K=_PAIRS))
+    assert _rows(outcomes["Pairs"]) == [
         ("p1t1", "miss", "version changed"),
         ("p1t2", "miss", "version changed"),
         ("p2t1", "miss", "version changed"),
+    ]
+    assert _rows(outcomes["Rank"]) == [(None, "miss", "upstream miss: version changed")]
+    assert _rows(outcomes["Summary"]) == [
+        (None, "miss", "upstream miss: version changed")
+    ]
+
+
+def test_a_row_key_join_hits_each_of_its_rows_on_the_next_run() -> None:
+    """A join whose record key is its ``row_key`` looks its further inputs up by
+    its ``by`` key, as its writer does, so a rerun hits every row."""
+    storage = InMemoryJobStorage()
+    docs = [{"id": "a", "unit": "u1"}, {"id": "b", "unit": "u1"}]
+    built = _graph(_BROADCAST, Docs=docs)
+    asyncio.run(
+        _write(
+            storage,
+            built,
+            {
+                "D": _outputs(_pairs(docs)),
+                "M": _outputs([{**row, "n": 1} for row in docs]),
+            },
+        )
+    )
+    assert _rows(_plan(storage, built)["M"]) == [
+        ('["u1","a"]', "hit", None),
+        ('["u1","b"]', "hit", None),
     ]
 
 
