@@ -1161,10 +1161,9 @@ def _validate_list_lambda_slice_span(
 
 
 _GPU_ZERO_CONFLICT = (
-    "hardware.gpu=0 conflicts with workflow: this graph contains "
-    "ops that require a GPU worker (vLLM / transformers / "
-    "diffusers / text-to-image, or a python step that asks for GPUs). "
-    "Drop --gpu 0 or remove the GPU op."
+    "hardware.gpu=0 conflicts with workflow: this graph contains ops that require a GPU"
+    " worker (vLLM / transformers / diffusers / text-to-image, or a python step that"
+    " asks for GPUs). Drop --gpu 0 or remove the GPU op."
 )
 
 

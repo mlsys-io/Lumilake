@@ -56,9 +56,8 @@ class TopologicalSortOptimizer(BaseOptimizer):
                 if not candidates:
                     kind = "GPU" if on_gpu else "CPU"
                     raise ValueError(
-                        f"Node '{node_id}' has task type {op.task_type!r}, but none"
-                        f" of the selected {kind} workers in {worker_names}"
-                        " advertises it."
+                        f"Node '{node_id}' has task type {op.task_type!r}, but none of"
+                        f" the selected {kind} workers in {worker_names} advertises it."
                     )
                 assignment[candidates[0]].append(node_id)
             elif op.backend in _GPU_BACKENDS:
