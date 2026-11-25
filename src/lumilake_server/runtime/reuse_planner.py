@@ -61,6 +61,7 @@ from lumilake_server.runtime.record_writer import (
     join_inputs,
     join_row_key,
     join_row_paths,
+    literal_entry,
     literal_rows,
     position_inputs,
     read_entry,
@@ -257,6 +258,9 @@ class _Input:
     values: list[Any] | None = None
     """The input's records in order, when the plan holds them, so a reduce can
     group its rows before it runs."""
+    plan_entry: int | None = None
+    """The plan index a literal input is, so a join can tell its first column
+    from a further one."""
 
 
 @dataclass(frozen=True)
@@ -1449,15 +1453,18 @@ def _planner_inputs(
                 declared_node=node,
             )
         )
-    for rows in literal_rows(plan):
+    for index, rows in enumerate(literal_rows(plan)):
+        entry = literal_entry(plan, index)
         if plan.key_paths:
-            inputs.append(_join_literal_input(rows, plan.key_paths))
+            inputs.append(_join_literal_input(rows, plan.key_paths, entry))
             continue
         inputs.append(_literal_input(rows, plan.key_path))
     return inputs
 
 
-def _join_literal_input(rows: Sequence[Any], key_paths: list[str]) -> _Input:
+def _join_literal_input(
+    rows: Sequence[Any], key_paths: list[str], plan_entry: int | None
+) -> _Input:
     """A join's literal rows, each named by its own key as the writer names it:
     one record per row, digests over the single row a key selects."""
     keys = [row_key(row, ".".join(key_paths)) for row in rows]
@@ -1469,6 +1476,7 @@ def _join_literal_input(rows: Sequence[Any], key_paths: list[str]) -> _Input:
         ),
         keys=keys,
         values=list(rows),
+        plan_entry=plan_entry,
     )
 
 
@@ -1549,12 +1557,18 @@ def _content_input(
     keys: list[str | None] = (
         [records.keys[position] for position in positions] if records.keyed else [None]
     )
+    values = (
+        [content_value(records.value_at(position)) for position in positions]
+        if records.keyed
+        else None
+    )
     return _Input(
         named=RecordInput(
             keyed=named.keyed, records=named.records, node=node, keys=keys
         ),
         keys=keys,
         declared_node=declared,
+        values=values,
     )
 
 
@@ -1598,8 +1612,10 @@ def _join_record_keys(
     values (or ``by`` values), else the first input's record key at its
     position; one record per first-input row."""
     first = _first_input(plan, inputs)
-    if first is None or first.values is None:
+    if first is None:
         return None
+    if first.values is None:
+        return None if any(key is None for key in first.keys) else list(first.keys)
     keys = [
         join_row_key(None, row, join_row_paths(plan), _key_at(first.keys, position))
         for position, row in enumerate(first.values)
@@ -1612,11 +1628,23 @@ def _first_input(plan: RecordPlan, inputs: Sequence[_Input]) -> _Input | None:
     nodes = plan.join_inputs
     first = nodes[0] if nodes else None
     if first is None:
-        return None
+        entry = _first_literal_entry(plan)
+        return next(
+            (item for item in inputs if item.plan_entry == entry),
+            None,
+        )
     for item in inputs:
         if item.declared_node == first:
             return item
     return None
+
+
+def _first_literal_entry(plan: RecordPlan) -> int | None:
+    """The plan index a join's first column reads, when that column is a literal."""
+    spec = plan.op.data_spec
+    if not isinstance(spec, PythonData) or spec.join is None:
+        return None
+    return spec.join.inputs[0] if spec.join.inputs else None
 
 
 def records_from_groups(groups: Mapping[str, list[int]]) -> list[str | None]:
@@ -1689,7 +1717,13 @@ def _join_lookup_key(
         return None
     first = _first_input(plan, inputs)
     values = None if first is None else first.values
-    if values is None or position >= len(values):
+    if values is None:
+        if first is not None:
+            first_key = _key_at(first.keys, position)
+            if first_key is not None:
+                return first_key
+        return record
+    if position >= len(values):
         return record
     return composite_key(values[position], plan.key_paths)
 

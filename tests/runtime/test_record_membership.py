@@ -127,6 +127,16 @@ ops:
 outputs: [{name: merged, ref: M}]
 """
 
+_LITERAL_FIRST = """\
+name: literal-first
+inputs: {Cases: [], Docs: []}
+ops:
+  - {id: D, op: LambdaOp, inputs: [Docs], mode: row, fn_name: r,
+     key: {node: Docs, path: id}, code: "lambda row: json.loads(row[0])"}
+  - {id: M, op: JoinOp, inputs: [Cases, D], by: id}
+outputs: [{name: merged, ref: M}]
+"""
+
 _DOCS = [{"id": "a"}, {"id": "b"}]
 
 
@@ -363,6 +373,24 @@ def test_a_row_key_join_hits_each_of_its_rows_on_the_next_run() -> None:
         ('["u1","a"]', "hit", None),
         ('["u1","b"]', "hit", None),
     ]
+
+
+def test_a_join_whose_first_column_is_a_workflow_input_hits_each_row() -> None:
+    """A join's first column is a literal when it names a workflow input, so its
+    rows come from that input's values: a rerun hits every row."""
+    storage = InMemoryJobStorage()
+    built = _graph(_LITERAL_FIRST, Cases=_DOCS, Docs=_DOCS)
+    asyncio.run(
+        _write(
+            storage,
+            built,
+            {
+                "D": _outputs(_pairs(_DOCS)),
+                "M": _outputs(_DOCS),
+            },
+        )
+    )
+    assert _rows(_plan(storage, built)["M"]) == [("a", "hit", None), ("b", "hit", None)]
 
 
 def test_a_corrupt_address_object_raises_instead_of_reading_as_absent() -> None:
