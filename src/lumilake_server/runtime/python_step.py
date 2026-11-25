@@ -63,6 +63,7 @@ _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
 text = _RUNTIME.text
+_canonical_json = _RUNTIME._canonical_json
 _column = _RUNTIME._column
 decode = _RUNTIME.decode
 _walk_path = _RUNTIME._walk_path
@@ -488,7 +489,7 @@ def main(inputs):
         items.append(
             {{
                 "output": fn(rows),
-                "key": by_value,
+                "key": _group_text(by_value),
                 "members": _live_members(slots, by_value, members),
             }}
         )
@@ -525,7 +526,9 @@ def _served_groups(inputs):
 
 
 def _group_text(value):
-    return value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    # The planner spells a group key with the record store's canonical JSON; this
+    # step compares against the same spelling so a slot matches its own group.
+    return value if isinstance(value, str) else _canonical_json(value)
 
 
 def _served_group(slots, by_value):

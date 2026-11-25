@@ -1509,6 +1509,51 @@ async def test_a_reduce_reading_an_unkeyed_input_serves_its_group() -> None:
     assert rank not in dispatched.nodes
 
 
+def _reduce_object_group_workflow() -> dict[str, Any]:
+    """A keyed row step whose ``by`` path reaches an object, over two groups, so
+    a partial run computes one group's item and merges it by its object key."""
+    tag, rank = _REDUCE_OPS
+    rank = {**rank, "by": "meta"}
+    return {
+        "name": "reduce-object-group",
+        "inputs": {
+            "Rows": [
+                json.dumps({"id": "t1", "meta": {"p": 1, "q": 2}}),
+                json.dumps({"id": "t2", "meta": {"p": 3, "q": 4}}),
+            ]
+        },
+        "ops": [tag, rank],
+        "outputs": [{"name": "ranked", "ref": "Rank"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_partial_reduce_merges_an_object_group_key() -> None:
+    """A partial reduce whose ``by`` value is an object emits every live group in
+    group order: the step spells each computed group's key the planner's way, so
+    it names its own slot. Covers finding 8."""
+    workflow = _reduce_object_group_workflow()
+    graph = _runtime_graph(workflow)
+    storage = InMemoryJobStorage()
+    first, second = {"p": 1, "q": 2}, {"p": 3, "q": 4}
+    await _run(
+        storage,
+        workflow,
+        {"Tag": [{"id": "t1", "meta": first}, {"id": "t2", "meta": second}]},
+        "req-1",
+        graph=graph,
+        items={"Rank": [{"output": ["t1"], "key": first, "members": [0]}]},
+        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
+    )
+    plan, dispatched = _planned(storage, graph)
+    rank = _node(graph, "Rank")
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
+    )
+    items = _run_step(dispatched.nodes[rank], {})
+    assert [item["key"] for item in items] == ['{"p":1,"q":2}', '{"p":3,"q":4}']
+
+
 def _seeded_expand_workflow() -> dict[str, Any]:
     """A keyed row step read by an expand whose row function draws a seed from
     the same input's ``seed`` column."""

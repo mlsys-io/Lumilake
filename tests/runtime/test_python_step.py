@@ -770,7 +770,7 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     assert [(item["key"], item["members"]) for item in out["items"]] == [
         ("p1", [0, 2, 5]),
         ("p2", [1]),
-        (1, [3]),
+        ("1", [3]),
         ("1", [4]),
     ]
 

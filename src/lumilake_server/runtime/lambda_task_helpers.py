@@ -113,6 +113,14 @@ def text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def _canonical_json(value: Any) -> str:
+    """One spelling for a JSON value, the record store's own, so a group key the
+    planner stored matches the key this step reads."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
+
+
 def _raw_seed(value: Any, op_id: str, index: int) -> int:
     """One row's seed: an integer or JSON integer text, refused otherwise."""
     decoded = value
