@@ -69,6 +69,17 @@ ops:
      key: {node: Parsed, path: id}, code: "lambda c: ['ok' for v in c[0]]"}
 outputs: [{name: g, ref: Grade}]
 """
+_OUT_TEXT = """\
+name: out
+inputs: {Rows: %s}
+ops:
+  - {id: Mark, op: LambdaOp, inputs: [Rows], mode: row, fn_name: mark,
+     key: {node: Rows, path: id}, code: "lambda c: json.loads(c[0][0])"}
+  - {id: Parsed, op: ParseOp, inputs: [Mark], format: json}
+  - {id: Out, op: LambdaOp, inputs: [Parsed], mode: row, fn_name: out,
+     code: "lambda c: [str(v) + '!' for v in c[0]]"}
+outputs: [{name: o, ref: Out}]
+"""
 
 
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
@@ -299,6 +310,35 @@ async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     assert {e.record for e in entries.entries if e.op == "Parsed"} == {"a", "b"}
     again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
     assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
+
+
+@pytest.mark.asyncio
+async def test_a_second_redispatched_row_step_keeps_inheriting_keys() -> None:
+    """An undeclared row step after a re-dispatched parse stores under the served
+    keys, so a third run hits it instead of missing with no entry."""
+    rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
+    parsed, out = [{"text": row["text"]} for row in rows], ["one", "two"]
+    text = _OUT_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Mark": rows, "Parsed": parsed, "Out": out}, "req-1")
+    planner, graph = _planner(storage), _runtime_graph(changed)
+    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
+    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {"Parsed": parsed, "Out": out},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == "Out"} == {"a", "b"}
+    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
+    assert _decisions(again)["Out"] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio

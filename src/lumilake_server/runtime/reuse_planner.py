@@ -455,9 +455,13 @@ def _dispatch_record_keys(
         inherited = plan.key_paths.get(node_id)
         if node_id in keys or inherited is None:
             continue
-        sources = [node for node in op.dependencies if plan.key_paths.get(node)]
-        if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=inherited)
+        served = [
+            node
+            for node in op.dependencies
+            if node in plan.hits and plan.key_paths.get(node) is not None
+        ]
+        if len(served) == 1:
+            keys[node_id] = RecordKey(node=served[0], path=inherited)
     return keys
 
 
