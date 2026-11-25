@@ -50,7 +50,6 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.job_storage import JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
@@ -121,7 +120,7 @@ class ReusePlanner:
         misses: set[str] = set()
         stored: dict[str, list[RecordEntry]] = {}
         plans: dict[str, RecordPlan] = {}
-        for node_id in _seed_first_order(runtime_graph):
+        for node_id in runtime_graph.topological_order(_seed_edges(runtime_graph)):
             plans[node_id] = RecordPlan(
                 op=runtime_graph.nodes[node_id],
                 op_name=names.get(node_id, node_id),
@@ -528,26 +527,14 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
-def _seed_first_order(runtime_graph: RuntimeGraph) -> list[str]:
-    """Topological order with each seed node ordered ahead of the chat reading it."""
-    graph: dict[str, set[str]] = {node_id: set() for node_id in runtime_graph.nodes}
+def _seed_edges(runtime_graph: RuntimeGraph) -> dict[str, list[str]]:
+    """Each seed node paired with the chats reading it, so they sort after it."""
+    edges: dict[str, list[str]] = {}
     for node_id, node in runtime_graph.nodes.items():
-        for dep in node.dependencies:
-            if dep in graph:
-                graph[dep].add(node_id)
         spec = node.data_spec
         if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
-            if spec.seeds.node in graph:
-                graph[spec.seeds.node].add(node_id)
-    order_index = {node: idx for idx, node in enumerate(runtime_graph.node_order)}
-    return [
-        node_id
-        for node_id in topological_sort(
-            graph,
-            secondary_key=lambda node_id: order_index.get(node_id, len(order_index)),
-        )
-        if node_id in runtime_graph.nodes
-    ]
+            edges.setdefault(spec.seeds.node, []).append(node_id)
+    return edges
 
 
 def _seeded_records(

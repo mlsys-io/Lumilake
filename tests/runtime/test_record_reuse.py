@@ -30,7 +30,6 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
-    _seed_first_order,
     served_column,
     served_records,
 )
@@ -593,7 +592,8 @@ def test_a_seed_node_that_depends_on_a_later_node_stays_after_it() -> None:
         graph.nodes[join],
         data_spec=spec.model_copy(update={"seeds": NodeRead(node="s")}),
     )
-    order = _seed_first_order(graph)
+    plan, _ = _planned(InMemoryJobStorage(), graph)
+    order = [decision.node for decision in plan.decisions]
     assert order.index(mark) < order.index(join)
     assert order.index("b") < order.index("s")
     assert order.index("s") < order.index(join)
