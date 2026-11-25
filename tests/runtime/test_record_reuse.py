@@ -1367,21 +1367,24 @@ async def test_a_chain_below_a_partially_served_row_step_serves_on_a_third_run()
     }, _decisions(again)
 
 
-@pytest.mark.parametrize("make", ["reduce", "expand", "empty_expand"])
+@pytest.mark.parametrize("make", ["reduce", "expand", "empty_expand", "unkeyed_expand"])
 @pytest.mark.asyncio
 async def test_a_served_reduce_or_expand_output_is_one_whole_run_value(
     make: str, monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
 ) -> None:
-    """A keyed reduce or expand that is also the workflow output stores one
-    record per group or child, yet a whole run archives it as one value per run.
-    A run the store answers completely rebuilds exactly that one value, so the
-    output merge finds one value where a full run produces one, whether the
-    records are groups, children or a parent that expanded to nothing."""
+    """A reduce or expand that is also the workflow output stores one record per
+    group, child or parent, yet a whole run archives it as one value over all of
+    them. A run the store answers completely rebuilds exactly that one value, so
+    the output merge finds one value where a full run produces one, whether the
+    records are groups, children, an unkeyed parent's children or a parent that
+    expanded to nothing."""
     workflow = (
         _expand_workflow(children="[] if row[0]['id'] == 'p2' else row[0]['id'] + 'a'")
         if make == "empty_expand"
-        else _expand_workflow() if make == "expand" else _reduce_workflow(_REDUCE_ROWS)
+        else _reduce_workflow(_REDUCE_ROWS) if make == "reduce" else _expand_workflow()
     )
+    if make == "unkeyed_expand":
+        del workflow["ops"][0]["key"]
     graph = _runtime_graph(workflow)
     cycle = _Cycle(job_storage)
     await cycle.full(workflow)
