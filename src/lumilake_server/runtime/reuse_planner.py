@@ -810,12 +810,16 @@ def output_shape(plan: RecordPlan, path: str | None) -> OutputShape | None:
     """How a hit output archives its records; ``None`` if no stored value holds it."""
     if plan.op.task_type in _PROMPT_TASKS:
         return None
+    if path == "items":
+        # An ``items`` output archives each whole item, envelope and all, which no
+        # stored value holds.
+        return None
     spec = plan.op.data_spec
     whole_list = isinstance(spec, PythonData) and spec.mode == "list" and not plan.keyed
     whole_run = (
         isinstance(spec, PythonData) and spec.mode in python_step.WHOLE_RESULT_MODES
     )
-    if path is None or path == "items" or path == "":
+    if path is None or path == "":
         return OutputShape(whole_list=whole_list, whole_run=whole_run)
     field = _stored_path(path)
     if field is None:
