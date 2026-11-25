@@ -1633,6 +1633,18 @@ def _collect_node_records(
             keys=None,
             items=items_of.get(node_id) or [],
         )
+    # A partially served op keeps the store's groups or children beside the ones
+    # it computes, and a reader names every one of them by its record, so the
+    # store's own entries answer at their positions too.
+    for node_id, node_records in (served or {}).items():
+        produced_records = records.get(node_id)
+        if produced_records is None:
+            continue
+        for entry in node_records.entries:
+            produced_records.digests[entry.address.record, entry.address.round] = (
+                entry.digest,
+                entry.value_digest,
+            )
     _keyed_mode_records(runtime_graph, plans, order, items_of, produced, records)
     _inherit_input_keys(order, plans, runtime_graph, records)
     return records, items_of
