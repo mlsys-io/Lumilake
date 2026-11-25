@@ -8,7 +8,7 @@ Covers:
 - The priority-queue partition key includes the hardware signature so jobs
   with different hardware tuples land in distinct dispatches; jobs with no
   override co-batch.
-- ``_any_graph_requires_gpu`` correctly classifies vLLM ops.
+- ``_any_graph_requires_gpu`` correctly classifies vLLM and image-generation ops.
 """
 
 from typing import Any
@@ -21,6 +21,7 @@ from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    ImageGenerationOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -266,6 +267,18 @@ def _gpu_compiled() -> Any:
     return Graph.from_ops([output]).compile(Prompt=["hello"])
 
 
+def _image_gen_compiled() -> Any:
+    """CompiledGraph containing an ImageGenerationOp — RuntimeGraphBuilder
+    assigns the ``omni`` backend, which ``_runtime_op_requires_gpu``
+    classifies as GPU."""
+    prompt = input_placeholder("Prompt")
+    image = ImageGenerationOp(
+        content=prompt, config=GenerationConfig(model="black-forest-labs/FLUX.1-dev")
+    )
+    output = as_output("result", image)
+    return Graph.from_ops([output]).compile(Prompt=["a red fox"])
+
+
 def _make_server_stub() -> Any:
     return type("_S", (), {"_runtime_builder": RuntimeGraphBuilder()})()
 
@@ -279,6 +292,20 @@ def test_any_graph_requires_gpu_detects_vllm_backend_in_real_compiled_graph(
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
     assert _any_graph_requires_gpu(_make_server_stub(), {"g": _gpu_compiled()}) is True
+
+
+def test_any_graph_requires_gpu_detects_omni_backend_in_real_compiled_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ImageGenerationOp graph must claim a GPU group through the ``omni``
+    backend its lowering sets."""
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+
+    assert (
+        _any_graph_requires_gpu(_make_server_stub(), {"g": _image_gen_compiled()})
+        is True
+    )
 
 
 def test_any_graph_requires_gpu_false_for_cpu_only_real_compiled_graph(

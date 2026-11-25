@@ -2162,7 +2162,7 @@ class FlowmeshRuntimeManager:
         if runtime_op.data_spec.gpu_request is not None:
             return True
         backend = (runtime_op.backend or "").strip().lower()
-        if backend in {"vllm", "transformers", "diffusers"}:
+        if backend in {"vllm", "transformers", "diffusers", "omni"}:
             return True
         task_type = (runtime_op.task_type or "").strip().lower()
         return task_type in {"inference", "embedding", "diffusion"}
