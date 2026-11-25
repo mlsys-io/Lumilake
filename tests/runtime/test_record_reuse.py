@@ -1314,6 +1314,55 @@ async def test_an_expand_cycle_serves_a_parent_that_expands_to_nothing() -> None
 
 
 @pytest.mark.asyncio
+async def test_an_expand_cycle_keys_by_its_parent_beside_a_served_list() -> None:
+    """An expand reading a keyed parent and an unkeyed whole-op list keys its
+    children under that parent while the list is served and the parent reruns,
+    so its next run answers those children instead of missing an unkeyed parent."""
+    workflow = _expand_workflow()
+    fill, split = workflow["ops"]
+    workflow["inputs"] = {**workflow["inputs"], "Fixed": ["1", "2"]}
+    workflow["ops"] = [
+        {
+            "id": "Const",
+            "op": "LambdaOp",
+            "inputs": ["Fixed"],
+            "mode": "list",
+            "fn_name": "fixed",
+            "code": "lambda c: [len(c)]",
+        },
+        fill,
+        {
+            **split,
+            "inputs": ["Fill", "Const"],
+            "fn_name": "split2",
+            "code": (
+                """
+def split2(row):
+    return [row[0]['id'] + str(row[1]), row[0]['id'] + 'b']
+"""
+            ),
+        },
+    ]
+    workflow["outputs"] = [{"name": "split", "ref": "Split"}]
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    changed = {
+        **workflow,
+        "inputs": {
+            **workflow["inputs"],
+            "Rows": ['{"id": "p1"}', '{"id": "p2", "v": 2}'],
+        },
+    }
+    plan, _, _ = await cycle.rerun(changed)
+    split_id = _node(_runtime_graph(workflow), "Split")
+    assert _decisions(plan)["Fill"] == ("miss", "partial records"), _decisions(plan)
+    assert _decisions(plan)["Const"] == ("hit", None), _decisions(plan)
+    third, dispatched = cycle.third(changed)
+    assert third.hits.get(split_id), _decisions(third)
+    assert split_id not in dispatched.nodes
+
+
+@pytest.mark.asyncio
 async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
     """A row op whose two live keys miss in the middle: run 2 computes just those
     and writes every key, so run 3 serves the op whole. Covers finding 4."""

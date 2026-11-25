@@ -261,7 +261,7 @@ class RecordWriter:
         if not self._enabled:
             return 0
         order = runtime_graph.topological_order()
-        plans = _resolve_plans(runtime_graph, order)
+        plans = _resolve_plans(runtime_graph, order, served)
         records, items_of = _collect_node_records(
             runtime_graph, plans, order, node_task_map, results, served
         )
@@ -1435,18 +1435,24 @@ def _draw_unique_to(source: RecordSource, seed: int | None = None) -> RecordReal
 
 
 def resolve_plans(
-    runtime_graph: RuntimeGraph, order: Sequence[str]
+    runtime_graph: RuntimeGraph,
+    order: Sequence[str],
+    served: Mapping[str, NodeRecords] | None = None,
 ) -> dict[str, RecordPlan]:
     """Every node's plan, in the given order."""
-    return _resolve_plans(runtime_graph, order)
+    return _resolve_plans(runtime_graph, order, served)
 
 
 def _resolve_plans(
-    runtime_graph: RuntimeGraph, order: Sequence[str]
+    runtime_graph: RuntimeGraph,
+    order: Sequence[str],
+    served: Mapping[str, NodeRecords] | None = None,
 ) -> dict[str, RecordPlan]:
     """Resolve every node's plan, deriving a 1:1 node's key from its keyed
-    input in dependency order."""
+    input in dependency order; ``served`` names the records the store answers,
+    so an expand keys by its real parent rather than by what is dispatched."""
     names = _logical_names(runtime_graph)
+    records = {} if served is None else served
     plans: dict[str, RecordPlan] = {}
     for node_id in order:
         op = runtime_graph.nodes[node_id]
@@ -1461,7 +1467,7 @@ def _resolve_plans(
             join_attaches=join_attach_nodes(op),
             column=retrieval_key_column(op.data_spec),
             groups_keyed=_groups_keyed(op),
-            expand_source=_mode_source(runtime_graph, node_id, plans),
+            expand_source=_mode_source(runtime_graph, node_id, plans, records),
             inherits_key=_inherits_input(runtime_graph, node_id, plans),
             logical_names=names,
         )
@@ -1538,18 +1544,22 @@ def _keyed_input(
 
 
 def _mode_source(
-    runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
+    runtime_graph: RuntimeGraph,
+    node_id: str,
+    plans: Mapping[str, RecordPlan],
+    served: Mapping[str, NodeRecords],
 ) -> str | None:
-    """The single keyed node an expand reads its input rows from."""
+    """The single keyed parent an expand reads its input rows from. A dependency
+    the store serves is keyed only when its served records are, so a served
+    whole-op side input never counts as a second parent."""
     op = runtime_graph.nodes[node_id]
     if _mode_of(op) != "expand":
         return None
     keyed = [
         node
         for node in op.dependencies
-        # A served parent leaves the dispatched graph, so its absence from the plans
-        # marks it; its children still key by the keys the plan served for it.
-        if node not in plans or plans[node].keyed
+        if (node in plans and plans[node].keyed)
+        or (node in served and served[node].keyed)
     ]
     if len(keyed) != 1:
         return None
