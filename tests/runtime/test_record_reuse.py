@@ -17,6 +17,7 @@ from lumilake_server.data_specs import (
     PythonData,
     parse_data_spec,
 )
+from lumilake_server.ops import RecordKey
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.record_store import (
@@ -450,3 +451,81 @@ async def test_a_hit_output_survives_a_partial_run(
         _node(graph, n): [json.dumps(r) for r in _ROWS[n]] for n in ("Join", "Final")
     }
     assert outputs["flat_outputs"] == want
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_run_stores_the_seeded_chat_it_redispatched() -> None:
+    """Keyed Cases served and a seeded keyed chat re-dispatched: the reuse write
+    holds the chat's per-row records, so a third run serves the chat."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    seeds = "lambda_keyed_Seeds_1"
+    graph = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            seeds: replace(
+                graph.nodes[mark],
+                node_id=seeds,
+                dependencies=(),
+                data_spec=PythonData(
+                    mode="list", fn_name="seeds", code="lambda c: [7, 9]"
+                ),
+            ),
+        },
+        node_order=[*graph.node_order, seeds],
+    )
+    graph.op_names[seeds] = "Seeds"
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(
+            update={"seeds": NodeRead(node=seeds, path="value.items.output")}
+        ),
+    )
+    graph.record_keys[join] = RecordKey(node=mark, path="id")
+    replies = ["A", "B"]
+    items: dict[str, list[Any]] = {
+        "Seeds": [{"output": 7}, {"output": 9}],
+        "Join": [{"output": replies}],
+    }
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Mark": _BASE_ROWS, "Join": replies},
+        "req-1",
+        graph=graph,
+        items=items,
+    )
+    changed = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            join: replace(
+                graph.nodes[join],
+                data_spec=graph.nodes[join].data_spec.model_copy(
+                    update={"messages": [{"role": "user", "content": "{q}?"}]}
+                ),
+            ),
+        },
+    )
+    plan, dispatched = _planned(storage, changed)
+    assert _decisions(plan)["Mark"] == ("hit", None), _decisions(plan)
+    assert _decisions(plan)["Join"] == ("miss", "no entry"), _decisions(plan)
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+        items=items,
+    )
+    chat = graph.op_names[join]
+    index = read_index(storage, "req-2")
+    assert index is not None
+    stored = [e for e in index.entries if e.op == chat]
+    assert {e.record for e in stored} == {"a", "b"}
+    again, _ = _planned(storage, changed, job_id="req-3")
+    assert _decisions(again)["Join"] == ("hit", None), _decisions(again)

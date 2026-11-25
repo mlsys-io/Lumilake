@@ -119,7 +119,7 @@ class ReusePlanner:
         misses: set[str] = set()
         stored: dict[str, list[RecordEntry]] = {}
         plans: dict[str, RecordPlan] = {}
-        for node_id in runtime_graph.topological_order():
+        for node_id in _seed_first_order(runtime_graph):
             plans[node_id] = RecordPlan(
                 op=runtime_graph.nodes[node_id],
                 op_name=names.get(node_id, node_id),
@@ -525,6 +525,23 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
                 seen.add(key)
                 keys.append(key)
     return keys or None
+
+
+def _seed_first_order(runtime_graph: RuntimeGraph) -> list[str]:
+    """The nodes in topological order, each seed node just ahead of the first
+    chat that seeds from it, so that chat reads the seed node's records."""
+    order = runtime_graph.topological_order()
+    for node_id in list(order):
+        node = runtime_graph.nodes[node_id]
+        spec = node.data_spec
+        if not isinstance(spec, DataFrame) or not isinstance(spec.seeds, NodeRead):
+            continue
+        seed = spec.seeds.node
+        if seed not in order or order.index(seed) < order.index(node_id):
+            continue
+        order.remove(seed)
+        order.insert(order.index(node_id), seed)
+    return order
 
 
 def _seeded_records(
