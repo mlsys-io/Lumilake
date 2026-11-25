@@ -117,14 +117,6 @@ def _empty_runtime_graph() -> RuntimeGraph:
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
 
 
-def _param_input_ref(param: RetrievalParam) -> InputRef | None:
-    """The ``input_ref`` a retrieval param declares, as the column-shaped ref."""
-    ref = param.input_ref
-    if ref is None:
-        return None
-    return {"key": ref.key, "path": ref.path}
-
-
 def _param_list_writer(param: RetrievalParam) -> _ListSpecWriter:
     """Write a rewritten list back into a retrieval param's typed spec."""
 
@@ -1813,7 +1805,7 @@ class LumilakeServer:
                     yield (
                         label,
                         data.items,
-                        _param_input_ref(param),
+                        param.input_ref,
                         _param_list_writer(param),
                     )
             if isinstance(op, LLMChatOp):
