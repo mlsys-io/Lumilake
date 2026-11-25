@@ -912,7 +912,7 @@ def _item_values(
 def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
     """Whether an item holds a rowwise model task's per-row outputs as one list."""
     return (
-        isinstance(plan.op.data_spec, DataFrame)
+        grouped_local_chat(plan.op)
         and isinstance(item, Mapping)
         and isinstance(item.get("output"), list)
     )
@@ -942,6 +942,12 @@ def typed_row_step(op: RuntimeOp) -> bool:
         and isinstance(spec, PythonData)
         and spec.mode in (None, "row", "parse")
     )
+
+
+def grouped_local_chat(op: RuntimeOp) -> bool:
+    """Whether ``op`` is a local rowwise chat that groups every row's reply into
+    one item."""
+    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
 
 
 def _item_output(item: Any, typed: bool) -> Any:
