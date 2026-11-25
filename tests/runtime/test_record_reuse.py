@@ -1367,6 +1367,37 @@ async def test_a_chain_below_a_partially_served_row_step_serves_on_a_third_run()
     }, _decisions(again)
 
 
+@pytest.mark.parametrize("make", ["reduce", "expand", "empty_expand"])
+@pytest.mark.asyncio
+async def test_a_served_reduce_or_expand_output_is_one_whole_run_value(
+    make: str, monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
+) -> None:
+    """A keyed reduce or expand that is also the workflow output stores one
+    record per group or child, yet a whole run archives it as one value per run.
+    A run the store answers completely rebuilds exactly that one value, so the
+    output merge finds one value where a full run produces one, whether the
+    records are groups, children or a parent that expanded to nothing."""
+    workflow = (
+        _expand_workflow(children="[] if row[0]['id'] == 'p2' else row[0]['id'] + 'a'")
+        if make == "empty_expand"
+        else _expand_workflow() if make == "expand" else _reduce_workflow(_REDUCE_ROWS)
+    )
+    graph = _runtime_graph(workflow)
+    cycle = _Cycle(job_storage)
+    await cycle.full(workflow)
+    (output,) = graph.output_node_map
+
+    async def _never(*_: Any) -> tuple[str, list[str]]:
+        raise AssertionError("an all-hit request must submit nothing")
+
+    monkeypatch.setattr(FlowmeshRuntimeManager, "_submit_workflow", _never)
+    answers = await FlowmeshRuntimeManager().process_request(
+        _reusing(graph), Schedule(worker_assignment={"w": list(graph.nodes)}), ["w"]
+    )
+    whole = [item["output"] for item in cycle.items[output]]
+    assert answers["flat_outputs"] == {output: [json.dumps(whole)]}
+
+
 @pytest.mark.parametrize(
     ("make", "served"),
     [("expand_reduce", ["Split", "Fold"]), ("unkeyed", ["Rank"])],
