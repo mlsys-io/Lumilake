@@ -1285,7 +1285,7 @@ class LumilakeServer:
                     if gpu_worker_can_run(
                         normalized_profiles[worker],
                         needed_gpu_task_types,
-                        tuple(needed_gpu_requests),
+                        needed_gpu_requests,
                     )
                 ]
                 if not holding:

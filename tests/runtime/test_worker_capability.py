@@ -204,3 +204,12 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
     # One slot is enough when the same worker carries both requests.
     both = _gpu_free({"gpu-two": _gpu_profile([_H100, _A100], ["python"])})
     assert _gpu_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]
+    # Two A100s ahead of the H100: the swap keeps one A100 and takes the H100.
+    order = _gpu_free(
+        {
+            "a": profiles["gpu-a100"],
+            "b": profiles["gpu-a100"],
+            "c": profiles["gpu-h100"],
+        }
+    )
+    assert _gpu_claim(order, 2, required_gpu_requests=(a100, h100)) == ["a", "c"]

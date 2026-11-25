@@ -228,21 +228,11 @@ class FreeCapacity:
                 if selected_gpu[0] not in shared:
                     selected_gpu[0] = next(w for w in eligible_gpu if w in shared)
             else:
-                for index, gate in enumerate(gates):
+                for gate in gates:
                     if any(w in gate for w in selected_gpu):
                         continue
-                    others = [other for i, other in enumerate(gates) if i != index]
-                    slot = next(
-                        (
-                            i
-                            for i in reversed(range(len(selected_gpu)))
-                            if all(selected_gpu[i] not in other for other in others)
-                        ),
-                        None,
-                    )
-                    if slot is None:
+                    if not _swap_into(selected_gpu, eligible_gpu, gate, gates):
                         return None
-                    selected_gpu[slot] = next(w for w in eligible_gpu if w in gate)
         if fraction_gate:
             # A worker's memory fraction holds every utilization at or below it, so a
             # group covering the largest one covers them all.
@@ -255,18 +245,10 @@ class FreeCapacity:
             if not capable:
                 return None
             if not any(w in capable for w in selected_gpu):
-                # A replacement never evicts a worker a GPU gate placed.
-                slot = next(
-                    (
-                        i
-                        for i in reversed(range(len(selected_gpu)))
-                        if all(selected_gpu[i] not in gate for gate in gates)
-                    ),
-                    None,
-                )
-                if slot is None:
+                if not _swap_into(
+                    selected_gpu, eligible_gpu, frozenset(capable), gates
+                ):
                     return None
-                selected_gpu[slot] = capable[0]
         return (selected_cpu, selected_gpu)
 
     def _gpu_gates(
@@ -288,3 +270,21 @@ class FreeCapacity:
                 required_task_types, required_requests
             )
         ]
+
+
+def _swap_into(
+    selected: list[str],
+    workers: Sequence[str],
+    gate: frozenset[str],
+    gates: Sequence[frozenset[str]],
+) -> bool:
+    """Put a worker of ``gate`` into ``selected`` at a slot no other gate needs."""
+    candidate = next((w for w in workers if w in gate and w not in selected), None)
+    if candidate is None:
+        return False
+    for slot in reversed(range(len(selected))):
+        rest = selected[:slot] + selected[slot + 1 :]
+        if all(any(w in other for w in rest) for other in gates if other != gate):
+            selected[slot] = candidate
+            return True
+    return False
