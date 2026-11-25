@@ -960,6 +960,15 @@ def literal_rows(plan: RecordPlan) -> list[list[Any]]:
     return _literal_rows(plan)
 
 
+def literal_entry(plan: RecordPlan, index: int) -> int | None:
+    """The plan index of one literal rows list, when the list comes from a plan."""
+    entries = data_spec_dict(plan.op).get("plan")
+    if not isinstance(entries, list):
+        return None
+    literal = [at for at, entry in enumerate(entries) if _is_literal_entry(entry)]
+    return None if index >= len(literal) else literal[index]
+
+
 def logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
     """Each runtime node's op name."""
     return _logical_names(runtime_graph)
@@ -1465,13 +1474,16 @@ def _literal_entries(plan: RecordPlan) -> list[Mapping[str, Any]]:
     entries = data_spec_dict(plan.op).get("plan")
     if not isinstance(entries, list):
         return []
-    return [
-        entry
-        for entry in entries
-        if isinstance(entry, Mapping)
+    return [entry for entry in entries if _is_literal_entry(entry)]
+
+
+def _is_literal_entry(entry: Any) -> bool:
+    """Whether one plan entry is a literal rows list a python step reads."""
+    return (
+        isinstance(entry, Mapping)
         and entry.get("kind") == "literal"
         and isinstance(entry.get("values"), list)
-    ]
+    )
 
 
 def _input_nodes(plan: RecordPlan) -> Sequence[str]:
