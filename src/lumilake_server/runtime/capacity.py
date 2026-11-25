@@ -7,8 +7,10 @@ from typing import Any
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
+    gated_nodes_gpu_requirements,
+    gpu_group_holds,
+    gpu_worker_can_run,
     holds_gpu_utilizations,
-    profile_fits_gpu_request,
 )
 
 
@@ -43,21 +45,16 @@ class FreeCapacity:
             for w in self.cpu_worker_ids
         )
 
-    def has_gpu_worker_advertising(self, task_types: frozenset[str]) -> bool:
-        """True when some GPU worker in this snapshot advertises every task type."""
-        return any(
-            task_types <= advertised_task_types(self.profiles.get(w, {}))
-            for w in self.gpu_worker_ids
-        )
-
-    def has_gpu_worker_carrying(self, requests: Sequence[GpuRequest]) -> bool:
-        """True when some GPU worker in this snapshot carries every request."""
-        return any(
-            all(
-                profile_fits_gpu_request(self.profiles.get(w, {}), request)
-                for request in requests
-            )
-            for w in self.gpu_worker_ids
+    def gpu_group_serves(
+        self,
+        task_types: frozenset[str] = frozenset(),
+        requests: Sequence[GpuRequest] = (),
+    ) -> bool:
+        """True when each GPU task type and request has a worker in this snapshot."""
+        return gpu_group_holds(
+            self.profiles,
+            self.gpu_worker_ids,
+            gated_nodes_gpu_requirements(task_types, requests),
         )
 
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
@@ -94,8 +91,9 @@ class FreeCapacity:
         so the count is also bounded by the number of such workers, and is
         ``0`` when there is none, no group of that class, or no profiles (the
         cases in which :meth:`eligible_workers` returns ``None``). The count is
-        ``0`` the same way when no GPU worker carries a step's own
-        ``required_gpu_requests``. ``0`` when no class is claimed.
+        ``0`` the same way when no single worker carries every one of a step's
+        own ``required_gpu_requests``, or the GPU group cannot cover them one
+        requirement per worker. ``0`` when no class is claimed.
         """
         eligible_cpu = self._meeting_hardware(
             self.cpu_worker_ids, worker_meets_hardware, hardware
@@ -111,29 +109,25 @@ class FreeCapacity:
             )
             if group_size > 0
         ]
-        for task_types, requests, ids, group_size in (
-            (required_task_types, frozenset(), eligible_cpu, cpu_group_size),
-            (
-                required_gpu_task_types,
-                required_gpu_requests,
-                eligible_gpu,
-                gpu_group_size,
-            ),
-        ):
-            if not task_types and not requests:
-                continue
-            if group_size < 1 or not self.profiles:
+        if required_task_types:
+            if cpu_group_size < 1 or not self.profiles:
                 return 0
-            counts.append(
-                sum(
-                    task_types <= advertised_task_types(self.profiles.get(w, {}))
-                    and all(
-                        profile_fits_gpu_request(self.profiles.get(w, {}), request)
-                        for request in requests
-                    )
-                    for w in ids
-                )
+            capable_cpu = [
+                w
+                for w in eligible_cpu
+                if required_task_types
+                <= advertised_task_types(self.profiles.get(w, {}))
+            ]
+            counts.append(len(capable_cpu))
+        if required_gpu_task_types or required_gpu_requests:
+            if gpu_group_size < 1 or not self.profiles:
+                return 0
+            # Concurrent dispatches draw their groups from the same workers, so
+            # each requirement bounds the count by the workers that serve it.
+            gates = self._gpu_gates(
+                eligible_gpu, required_gpu_task_types, required_gpu_requests
             )
+            counts.extend(len(gate) for gate in gates)
         return min(counts, default=0)
 
     def _meeting_hardware(
@@ -235,22 +229,33 @@ class FreeCapacity:
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
         selected_gpu = eligible_gpu[:gpu_group_size]
-        if required_gpu_task_types or required_gpu_requests:
-
-            def capable_gpu_worker(worker: str) -> bool:
-                profile = self.profiles.get(worker, {})
-                return required_gpu_task_types <= advertised_task_types(
-                    profile
-                ) and all(
-                    profile_fits_gpu_request(profile, request)
-                    for request in required_gpu_requests
-                )
-
-            capable_gpu = [w for w in eligible_gpu if capable_gpu_worker(w)]
-            if not capable_gpu:
+        gates = self._gpu_gates(
+            eligible_gpu, required_gpu_task_types, required_gpu_requests
+        )
+        if gates:
+            if not all(gates):
                 return None
-            if not any(w in capable_gpu for w in selected_gpu):
-                selected_gpu[-1] = capable_gpu[0]
+            if gpu_group_size == 1:
+                shared = frozenset.intersection(*gates)
+                if not shared:
+                    return None
+                selected_gpu[0] = min(shared)
+            else:
+                for index, gate in enumerate(gates):
+                    if any(w in gate for w in selected_gpu):
+                        continue
+                    others = [other for i, other in enumerate(gates) if i != index]
+                    slot = next(
+                        (
+                            i
+                            for i in reversed(range(len(selected_gpu)))
+                            if all(selected_gpu[i] not in other for other in others)
+                        ),
+                        None,
+                    )
+                    if slot is None:
+                        return None
+                    selected_gpu[slot] = min(gate)
         if fraction_gate:
             # A worker's memory fraction holds every utilization at or below it, so a
             # group covering the largest one covers them all.
@@ -263,5 +268,36 @@ class FreeCapacity:
             if not capable:
                 return None
             if not any(w in capable for w in selected_gpu):
-                selected_gpu[-1] = capable[0]
+                # A replacement never evicts a worker a GPU gate placed.
+                slot = next(
+                    (
+                        i
+                        for i in reversed(range(len(selected_gpu)))
+                        if all(selected_gpu[i] not in gate for gate in gates)
+                    ),
+                    None,
+                )
+                if slot is None:
+                    return None
+                selected_gpu[slot] = capable[0]
         return (selected_cpu, selected_gpu)
+
+    def _gpu_gates(
+        self,
+        workers: Sequence[str],
+        required_task_types: frozenset[str],
+        required_requests: Sequence[GpuRequest],
+    ) -> list[frozenset[str]]:
+        """The workers of ``workers`` that serve each GPU-group requirement."""
+        return [
+            frozenset(
+                worker
+                for worker in workers
+                if gpu_worker_can_run(
+                    self.profiles.get(worker, {}), task_types, request
+                )
+            )
+            for task_types, request in gated_nodes_gpu_requirements(
+                required_task_types, required_requests
+            )
+        ]

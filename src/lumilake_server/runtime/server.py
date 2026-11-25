@@ -1138,11 +1138,7 @@ class LumilakeServer:
             total = await self._snapshot_total_capacity()
             if not (
                 (not required_cpu or total.has_cpu_worker_advertising(required_cpu))
-                and (not required_gpu or total.has_gpu_worker_advertising(required_gpu))
-                and (
-                    not required_gpu_requests
-                    or total.has_gpu_worker_carrying(required_gpu_requests)
-                )
+                and total.gpu_group_serves(required_gpu, required_gpu_requests)
                 and (
                     not required_gpu_utilizations
                     or total.has_gpu_worker_holding(required_gpu_utilizations)

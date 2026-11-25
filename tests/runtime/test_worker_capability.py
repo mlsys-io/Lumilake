@@ -155,7 +155,7 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(free, required_gpu_task_types=required) == ["gpu-python"]
     plain = _gpu_free({"gpu-vllm": _GPU_VLLM})
     assert _gpu_claim(plain, required_gpu_task_types=required) is None
-    assert not plain.has_gpu_worker_advertising(required)
+    assert not plain.gpu_group_serves(required)
 
     cards = {
         "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
@@ -165,4 +165,68 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
     small = _gpu_free({"gpu-rtx": _gpu_profile([_H100], ["python"])})
     assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
-    assert not small.has_gpu_worker_carrying((passes,))
+    assert not small.gpu_group_serves(requests=(passes,))
+
+
+def _group_claim(
+    free: FreeCapacity, group_size: int, **required: Any
+) -> list[str] | None:
+    selected = free.eligible_workers(
+        cpu_group_size=1,
+        gpu_group_size=group_size,
+        worker_meets_hardware=_meets_everything,
+        hardware=None,
+        **required,
+    )
+    return None if selected is None else selected[1]
+
+
+def test_one_slot_group_needs_a_worker_that_carries_every_gate() -> None:
+    """The fraction gate must not swap in a worker the python gate placed out."""
+    h100 = {**_gpu_profile([_H100], ["python"]), "gpu_memory_fraction": 0.2}
+    other = {**_gpu_profile([_A100], []), "gpu_memory_fraction": 0.9}
+    free = _gpu_free({"gpu-h100": h100, "gpu-split": other})
+    assert (
+        _group_claim(
+            free,
+            1,
+            required_gpu_task_types=frozenset({"python"}),
+            required_gpu_utilizations=frozenset({0.9}),
+        )
+        is None
+    )
+    assert _group_claim(
+        _gpu_free(
+            {
+                "gpu-h100": {**h100, "gpu_memory_fraction": 0.9},
+                "gpu-split": other,
+            }
+        ),
+        1,
+        required_gpu_task_types=frozenset({"python"}),
+        required_gpu_utilizations=frozenset({0.9}),
+    ) == ["gpu-h100"]
+
+
+def test_two_slot_group_serves_one_request_per_worker() -> None:
+    """An H100 step and an A100 step share a two-worker group; neither worker
+    carries both requests, so a single-carrier gate would stall the batch."""
+    profiles = {
+        "gpu-h100": _gpu_profile([_H100], ["python"]),
+        "gpu-a100": _gpu_profile([_A100], ["python"]),
+    }
+    h100 = GpuRequest(count=1, type="H100")
+    a100 = GpuRequest(count=1, type="A100")
+    free = _gpu_free(profiles)
+    assert sorted(_group_claim(free, 2, required_gpu_requests=(h100, a100)) or []) == [
+        "gpu-a100",
+        "gpu-h100",
+    ]
+    assert _group_claim(free, 1, required_gpu_requests=(h100, a100)) is None
+    assert free.gpu_group_serves(requests=(h100, a100))
+    assert not _gpu_free({"gpu-h100": profiles["gpu-h100"]}).gpu_group_serves(
+        requests=(h100, a100)
+    )
+    # One slot is enough when the same worker carries both requests.
+    both = _gpu_free({"gpu-two": _gpu_profile([_H100, _A100], ["python"])})
+    assert _group_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]
