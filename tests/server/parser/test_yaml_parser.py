@@ -702,6 +702,8 @@ def test_lambda_op_gpu_request_round_trips_and_rejects_a_bad_count() -> None:
     assert op.gpu == GpuRequest(count=1, memory="24Gi")
     with pytest.raises(ValueError, match="'gpu' is invalid"):
         parse_yaml_payload(_gpu_lambda_yaml("{count: 0}"))
+    with pytest.raises(ValueError, match="'gpu' is invalid"):
+        parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24G}"))
 
 
 def test_column_without_data_or_node_names_the_field() -> None:

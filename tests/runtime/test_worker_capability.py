@@ -181,6 +181,34 @@ def _group_claim(
     return None if selected is None else selected[1]
 
 
+def test_a_gpu_type_wildcard_places_no_type_constraint() -> None:
+    rtx = {"name": "RTX 4090", "memory_total_bytes": 24 * 1024**3}
+    for wildcard in ("any", "auto", "*", "ANY"):
+        passes = GpuRequest(count=1, type=wildcard)
+        free = _gpu_free({"gpu-rtx": _gpu_profile([rtx], ["python"])})
+        assert _gpu_claim(free, required_gpu_requests=(passes,)) == ["gpu-rtx"]
+    literal = _gpu_free({"gpu-rtx": _gpu_profile([rtx], ["python"])})
+    assert (
+        _gpu_claim(literal, required_gpu_requests=(GpuRequest(count=1, type="H100"),))
+        is None
+    )
+
+
+def test_memory_floor_uses_binary_units() -> None:
+    cards = {
+        "gpu-16": _gpu_profile(
+            [{"name": "L4", "memory_total_bytes": 16 << 30}], ["python"]
+        )
+    }
+    assert (
+        _gpu_claim(_gpu_free(cards), required_gpu_requests=(GpuRequest(memory="24Gi"),))
+        is None
+    )
+    assert _gpu_claim(
+        _gpu_free(cards), required_gpu_requests=(GpuRequest(memory="16Gi"),)
+    ) == ["gpu-16"]
+
+
 def test_one_slot_group_needs_a_worker_that_carries_every_gate() -> None:
     """The fraction gate must not swap in a worker the python gate placed out."""
     h100 = {**_gpu_profile([_H100], ["python"]), "gpu_memory_fraction": 0.2}

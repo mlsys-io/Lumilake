@@ -23,6 +23,9 @@ CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 """Task types that run on a CPU worker, unless the node asks for GPUs."""
 
+GPU_TYPE_WILDCARDS = frozenset({"any", "auto", "*"})
+"""``GpuRequest.type`` values FlowMesh treats as no type constraint."""
+
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
     """The task types a worker profile says its executors run."""
@@ -118,8 +121,13 @@ def profile_fits_gpu_request(
 
 def device_matches_request(device: GpuDevice, request: GpuRequest) -> bool:
     """True when one card meets the request's type substring and memory floor."""
-    wanted = request.type.strip().lower() if request.type else None
-    if wanted and device.name is not None and wanted not in device.name.lower():
+    wanted = request.type.strip().lower() if request.type else ""
+    if (
+        wanted
+        and wanted not in GPU_TYPE_WILDCARDS
+        and device.name is not None
+        and wanted not in device.name.lower()
+    ):
         return False
     required_bytes = parse_memory_to_bytes(request.memory) if request.memory else None
     return (

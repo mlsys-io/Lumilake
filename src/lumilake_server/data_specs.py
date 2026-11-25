@@ -197,8 +197,12 @@ class GpuRequest(DataSpecModel):
     """
 
     count: int = Field(default=1, ge=1, le=8)
-    type: str | None = None
-    memory: str | None = None
+    type: str | None = Field(default=None, max_length=128)
+    """Device-name substring; a wildcard such as ``any`` places no constraint."""
+    memory: str | None = Field(
+        default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
+    )
+    """Per-device memory floor (e.g. ``"24Gi"``)."""
 
 
 class PythonData(DataSpecModel):
