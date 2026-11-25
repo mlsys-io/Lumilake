@@ -10,7 +10,7 @@ import queue
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Self
@@ -31,7 +31,6 @@ from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,
-    GpuRequest,
     ListData,
     LiteralColumn,
     PythonData,
@@ -1108,12 +1107,13 @@ class LumilakeServer:
         gpu_group_size = (
             self.config.gpu_worker_group_size if self._batch_requires_gpu(batch) else 0
         )
+        nodes = self._batch_gated_nodes(batch)
         cpu_group_size = self.config.cpu_worker_group_size
-        if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
+        if requires_cpu_worker(nodes) and cpu_group_size <= 0:
             cpu_group_size = 1
         hardware = batch.config.hardware_requirements
-        required_cpu = self._batch_required_task_types(batch)
-        required_gpu_requests = self._batch_gpu_requests(batch)
+        required_cpu = cpu_required_task_types(nodes)
+        required_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
 
         def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
@@ -1456,18 +1456,6 @@ class LumilakeServer:
         ]
 
     @classmethod
-    def _batch_required_task_types(cls, batch: BatchSelection) -> frozenset[str]:
-        """The gated task types the batch's CPU group must cover."""
-        return cpu_required_task_types(cls._batch_gated_nodes(batch))
-
-    @classmethod
-    def _batch_gpu_requests(cls, batch: BatchSelection) -> Sequence[GpuRequest]:
-        """The GPU requests the batch's python steps carry."""
-        return python_steps_gpu_requests(
-            spec for _, spec in cls._batch_gated_nodes(batch)
-        )
-
-    @classmethod
     def _batch_gpu_utilizations(cls, batch: BatchSelection) -> frozenset[float]:
         """The card fractions the batch's GPU nodes reserve for their engines."""
         return frozenset(
@@ -1476,13 +1464,6 @@ class LumilakeServer:
             for op in runtime_graph.nodes.values()
             if cls._requires_gpu(op) and op.gpu_memory_utilization is not None
         )
-
-    @classmethod
-    def _batch_requires_cpu(cls, batch: BatchSelection) -> bool:
-        """A configured CPU group size of 0 is only valid alongside a nonzero
-        GPU group; a batch with a data_retrieval or api op still needs one CPU
-        worker (matching _select_preview_workers_and_profiles)."""
-        return requires_cpu_worker(cls._batch_gated_nodes(batch))
 
     @classmethod
     def _normalize_worker_profile(
