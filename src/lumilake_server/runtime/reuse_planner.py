@@ -290,17 +290,22 @@ class ReusePlanner:
                     )
                     misses.add(node_id)
                     continue
-                decision.hits[node_id] = [
-                    entry for group in children for entry in group
-                ]
+                answered_children = [entry for group in children for entry in group]
                 decision.decisions.append(
                     RecordDecision(
                         op=plan.op_name,
                         node=node_id,
                         decision="hit",
-                        records=sum(len(group) for group in children),
+                        records=len(answered_children),
                     )
                 )
+                if not self._accept_hit(
+                    decision, plan, node_id, answered_children, runtime_graph
+                ):
+                    misses.add(node_id)
+                    continue
+                decision.hits[node_id] = answered_children
+                stored[node_id] = answered_children
                 continue
             grouped = self._reduce_outcome(
                 plan,
