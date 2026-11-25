@@ -284,8 +284,8 @@ def _swap_into(
         return False
     covered = [g for g in gates if g != gate and any(w in g for w in selected)]
     for slot in reversed(range(len(selected))):
-        rest = selected[:slot] + selected[slot + 1 :]
-        if all(any(w in g for w in rest) for g in covered):
+        swapped = selected[:slot] + [candidate] + selected[slot + 1 :]
+        if all(any(w in g for w in swapped) for g in covered):
             selected[slot] = candidate
             return True
     return False
