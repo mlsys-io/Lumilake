@@ -113,8 +113,19 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
 
 
-_GPU_VLLM = {"has_gpu": True, "supported_task_types": ["echo"]}
-_GPU_PYTHON = {"has_gpu": True, "supported_task_types": ["python"]}
+_H100 = {"name": "H100", "memory_total_bytes": 24 * 1024**3}
+_A100 = {"name": "A100", "memory_total_bytes": 40 * 1024**3}
+
+
+def _gpu_profile(
+    devices: list[dict[str, Any]], task_types: list[str]
+) -> dict[str, Any]:
+    """A GPU worker profile in the raw shape the server's snapshot stores."""
+    return {"gpu": {"devices": devices}, "supported_task_types": task_types}
+
+
+_GPU_VLLM = _gpu_profile([_A100], ["echo"])
+_GPU_PYTHON = _gpu_profile([_A100], ["python"])
 
 
 def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
@@ -146,13 +157,12 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(plain, required_gpu_task_types=required) is None
     assert not plain.has_gpu_worker_advertising(required)
 
-    h100 = {"name": "H100", "memory_total_bytes": 24 * 1024**3}
     cards = {
-        "gpu-rtx": {**_GPU_PYTHON, "gpu": {"devices": [{"name": "RTX 4090"}]}},
-        "gpu-big": {**_GPU_PYTHON, "gpu": {"devices": [h100, h100]}},
+        "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
+        "gpu-big": _gpu_profile([_H100, _H100], ["python"]),
     }
     passes = GpuRequest(count=2, type="H100")
     assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
-    small = _gpu_free({"gpu-rtx": {**_GPU_PYTHON, "gpu": {"devices": [h100]}}})
+    small = _gpu_free({"gpu-rtx": _gpu_profile([_H100], ["python"])})
     assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
     assert not small.has_gpu_worker_carrying((passes,))

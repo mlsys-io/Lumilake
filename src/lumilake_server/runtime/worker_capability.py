@@ -107,11 +107,12 @@ def gpu_request_fits(
 def profile_fits_gpu_request(
     profile: Mapping[str, Any], request: GpuRequest | None
 ) -> bool:
-    """True when a raw worker profile is a GPU worker that carries ``request``."""
+    """True when a raw GPU worker profile carries ``request``.
+
+    Callers pass GPU workers only; the raw profile carries no ``has_gpu`` flag.
+    """
     if request is None:
         return True
-    if not profile.get("has_gpu"):
-        return False
     return gpu_request_fits(gpu_devices(profile), request)
 
 
