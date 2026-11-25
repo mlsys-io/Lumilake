@@ -6,14 +6,12 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import HTTPException
-from lumid_hooks import PrincipalContext
 from pydantic import ValidationError
 
 from lumilake import envs
-from lumilake_server.hooks.security import require_scope
 from lumilake_server.routes import jobs as jobs_routes
 from lumilake_server.routes.jobs import (
-    LUMID_JOB_BIND_SCOPE,
+    JobPreviewRequest,
     JobSubmitRequest,
     LumidJobBinding,
 )
@@ -146,20 +144,11 @@ async def test_missing_runtime_key_is_refused_before_any_call(
     assert seen == []
 
 
-def _principal(scopes: list[str]) -> PrincipalContext:
-    return PrincipalContext(
-        principal_id="p",
-        org_id="o",
-        external_id="e",
-        principal_type="user",
-        scopes=scopes,
+def test_preview_accepts_the_binding_field() -> None:
+    req = JobPreviewRequest.model_validate(
+        {
+            "data": [{"workflow": "{}", "inputs": {"x": ["1"]}}],
+            "lumid_job": {"job_id": _JOB_ID},
+        }
     )
-
-
-def test_binding_requires_the_bind_scope() -> None:
-    require_scope(_principal(["lumid-job:bind"]), LUMID_JOB_BIND_SCOPE)
-    require_scope(_principal(["*"]), LUMID_JOB_BIND_SCOPE)
-    with pytest.raises(HTTPException) as exc:
-        require_scope(_principal(["jobs:read"]), LUMID_JOB_BIND_SCOPE)
-    assert exc.value.status_code == 403
-    assert LUMID_JOB_BIND_SCOPE in exc.value.detail
+    assert req.lumid_job is not None

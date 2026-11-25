@@ -1045,6 +1045,13 @@ class JobPreviewRequest(BaseModel):
             " against both ``/jobs`` and ``/jobs/preview``."
         ),
     )
+    lumid_job: LumidJobBinding | None = Field(
+        default=None,
+        description=(
+            "Accepted for payload compatibility; ignored during preview, which"
+            " reads with the server's data token."
+        ),
+    )
 
 
 class JobPreviewPayload(BaseModel):
