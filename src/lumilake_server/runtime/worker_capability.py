@@ -14,17 +14,12 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,
     GpuRequest,
-    PythonData,
 )
-from lumilake_server.utils.utils import parse_memory_to_bytes
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 """Task types that run on a CPU worker, unless the node asks for GPUs."""
-
-GPU_TYPE_WILDCARDS = frozenset({"any", "auto", "*"})
-"""``GpuRequest.type`` values FlowMesh treats as no type constraint."""
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -40,18 +35,6 @@ def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
     if isinstance(fraction, int | float) and not isinstance(fraction, bool):
         return float(fraction)
     return None
-
-
-def python_step_gpu_request(data_spec: DataSpecModel) -> GpuRequest | None:
-    """The GPU request a python step's own data spec carries, if any."""
-    if isinstance(data_spec, PythonData):
-        return data_spec.gpu
-    return None
-
-
-def python_step_requests_gpu(data_spec: DataSpecModel) -> bool:
-    """True when a python step's own data spec asks FlowMesh for GPUs."""
-    return python_step_gpu_request(data_spec) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,24 +65,6 @@ def _gpu_devices(profile: Mapping[str, Any]) -> tuple[_GpuDevice, ...] | None:
     return tuple(listed)
 
 
-def _device_matches_request(device: _GpuDevice, request: GpuRequest) -> bool:
-    """True when one card meets the request's type substring and memory floor."""
-    wanted = request.type.strip().lower() if request.type else ""
-    if (
-        wanted
-        and wanted not in GPU_TYPE_WILDCARDS
-        and device.name is not None
-        and wanted not in device.name.lower()
-    ):
-        return False
-    required_bytes = parse_memory_to_bytes(request.memory) if request.memory else None
-    return (
-        required_bytes is None
-        or device.memory_total_bytes is None
-        or device.memory_total_bytes >= required_bytes
-    )
-
-
 def profile_fits_gpu_request(
     profile: Mapping[str, Any], request: GpuRequest | None
 ) -> bool:
@@ -109,10 +74,11 @@ def profile_fits_gpu_request(
     devices = _gpu_devices(profile)
     if devices is None:
         return True
-    return (
-        sum(1 for device in devices if _device_matches_request(device, request))
-        >= request.count
+    matched = sum(
+        request.allows_device(device.name, device.memory_total_bytes)
+        for device in devices
     )
+    return matched >= request.count
 
 
 def python_steps_gpu_requests(
@@ -121,7 +87,7 @@ def python_steps_gpu_requests(
     """The distinct GPU requests the python steps among ``data_specs`` carry."""
     requests: dict[str, GpuRequest] = {}
     for data_spec in data_specs:
-        request = python_step_gpu_request(data_spec)
+        request = data_spec.gpu_request
         if request is not None:
             requests.setdefault(request.model_dump_json(), request)
     return tuple(requests.values())
@@ -142,9 +108,7 @@ def cpu_required_task_types(
     """The gated task types ``nodes`` need from the CPU group: every gated step but a
     python step that requests GPUs, which runs on a GPU worker."""
     return CAPABILITY_GATED_TASK_TYPES.intersection(
-        task_type
-        for task_type, data_spec in nodes
-        if not python_step_requests_gpu(data_spec)
+        task_type for task_type, data_spec in nodes if data_spec.gpu_request is None
     )
 
 
@@ -187,6 +151,6 @@ def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
     """
     return any(
         (task_type or "").strip().lower() in CPU_ONLY_TASK_TYPES
-        and not python_step_requests_gpu(data_spec)
+        and data_spec.gpu_request is None
         for task_type, data_spec in nodes
     )

@@ -34,8 +34,6 @@ from lumilake_server.runtime.worker_capability import (
     fraction_holds_utilization,
     gpu_memory_fraction,
     profile_fits_gpu_request,
-    python_step_gpu_request,
-    python_step_requests_gpu,
 )
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
@@ -227,7 +225,7 @@ class HaloOptimizer(BaseOptimizer):
                     outputs=tuple(),
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
-                    gpu_request=python_step_gpu_request(op.data_spec),
+                    gpu_request=op.data_spec.gpu_request,
                     raw=raw,
                 )
                 for dep in deps:
@@ -1033,9 +1031,7 @@ class HaloOptimizer(BaseOptimizer):
         )
         gpu_types = (
             frozenset({PYTHON_TASK_TYPE})
-            if any(
-                python_step_requests_gpu(op.data_spec) for op in graph.nodes.values()
-            )
+            if any(op.data_spec.gpu_request is not None for op in graph.nodes.values())
             else frozenset()
         )
         for on_gpu, needed in ((False, cpu_types), (True, gpu_types)):
@@ -1052,7 +1048,7 @@ class HaloOptimizer(BaseOptimizer):
                     node_id
                     for node_id, op in graph.nodes.items()
                     if op.task_type == task_type
-                    and python_step_requests_gpu(op.data_spec) == on_gpu
+                    and op.data_spec.gpu_request is not None == on_gpu
                 )
                 kind = "GPU" if on_gpu else "CPU"
                 raise ValueError(

@@ -16,7 +16,6 @@ from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphSchema
-from lumilake_server.runtime.worker_capability import python_step_requests_gpu
 
 
 class RemoteOptimizer(BaseOptimizer):
@@ -54,7 +53,7 @@ class RemoteOptimizer(BaseOptimizer):
         gpu_python_nodes = sorted(
             node_id
             for node_id, op in graph.nodes.items()
-            if python_step_requests_gpu(op.data_spec)
+            if op.data_spec.gpu_request is not None
         )
         if gpu_python_nodes:
             raise ValueError(

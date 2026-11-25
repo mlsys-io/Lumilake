@@ -55,7 +55,6 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.runtime.worker_capability import python_step_requests_gpu
 from lumilake_server.utils.job_storage import get_job_storage
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
@@ -2040,7 +2039,7 @@ class FlowmeshRuntimeManager:
             runtime_op = runtime_graph.nodes.get(node_name)
             if runtime_op is None:
                 continue
-            if python_step_requests_gpu(runtime_op.data_spec):
+            if runtime_op.data_spec.gpu_request is not None:
                 # The step carries its own GPU request in its task spec.
                 gpu_nodes += 1
                 continue
@@ -2079,7 +2078,7 @@ class FlowmeshRuntimeManager:
 
     @staticmethod
     def _runtime_op_requires_gpu(runtime_op: RuntimeOp) -> bool:
-        if python_step_requests_gpu(runtime_op.data_spec):
+        if runtime_op.data_spec.gpu_request is not None:
             return True
         backend = (runtime_op.backend or "").strip().lower()
         if backend in {"vllm", "transformers", "diffusers"}:

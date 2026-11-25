@@ -12,10 +12,14 @@ from pydantic import (
 )
 
 from lumilake_server.common import InputRef
+from lumilake_server.utils.utils import parse_memory_to_bytes
 
 PYTHON_TASK_TYPE = "python"
 RETRIEVAL_TASK_TYPE = "data_retrieval"
 PROFILE_TASK_TYPE = "data_profiling"
+GPU_TYPE_WILDCARDS = frozenset({"any", "auto", "*"})
+"""``GpuRequest.type`` values that place no type constraint."""
+
 MODEL_TASK_TYPES = frozenset(
     {"inference", "diffusion", "embedding", "classification", "omni_text2image", "api"}
 )
@@ -30,10 +34,49 @@ PythonMode = Literal[
 ]
 
 
-class DataSpecModel(BaseModel):
+class _StrictModel(BaseModel):
     """Base model that refuses unknown keys."""
 
     model_config = ConfigDict(extra="forbid")
+
+
+class GpuRequest(_StrictModel):
+    """GPUs a standalone python step asks FlowMesh for.
+
+    ``type`` and ``memory`` narrow which device FlowMesh may pick.
+    """
+
+    count: int = Field(default=1, ge=1, le=8)
+    type: str | None = Field(default=None, max_length=128)
+    """Device-name substring; a wildcard such as ``any`` places no constraint."""
+    memory: str | None = Field(
+        default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
+    )
+    """Per-device memory floor (e.g. ``"24Gi"``)."""
+
+    def allows_device(self, name: str | None, memory_total_bytes: int | None) -> bool:
+        """True when one card, by name and total memory, meets this request."""
+        wanted = (self.type or "").strip().lower()
+        if (
+            wanted
+            and wanted not in GPU_TYPE_WILDCARDS
+            and name is not None
+            and wanted not in name.lower()
+        ):
+            return False
+        floor = parse_memory_to_bytes(self.memory) if self.memory else None
+        if floor is None or memory_total_bytes is None:
+            return True
+        return memory_total_bytes >= floor
+
+
+class DataSpecModel(_StrictModel):
+    """Base model of every runtime task's data spec."""
+
+    @property
+    def gpu_request(self) -> GpuRequest | None:
+        """The GPUs this step's task asks FlowMesh for, if any."""
+        return None
 
 
 class NodeRead(DataSpecModel):
@@ -190,21 +233,6 @@ class ColumnPlanEntry(DataSpecModel):
     file: str | None = None
 
 
-class GpuRequest(DataSpecModel):
-    """GPUs a standalone python step asks FlowMesh for.
-
-    ``type`` and ``memory`` narrow which device FlowMesh may pick.
-    """
-
-    count: int = Field(default=1, ge=1, le=8)
-    type: str | None = Field(default=None, max_length=128)
-    """Device-name substring; a wildcard such as ``any`` places no constraint."""
-    memory: str | None = Field(
-        default=None, max_length=6, pattern=r"^[1-9]\d{0,3}(Ki|Mi|Gi|Ti)$"
-    )
-    """Per-device memory floor (e.g. ``"24Gi"``)."""
-
-
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -220,6 +248,11 @@ class PythonData(DataSpecModel):
     expected_runtime_s: float | None = None
     row_count: int | None = None
     cache: bool | None = None
+
+    @property
+    def gpu_request(self) -> GpuRequest | None:
+        """The GPUs this step's task asks FlowMesh for, if any."""
+        return self.gpu
 
 
 class RetrievalParam(DataSpecModel):

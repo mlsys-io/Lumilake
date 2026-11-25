@@ -15,8 +15,6 @@ from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
     profile_fits_gpu_request,
-    python_step_gpu_request,
-    python_step_requests_gpu,
 )
 
 _GPU_BACKENDS = {"vllm", "transformers", "diffusers", "omni"}
@@ -48,12 +46,12 @@ class TopologicalSortOptimizer(BaseOptimizer):
         for node_id in graph.topological_order():
             op = graph.nodes[node_id]
             if op.task_type in CAPABILITY_GATED_TASK_TYPES:
-                on_gpu = python_step_requests_gpu(op.data_spec)
-                gpu_request = python_step_gpu_request(op.data_spec)
+                gpu_request = op.data_spec.gpu_request
                 candidates = [
                     w
                     for w in worker_names
-                    if bool(worker_profiles.get(w, {}).get("has_gpu")) == on_gpu
+                    if bool(worker_profiles.get(w, {}).get("has_gpu"))
+                    == (gpu_request is not None)
                     and op.task_type
                     in advertised_task_types(worker_profiles.get(w, {}))
                     and profile_fits_gpu_request(
@@ -61,7 +59,7 @@ class TopologicalSortOptimizer(BaseOptimizer):
                     )
                 ]
                 if not candidates:
-                    kind = "GPU" if on_gpu else "CPU"
+                    kind = "GPU" if gpu_request is not None else "CPU"
                     if gpu_request is not None:
                         detail = gpu_request.model_dump(exclude_none=True)
                         raise ValueError(
