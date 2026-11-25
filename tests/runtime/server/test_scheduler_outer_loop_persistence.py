@@ -5,6 +5,7 @@ from typing import Any, cast
 import pytest
 from support.runtime_server import attach_request_states, make_runtime_op
 
+from lumilake_server.data_specs import PythonData, RetrievalData
 from lumilake_server.runtime.capacity import FreeCapacity
 
 
@@ -179,7 +180,9 @@ class _CpuOnlyBatchJobManager:
         self._select_calls += 1
         if self._select_calls == 1:
             cpu_node = SimpleNamespace(
-                backend="data_retrieval", task_type="data_retrieval"
+                backend="data_retrieval",
+                task_type="data_retrieval",
+                data_spec=RetrievalData(type="lumid", mode="sql"),
             )
             selection = SimpleNamespace(
                 config=SimpleNamespace(hardware_requirements=None),
@@ -349,7 +352,11 @@ class _RecordingJobManager:
         self._calls += 1
         if self._calls > self._batches_to_yield:
             return None
-        cpu_node = SimpleNamespace(backend="data_retrieval", task_type="data_retrieval")
+        cpu_node = SimpleNamespace(
+            backend="data_retrieval",
+            task_type="data_retrieval",
+            data_spec=RetrievalData(type="lumid", mode="sql"),
+        )
         selection = SimpleNamespace(
             config=SimpleNamespace(hardware_requirements=None),
             workflows=[
@@ -563,7 +570,11 @@ class _GpuThenCpuJobManager:
             return SimpleNamespace(selection=selection, id="gpu")
         if self._cpu_committed:
             return None
-        cpu_node = SimpleNamespace(backend="data_retrieval", task_type="data_retrieval")
+        cpu_node = SimpleNamespace(
+            backend="data_retrieval",
+            task_type="data_retrieval",
+            data_spec=RetrievalData(type="lumid", mode="sql"),
+        )
         selection = SimpleNamespace(
             config=SimpleNamespace(hardware_requirements=None),
             workflows=[
@@ -1069,7 +1080,9 @@ async def test_try_claim_workers_rejects_undersized_worker(server_factory) -> No
 
 
 def _python_batch() -> Any:
-    python_op = SimpleNamespace(task_type="python", backend="python")
+    python_op = SimpleNamespace(
+        task_type="python", backend="python", data_spec=PythonData(code="x")
+    )
     return SimpleNamespace(
         config=SimpleNamespace(hardware_requirements=None),
         workflows=[SimpleNamespace(request_id="req", id="wf")],

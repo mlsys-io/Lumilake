@@ -6,7 +6,13 @@ import pytest
 from support.runtime_server import make_workflow, make_workflow_slices_from_inputs
 
 from lumilake import envs
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ColumnTable,
+    LiteralColumn,
+    NodeColumn,
+    PythonData,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
 from lumilake_server.parser.n8n import parse_n8n_payload
@@ -15,7 +21,6 @@ from lumilake_server.runtime.job_manager.base import WorkflowItem
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.server import LumilakeServer
-from tests.support.data_specs import wire
 
 
 @pytest.fixture(autouse=True)
@@ -269,9 +274,9 @@ def test_merge_group_compiled_graph_image_generation_rewrites_stock_everywhere()
         isinstance(op, LLMChatOp)
         and op.rowwise_columns is not None
         and any(
-            isinstance(column, dict)
-            and column.get("label") == "symbol"
-            and column.get("path") == "items.table.symbol"
+            isinstance(column, NodeColumn)
+            and column.label == "symbol"
+            and column.path == "items.table.symbol"
             for column in op.rowwise_columns
         )
         for op in merged_compiled.graph.as_dict().values()
@@ -373,7 +378,7 @@ def _rowwise_slices(
     return workflows
 
 
-def _rowwise_columns(compiled_graph: Graph) -> list[dict]:
+def _rowwise_columns(compiled_graph: Graph) -> ColumnTable:
     for op in compiled_graph.as_dict().values():
         if not isinstance(op, LLMChatOp):
             continue
@@ -387,7 +392,7 @@ def _runtime_columns(graph: Graph, inputs: dict[str, list[str]]) -> list[dict]:
 
     runtime_graph = RuntimeGraphBuilder().build(graph.compile(**inputs))
     for node in runtime_graph.nodes.values():
-        data_spec = wire(node)
+        data_spec = node.data_spec.model_dump(exclude_none=True)
         if data_spec.get("type") == "dataframe":
             return data_spec["columns"]
     raise AssertionError("No dataframe node found")
@@ -523,8 +528,9 @@ def test_merge_group_compiled_graph_non_varying_input_ref_not_rewritten() -> Non
     # The Paper-bound column keeps its single projected value; Stock is not
     # projected from it.
     columns = _rowwise_columns(merged.graph)
-    paper_col = next(col for col in columns if col["label"] == "Stock")
-    assert paper_col["data"]["items"] == ["paper"]
+    paper_col = next(col for col in columns if col.label == "Stock")
+    assert isinstance(paper_col, LiteralColumn)
+    assert paper_col.model_dump(exclude_none=True)["data"]["items"] == ["paper"]
 
 
 def _with_python_step(

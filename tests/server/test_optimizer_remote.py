@@ -80,6 +80,40 @@ def test_remote_optimizer_posts_schedule_and_maps_response(
 
 
 @respx.mock
+def test_remote_optimizer_refuses_a_gpu_python_step_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        envs_mod, "LUMILAKE_REMOTE_OPTIMIZER_URL", "http://127.0.0.1:9000"
+    )
+    route = respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
+        return_value=httpx.Response(200, json={"worker_assignment": {"w1": []}})
+    )
+    graph = RuntimeGraph(
+        nodes={
+            "n1": runtime_op(
+                node_id="n1",
+                task_type="python",
+                backend="python",
+                model="",
+                data_spec={"code": "x", "gpu": {"count": 1}},
+                model_spec={},
+                inference_spec={},
+            )
+        },
+        node_order=["n1"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+    with pytest.raises(ValueError, match=r"GPU python step node\(s\) \['n1'\]"):
+        RemoteOptimizer(optimizer_type="halo-greedy").generate_schedule(
+            graph, worker_names=["w1"], worker_profiles={"w1": {"has_gpu": True}}
+        )
+    assert not route.called
+
+
+@respx.mock
 def test_remote_optimizer_sends_constructor_optimizer_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

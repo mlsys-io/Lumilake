@@ -2,6 +2,9 @@
 
 from typing import Any
 
+from pydantic import ValidationError
+
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.ops.util_ops import LambdaOp
 
 from .common import EmitContext
@@ -40,6 +43,14 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
                 f"LambdaOp '{entry.id}' 'image' must be a non-empty string"
             )
         op_dict["image"] = image
+    gpu = entry.fields.get("gpu")
+    if gpu is not None:
+        try:
+            op_dict["gpu"] = GpuRequest.model_validate(gpu).model_dump(
+                exclude_none=True
+            )
+        except ValidationError as exc:
+            raise ValueError(f"LambdaOp '{entry.id}' 'gpu' is invalid: {exc}") from exc
     expected_runtime_s = entry.fields.get("expected_runtime_s")
     if expected_runtime_s is not None:
         if isinstance(expected_runtime_s, bool) or not isinstance(

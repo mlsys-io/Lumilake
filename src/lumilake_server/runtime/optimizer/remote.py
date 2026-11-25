@@ -50,6 +50,17 @@ class RemoteOptimizer(BaseOptimizer):
         worker_profiles: dict[str, dict[str, Any]],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
+        gpu_python_nodes = sorted(
+            node_id
+            for node_id, op in graph.nodes.items()
+            if op.data_spec.gpu_request is not None
+        )
+        if gpu_python_nodes:
+            raise ValueError(
+                f"Graph has GPU python step node(s) {gpu_python_nodes}, but a remote"
+                " optimizer cannot place them; run the job under HALO or"
+                " topological-sort."
+            )
         graph_schema = RuntimeGraphSchema.model_validate(graph.serialize())
         request = ScheduleRequest(
             graph=graph_schema,

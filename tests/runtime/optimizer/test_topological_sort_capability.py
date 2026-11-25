@@ -32,6 +32,18 @@ def _graph(*ops: RuntimeOp) -> RuntimeGraph:
     )
 
 
+def _gpu_python_op(node_id: str, gpu: dict[str, object] | None = None) -> RuntimeOp:
+    return runtime_op(
+        node_id=node_id,
+        task_type="python",
+        backend="python",
+        model="",
+        data_spec={"code": "x", "gpu": gpu or {"count": 1}},
+        model_spec={},
+        inference_spec={},
+    )
+
+
 def test_python_node_goes_to_the_worker_that_advertises_python() -> None:
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=_graph(_op("p1", "python", "python")),
@@ -73,6 +85,50 @@ def test_python_node_without_an_advertising_worker_fails() -> None:
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["cpu-plain"],
             worker_profiles={"cpu-plain": {"has_gpu": False}},
+        )
+
+
+def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
+    h100 = {"name": "H100", "memory_total_bytes": 80 * 1024**3}
+    profiles = {
+        "gpu-rtx": {
+            "has_gpu": True,
+            "supported_task_types": ["python"],
+            "gpu": {"devices": [{"name": "RTX 4090"}]},
+        },
+        "gpu-h100": {
+            "has_gpu": True,
+            "supported_task_types": ["python"],
+            "gpu": {"devices": [h100, h100]},
+        },
+    }
+    schedule = TopologicalSortOptimizer().generate_schedule(
+        graph=_graph(_gpu_python_op("p1", {"count": 2, "type": "H100"})),
+        worker_names=["gpu-rtx", "gpu-h100"],
+        worker_profiles=profiles,
+    )
+    assert schedule.worker_assignment == {"gpu-rtx": [], "gpu-h100": ["p1"]}
+    without_carrier = {
+        "gpu-rtx": profiles["gpu-rtx"],
+        "gpu-h100": {**profiles["gpu-h100"], "supported_task_types": []},
+    }
+    with pytest.raises(ValueError, match=r"carries the GPUs node 'p1' requests"):
+        TopologicalSortOptimizer().generate_schedule(
+            graph=_graph(_gpu_python_op("p1", {"count": 2, "type": "H100"})),
+            worker_names=["gpu-rtx", "gpu-h100"],
+            worker_profiles=without_carrier,
+        )
+    with pytest.raises(ValueError, match=r"carries the GPUs node 'p1' requests"):
+        TopologicalSortOptimizer().generate_schedule(
+            graph=_graph(_gpu_python_op("p1", {"count": 2, "type": "H100"})),
+            worker_names=["gpu-rtx", "gpu-h100"],
+            worker_profiles={
+                "gpu-rtx": profiles["gpu-rtx"],
+                "gpu-h100": {
+                    **profiles["gpu-h100"],
+                    "gpu": {"devices": [h100]},
+                },
+            },
         )
 
 

@@ -143,7 +143,7 @@ params:
 
 For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, set `sample_value` in the upstream `data_spec` to supply a representative value for data-profile preflight without issuing a live sample query. Use a scalar for single-column sources, or a `{column: value, ...}` mapping when downstream `path` entries project specific columns. For a `LambdaOp` upstream, set `sample_value` on the op (or the Code node's `sample-value` note) the same way — preflight never executes user code, so it needs a representative value to resolve the placeholder.
 
-An `aggregate_table` column may reference a workflow input by `node` with an empty `path` (`path: ""`), in which case the input's literal values are inlined as the column's list rather than read from a runtime envelope.
+An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` alone: the column carries that op's literal values whole and takes no `path`.
 
 A `sql`-mode retrieval must define its row order; see [`docs/OPS.md`](OPS.md#dataretrievalop) for the rule and its refusals.
 
