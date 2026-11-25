@@ -29,14 +29,12 @@ from lumilake_server.runtime.record_store import (
     InputMembership,
     RecordAddress,
     RecordAddressEntry,
-    RecordAddressIndex,
     RecordEntry,
     RecordIndex,
     RecordIndexEntry,
     RecordRealization,
     RecordSource,
     address_object_name,
-    address_text,
     data_spec_dict,
     declared_seed,
     digest_of,
@@ -49,6 +47,7 @@ from lumilake_server.runtime.record_store import (
     key_text,
     literal_lists,
     membership_of,
+    op_namespace,
     op_spec_digest,
     path_value,
     samples,
@@ -238,6 +237,7 @@ class RecordPlan:
         self.inherits_key = inherits_key
         self.logical_names = logical_names
         self.spec_digest = op_spec_digest(op, logical_names)
+        self.scope = op_namespace(op, logical_names)
 
     @property
     def keyed(self) -> bool:
@@ -381,31 +381,22 @@ class RecordWriter:
 
     async def _write_addresses(self, entries: Sequence[RecordEntry]) -> None:
         """Point each written record's address at its newest entry."""
-        by_address: dict[tuple[str, int], list[RecordEntry]] = {}
         for entry in entries:
-            by_address.setdefault((entry.address.op, entry.address.round), []).append(
-                entry
-            )
-        for (op, round_number), written in by_address.items():
-            await asyncio.to_thread(
-                self._merge_address_index, op, round_number, written
-            )
+            await asyncio.to_thread(self._save_address, entry)
 
-    def _merge_address_index(
-        self, op: str, round_number: int, written: Sequence[RecordEntry]
-    ) -> None:
-        """Add one batch's entries to one address index object in one save."""
-        key = address_object_name(op, round_number)
-        try:
-            body, _ = self._storage.load_blob(key)
-            known = RecordAddressIndex.from_body(body)
-        except (ArchiveNotFound, KeyError, ValueError):
-            known = RecordAddressIndex(op=op, round=round_number)
-        for entry in written:
-            known.records[address_text(entry.address.record)] = RecordAddressEntry(
-                digest=entry.digest, written_at=entry.written_at
-            )
-        self._storage.save_blob(key, known.body(), "application/json")
+    def _save_address(self, entry: RecordEntry) -> None:
+        """Save one record's newest entry at its address, replacing the one there.
+
+        Each address is its own object, so a writer never rewrites another
+        writer's object and two jobs finishing together never lose a pointer;
+        the later write wins the address it shares."""
+        self._storage.save_blob(
+            address_object_name(
+                entry.address.scope, entry.address.record, entry.address.round
+            ),
+            RecordAddressEntry(digest=entry.digest, written_at=entry.written_at).body(),
+            "application/json",
+        )
 
     async def _index_served(
         self,
@@ -599,7 +590,7 @@ class RecordWriter:
     ) -> list[RecordEntry]:
         """One entry per reduce group, keyed by its ``by`` value and listing
         the ordered keys and digests of the members it read."""
-        keyed, whole = _split_inputs(inputs)
+        keyed, whole = split_inputs(inputs)
         entries: list[RecordEntry] = []
         for item in items:
             record = _group_key(item, groups)
@@ -607,9 +598,6 @@ class RecordWriter:
                 continue
             wanted = item.get("members")
             member_keys: list[str] = []
-            input_digests: list[str] = []
-            input_values: list[str] = []
-            read = _MembershipOrder()
             for member in wanted if isinstance(wanted, list) else []:
                 if not isinstance(member, int):
                     continue
@@ -618,18 +606,15 @@ class RecordWriter:
                     member_keys.append(
                         key if key is not None else digest_of(groups.values[member])
                     )
-                read_digests, read_values, read_membership = _position_inputs(
-                    keyed, member, keyed=True
-                )
-                input_digests.extend(read_digests)
-                input_values.extend(read_values)
-                read.extend(read_membership)
-            whole_digests, whole_values, whole_membership = _position_inputs(
-                whole, 0, keyed=False
+            input_digests, input_values, read = group_inputs(
+                keyed,
+                whole,
+                (
+                    [member for member in wanted if isinstance(member, int)]
+                    if isinstance(wanted, list)
+                    else []
+                ),
             )
-            input_digests.extend(whole_digests)
-            input_values.extend(whole_values)
-            read.extend(whole_membership)
             value = item.get("output")
             value, failed = _record_value(value)
             value_hash = None if failed else digest_of(value)
@@ -652,7 +637,7 @@ class RecordWriter:
                     source=source,
                     member_keys=member_keys,
                     node_records=node_records,
-                    membership=read.groups(),
+                    membership=read,
                 )
             )
         return entries
@@ -683,7 +668,12 @@ class RecordWriter:
                 failed=failed,
             )
             input_digests, input_values, read = _join_inputs(
-                plan, records, indexes, position, round_number, value
+                plan,
+                records,
+                indexes,
+                position,
+                composite_key(value, plan.key_paths) if plan.key_paths else None,
+                round_number,
             )
             entries.append(
                 self._entry(
@@ -721,7 +711,13 @@ class RecordWriter:
         membership: list[InputMembership] | None = None,
     ) -> RecordEntry:
         """One record's entry, at the signature its inputs decide."""
-        address = RecordAddress(op=plan.op_name, record=record, round=source.round)
+        address = RecordAddress(
+            op=plan.op_name,
+            record=record,
+            round=source.round,
+            spec=plan.spec_digest,
+            scope=plan.scope,
+        )
         signature = failed_record_digest if failed else entry_digest
         digest = signature(
             spec_digest=plan.spec_digest,
@@ -1029,7 +1025,7 @@ def _position_inputs(
     return digests, values, membership_of(read)
 
 
-def _split_inputs(
+def split_inputs(
     inputs: Sequence[RecordInput],
 ) -> tuple[list[RecordInput], list[RecordInput]]:
     """A reduce's inputs split into the ones it reads one row of per member and
@@ -1067,6 +1063,52 @@ def content_input(produced: NodeRecords) -> RecordInput:
         value = content_value(produced.value_at(position))
         records.append((digest_of({"value": value}), digest_of(value)))
     return RecordInput(keyed=produced.keyed, records=records)
+
+
+def group_inputs(
+    keyed: Sequence[RecordInput],
+    whole: Sequence[RecordInput],
+    members: Sequence[int],
+) -> tuple[list[str], list[str], list[InputMembership]]:
+    """What one reduce group read: each member's keyed rows in order, then the
+    inputs the group reads whole once, with each input's keys in read order."""
+    digests: list[str] = []
+    values: list[str] = []
+    read = _MembershipOrder()
+    for member in members:
+        member_digests, member_values, member_membership = _position_inputs(
+            keyed, member, keyed=True
+        )
+        digests.extend(member_digests)
+        values.extend(member_values)
+        read.extend(member_membership)
+    whole_digests, whole_values, whole_membership = _position_inputs(
+        whole, 0, keyed=False
+    )
+    digests.extend(whole_digests)
+    values.extend(whole_values)
+    read.extend(whole_membership)
+    return digests, values, read.groups()
+
+
+def join_inputs(
+    plan: RecordPlan,
+    records: Mapping[str, NodeRecords],
+    indexes: Mapping[str, Mapping[str, int]],
+    position: int,
+    key: str | None,
+    round_number: int,
+) -> tuple[list[str], list[str], list[InputMembership]]:
+    """What one join row read: its first input by position, each further input
+    and attach at the row its key selects, and its literal columns by that key."""
+    return _join_inputs(plan, records, indexes, position, key, round_number)
+
+
+def join_indexes(
+    plan: RecordPlan, records: Mapping[str, NodeRecords]
+) -> dict[str, dict[str, int]]:
+    """For each keyed input a join looks a row up in, the first row per key."""
+    return _join_indexes(plan, records)
 
 
 def record_inputs(
@@ -1187,12 +1229,11 @@ def _join_inputs(
     records: Mapping[str, NodeRecords],
     indexes: Mapping[str, Mapping[str, int]],
     position: int,
+    key: str | None,
     round_number: int,
-    value: Any,
 ) -> tuple[list[str], list[str], list[InputMembership]]:
     """What one join row read, its first input by position, the rest by their own."""
     nodes = plan.join_inputs or _input_nodes(plan)
-    key = composite_key(value, plan.key_paths) if plan.key_paths else None
     digests: list[str] = []
     values: list[str] = []
     membership = _MembershipOrder()
