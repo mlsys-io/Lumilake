@@ -37,6 +37,8 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMID_DATA_WORKER_URL` | Optional worker-facing base URL for lumid-data-app blobs. Falls back to `LUMID_DATA_URL`; set it when workers reach lumid-data-app at a different address from the server. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
+| `LUMID_JOBS_URL` | Base URL of the lum.id/data jobs API, used for submissions that carry `lumid_job`. Defaults to `LUMID_DATA_URL`. |
+| `LUMID_JOBS_RUNTIME_KEY` | This server's runtime service key on the lum.id/data hub (a local key labelled `runtime:lumilake`). Required to accept `lumid_job` submissions: the server uses it to fetch each job's job-scoped data token. |
 | `S3_DATA_PREFIX` | Logical blob-key prefix in lumid-data-app's store for compute data (workflow inputs/outputs). Used as the base key prefix for S3-input resolution and output writes. |
 | `S3_ARCHIVE_PREFIX` | Logical blob-key prefix in lumid-data-app's store for job records and runtime artifacts (the archive layer). Required. |
 

@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.data_specs import NodeColumn, build_column_table
 
 from ..common import make_id as _make_id
 from . import references, shared
@@ -463,22 +464,26 @@ def _build_llm_chat_op(
     model_config: dict[str, Any],
     return_history: bool = False,
     structural_outputs: Any = None,
-    aggregate_table: Any = None,
+    aggregate_table: list[dict[str, Any]] | None = None,
     rowwise_template: str | None = None,
-    rowwise_columns: Any = None,
+    rowwise_columns: list[dict[str, Any]] | None = None,
     system_messages: list[str] | None = None,
 ) -> dict[str, Any]:
-    aggregate_inputs = [
-        item["node"]
-        for item in aggregate_table or []
-        if isinstance(item, dict) and isinstance(item.get("node"), str)
-    ]
-    rowwise_inputs = [
-        item["node"]
-        for item in rowwise_columns or []
-        if isinstance(item, dict) and isinstance(item.get("node"), str)
-    ]
-    llm_inputs = list(dict.fromkeys([msg_op_id, *aggregate_inputs, *rowwise_inputs]))
+    aggregate_columns = build_column_table(aggregate_table, "aggregate_table")
+    rowwise_specs = build_column_table(rowwise_columns, "rowwise_columns")
+    llm_inputs = list(
+        dict.fromkeys(
+            [
+                msg_op_id,
+                *(
+                    column.node
+                    for table in (aggregate_columns, rowwise_specs)
+                    for column in table or []
+                    if isinstance(column, NodeColumn)
+                ),
+            ]
+        )
+    )
 
     op: dict[str, Any] = {
         "_id": _make_id(scope, "llm", node_name),
@@ -498,24 +503,16 @@ def _build_llm_chat_op(
                 f"Chain node '{node_name}' structural-outputs must be a list of objects"
             )
         op["structural_outputs"] = structural_outputs
-    if aggregate_table is not None:
-        if not isinstance(aggregate_table, list) or not all(
-            isinstance(item, dict) for item in aggregate_table
-        ):
-            raise ValueError(
-                f"Chain node '{node_name}' aggregate table must be a list of objects"
-            )
-        op["aggregate_table"] = aggregate_table
+    if aggregate_columns is not None:
+        op["aggregate_table"] = [
+            column.model_dump(exclude_none=True) for column in aggregate_columns
+        ]
     if rowwise_template is not None:
         op["rowwise_template"] = rowwise_template
-    if rowwise_columns is not None:
-        if not isinstance(rowwise_columns, list) or not all(
-            isinstance(item, dict) for item in rowwise_columns
-        ):
-            raise ValueError(
-                f"Chain node '{node_name}' rowwise columns must be a list of objects"
-            )
-        op["rowwise_columns"] = rowwise_columns
+    if rowwise_specs is not None:
+        op["rowwise_columns"] = [
+            column.model_dump(exclude_none=True) for column in rowwise_specs
+        ]
     if system_messages is not None:
         op["system_messages"] = system_messages
     return op
@@ -547,8 +544,11 @@ def _build_llm_vision_op(
     }
     if rowwise_template is not None:
         op["rowwise_template"] = rowwise_template
-    if rowwise_columns is not None:
-        op["rowwise_columns"] = rowwise_columns
+    vision_columns = build_column_table(rowwise_columns, "rowwise_columns")
+    if vision_columns is not None:
+        op["rowwise_columns"] = [
+            column.model_dump(exclude_none=True) for column in vision_columns
+        ]
     if system_messages is not None:
         op["system_messages"] = system_messages
     return op

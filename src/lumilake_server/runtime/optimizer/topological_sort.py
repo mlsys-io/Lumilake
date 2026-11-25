@@ -2,7 +2,9 @@
 
 Assigns every GPU-backend node to the first GPU worker and every CPU node to the
 first CPU worker, in topological order. A node of a capability-gated task type
-goes to the first CPU worker that advertises it. It uses no cost model.
+goes to the first worker of its class that advertises it and carries its GPU
+request: a CPU worker, or a GPU worker for a python step that requests GPUs. It
+uses no cost model.
 """
 
 from typing import Any
@@ -12,6 +14,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
+    profile_fits_gpu_request,
 )
 
 _GPU_BACKENDS = {"vllm", "transformers", "diffusers", "omni"}
@@ -43,18 +46,29 @@ class TopologicalSortOptimizer(BaseOptimizer):
         for node_id in graph.topological_order():
             op = graph.nodes[node_id]
             if op.task_type in CAPABILITY_GATED_TASK_TYPES:
+                gpu_request = op.data_spec.gpu_request
                 candidates = [
                     w
                     for w in worker_names
-                    if not worker_profiles.get(w, {}).get("has_gpu")
+                    if bool(worker_profiles.get(w, {}).get("has_gpu"))
+                    == (gpu_request is not None)
                     and op.task_type
                     in advertised_task_types(worker_profiles.get(w, {}))
+                    and profile_fits_gpu_request(
+                        worker_profiles.get(w, {}), gpu_request
+                    )
                 ]
                 if not candidates:
+                    kind = "GPU" if gpu_request is not None else "CPU"
+                    if gpu_request is not None:
+                        detail = gpu_request.model_dump(exclude_none=True)
+                        raise ValueError(
+                            f"No {kind} worker carries the GPUs node '{node_id}'"
+                            f" requests (gpu={detail})."
+                        )
                     raise ValueError(
-                        f"Node '{node_id}' has task type {op.task_type!r}, but none"
-                        f" of the selected CPU workers in {worker_names}"
-                        " advertises it."
+                        f"Node '{node_id}' has task type {op.task_type!r}, but none of"
+                        f" the selected {kind} workers in {worker_names} advertises it."
                     )
                 assignment[candidates[0]].append(node_id)
             elif op.backend in _GPU_BACKENDS:

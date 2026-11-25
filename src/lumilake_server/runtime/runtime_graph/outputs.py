@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.data_specs import ListData, LiteralColumn, NodeColumn
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -144,7 +145,7 @@ def op_output(
         kind = OutputKind.DECLARED
     default_path: str | None
     if isinstance(op, DataRetrievalOp):
-        path = default_path = retrieval_items_path(op.data_spec["mode"])
+        path = default_path = retrieval_items_path(op.data_spec.mode)
     elif op.result_path is not None:
         path = default_path = op.result_path
     elif kind is OutputKind.API_ROW:
@@ -203,18 +204,17 @@ def _llm_row_count(
     row count of the ops its message chain binds."""
     if op.rowwise_columns:
         counts: list[int | None] = []
-        for col in op.rowwise_columns:
-            data = col.get("data")
-            if isinstance(data, dict):
-                items = data.get("items")
+        for column in op.rowwise_columns:
+            if isinstance(column, LiteralColumn):
+                data = column.data
+                items = data.items if isinstance(data, ListData) else None
                 if isinstance(items, list):
                     counts.append(len(items))
-                    continue
-            node_ref = col.get("node")
-            if isinstance(node_ref, str):
-                upstream = graph_dict.get(node_ref)
-                if upstream is not None:
-                    counts.append(output_row_count(upstream, inputs_dict, graph_dict))
+                continue
+            assert isinstance(column, NodeColumn)
+            upstream = graph_dict.get(column.node)
+            if upstream is not None:
+                counts.append(output_row_count(upstream, inputs_dict, graph_dict))
         return _max_known(counts)
     messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
     return _max_known(

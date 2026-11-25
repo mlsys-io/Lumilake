@@ -36,6 +36,7 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
+    RetrievalData,
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.flowmesh_client import (
@@ -56,18 +57,44 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
+@dataclass(frozen=True)
+class DataCredential:
+    """A lum.id/data job's worker-facing data URL and job-scoped token."""
+
+    url: str
+    token: str
+
+
 @dataclass
 class DispatchCredentials:
-    """Per-request in-process credentials: the FlowMesh transport token and the
-    caller-supplied API credential, resolved at dispatch and never persisted."""
+    """Per-request in-process credentials: the FlowMesh transport token, the
+    caller-supplied API credential, and the lum.id/data job's data credential,
+    resolved at dispatch and never persisted."""
 
     runtime_token: str | None = None
     api_credential: str | None = None
+    data_credential: DataCredential | None = None
+
+
+def _rewrite_data_credentials(value: Any, credential: DataCredential) -> None:
+    """Replace ``lumid_data_token`` / ``lumid_data_url`` in every dict of a task
+    spec (DataRetrievalOp ``data`` specs and s3 list-input ``lumid_cfg``)."""
+    if isinstance(value, dict):
+        if "lumid_data_token" in value:
+            value["lumid_data_token"] = credential.token
+            if "lumid_data_url" in value:
+                value["lumid_data_url"] = credential.url
+        for item in value.values():
+            _rewrite_data_credentials(item, credential)
+    elif isinstance(value, list):
+        for item in value:
+            _rewrite_data_credentials(item, credential)
 
 
 def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
@@ -370,6 +397,19 @@ class FlowmeshRuntimeManager:
         with self._dispatch_tokens_lock:
             entry = self._dispatch_tokens.get(request_id)
             return entry.api_credential if entry is not None else None
+
+    def set_data_credential(
+        self, request_id: str, credential: DataCredential | None
+    ) -> None:
+        with self._dispatch_tokens_lock:
+            self._dispatch_tokens.setdefault(
+                request_id, DispatchCredentials()
+            ).data_credential = credential
+
+    def get_data_credential(self, request_id: str) -> DataCredential | None:
+        with self._dispatch_tokens_lock:
+            entry = self._dispatch_tokens.get(request_id)
+            return entry.data_credential if entry is not None else None
 
     def clear_dispatch_token(self, request_id: str) -> None:
         with self._dispatch_tokens_lock:
@@ -1391,9 +1431,8 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> str:
-        """Fetch a task's raw FlowMesh response and archive it as a job
-        artifact, redacting the untrusted body before persisting it."""
+    ) -> dict[str, Any]:
+        """Archive a task's redacted FlowMesh response and return a JSON object."""
         try:
             response_data = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
@@ -1402,6 +1441,8 @@ class FlowmeshRuntimeManager:
             raise _sanitize_flowmesh_api_error(e) from None
         if isinstance(response_data, BaseModel):
             response_data = response_data.model_dump(mode="json")
+        if not isinstance(response_data, dict):
+            response_data = {}
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1413,7 +1454,29 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return response_uri
+        return response_data
+
+    def _assert_rows_one(
+        self,
+        runtime_graph: RuntimeGraph,
+        node_id: str,
+        response_data: dict[str, Any],
+    ) -> None:
+        """Fail a ``rows: one`` retrieval whose parameter row returned several rows."""
+        node = runtime_graph.nodes.get(node_id)
+        if node is None or not isinstance(node.data_spec, RetrievalData):
+            return
+        if node.data_spec.rows != ROWS_ONE:
+            return
+        multi = multi_row_item_indexes(response_data.get("items"))
+        if not multi:
+            return
+        raise RuntimeError(
+            f"DataRetrievalOp '{node_id}': declares rows: one but returned more than"
+            f" one row for parameter row(s) {multi} of this batch; the step needs at"
+            " most one row per parameter row. Make the query select one row, or drop"
+            " the rows: one declaration and order the query instead."
+        )
 
     async def process_request(
         self,
@@ -1491,6 +1554,7 @@ class FlowmeshRuntimeManager:
             schedule=schedule,
         )
         self._resolve_api_credentials(request_info.member_request_ids, task_spec)
+        self._resolve_data_credentials(request_info.member_request_ids, task_spec)
         submit_id = uuid.uuid4().hex
         task_spec["metadata"]["annotations"]["custom"] = {
             "lumilake_submit_id": submit_id
@@ -1650,7 +1714,12 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        await self._archive_task_response(request_info, tid, node_id)
+                        response_data = await self._archive_task_response(
+                            request_info, tid, node_id
+                        )
+                        self._assert_rows_one(
+                            request_info.runtime_graph, node_id, response_data
+                        )
                         downloaded_tasks.add(tid)
 
                 # Count statuses for all nodes and output nodes
@@ -2020,6 +2089,18 @@ class FlowmeshRuntimeManager:
             if resolved:
                 headers["Authorization"] = _with_auth_scheme(resolved)
 
+    def _resolve_data_credentials(
+        self, member_request_ids: set[str], task_spec: dict[str, Any]
+    ) -> None:
+        """Point every data spec in the task at the batch's lum.id/data job
+        credential. The queue partitions by data-credential digest, so all
+        members of a batch share one credential (or none, in which case the
+        server's LUMID_DATA_TOKEN built into the graph stays)."""
+        credentials = [self.get_data_credential(r) for r in member_request_ids]
+        credential = next((c for c in credentials if c is not None), None)
+        if credential is not None:
+            _rewrite_data_credentials(task_spec, credential)
+
     def _apply_per_node_resource_hints(
         self,
         nodes: list[dict[str, Any]],
@@ -2039,12 +2120,16 @@ class FlowmeshRuntimeManager:
             runtime_op = runtime_graph.nodes.get(node_name)
             if runtime_op is None:
                 continue
+            if runtime_op.data_spec.gpu_request is not None:
+                # The step carries its own GPU request in its task spec.
+                gpu_nodes += 1
+                continue
             if self._runtime_op_requires_gpu(runtime_op):
                 if gpu_count <= 0:
                     raise ValueError(
-                        f"hardware.gpu={gpu_count} but runtime node "
-                        f"{node_name!r} requires a GPU worker "
-                        "(vLLM / transformers / diffusers / text-to-image)."
+                        f"hardware.gpu={gpu_count} but runtime node {node_name!r}"
+                        " requires a GPU worker (vLLM / transformers / diffusers /"
+                        " text-to-image)."
                     )
                 gpu_nodes += 1
                 node_spec = node.setdefault("spec", {})
@@ -2074,6 +2159,8 @@ class FlowmeshRuntimeManager:
 
     @staticmethod
     def _runtime_op_requires_gpu(runtime_op: RuntimeOp) -> bool:
+        if runtime_op.data_spec.gpu_request is not None:
+            return True
         backend = (runtime_op.backend or "").strip().lower()
         if backend in {"vllm", "transformers", "diffusers"}:
             return True

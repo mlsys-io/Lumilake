@@ -7,14 +7,19 @@ fraction of a card its engine reserves. An optimizer compares the two.
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
-from lumilake_server.data_specs import PYTHON_TASK_TYPE
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    DataSpecModel,
+    GpuRequest,
+)
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
-"""Task types that run on a CPU worker only (HALO's CPU-only engines)."""
+"""Task types that run on a CPU worker, unless the node asks for GPUs."""
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -32,9 +37,79 @@ def gpu_memory_fraction(profile: Mapping[str, Any]) -> float | None:
     return None
 
 
-def required_task_types(task_types: Iterable[str]) -> frozenset[str]:
-    """The gated task types among ``task_types``."""
-    return CAPABILITY_GATED_TASK_TYPES.intersection(task_types)
+@dataclass(frozen=True, slots=True)
+class _GpuDevice:
+    """One card a worker reports: its name and total memory, either may be unknown."""
+
+    name: str | None = None
+    memory_total_bytes: int | None = None
+
+
+def _gpu_devices(profile: Mapping[str, Any]) -> tuple[_GpuDevice, ...] | None:
+    """The cards a raw worker profile lists, ``None`` when it reports no detail."""
+    devices = (profile.get("gpu") or {}).get("devices")
+    if not isinstance(devices, list):
+        return None
+    listed: list[_GpuDevice] = []
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        name = device.get("name")
+        vram = device.get("memory_total_bytes")
+        listed.append(
+            _GpuDevice(
+                name=name if isinstance(name, str) else None,
+                memory_total_bytes=vram if isinstance(vram, int) else None,
+            )
+        )
+    return tuple(listed)
+
+
+def profile_fits_gpu_request(
+    profile: Mapping[str, Any], request: GpuRequest | None
+) -> bool:
+    """True when a GPU worker's profile carries ``request``; no device detail passes."""
+    if request is None:
+        return True
+    devices = _gpu_devices(profile)
+    if devices is None:
+        return True
+    matched = sum(
+        request.allows_device(device.name, device.memory_total_bytes)
+        for device in devices
+    )
+    return matched >= request.count
+
+
+def python_steps_gpu_requests(
+    data_specs: Iterable[DataSpecModel],
+) -> tuple[GpuRequest, ...]:
+    """The distinct GPU requests the python steps among ``data_specs`` carry."""
+    requests: dict[str, GpuRequest] = {}
+    for data_spec in data_specs:
+        request = data_spec.gpu_request
+        if request is not None:
+            requests.setdefault(request.model_dump_json(), request)
+    return tuple(requests.values())
+
+
+def gpu_worker_can_run(
+    profile: Mapping[str, Any], requests: Iterable[GpuRequest]
+) -> bool:
+    """True when a GPU worker runs python steps and carries each of ``requests``."""
+    return PYTHON_TASK_TYPE in advertised_task_types(profile) and all(
+        profile_fits_gpu_request(profile, request) for request in requests
+    )
+
+
+def cpu_required_task_types(
+    nodes: Iterable[tuple[str, DataSpecModel]],
+) -> frozenset[str]:
+    """The gated task types ``nodes`` need from the CPU group: every gated step but a
+    python step that requests GPUs, which runs on a GPU worker."""
+    return CAPABILITY_GATED_TASK_TYPES.intersection(
+        task_type for task_type, data_spec in nodes if data_spec.gpu_request is None
+    )
 
 
 def model_spec_gpu_memory_utilization(model_spec: Mapping[str, Any]) -> float | None:
@@ -67,13 +142,15 @@ def holds_gpu_utilizations(
     )
 
 
-def requires_cpu_worker(task_types: Iterable[str]) -> bool:
-    """True when any of ``task_types`` runs on a CPU worker only.
+def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
+    """True when any of ``nodes`` needs a CPU worker.
 
-    A batch with such a node claims a CPU worker even when the configured CPU
-    group size is zero.
+    ``nodes`` yields a ``(task_type, data_spec)`` pair per node. A batch with
+    such a node claims a CPU worker even when the configured CPU group size is
+    zero.
     """
     return any(
         (task_type or "").strip().lower() in CPU_ONLY_TASK_TYPES
-        for task_type in task_types
+        and data_spec.gpu_request is None
+        for task_type, data_spec in nodes
     )
