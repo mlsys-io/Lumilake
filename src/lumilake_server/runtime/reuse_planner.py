@@ -941,7 +941,7 @@ def _served_input(
             keys=keys,
         ),
         keys=keys,
-        declared_node=None if declared is None else declared,
+        declared_node=declared,
         values=[entry.value for entry in records],
     )
 
@@ -1271,13 +1271,13 @@ def _entry_miss_reason(entry: RecordEntry | None) -> str | None:
 def read_address_entry(
     storage: JobStorage, scope: str, record: str | None, round_number: int
 ) -> RecordEntry | None:
-    """The newest entry written at one address, whatever its signature."""
+    """The newest entry written at one address, whatever its signature; an
+    address object that does not parse raises rather than reading as absent."""
     try:
         body, _ = storage.load_blob(address_object_name(scope, record, round_number))
-        listed = RecordAddressEntry.from_body(body)
     except (ArchiveNotFound, KeyError):
         return None
-    return read_entry(storage, listed.digest)
+    return read_entry(storage, RecordAddressEntry.from_body(body).digest)
 
 
 def _changed_reason(
