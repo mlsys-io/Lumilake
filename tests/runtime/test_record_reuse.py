@@ -242,13 +242,14 @@ class _Cycle:
 
     async def rerun(self, workflow: dict[str, Any], graph: Any = None) -> Any:
         """Run 2: plan, run every step the plan left in the graph over its
-        upstreams as its worker does, and store under the live keys."""
+        upstreams as its worker does, and store this run's own items under the
+        live keys."""
         graph = _runtime_graph(workflow) if graph is None else graph
         plan, dispatched = self.plan(workflow, graph)
         self.run += 1
         items = self._steps(dispatched)
-        await self._write(dispatched, workflow, served=writer_records(plan, {}))
         self.items |= items
+        await self._write(dispatched, workflow, served=writer_records(plan, {}))
         return plan, dispatched, items
 
     async def _write(
@@ -1304,15 +1305,23 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
     assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
     index = read_index(cycle.storage, "req-2")
     assert index is not None
-    assert {item.record for item in index.entries if item.op == "Tag"} == {
-        "a",
-        "b",
-        "c",
-    }
+    written = [
+        read_entry(cycle.storage, item.digest)
+        for item in index.entries
+        if item.op == "Tag"
+    ]
+    stored = [entry for entry in written if entry is not None]
+    assert {entry.address.record for entry in stored} == {"a", "b", "c"}
     tag = _node(_runtime_graph(workflow), "Tag")
     assert {item["key"] for item in items[tag]} == {"a", "b", "c"}
-    third, _ = cycle.third(workflow)
+    full = _run_step(_runtime_graph(workflow).nodes[tag], {})
+    by_key = {str(entry.address.record): entry.value for entry in stored}
+    assert [by_key[record] for record in sorted(by_key)] == [
+        item["value"] for item in full
+    ]
+    third, dispatched = cycle.third(workflow)
     assert _decisions(third)["Tag"] == ("hit", None), _decisions(third)
+    assert dispatched.nodes == {}
 
 
 @pytest.mark.asyncio
