@@ -127,22 +127,11 @@ def python_steps_gpu_requests(
     return tuple(requests.values())
 
 
-GpuRequirement = tuple[frozenset[str], tuple[GpuRequest, ...]]
-"""One GPU-group requirement: task types to advertise and requests to carry."""
-
-
-def gpu_requirements(requests: Iterable[GpuRequest]) -> tuple[GpuRequirement, ...]:
-    """One requirement per request: a GPU worker running python that carries it."""
-    return tuple((frozenset({PYTHON_TASK_TYPE}), (request,)) for request in requests)
-
-
 def gpu_worker_can_run(
-    profile: Mapping[str, Any],
-    task_types: frozenset[str] = frozenset(),
-    requests: tuple[GpuRequest, ...] = (),
+    profile: Mapping[str, Any], requests: Iterable[GpuRequest]
 ) -> bool:
-    """True when a GPU worker advertises ``task_types`` and carries ``requests``."""
-    return task_types <= advertised_task_types(profile) and all(
+    """True when a GPU worker runs python steps and carries each of ``requests``."""
+    return PYTHON_TASK_TYPE in advertised_task_types(profile) and all(
         profile_fits_gpu_request(profile, request) for request in requests
     )
 

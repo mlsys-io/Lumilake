@@ -7,7 +7,6 @@ from typing import Any
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
-    gpu_requirements,
     gpu_worker_can_run,
     holds_gpu_utilizations,
 )
@@ -71,13 +70,13 @@ class FreeCapacity:
         GPU workers (a class with group size ``0`` is not claimed). The count is
         the smallest ``eligible // group size`` over the claimed classes, where
         eligible workers meet ``hardware`` when the snapshot carries profiles.
-        ``required_task_types`` are the gated task types the CPU group must
-        cover: each dispatch's group holds an eligible worker advertising all of them,
-        so the count is also bounded by the number of such workers, and is
-        ``0`` when there is none, no group of that class, or no profiles (the
-        cases in which :meth:`eligible_workers` returns ``None``). Each GPU
-        requirement (a python step's own request) bounds
-        the count by the workers that run it. ``0`` when no class is claimed.
+        ``required_task_types`` are the gated task types the CPU group must cover:
+        each dispatch's group holds an eligible worker advertising all of them, so
+        the count is also bounded by the number of such workers, and is ``0`` when
+        there is none, no group of that class, or no profiles (the cases in which
+        :meth:`eligible_workers` returns ``None``). Each python step's own GPU request
+        bounds the count by the GPU workers that run it. ``0`` when no class is
+        claimed.
         """
         eligible_cpu = self._meeting_hardware(
             self.cpu_worker_ids, worker_meets_hardware, hardware
@@ -248,11 +247,9 @@ class FreeCapacity:
             frozenset(
                 worker
                 for worker in workers
-                if gpu_worker_can_run(
-                    self.profiles.get(worker, {}), task_types, request
-                )
+                if gpu_worker_can_run(self.profiles.get(worker, {}), (request,))
             )
-            for task_types, request in gpu_requirements(required_requests)
+            for request in required_requests
         ]
 
 

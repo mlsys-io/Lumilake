@@ -256,8 +256,9 @@ class PriorityJobManager(BaseJobManager):
 
         Workers must meet the partition's hardware when the capacity snapshot
         carries profiles, a GPU dispatch is bounded by its CPU group too, and a
-        CPU worker must advertise every gated CPU task type the work needs while
-        a GPU worker must advertise every gated GPU task type. A configured CPU
+        CPU worker must advertise every gated task type the work needs and each
+        GPU python step needs a GPU worker that runs python and carries its
+        request. A configured CPU
         group of zero still claims one CPU worker when the work has a CPU-only
         node (as dispatch does). The task types are those of all ``candidates``,
         a conservative bound: the batch actually selected needs a subset of
