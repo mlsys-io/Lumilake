@@ -1307,7 +1307,8 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
         "b",
         "c",
     }
-    assert {item["key"] for item in items["Tag"]} == {"a", "b", "c"}
+    tag = _node(_runtime_graph(workflow), "Tag")
+    assert {item["key"] for item in items[tag]} == {"a", "b", "c"}
     third, _ = cycle.third(workflow)
     assert _decisions(third)["Tag"] == ("hit", None), _decisions(third)
 

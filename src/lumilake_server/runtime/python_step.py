@@ -207,37 +207,37 @@ def main(inputs):
                 % ({op_id!r}, len(seeds), n)
             )
     served = _served_slots(inputs)
+    if served is None:
+        computed = _compute_rows(rows, cells, seeds, fn)
+        return {{"items": [{{"output": out, "value": val}} for out, val in computed]}}
+    # A partial run reads its every live row at its own position and computes
+    # only the slots the store did not answer; each row keeps its live key.
+    items = []
+    for (key, slot), row in zip(served, rows):
+        if slot == _MISSED:
+            out, val = _compute_rows([row], cells, seeds, fn, len(items))[0]
+        else:
+            out, val = text(slot), slot
+        items.append({{"output": out, "value": val, "key": key}})
+    return {{"items": items}}
+
+
+def _compute_rows(rows, cells, seeds, fn, offset=0):
     computed = []
     for i, row in enumerate(rows):
         marked = next(
             (value for value in map(failure_of, row) if value is not None), None
         )
-        if marked is None and seeds is not None and seeds[i] is None:
-            marked = failure_of(cells[i])
+        if marked is None and seeds is not None and seeds[offset + i] is None:
+            marked = failure_of(cells[offset + i])
         if marked is not None:
             # A marked row keeps its position and passes the marker on.
             computed.append((marked, marked))
             continue
-        value = fn(row) if seeds is None else fn(row, seeds[i])
+        value = fn(row) if seeds is None else fn(row, seeds[offset + i])
         reject_reserved_key(value, _NODE)
         computed.append((text(value), value))
-    if served is None:
-        return {{"items": [{{"output": out, "value": val}} for out, val in computed]}}
-    fill = iter(computed)
-    items = []
-    for key, slot in served:
-        if slot == _MISSED:
-            out, val = next(fill)
-        else:
-            out, val = text(slot), slot
-        items.append({{"output": out, "value": val, "key": key}})
-    rest = list(fill)
-    if rest:
-        raise ValueError(
-            "%s: %d computed row(s) over %d slot(s)"
-            % (_NODE, len(computed), len(served))
-        )
-    return {{"items": items}}
+    return computed
 
 
 _MISSED = "\\x00lumilake-missed"
@@ -340,9 +340,9 @@ def main(inputs):
             )
     items = []
     parents = _served_parents(inputs)
-    missed = None
+    missing = None
     if parents is not None:
-        missed = [slot["parent"] for slot in parents if slot.get("children") is None]
+        missing = {{slot["parent"] for slot in parents if slot.get("children") is None}}
         # A served parent's children keep their own order under its live position, so
         # this run neither runs nor loses them.
         for slot in parents:
@@ -355,12 +355,14 @@ def main(inputs):
                         "served": True,
                     }}
                 )
-        items.sort(key=lambda item: item["parent"])
     for index, row in enumerate(rows):
+        if missing is not None and index not in missing:
+            # A parent the store answered re-emits its own children above.
+            continue
         marked = carried_marker(row)
         if marked is None and seeds is not None and seeds[index] is None:
             marked = failure_of(cells[index])
-        live = index if missed is None else missed[index]
+        live = index
         if marked is not None:
             # A marked row keeps one defined slot, so no child is run or lost.
             items.append({{"output": marked, "parent": live, "child": 0}})
