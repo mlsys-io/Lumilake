@@ -88,10 +88,13 @@ class OutputShape:
     path: str | None = None
     """The stored value's own field to archive, when the output names one."""
     whole_list: bool = False
+    whole_run: bool = False
+    """A keyed reduce or expand stores one record per group or child, while the
+    run emits one value over all of them, so a hit rebuilds that one value."""
 
     def archived(self, values: Sequence[Any]) -> list[str]:
         selected = [_value_at_path(value, self.path) for value in values]
-        if self.whole_list:
+        if self.whole_run or self.whole_list:
             return [_output_text(selected)]
         return [_output_text(value) for value in selected]
 
@@ -808,12 +811,17 @@ def output_shape(plan: RecordPlan, path: str | None) -> OutputShape | None:
         return None
     spec = plan.op.data_spec
     whole_list = isinstance(spec, PythonData) and spec.mode == "list" and not plan.keyed
+    whole_run = (
+        isinstance(spec, PythonData)
+        and spec.mode in ("expand", "reduce")
+        and plan.keyed
+    )
     if path is None or path == "items" or path == "":
-        return OutputShape(whole_list=whole_list)
+        return OutputShape(whole_list=whole_list, whole_run=whole_run)
     field = _stored_path(path)
     if field is None:
         return None
-    return OutputShape(path=field, whole_list=whole_list)
+    return OutputShape(path=field, whole_list=whole_list, whole_run=whole_run)
 
 
 def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
@@ -822,6 +830,8 @@ def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
         return entries[0].address.record is not None or not isinstance(
             entries[0].value, list
         )
+    # A whole-run output folds its stored records into one value, so their own
+    # keys never stand in the way; only a missing field does.
     return any(
         _value_at_path(value, shape.path) is _UNSET for value in _hit_values(entries)
     )
