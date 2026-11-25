@@ -1216,11 +1216,17 @@ def _dispatch_record_keys(
         for node_id, key in runtime_graph.record_keys.items()
         if node_id in nodes
     }
+    # Only a served input declares a key: a dispatched producer hands its rows'
+    # keys down by position, as a full run does, whatever path its op declares.
     for node_id, op in nodes.items():
         inherited = plan.key_paths.get(node_id)
         if node_id in keys or inherited is None:
             continue
-        sources = [node for node in op.dependencies if plan.key_paths.get(node)]
+        sources = [
+            node
+            for node in op.dependencies
+            if node not in nodes and plan.key_paths.get(node)
+        ]
         if len(sources) == 1:
             keys[node_id] = RecordKey(node=sources[0], path=inherited)
     return keys
