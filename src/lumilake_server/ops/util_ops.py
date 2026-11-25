@@ -39,6 +39,8 @@ ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 SEED_MODES = ("row", "expand")
 CLEARS_KEY = "_clears_markers"
 """The private serialized key for ``LambdaOp.clears_markers``."""
+WHOLE_COLUMN_KEY = "_whole_columns"
+"""The private serialized key for the inputs a fan-out reads undecoded."""
 
 
 class LambdaSpec(BaseModel):
@@ -61,6 +63,7 @@ class LambdaSpec(BaseModel):
     on_empty: ExpandOnEmpty | None = None
     seed: ColumnSeed | None = None
     clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
+    whole_columns: list[StrictStr] | None = Field(default=None, alias="_whole_columns")
 
     @field_validator("image")
     @classmethod
@@ -283,6 +286,7 @@ class LambdaOp(Op):
         on_empty: ExpandOnEmpty | None = None,
         seed: ColumnSeed | None = None,
         clears_markers: bool = False,
+        whole_columns: list[str] | None = None,
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs
@@ -306,6 +310,7 @@ class LambdaOp(Op):
                 "on_empty": on_empty,
                 "seed": seed,
                 CLEARS_KEY: clears_markers or None,
+                WHOLE_COLUMN_KEY: whole_columns,
             },
             "LambdaOp",
         )
@@ -360,6 +365,11 @@ class LambdaOp(Op):
         return bool(self.spec.clears_markers)
 
     @property
+    def whole_columns(self) -> list[str]:
+        """Parser-owned: the inputs a generated fan-out keeps undecoded."""
+        return list(self.spec.whole_columns or [])
+
+    @property
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in ("list", "aligned")
@@ -398,6 +408,7 @@ class LambdaOp(Op):
             on_empty=spec.on_empty,
             seed=spec.seed,
             clears_markers=bool(spec.clears_markers),
+            whole_columns=spec.whole_columns,
         )
         return op
 

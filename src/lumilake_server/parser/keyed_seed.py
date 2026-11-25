@@ -15,6 +15,7 @@ from lumilake_server.ops.seed_spec import (
     Pairing,
 )
 from lumilake_server.ops.spec_validation import validate_fields
+from lumilake_server.ops.util_ops import WHOLE_COLUMN_KEY
 from lumilake_server.parser.common import make_id
 
 SEED_SUFFIX = "__seed"
@@ -446,6 +447,7 @@ def rewire_sample_fan_out(
     op_id = spec.op_id
     columns = read_sample_columns(op_id, op.get("rowwise_columns"))
     fan_out_inputs = _fan_out_inputs(columns)
+    whole_nodes = [column.node for column in columns if not _column_parts(column.path)]
     if spec.key_node not in fan_out_inputs:
         raise ValueError(
             f"{spec.op_kind} '{op_id}' keyed seed reads '{spec.key_node}'; no column"
@@ -461,6 +463,8 @@ def rewire_sample_fan_out(
     ]
     seed_dict = sample_op(spec, slots, fan_out_inputs.index(spec.key_node))
     seed_dict["_inputs"] = fan_out_inputs
+    if whole_nodes:
+        seed_dict[WHOLE_COLUMN_KEY] = list(dict.fromkeys(whole_nodes))
     fan_out = seed_dict["_id"]
     op["rowwise_columns"] = [
         column.model_copy(

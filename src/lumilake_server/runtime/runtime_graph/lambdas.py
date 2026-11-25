@@ -36,6 +36,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         plan: list[ColumnPlanEntry] = []
         row_counts: list[tuple[str, int | None]] = []
         inputs_dict = ctx.inputs_dict
+        whole = set(op.whole_columns)
         for inp in op.inputs:
             if isinstance(inp, LambdaOp):
                 nodes.extend(self._build_python_step(inp, ctx))
@@ -55,13 +56,23 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             elif isinstance(inp, InputOp):
                 ctx.visited.add(inp.id)
                 plan.append(
-                    ColumnPlanEntry(kind="literal", values=inputs_dict[inp.name])
+                    ColumnPlanEntry(
+                        kind="literal",
+                        values=inputs_dict[inp.name],
+                        whole=True if inp.id in whole else None,
+                    )
                 )
                 row_counts.append((inp.id, len(inputs_dict[inp.name])))
                 continue
             elif isinstance(inp, DataOp):
                 ctx.visited.add(inp.id)
-                plan.append(ColumnPlanEntry(kind="literal", values=list(inp.data)))
+                plan.append(
+                    ColumnPlanEntry(
+                        kind="literal",
+                        values=list(inp.data),
+                        whole=True if inp.id in whole else None,
+                    )
+                )
                 row_counts.append((inp.id, len(inp.data)))
                 continue
             else:
@@ -121,6 +132,27 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             dependencies.append(seed_node)
         return [*plan[:index], seeded, *plan[index + 1 :]]
 
+    def _tag_whole_columns(
+        self, op: LambdaOp, plan: list[ColumnPlanEntry]
+    ) -> list[ColumnPlanEntry]:
+        """Mark the plan entries a generated fan-out reads as they stand."""
+        whole = set(op.whole_columns)
+        marked = [
+            (
+                entry.model_copy(update={"whole": True})
+                if entry.kind == "stage" and entry.node in whole
+                else entry
+            )
+            for entry in plan
+        ]
+        bound = {i.id for i in op.inputs}
+        if whole - bound:
+            raise ValueError(
+                f"LambdaOp '{op.id}' reads {sorted(whole - bound)} whole, which are not"
+                " its inputs"
+            )
+        return marked
+
     def _python_step(
         self,
         op: LambdaOp,
@@ -133,7 +165,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         data_spec = PythonData(
             code=op.code,
             fn_name=op.fn.__name__,
-            plan=self._tag_seed_entry(op, plan, ctx, dependencies),
+            plan=self._tag_whole_columns(
+                op, self._tag_seed_entry(op, plan, ctx, dependencies)
+            ),
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None
