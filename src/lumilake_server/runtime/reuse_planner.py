@@ -89,13 +89,16 @@ class OutputShape:
     path: str | None = None
     """The stored value's own field to archive, when the output names one."""
     whole_list: bool = False
+    """An unkeyed list-mode output stores every item as its one record; a hit
+    that finds a keyed record or a value that is not a list is not that shape,
+    so it runs."""
     whole_run: bool = False
     """A list, reduce or expand emits one value over all its records, whatever
     records the store holds, so a hit rebuilds that one value."""
 
     def archived(self, values: Sequence[Any]) -> list[str]:
         selected = [_value_at_path(value, self.path) for value in values]
-        if self.whole_run or self.whole_list:
+        if self.whole_run:
             return [_output_text(selected)]
         return [_output_text(value) for value in selected]
 
