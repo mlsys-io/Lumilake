@@ -1313,6 +1313,60 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
     cycle.serves(workflow, "Tag", whole=True)
 
 
+def _parse_chain_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """A keyed row step's text through a parse step and a scoring row step, so
+    the chain below a partially served row step is keyed only by inheritance."""
+    text = "def text(c):\n    return c[0]['payload']\n"
+    score = "def score(c):\n    return str(c[0]['n'] * 10)\n"
+    ops = [
+        {**_lambda("Texts", ["Rows"], "text", text), "key": _ROWS_KEY},
+        {"id": "Parsed", "op": "ParseOp", "inputs": ["Texts"]},
+        {**_lambda("Score", ["Parsed"], "score", score), "mode": "row"},
+    ]
+    return _pipeline(
+        "parse-chain",
+        ops,
+        "Score",
+        [json.dumps({"id": row["id"], "payload": row["payload"]}) for row in rows],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_chain_below_a_partially_served_row_step_serves_on_a_third_run() -> (
+    None
+):
+    """One row fails in run 1 and is fixed in run 2, so run 2's row step is
+    partially served; the parse and row steps below it store their records
+    under the keys they inherit, exactly as a full run writes them, so run 3
+    serves the whole chain."""
+    rows = [
+        {"id": "s1", "payload": '{"n": 1}'},
+        {"id": "s2", "payload": '{"n": 2}'},
+        {"id": "s3", "payload": "not-json"},
+        {"id": "s4", "payload": '{"n": 4}'},
+    ]
+    fixed = [*rows[:2], {"id": "s3", "payload": '{"n": 3}'}, rows[3]]
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(_parse_chain_workflow(rows))
+    plan, _, _ = await cycle.rerun(_parse_chain_workflow(fixed))
+    assert _decisions(plan)["Texts"] == ("miss", "partial records"), _decisions(plan)
+    for op in ("Parsed", "Score"):
+        index = read_index(cycle.storage, "req-2")
+        assert index is not None
+        assert {e.record for e in index.entries if e.op == op} == {
+            "s1",
+            "s2",
+            "s3",
+            "s4",
+        }
+    again, _ = cycle.plan(_parse_chain_workflow(fixed))
+    assert _decisions(again) == {
+        "Texts": ("hit", None),
+        "Parsed": ("hit", None),
+        "Score": ("hit", None),
+    }, _decisions(again)
+
+
 @pytest.mark.parametrize(
     ("make", "served"),
     [("expand_reduce", ["Split", "Fold"]), ("unkeyed", ["Rank"])],
