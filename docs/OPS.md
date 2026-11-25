@@ -178,11 +178,28 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same `{no
 
 `rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from its key: the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31. The path names dict fields only and a key read under it keeps its JSON type, so `"123"` and `123` differ and a null key fails the job. A key that is the whole cell is read as its text, so an object or array cell is parsed back and a null one is the text `null`, which draws like any other string. The job's top-level `seed` (default 0), the op id as written and the dynamic round number are the other inputs, so two rows with the same key draw the same seed, and the parser generates a row-mode `LambdaOp` whose id a user op cannot hold. The key form needs `rowwise_template`, takes no other `rowwise_seed` field beside `key` and the optional `pairing`, and fails the job naming the op and row on a missing key.
 
-Two rows of one op that carry the same key draw the same seed, so the key form refuses a repeat, naming the op and both row indices; add `pairing: shared` to the key form to allow it. At submit the check covers a key column the submission can see in full, over the whole input set before the job is split into slices, and a dynamic round checks its own key columns the same way when it is built, over the run input and the values it forwards. The generated seed step repeats the check over the rows one task sees, so a column an upstream op produces still fails when that task holds the repeating rows. The round is the round a subgraph runs in, counted from one; the proposer's opening round and the API planner's opening pass run no user op, so no keyed draw takes their number. Renumbering rounds changes every draw, so a rerun or any later coalescing must keep a job's round numbers. A retry of a failed task draws the same seed, and changing the job seed, the op id, the round or the key is a deliberate unpairing. An op that draws `n > 1` samples in its one seeded request draws all n from that request, so the set is reproducible while the individual samples are not separately addressable.
+Two rows of one op that carry the same key draw the same seed, so the key form refuses a repeat, naming the op and both row indices; add `pairing: shared` to the key form to allow it. At submit the check covers a key column the submission can see in full, over the whole input set before the job is split into slices, and a dynamic round checks its own key columns the same way when it is built, over the run input and the values it forwards. The generated seed step repeats the check over the rows one task sees, so a column an upstream op produces still fails when that task holds the repeating rows. The round is the round a subgraph runs in, counted from one; the proposer's opening round and the API planner's opening pass run no user op, so no keyed draw takes their number. Renumbering rounds changes every draw, so a rerun or any later coalescing must keep a job's round numbers. A retry of a failed task draws the same seed, and changing the job seed, the op id, the round or the key is a deliberate unpairing.
+
+A key-form chat op that also sets `config.n` (greater than one) draws n samples per row, each addressed by its own key pair `[key, j]` for `j` from 0 to n-1, so sample j of key k draws `PRF(seed, op id, round, [k, j])`. The parser generates an expand-mode `LambdaOp` over the op's rowwise columns that emits one item per (row, sample), in row then sample order, each carrying that row's column values and that sample's seed; the chat op reads its prompts and its seed back from it and runs one generation per item, so no request sets `n`. This needs `rowwise_columns` whose entries all read a node and one of which reads the key's node, and it is local-only, like the rest of the key form. A rerun reproduces every sample, and raising n keeps the seeds of samples `0` to `n-2` unchanged. The chat op's result is one value per (row, sample), the samples of a row in order, so sample j of row i sits at `i * n + j`. A column-form `rowwise_seed` with `n > 1` gets one completion per row, because FlowMesh keeps the first of the n completions a request returns; draw several samples per row with the key form.
 
 ```yaml
 - {id: Answer, op: LLMChatOp, inputs: [Cases], rowwise_template: "{question}",
    rowwise_seed: {key: {node: Cases, path: items.output.case_id}}}
+```
+
+Draw three samples per case:
+
+```yaml
+- id: Answer
+  op: LLMChatOp
+  inputs: [Cases]
+  messages: [{role: user, content: placeholder}]
+  config: {model: Qwen/Qwen3-8B, n: 3}
+  rowwise_template: "{question}"
+  rowwise_columns:
+    - {label: question, node: Cases, path: items.output.question}
+    - {label: case_id, node: Cases, path: items.output.case_id}
+  rowwise_seed: {key: {node: Cases, path: items.output.case_id}}
 ```
 
 When every upstream column a per-row chat reads is empty, FlowMesh completes the task with an empty result without dispatching a worker.
