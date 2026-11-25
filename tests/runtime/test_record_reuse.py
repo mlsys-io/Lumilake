@@ -36,6 +36,7 @@ from lumilake_server.runtime.record_store import (
     RecordAddress,
     RecordEntry,
     RecordSource,
+    digest_of,
     is_marker,
 )
 from lumilake_server.runtime.record_writer import (
@@ -103,6 +104,7 @@ def _stored(value: Any, op: str, record: str | None = None) -> RecordEntry:
     return RecordEntry(
         digest="d",
         address=RecordAddress(op=op, record=record, round=0),
+        spec_digest=digest_of({"op": op}),
         value=value,
         source=RecordSource(job="req-1", round=0, task_id=""),
         written_at=0.0,
