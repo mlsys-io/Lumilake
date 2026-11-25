@@ -1633,9 +1633,9 @@ def _collect_node_records(
             keys=None,
             items=items_of.get(node_id) or [],
         )
-    # A partially served op keeps the store's groups or children beside the ones
-    # it computes, and a reader names every one of them by its record, so the
-    # store's own entries answer at their positions too.
+    # A partially served op keeps the store's groups or children beside the ones it
+    # computes, and a reader names every one of them by its record, so the store's own
+    # entries answer at their positions too.
     for node_id, node_records in (served or {}).items():
         produced_records = records.get(node_id)
         if produced_records is None:

@@ -830,8 +830,8 @@ def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
         return entries[0].address.record is not None or not isinstance(
             entries[0].value, list
         )
-    # A whole-run output folds its stored records into one value, so their own
-    # keys never stand in the way; only a missing field does.
+    # A whole-run output folds its stored records into one value, so their own keys
+    # never stand in the way; only a missing field does.
     return any(
         _value_at_path(value, shape.path) is _UNSET for value in _hit_values(entries)
     )
@@ -1226,8 +1226,8 @@ def _dispatch_record_keys(
         for node_id, key in runtime_graph.record_keys.items()
         if node_id in nodes
     }
-    # Only a served input declares a key: a dispatched producer hands its rows'
-    # keys down by position, as a full run does, whatever path its op declares.
+    # Only a served input declares a key: a dispatched producer hands its rows' keys
+    # down by position, as a full run does, whatever path its op declares.
     for node_id, op in nodes.items():
         inherited = plan.key_paths.get(node_id)
         if node_id in keys or inherited is None:
