@@ -2,24 +2,25 @@
 
 from typing import Any
 
+from lumilake_server.data_specs import EmptyData, GpuRequest
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
+    CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
-    required_task_types,
+    profile_fits_gpu_request,
     requires_cpu_worker,
 )
 
 
 def test_only_python_is_gated_today() -> None:
-    assert required_task_types(["api", "python", "inference"]) == {"python"}
-    assert required_task_types(["api", "data_retrieval"]) == frozenset()
+    assert CAPABILITY_GATED_TASK_TYPES == frozenset({"python"})
 
 
 def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
-    assert requires_cpu_worker(["inference", "api"])
-    assert requires_cpu_worker([" Data_Retrieval "])
-    assert requires_cpu_worker(["python"])
-    assert not requires_cpu_worker(["inference", "embedding", "diffusion"])
+    nodes = [("inference", EmptyData()), ("api", EmptyData())]
+    assert requires_cpu_worker(nodes)
+    assert requires_cpu_worker([(" Data_Retrieval ", EmptyData())])
+    assert not requires_cpu_worker([("embedding", EmptyData())])
     assert not requires_cpu_worker([])
 
 
@@ -110,3 +111,113 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     )
     assert not free.has_cpu_worker_advertising(frozenset({"python"}))
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
+
+
+_H100 = {"name": "H100", "memory_total_bytes": 24 * 1024**3}
+_A100 = {"name": "A100", "memory_total_bytes": 40 * 1024**3}
+
+
+def _gpu_profile(
+    devices: list[dict[str, Any]], task_types: list[str]
+) -> dict[str, Any]:
+    """A GPU worker profile in the raw shape the server's snapshot stores."""
+    return {"gpu": {"devices": devices}, "supported_task_types": task_types}
+
+
+_GPU_VLLM = _gpu_profile([_A100], ["echo"])
+_GPU_PYTHON = _gpu_profile([_A100], ["python"])
+
+
+def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
+    return FreeCapacity(
+        cpu_worker_ids=("cpu-python",),
+        gpu_worker_ids=tuple(profiles),
+        profiles={"cpu-python": _PYTHON, **profiles},
+    )
+
+
+def _gpu_claim(
+    free: FreeCapacity, group_size: int = 1, **required: Any
+) -> list[str] | None:
+    selected = free.eligible_workers(
+        cpu_group_size=1,
+        gpu_group_size=group_size,
+        worker_meets_hardware=_meets_everything,
+        hardware=None,
+        **required,
+    )
+    return None if selected is None else selected[1]
+
+
+def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_request() -> (
+    None
+):
+    free = _gpu_free({"gpu-vllm": _GPU_VLLM, "gpu-python": _GPU_PYTHON})
+    one = (GpuRequest(),)
+    assert _gpu_claim(free, required_gpu_requests=one) == ["gpu-python"]
+    plain = _gpu_free({"gpu-vllm": _GPU_VLLM})
+    assert _gpu_claim(plain, required_gpu_requests=one) is None
+
+    cards = {
+        "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
+        "gpu-big": _gpu_profile([_H100, _H100], ["python"]),
+    }
+    passes = GpuRequest(count=2, type="H100")
+    assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
+    small = _gpu_free({"gpu-rtx": _gpu_profile([_H100], ["python"])})
+    assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
+    split = _gpu_free(
+        {"gpu-h100": _gpu_profile([_H100], []), "gpu-rtx": cards["gpu-rtx"]}
+    )
+    h100 = GpuRequest(type="H100")
+    assert _gpu_claim(split, 2, required_gpu_requests=(h100,)) is None
+
+
+def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
+    l4 = _gpu_profile([{"name": "L4", "memory_total_bytes": 16 << 30}], ["python"])
+    for wildcard in ("any", "auto", "*", "ANY"):
+        assert profile_fits_gpu_request(l4, GpuRequest(type=wildcard))
+    assert not profile_fits_gpu_request(l4, GpuRequest(type="H100"))
+    assert not profile_fits_gpu_request(l4, GpuRequest(memory="24Gi"))
+    assert profile_fits_gpu_request(l4, GpuRequest(memory="16Gi"))
+
+
+def test_two_slot_group_serves_one_request_per_worker() -> None:
+    """An H100 step and an A100 step share a group of two, one worker each."""
+    profiles = {
+        "gpu-h100": _gpu_profile([_H100], ["python"]),
+        "gpu-a100": _gpu_profile([_A100], ["python"]),
+    }
+    h100 = GpuRequest(count=1, type="H100")
+    a100 = GpuRequest(count=1, type="A100")
+    free = _gpu_free(profiles)
+    assert sorted(_gpu_claim(free, 2, required_gpu_requests=(h100, a100)) or []) == [
+        "gpu-a100",
+        "gpu-h100",
+    ]
+    assert _gpu_claim(free, 1, required_gpu_requests=(h100, a100)) is None
+    # One slot is enough when the same worker carries both requests.
+    both = _gpu_free({"gpu-two": _gpu_profile([_H100, _A100], ["python"])})
+    assert _gpu_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]
+    # Two A100s ahead of the H100: the swap keeps one A100 and takes the H100.
+    order = _gpu_free(
+        {
+            "a": profiles["gpu-a100"],
+            "b": profiles["gpu-a100"],
+            "c": profiles["gpu-h100"],
+        }
+    )
+    assert _gpu_claim(order, 2, required_gpu_requests=(a100, h100)) == ["a", "c"]
+    # Leading workers in no gate give way to both python workers.
+    lead = {
+        "v1": _GPU_VLLM,
+        "v2": _GPU_VLLM,
+        "a": profiles["gpu-a100"],
+        "c": profiles["gpu-h100"],
+    }
+    claim = _gpu_claim(
+        _gpu_free(lead),
+        2,
+        required_gpu_requests=(a100, h100),
+    )
+    assert sorted(claim or []) == ["a", "c"]

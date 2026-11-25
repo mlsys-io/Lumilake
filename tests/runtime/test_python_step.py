@@ -8,7 +8,12 @@ import pytest
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData, build_column_table
+from lumilake_server.data_specs import (
+    ColumnPlanEntry,
+    GpuRequest,
+    PythonData,
+    build_column_table,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataRetrievalOp,
@@ -819,6 +824,14 @@ def test_python_step_timeout_and_memory_reach_the_task() -> None:
     assert spec["timeoutSeconds"] == 45
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
+    _, own, own_compiled = _llm_then_lambda(
+        image="ghcr.io/me/bench:1", gpu=GpuRequest(count=1, memory="24Gi")
+    )
+    own_spec = _spec(RuntimeGraphBuilder().build(own_compiled).nodes[own.id])
+    assert own_spec["resources"] == {
+        "hardware": {"gpu": {"count": 1, "memory": "24Gi"}}
+    }
+
 
 def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
@@ -855,19 +868,21 @@ def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
     assert "image" not in plain_spec
 
 
-def test_image_lambda_read_by_an_llm_message_chain_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"image": "ghcr.io/me/sim:latest"}, {"gpu": GpuRequest(count=1)}],
+)
+def test_lambda_needing_its_own_worker_read_by_an_llm_message_chain_is_rejected(
+    kwargs: dict[str, Any],
+) -> None:
     stock = input_placeholder("Stock")
-    shout = LambdaOp(
-        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
-    )
+    shout = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper(), **kwargs)
     llm = LLMChatOp(
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model=_MODEL),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
-    with pytest.raises(
-        ValueError, match="image-bearing LambdaOp '.*' through its message chain"
-    ):
+    with pytest.raises(ValueError, match="asks for an image or GPUs"):
         RuntimeGraphBuilder().build(compiled)
 
 

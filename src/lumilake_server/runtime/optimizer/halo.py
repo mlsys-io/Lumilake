@@ -17,7 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import RetrievalData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, RetrievalData
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -30,9 +30,10 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
+    cpu_required_task_types,
     fraction_holds_utilization,
     gpu_memory_fraction,
-    required_task_types,
+    profile_fits_gpu_request,
 )
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
@@ -224,6 +225,7 @@ class HaloOptimizer(BaseOptimizer):
                     outputs=tuple(),
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
+                    gpu_request=op.data_spec.gpu_request,
                     raw=raw,
                 )
                 for dep in deps:
@@ -236,7 +238,7 @@ class HaloOptimizer(BaseOptimizer):
                 edges=tuple(halo_edges),
             )
 
-            workers = self._build_workers(workers_input, worker_profiles, graph)
+            workers = self._build_workers(workers_input, worker_profiles, halo_graph)
             worker_ids = tuple(workers.keys())
             self.logger.info(
                 "Halo worker pool: total=%d gpu=%d cpu=%d",
@@ -244,7 +246,9 @@ class HaloOptimizer(BaseOptimizer):
                 sum(1 for worker in workers.values() if worker.kind == "gpu"),
                 sum(1 for worker in workers.values() if worker.kind != "gpu"),
             )
-            node_worker_options = self._build_node_worker_options(halo_graph, workers)
+            node_worker_options = self._build_node_worker_options(
+                halo_graph, workers, worker_profiles
+            )
             gpu_worker_ids = tuple(
                 wid for wid, worker in workers.items() if worker.kind == "gpu"
             )
@@ -383,10 +387,11 @@ class HaloOptimizer(BaseOptimizer):
         self,
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, Mapping[str, Any]],
-        graph: RuntimeGraph,
+        graph: GraphSpec,
     ) -> dict[str, Worker]:
         requires_gpu = any(
-            self._is_gpu_backend(op.backend) for op in graph.nodes.values()
+            node.engine == "vllm" or node.gpu_request is not None
+            for node in graph.nodes.values()
         )
 
         workers: dict[str, Worker] = {}
@@ -415,6 +420,7 @@ class HaloOptimizer(BaseOptimizer):
         self,
         graph: GraphSpec,
         workers: Mapping[str, Worker],
+        worker_profiles: Mapping[str, Mapping[str, Any]],
     ) -> dict[str, tuple[str, ...]]:
         gpu_workers = tuple(
             worker_id for worker_id, worker in workers.items() if worker.kind == "gpu"
@@ -435,7 +441,9 @@ class HaloOptimizer(BaseOptimizer):
             elif node.engine == "http":
                 tiers = (cpu_workers,)
             elif node.engine == "python":
-                tiers = (cpu_workers,)
+                tiers = (
+                    (gpu_workers,) if node.gpu_request is not None else (cpu_workers,)
+                )
             else:
                 raise ValueError(
                     "Unsupported node for Halo worker assignment: "
@@ -444,6 +452,17 @@ class HaloOptimizer(BaseOptimizer):
             if node.type in CAPABILITY_GATED_TASK_TYPES:
                 tiers = tuple(
                     tuple(w for w in tier if node.type in workers[w].task_types)
+                    for tier in tiers
+                )
+            if node.gpu_request is not None:
+                tiers = tuple(
+                    tuple(
+                        w
+                        for w in tier
+                        if profile_fits_gpu_request(
+                            worker_profiles.get(w, {}), node.gpu_request
+                        )
+                    )
                     for tier in tiers
                 )
             utilization = node.gpu_memory_utilization
@@ -461,6 +480,11 @@ class HaloOptimizer(BaseOptimizer):
                 )
             eligible = next((tier for tier in tiers if tier), ())
             if not eligible:
+                if node.gpu_request is not None:
+                    raise ValueError(
+                        f"No GPU worker carries the GPUs node '{node_id}' requests"
+                        f" (gpu={node.gpu_request.model_dump(exclude_none=True)})."
+                    )
                 if utilization is not None:
                     raise ValueError(
                         f"No GPU worker has the memory fraction for node '{node_id}',"
@@ -997,30 +1021,41 @@ class HaloOptimizer(BaseOptimizer):
     ) -> None:
         """Fail before scheduling when a node's task type has no executor.
 
-        Gated task types run on CPU workers, so only CPU workers count. Only
+        Gated task types run on CPU workers, so only CPU workers count, except a
+        python step that requests a GPU, which only GPU workers can run. Only
         task types in ``CAPABILITY_GATED_TASK_TYPES`` are checked; other nodes
         are placed by engine alone.
         """
-        cpu_names = [
-            name
-            for name in worker_names
-            if not worker_profiles.get(name, {}).get("has_gpu")
-        ]
-        advertised: set[str] = set()
-        for name in cpu_names:
-            advertised |= advertised_task_types(worker_profiles.get(name, {}))
-        needed = required_task_types(op.task_type for op in graph.nodes.values())
-        for task_type in sorted(needed - advertised):
-            nodes = sorted(
-                node_id
-                for node_id, op in graph.nodes.items()
-                if op.task_type == task_type
-            )
-            raise ValueError(
-                f"Graph has {task_type!r} task node(s) {nodes}, but none of the"
-                f" selected CPU workers {cpu_names} advertises the {task_type!r}"
-                " task type."
-            )
+        cpu_types = cpu_required_task_types(
+            (op.task_type, op.data_spec) for op in graph.nodes.values()
+        )
+        gpu_types = (
+            frozenset({PYTHON_TASK_TYPE})
+            if any(op.data_spec.gpu_request is not None for op in graph.nodes.values())
+            else frozenset()
+        )
+        for on_gpu, needed in ((False, cpu_types), (True, gpu_types)):
+            names = [
+                name
+                for name in worker_names
+                if bool(worker_profiles.get(name, {}).get("has_gpu")) == on_gpu
+            ]
+            advertised: set[str] = set()
+            for name in names:
+                advertised |= advertised_task_types(worker_profiles.get(name, {}))
+            for task_type in sorted(needed - advertised):
+                nodes = sorted(
+                    node_id
+                    for node_id, op in graph.nodes.items()
+                    if op.task_type == task_type
+                    and op.data_spec.gpu_request is not None == on_gpu
+                )
+                kind = "GPU" if on_gpu else "CPU"
+                raise ValueError(
+                    f"Graph has {task_type!r} task node(s) {nodes}, but none of the"
+                    f" selected {kind} workers {names} advertises the {task_type!r}"
+                    " task type."
+                )
 
     def _map_engine(self, backend: str, task_type: str) -> str:
         normalized_backend = backend.strip().lower()

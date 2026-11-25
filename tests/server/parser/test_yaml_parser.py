@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from lumilake_server.common import ApiConfig
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     InputOp,
@@ -672,6 +673,37 @@ def test_messages_column_is_refused_beside_prompt_fields_and_outside_chat(
     with pytest.raises(ValueError, match=message):
         graph_dict = parse_yaml_payload(payload)["messages_column"]["graph"]
         Graph.from_json(graph_dict)
+
+
+def _gpu_lambda_yaml(gpu: str) -> str:
+    return textwrap.dedent(f"""
+        name: lambda_gpu
+        inputs:
+          stock: ["NVDA"]
+        ops:
+          - id: measure
+            op: LambdaOp
+            inputs: [stock]
+            fn_name: measure
+            code: |
+              def measure(inputs):
+                  return str(inputs[0])
+            image: ghcr.io/me/bench:1
+            gpu: {gpu}
+        outputs:
+          - {{ name: out, ref: measure }}
+        """)
+
+
+def test_lambda_op_gpu_request_round_trips_and_rejects_a_bad_count() -> None:
+    specs = parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24Gi}"))
+    graph = Graph.from_json(specs["lambda_gpu"]["graph"])
+    (op,) = [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
+    assert op.gpu == GpuRequest(count=1, memory="24Gi")
+    with pytest.raises(ValueError, match="'gpu' is invalid"):
+        parse_yaml_payload(_gpu_lambda_yaml("{count: 0}"))
+    with pytest.raises(ValueError, match="'gpu' is invalid"):
+        parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24G}"))
 
 
 def test_column_without_data_or_node_names_the_field() -> None:

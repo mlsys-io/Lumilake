@@ -15,7 +15,8 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.runtime.worker_capability import (
-    required_task_types,
+    cpu_required_task_types,
+    python_steps_gpu_requests,
     requires_cpu_worker,
 )
 from lumilake_server.utils.utils import unique_id
@@ -278,28 +279,29 @@ class PriorityJobManager(BaseJobManager):
     ) -> int:
         """Whole dispatches of ``partition`` the idle workers can serve at once.
 
-        Workers must meet the partition's hardware when the capacity snapshot
-        carries profiles, a GPU dispatch is bounded by its CPU group too, and a
-        CPU worker must advertise every gated task type the work needs. A
-        configured CPU group of zero still claims one CPU worker when the work
-        has a CPU-only node (as dispatch does). The task types are those of all
-        ``candidates``, a conservative bound: the batch actually selected needs
-        a subset of them.
+        Workers must meet the partition's hardware when the capacity snapshot carries
+        profiles, a GPU dispatch is bounded by its CPU group too, and a CPU worker must
+        advertise every gated task type the work needs and each GPU python step needs a
+        GPU worker that runs python and carries its request. A configured CPU group of
+        zero still claims one CPU worker when the work has a CPU-only node (as dispatch
+        does). The task types are those of all ``candidates``, a conservative bound: the
+        batch actually selected needs a subset of them.
         """
         cpu_group_size, gpu_group_size = self._partition_group_sizes(partition)
-        task_types = [
-            op.task_type
+        nodes = [
+            (op.task_type, op.data_spec)
             for item in candidates
             for op in item.runtime_graph.nodes.values()
         ]
-        if cpu_group_size <= 0 and requires_cpu_worker(task_types):
+        if cpu_group_size <= 0 and requires_cpu_worker(nodes):
             cpu_group_size = 1
         return capacity.dispatch_count(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
             hardware=self._hardware_from_signature(_partition_hardware(partition)),
-            required_task_types=required_task_types(task_types),
+            required_task_types=cpu_required_task_types(nodes),
+            required_gpu_requests=python_steps_gpu_requests(spec for _, spec in nodes),
         )
 
     def _partition_eligible(

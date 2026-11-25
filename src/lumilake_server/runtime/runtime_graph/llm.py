@@ -1138,13 +1138,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, LambdaOp):
-                if op.image is not None:
+                if op.image is not None or op.gpu is not None:
                     raise ValueError(
-                        f"LLMOp '{llm_op_id}' consumes image-bearing LambdaOp"
-                        f" '{op.id}' through its message chain; a LambdaOp with"
-                        " an image always runs as its own FlowMesh python task,"
-                        " so read it through a node column (rowwise_columns /"
-                        " aggregate_table) instead."
+                        f"LLMOp '{llm_op_id}' consumes LambdaOp '{op.id}' that asks for"
+                        " an image or GPUs through its message chain; such a LambdaOp"
+                        " always runs as its own FlowMesh python task, so read it"
+                        " through a node column (rowwise_columns / aggregate_table)"
+                        " instead."
                     )
                 if op.takes_whole_columns:
                     raise ValueError(
