@@ -211,8 +211,8 @@ def main(inputs):
     if served is None:
         computed = _compute_rows(rows, cells, seeds, fn)
         return {{"items": [{{"output": out, "value": val}} for out, val in computed]}}
-    # A partial run reads its every live row at its own position and computes
-    # only the slots the store did not answer; each row keeps its live key.
+    # A partial run reads its every live row at its own position and computes only the
+    # slots the store did not answer, so each row keeps its own live key.
     items = []
     for (key, slot), row in zip(served, rows):
         if slot == _MISSED:
@@ -526,8 +526,8 @@ def _served_groups(inputs):
 
 
 def _group_text(value):
-    # The planner spells a group key with the record store's canonical JSON; this
-    # step compares against the same spelling so a slot matches its own group.
+    # The planner spells a group key with the record store's canonical JSON, and this
+    # step compares that spelling, so a slot matches its own group.
     return value if isinstance(value, str) else _canonical_json(value)
 
 

@@ -1348,8 +1348,8 @@ def _expand_reduce_workflow() -> dict[str, Any]:
     split = {
         **split,
         "code": (
-            "lambda row: [{'parent': row[0]['id'], 'x': 'a'},"
-            " {'parent': row[0]['id'], 'x': 'b'}]"
+            "lambda row: [{'parent': row[0]['id'], 'x': 'a'}, {'parent':"
+            " row[0]['id'], 'x': 'b'}]"
         ),
     }
     fold = {
