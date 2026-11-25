@@ -21,6 +21,7 @@ from lumilake_server.data_specs import (
     parse_data_spec,
 )
 from lumilake_server.ops import RecordKey
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_keys import child_count_key, child_key
 from lumilake_server.runtime.record_store import (
@@ -89,8 +90,8 @@ class OutputShape:
     """The stored value's own field to archive, when the output names one."""
     whole_list: bool = False
     whole_run: bool = False
-    """A keyed reduce or expand stores one record per group or child, while the
-    run emits one value over all of them, so a hit rebuilds that one value."""
+    """A list, reduce or expand emits one value over all its records, whatever
+    records the store holds, so a hit rebuilds that one value."""
 
     def archived(self, values: Sequence[Any]) -> list[str]:
         selected = [_value_at_path(value, self.path) for value in values]
@@ -812,9 +813,7 @@ def output_shape(plan: RecordPlan, path: str | None) -> OutputShape | None:
     spec = plan.op.data_spec
     whole_list = isinstance(spec, PythonData) and spec.mode == "list" and not plan.keyed
     whole_run = (
-        isinstance(spec, PythonData)
-        and spec.mode in ("expand", "reduce")
-        and plan.keyed
+        isinstance(spec, PythonData) and spec.mode in python_step.WHOLE_RESULT_MODES
     )
     if path is None or path == "items" or path == "":
         return OutputShape(whole_list=whole_list, whole_run=whole_run)
