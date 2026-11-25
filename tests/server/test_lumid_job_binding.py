@@ -1,5 +1,6 @@
 """Binding a submission to a lum.id/data job: validation and token fetch."""
 
+import json
 import uuid
 from typing import Any
 
@@ -91,11 +92,15 @@ async def test_token_is_fetched_with_the_runtime_key(
         monkeypatch,
         lambda r: httpx.Response(200, json={"token": "ljt_abc", "job_id": _JOB_ID}),
     )
-    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
+    cred = await jobs_routes._lumid_job_credential(
+        LumidJobBinding(job_id=_JOB_UUID), "owner-sub"
+    )
     assert cred.token == "ljt_abc"
     assert cred.url == "https://lum.id/data"
     assert str(seen[0].url) == f"https://lum.id/data/jobs/v1/jobs/{_JOB_ID}/token"
     assert seen[0].headers["authorization"] == "Bearer rt-key"
+    # The hub binds the token to the job's owner: we must say who asked.
+    assert json.loads(seen[0].content) == {"for_sub": "owner-sub"}
 
 
 @pytest.mark.asyncio
@@ -113,7 +118,9 @@ async def test_refused_or_malformed_token_is_a_502(
 ) -> None:
     _patch_client(monkeypatch, lambda r: response)
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
+        await jobs_routes._lumid_job_credential(
+            LumidJobBinding(job_id=_JOB_UUID), "owner-sub"
+        )
     assert exc.value.status_code == 502
 
 
@@ -126,7 +133,9 @@ async def test_unreachable_jobs_api_is_a_502(
 
     _patch_client(monkeypatch, boom)
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
+        await jobs_routes._lumid_job_credential(
+            LumidJobBinding(job_id=_JOB_UUID), "owner-sub"
+        )
     assert exc.value.status_code == 502
 
 
@@ -139,7 +148,9 @@ async def test_missing_runtime_key_is_refused_before_any_call(
         monkeypatch, lambda r: httpx.Response(200, json={"token": "t"})
     )
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
+        await jobs_routes._lumid_job_credential(
+            LumidJobBinding(job_id=_JOB_UUID), "owner-sub"
+        )
     assert exc.value.status_code == 422
     assert seen == []
 
@@ -152,3 +163,31 @@ def test_preview_accepts_the_binding_field() -> None:
         }
     )
     assert req.lumid_job is not None
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_job_is_a_403_not_a_token(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None
+) -> None:
+    _patch_client(
+        monkeypatch,
+        lambda r: httpx.Response(403, json={"error": {"code": "not_the_owner"}}),
+    )
+    with pytest.raises(HTTPException) as exc:
+        await jobs_routes._lumid_job_credential(
+            LumidJobBinding(job_id=_JOB_UUID), "intruder-sub"
+        )
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_no_principal_is_refused_before_any_call(
+    monkeypatch: pytest.MonkeyPatch, jobs_env: None
+) -> None:
+    seen = _patch_client(
+        monkeypatch, lambda r: httpx.Response(200, json={"token": "t"})
+    )
+    with pytest.raises(HTTPException) as exc:
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID), "")
+    assert exc.value.status_code == 422
+    assert seen == []

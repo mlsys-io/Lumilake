@@ -907,9 +907,22 @@ class LumidJobTokenResponse(BaseModel):
     token: str = Field(min_length=1)
 
 
-async def _lumid_job_credential(binding: LumidJobBinding) -> DataCredential:
+async def _lumid_job_credential(
+    binding: LumidJobBinding, for_sub: str
+) -> DataCredential:
     """Fetch a job-scoped data token from the lum.id/data jobs API with this
-    server's runtime service key. The token never enters the job record."""
+    server's runtime service key. The token never enters the job record.
+
+    ``for_sub`` is the lum.id sub of the principal whose request carried the
+    binding. The hub issues the token only if that user owns the job, so a
+    submitter who quotes someone else's ``job_id`` gets a 403 here instead of
+    that job's data token.
+    """
+    if not for_sub:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="lumid_job requires an authenticated lum.id principal",
+        )
     if not envs.LUMID_JOBS_URL or not envs.LUMID_JOBS_RUNTIME_KEY:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -920,13 +933,20 @@ async def _lumid_job_credential(binding: LumidJobBinding) -> DataCredential:
     try:
         async with httpx.AsyncClient(timeout=envs.LUMID_DATA_TIMEOUT_SECONDS) as client:
             resp = await client.post(
-                url, headers={"Authorization": f"Bearer {envs.LUMID_JOBS_RUNTIME_KEY}"}
+                url,
+                headers={"Authorization": f"Bearer {envs.LUMID_JOBS_RUNTIME_KEY}"},
+                json={"for_sub": for_sub},
             )
     except httpx.HTTPError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"lum.id/data jobs API unreachable: {type(exc).__name__}",
         ) from exc
+    if resp.status_code == 403:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"lum.id/data job {binding.job_id} does not belong to the caller",
+        )
     if resp.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -3597,7 +3617,7 @@ async def submit_job(
     if submit_request.lumid_job is not None:
         require_scope(principal, LUMID_JOB_BIND_SCOPE)
     data_credential = (
-        await _lumid_job_credential(submit_request.lumid_job)
+        await _lumid_job_credential(submit_request.lumid_job, principal.principal_id)
         if submit_request.lumid_job is not None
         else None
     )

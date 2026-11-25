@@ -490,7 +490,7 @@ async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
 ) -> None:
     credential = DataCredential(url="https://data.example", token="job-token")
 
-    async def fake_credential(binding: Any) -> DataCredential:
+    async def fake_credential(binding: Any, for_sub: str) -> DataCredential:
         return credential
 
     monkeypatch.setattr(job_routes, "_lumid_job_credential", fake_credential)
@@ -522,7 +522,7 @@ async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
 async def test_binding_without_the_scope_is_refused_before_a_token_fetch(
     app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def fetched(binding: Any) -> DataCredential:
+    async def fetched(binding: Any, for_sub: str) -> DataCredential:
         raise AssertionError("the jobs API must not be called")
 
     monkeypatch.setattr(job_routes, "_lumid_job_credential", fetched)
