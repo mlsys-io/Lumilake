@@ -402,6 +402,7 @@ class PriorityJobManager(BaseJobManager):
                     dispatch_token=job.dispatch_token,
                     api_credential_digest=job.api_credential_digest,
                     data_credential_digest=job.data_credential_digest,
+                    data_token=job.data_token,
                     requires_gpu=job.requires_gpu.get(graph_name, False),
                 )
             )

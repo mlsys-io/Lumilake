@@ -39,6 +39,7 @@ class WorkflowItem:
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
     data_credential_digest: str | None = None
+    data_token: str | None = field(default=None, repr=False)
     miss_count: int = 0
     requires_gpu: bool = False
 
@@ -94,6 +95,7 @@ class Job:
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
     data_credential_digest: str | None = None
+    data_token: str | None = field(default=None, repr=False)
     requires_gpu: dict[str, bool] = field(default_factory=dict)
 
 
