@@ -10,7 +10,7 @@ import queue
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar, Self
@@ -28,7 +28,13 @@ from lumilake.log import (
     log_on_exception_async,
 )
 from lumilake_server.common import InputRef, project_input_values
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, GpuRequest, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    GpuRequest,
+    ListData,
+    LiteralColumn,
+    PythonData,
+)
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -95,6 +101,8 @@ from lumilake_server.utils.utils import (
     unique_id,
 )
 
+_ListSpecWriter = Callable[[list[Any], bool], None]
+
 
 def _empty_runtime_graph() -> RuntimeGraph:
     """A node-less graph used when data profiling is disabled.
@@ -104,6 +112,30 @@ def _empty_runtime_graph() -> RuntimeGraph:
     profiling is skipped entirely.
     """
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
+
+
+def _dict_list_writer(data: dict[str, Any]) -> _ListSpecWriter:
+    """Write a rewritten list back into a retrieval param's dict spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        data["items"] = items
+        if grouped:
+            data["grouped"] = True
+
+    return write
+
+
+def _column_list_writer(column: LiteralColumn) -> _ListSpecWriter:
+    """Write a rewritten list back into a rowwise column's typed spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        assert isinstance(column.data, ListData)
+        update: dict[str, Any] = {"items": items}
+        if grouped:
+            update["grouped"] = True
+        column.data = column.data.model_copy(update=update)
+
+    return write
 
 
 @dataclass(slots=True)
@@ -1781,7 +1813,8 @@ class LumilakeServer:
     @staticmethod
     def _iter_input_bound_list_specs(
         graph: Graph,
-    ) -> Generator[tuple[str, dict[str, Any], dict[str, Any]], None, None]:
+    ) -> Generator[tuple[str, list[Any], InputRef | None, _ListSpecWriter], None, None]:
+        """Yield each input-bound literal list: label, items and an items writer."""
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
                 params = op.data_spec.get("params")
@@ -1797,23 +1830,28 @@ class LumilakeServer:
                         items = data.get("items")
                         if data_type != "list" or not isinstance(items, list):
                             continue
-                        yield label, data, param
+                        input_ref: InputRef | None = None
+                        if isinstance(param.get("input_ref"), dict):
+                            input_ref = {
+                                "key": param["input_ref"]["key"],
+                                "path": param["input_ref"].get("path"),
+                            }
+                        yield label, items, input_ref, _dict_list_writer(data)
             if isinstance(op, LLMChatOp):
-                columns = op.rowwise_columns
-                if not isinstance(columns, list):
-                    continue
-                for column in columns:
-                    if not isinstance(column, dict):
+                for column in op.rowwise_columns or []:
+                    if not isinstance(column, LiteralColumn):
                         continue
-                    label = column.get("label")
-                    data = column.get("data")
-                    if not isinstance(label, str) or not isinstance(data, dict):
+                    data = column.data
+                    if not isinstance(data, ListData) or not isinstance(
+                        data.items, list
+                    ):
                         continue
-                    data_type = data.get("type")
-                    items = data.get("items")
-                    if data_type != "list" or not isinstance(items, list):
-                        continue
-                    yield label, data, column
+                    yield (
+                        column.label,
+                        data.items,
+                        column.input_ref,
+                        _column_list_writer(column),
+                    )
 
     @classmethod
     def _validate_merged_varying_inputs(
@@ -1892,14 +1930,9 @@ class LumilakeServer:
         rewrite_hits: dict[str, int] = {key: 0 for key in varying_input_keys}
         inferred_aliases: dict[str, str] = {}
 
-        def _rewrite_target_key(label: str, owner: dict[str, Any]) -> str | None:
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
-                key = input_ref.get("key")
-                if not isinstance(key, str):
-                    raise ValueError(
-                        f"Invalid input_ref key for '{label}' in {group_context}"
-                    )
+        def _rewrite_target_key(label: str, input_ref: InputRef | None) -> str | None:
+            if input_ref is not None:
+                key = input_ref["key"]
                 # An explicit input_ref pins the column to that input; a
                 # non-varying key must not fall through to label matching.
                 return key if key in varying_input_keys else None
@@ -1907,13 +1940,8 @@ class LumilakeServer:
                 return label
             return inferred_aliases.get(label)
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            if label in varying_input_keys:
-                continue
-            if isinstance(owner.get("input_ref"), dict):
-                continue
-            items = data["items"]
-            if not isinstance(items, list):
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
+            if label in varying_input_keys or input_ref is not None:
                 continue
             matched_keys = [
                 key for key, values in first_slice_inputs.items() if items == values
@@ -1927,32 +1955,21 @@ class LumilakeServer:
             if len(matched_keys) == 1:
                 inferred_aliases[label] = matched_keys[0]
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            rewrite_target_key = _rewrite_target_key(label, owner)
+        for label, _items, input_ref, write in cls._iter_input_bound_list_specs(graph):
+            rewrite_target_key = _rewrite_target_key(label, input_ref)
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
-                ref_key = input_ref.get("key")
-                ref_path = input_ref.get("path")
-                if not isinstance(ref_key, str) or not isinstance(
-                    ref_path, (str, type(None))
-                ):
-                    raise ValueError(
-                        f"Invalid input_ref for '{label}' in {group_context}"
-                    )
-                ref: InputRef = {"key": ref_key, "path": ref_path}
+            if input_ref is not None:
                 projected = project_input_values(
                     replacement,
-                    ref["path"],
-                    ref["key"],
+                    input_ref["path"],
+                    input_ref["key"],
                 )
-                data["items"] = list(projected)
-                if len(replacement) > 1:
-                    data["grouped"] = True
+                data = list(projected)
             else:
-                data["items"] = list(replacement)
+                data = list(replacement)
+            write(data, len(replacement) > 1)
             rewrite_hits[rewrite_target_key] += 1
 
         for key, hit_count in rewrite_hits.items():
@@ -1968,16 +1985,10 @@ class LumilakeServer:
                     "Expected at least one input-bound list field keyed by this label."
                 )
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            validation_target_key = _rewrite_target_key(label, owner)
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
+            validation_target_key = _rewrite_target_key(label, input_ref)
             if validation_target_key is None:
                 continue
-            items = data["items"]
-            if not isinstance(items, list):
-                raise ValueError(
-                    "Rewritten field is no longer a list for "
-                    f"key='{label}' in {group_context}"
-                )
             expected_len = len(merged_inputs[validation_target_key])
             actual_len = len(items)
             if actual_len != expected_len:

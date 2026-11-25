@@ -702,3 +702,13 @@ def test_lambda_op_gpu_request_round_trips_and_rejects_a_bad_count() -> None:
     assert op.gpu == GpuRequest(count=1, memory="24Gi")
     with pytest.raises(ValueError, match="'gpu' is invalid"):
         parse_yaml_payload(_gpu_lambda_yaml("{count: 0}"))
+
+
+def test_column_without_data_or_node_names_the_field() -> None:
+    """A column with neither ``data`` nor ``node`` is refused, naming the field."""
+    payload = _messages_payload(
+        messages=[{"role": "user", "content": ""}],
+        rowwise_columns=[{"label": "topic"}],
+    )
+    with pytest.raises(ValueError, match=r"rowwise_columns\[0\]\.node"):
+        parse_yaml_payload(payload)
