@@ -17,7 +17,7 @@ from lumilake_server.runtime.runtime_manager import (
     _rewrite_data_credentials,
 )
 
-_JOB = DataCredential(url="http://192.168.7.155:5101", token="ljt_job")
+_JOB = DataCredential(url="https://data.example", token="ljt_job")
 
 
 def _task_spec() -> dict[str, Any]:
@@ -73,10 +73,10 @@ def test_rewrite_points_every_data_spec_at_the_job_credential() -> None:
     _rewrite_data_credentials(spec, _JOB)
     retrieve, list_input, lambda_node = spec["spec"]["graph"]["nodes"]
     assert retrieve["spec"]["data"]["lumid_data_token"] == "ljt_job"
-    assert retrieve["spec"]["data"]["lumid_data_url"] == "http://192.168.7.155:5101"
+    assert retrieve["spec"]["data"]["lumid_data_url"] == "https://data.example"
     assert retrieve["spec"]["data"]["template"] == "SELECT 1"
     assert list_input["spec"]["data"]["lumid_cfg"] == {
-        "lumid_data_url": "http://192.168.7.155:5101",
+        "lumid_data_url": "https://data.example",
         "lumid_data_token": "ljt_job",
     }
     # Lumilake's own runtime blobs are not job data: untouched.
