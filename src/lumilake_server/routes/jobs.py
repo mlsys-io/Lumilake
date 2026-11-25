@@ -888,13 +888,12 @@ class LumidJobBinding(BaseModel):
         description="lum.id/data job id (UUID).",
         pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
     )
-    data_url: str | None = Field(
-        default=None,
-        description=(
-            "Worker-facing lumid-data URL chosen by the job's networking plan."
-            " Falls back to LUMID_DATA_WORKER_URL / LUMID_DATA_URL."
-        ),
-    )
+
+
+class LumidJobTokenResponse(BaseModel):
+    """The jobs API's answer to a token request."""
+
+    token: str = Field(min_length=1)
 
 
 async def _lumid_job_credential(binding: LumidJobBinding) -> DataCredential:
@@ -923,14 +922,15 @@ async def _lumid_job_credential(binding: LumidJobBinding) -> DataCredential:
             detail=f"lum.id/data refused a token for job {binding.job_id}"
             f" (HTTP {resp.status_code})",
         )
-    token = resp.json().get("token")
-    if not isinstance(token, str) or not token:
+    try:
+        body = LumidJobTokenResponse.model_validate_json(resp.content)
+    except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="lum.id/data returned no job token",
-        )
-    data_url = binding.data_url or envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL
-    return DataCredential(url=data_url.rstrip("/"), token=token)
+        ) from exc
+    data_url = envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL
+    return DataCredential(url=data_url.rstrip("/"), token=body.token)
 
 
 class JobSubmitRequest(BaseModel):

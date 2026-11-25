@@ -30,11 +30,11 @@ def test_submit_request_accepts_an_optional_binding() -> None:
                     "output_location": {"type": "s3", "prefix": "out/"},
                 }
             ],
-            "lumid_job": {"job_id": _JOB_ID, "data_url": "http://192.168.7.155:5101"},
+            "lumid_job": {"job_id": _JOB_ID},
         }
     )
     assert req.lumid_job is not None
-    assert req.lumid_job.data_url == "http://192.168.7.155:5101"
+    assert req.lumid_job.job_id == _JOB_ID
     unbound = JobSubmitRequest.model_validate(
         {
             "data": [
@@ -80,30 +80,24 @@ async def test_token_is_fetched_with_the_runtime_key(
         monkeypatch,
         lambda r: httpx.Response(200, json={"token": "ljt_abc", "job_id": _JOB_ID}),
     )
-    cred = await jobs_routes._lumid_job_credential(
-        LumidJobBinding(job_id=_JOB_ID, data_url="http://192.168.7.155:5101/")
-    )
+    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
     assert cred.token == "ljt_abc"
-    assert cred.url == "http://192.168.7.155:5101"
+    assert cred.url == "https://lum.id/data"
     assert str(seen[0].url) == f"https://lum.id/data/jobs/v1/jobs/{_JOB_ID}/token"
     assert seen[0].headers["authorization"] == "Bearer rt-key"
 
 
 @pytest.mark.asyncio
-async def test_data_url_falls_back_to_the_worker_url(
-    monkeypatch: pytest.MonkeyPatch, jobs_env: None
-) -> None:
-    _patch_client(monkeypatch, lambda r: httpx.Response(200, json={"token": "t"}))
-    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
-    assert cred.url == "https://lum.id/data"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response",
-    [httpx.Response(404, json={}), httpx.Response(200, json={"token": ""})],
+    [
+        httpx.Response(404, json={}),
+        httpx.Response(200, json={"token": ""}),
+        httpx.Response(200, json=["token"]),
+        httpx.Response(200, content=b"not json"),
+    ],
 )
-async def test_refused_or_empty_token_is_a_502(
+async def test_refused_or_malformed_token_is_a_502(
     monkeypatch: pytest.MonkeyPatch, jobs_env: None, response: httpx.Response
 ) -> None:
     _patch_client(monkeypatch, lambda r: response)
