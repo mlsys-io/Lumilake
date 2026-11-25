@@ -1167,56 +1167,69 @@ _REDUCE_OPS: list[dict[str, Any]] = [
     },
 ]
 _REDUCE_ROWS = [
-    {"id": "t1", "patient": "p1"},
-    {"id": "t2", "patient": "p2"},
-    {"id": "t3", "patient": "p3"},
-]
-_REDUCE_GROUPS = [
-    {"output": ["t1"], "key": "p1", "members": [0]},
-    {"output": ["t2"], "key": "p2", "members": [1]},
+    {"id": "t1", "patient": "p1", "meta": {"p": 1}},
+    {"id": "t2", "patient": "p2", "meta": {"p": 2}},
+    {"id": "t3", "patient": "p3", "meta": {"p": 3}},
 ]
 
 
-def _reduce_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """The reduce fixture over ``rows`` as a workflow input."""
+def _reduce_workflow(
+    rows: list[dict[str, Any]], by: str = "patient", changed: bool = False
+) -> dict[str, Any]:
+    """The reduce fixture over ``rows``, grouped by ``by``, with a per-row
+    literal list beside it so every column must stay at live width; ``changed``
+    alters the last literal, which changes one group's inputs alone."""
+    tag, rank = _REDUCE_OPS
+    weights = ["w1", "w2", "w3!"] if changed else ["w1", "w2", "w3"]
     return {
         "name": "reduce-reuse",
         "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": _REDUCE_OPS,
+        "ops": [
+            tag,
+            {"id": "Weights", "op": "DataOp", "inputs": [], "data": weights},
+            {**rank, "by": by, "inputs": ["Tag", "Weights"]},
+        ],
         "outputs": [{"name": "ranked", "ref": "Rank"}],
     }
 
 
+@pytest.mark.parametrize("by", ["patient", "meta"])
 @pytest.mark.asyncio
-async def test_a_reduce_reuses_its_unchanged_groups() -> None:
-    """A reduce over a served input keeps every group in group order: the stored
-    output of one the store answered, the recomputed output of one it did not; a
-    reduce whose producer is dispatched has no groups yet and misses whole."""
-    workflow = _reduce_workflow(_REDUCE_ROWS)
-    graph = _runtime_graph(workflow)
-    rank_id, tag_id = _node(graph, "Rank"), _node(graph, "Tag")
-    storage = InMemoryJobStorage()
-    # Run 1 stored only the first two groups, so p3 has no entry.
-    await _run(
-        storage,
-        workflow,
-        {"Tag": _REDUCE_ROWS},
-        "req-1",
-        items={"Rank": _REDUCE_GROUPS},
+async def test_a_reduce_cycle_merges_one_changed_group(by: str) -> None:
+    """A reduce over a served input whose last per-row literal changes: run 2
+    recomputes that row's group only and emits every live group in group order,
+    so its output equals a full run's and it stores that group, and run 3 serves
+    the reduce whole. ``by`` spells a group key as a string and as an object,
+    which take different spelling paths, and the literal stays at live width
+    beside the served column. Covers findings 1, 4, 5 and 8."""
+    rows = _REDUCE_ROWS
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(_reduce_workflow(rows, by))
+    plan, dispatched, _ = await cycle.rerun(_reduce_workflow(rows, by, changed=True))
+    rank_id = _node(_runtime_graph(_reduce_workflow(rows, by)), "Rank")
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
     )
-    plan, dispatched = _planned(storage, graph)
-    assert _decisions(plan)["Rank"] == ("miss", "partial group records")
     slots = plan.partial[rank_id].groups
     assert slots is not None
-    assert [slot.key for slot in slots if slot.served is not None] == ["p1", "p2"]
-    assert [slot.key for slot in slots if slot.served is None] == ["p3"]
+    assert [slot.served is not None for slot in slots] == [True, True, False]
     items = _run_step(dispatched.nodes[rank_id], {})
-    full = _run_step(graph.nodes[rank_id], {tag_id: _run_step(graph.nodes[tag_id], {})})
+    full_graph = _runtime_graph(_reduce_workflow(rows, by, changed=True))
+    tag_id = _node(full_graph, "Tag")
+    full = _run_step(
+        full_graph.nodes[rank_id],
+        {tag_id: _run_step(full_graph.nodes[tag_id], {})},
+    )
     assert [(item["key"], item["output"]) for item in items] == [
         (item["key"], item["output"]) for item in full
     ]
-    moved = [*_REDUCE_ROWS[:2], {**_REDUCE_ROWS[2], "id": "t3b"}]
-    plan, _ = _planned(storage, _runtime_graph(_reduce_workflow(moved)))
+    third, dispatched = cycle.third(_reduce_workflow(rows, by, changed=True))
+    assert third.hits.get(rank_id), _decisions(third)
+    assert rank_id not in dispatched.nodes
+    moved = [*rows[:2], {**rows[2], "id": "t3b"}]
+    plan, _ = _planned(
+        cycle.storage, _runtime_graph(_reduce_workflow(moved, by, changed=True))
+    )
     assert _decisions(plan)["Rank"] == ("miss", "input dispatched"), _decisions(plan)
 
 
@@ -1398,20 +1411,6 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_reduce_cycle_serves_an_unchanged_reduce() -> None:
-    """A reduce whose every group the store answers leaves the graph, and a third
-    run over the same rows serves it again. Covers finding 1."""
-    cycle, workflow = _Cycle(InMemoryJobStorage()), _reduce_workflow(_REDUCE_ROWS)
-    await cycle.full(workflow)
-    plan, dispatched = cycle.plan(workflow)
-    rank_id = _node(_runtime_graph(workflow), "Rank")
-    assert plan.hits.get(rank_id), _decisions(plan)
-    assert rank_id not in dispatched.nodes
-    third, _ = cycle.third(workflow)
-    assert third.hits.get(rank_id), _decisions(third)
-
-
-@pytest.mark.asyncio
 async def test_an_expand_hit_feeds_a_reduce_reading_it() -> None:
     """An expand the store answers whole is a stored source for a reduce that
     reads it, so the reduce decides its groups instead of missing as
@@ -1420,7 +1419,7 @@ async def test_an_expand_hit_feeds_a_reduce_reading_it() -> None:
     await cycle.full(workflow)
     plan, _ = cycle.plan(workflow)
     assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
-    assert _decisions(plan)["Fold"] != ("miss", "input dispatched"), _decisions(plan)
+    assert _decisions(plan)["Fold"] == ("hit", None), _decisions(plan)
 
 
 def _expand_reduce_workflow() -> dict[str, Any]:
@@ -1488,51 +1487,6 @@ async def test_a_reduce_reading_an_unkeyed_input_serves_its_group() -> None:
     assert rank not in dispatched.nodes
 
 
-def _reduce_object_group_workflow() -> dict[str, Any]:
-    """A keyed row step whose ``by`` path reaches an object, over two groups, so
-    a partial run computes one group's item and merges it by its object key."""
-    tag, rank = _REDUCE_OPS
-    rank = {**rank, "by": "meta"}
-    return {
-        "name": "reduce-object-group",
-        "inputs": {
-            "Rows": [
-                json.dumps({"id": "t1", "meta": {"p": 1, "q": 2}}),
-                json.dumps({"id": "t2", "meta": {"p": 3, "q": 4}}),
-            ]
-        },
-        "ops": [tag, rank],
-        "outputs": [{"name": "ranked", "ref": "Rank"}],
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_partial_reduce_merges_an_object_group_key() -> None:
-    """A partial reduce whose ``by`` value is an object emits every live group in
-    group order: the step spells each computed group's key the planner's way, so
-    it names its own slot. Covers finding 8."""
-    workflow = _reduce_object_group_workflow()
-    graph = _runtime_graph(workflow)
-    storage = InMemoryJobStorage()
-    first, second = {"p": 1, "q": 2}, {"p": 3, "q": 4}
-    await _run(
-        storage,
-        workflow,
-        {"Tag": [{"id": "t1", "meta": first}, {"id": "t2", "meta": second}]},
-        "req-1",
-        graph=graph,
-        items={"Rank": [{"output": ["t1"], "key": first, "members": [0]}]},
-        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
-    )
-    plan, dispatched = _planned(storage, graph)
-    rank = _node(graph, "Rank")
-    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
-        plan
-    )
-    items = _run_step(dispatched.nodes[rank], {})
-    assert [item["key"] for item in items] == ['{"p":1,"q":2}', '{"p":3,"q":4}']
-
-
 @pytest.mark.asyncio
 async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
     """A group the store holds only as a marker is a hole, like a group with no
@@ -1540,31 +1494,17 @@ async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
     store lacks plans and dispatches instead of failing on a marker's value.
     Covers finding 3."""
     workflow = _reduce_workflow(_REDUCE_ROWS)
-    graph = _runtime_graph(workflow)
-    storage = InMemoryJobStorage()
-    await _run(
-        storage,
-        workflow,
-        {"Tag": _REDUCE_ROWS},
-        "req-1",
-        graph=graph,
-        items={
-            "Rank": [
-                {"output": ["t1"], "key": "p1", "members": [0]},
-                {"output": ["p2-rank"], "key": "p2", "members": [1]},
-            ]
-        },
-        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
-    )
-    rank = _node(graph, "Rank")
-    _mark_stored_entry(storage, "Rank", "p2")
-    plan, dispatched = _planned(storage, graph)
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    _mark_stored_entry(cycle.storage, "Rank", "p2")
+    plan, dispatched = cycle.plan(workflow)
+    rank = _node(_runtime_graph(workflow), "Rank")
     assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
         plan
     )
     slots = plan.partial[rank].groups
     assert slots is not None
-    assert [slot.key for slot in slots if slot.served is None] == ["p2", "p3"]
+    assert [slot.key for slot in slots if slot.served is None] == ["p2"]
     assert rank in dispatched.nodes
 
 
