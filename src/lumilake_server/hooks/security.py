@@ -78,6 +78,15 @@ def get_runtime_token(request: Request) -> str | None:
     return token if isinstance(token, str) else None
 
 
+def require_scope(principal: PrincipalContext, scope: str) -> None:
+    """Refuse with 403 unless the principal's scopes carry ``scope`` or ``*``."""
+    if "*" not in principal.scopes and scope not in principal.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"missing required scope: {scope}",
+        )
+
+
 async def run_submission_guards(
     principal: PrincipalContext,
     logger: logging.Logger,

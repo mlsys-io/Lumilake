@@ -51,7 +51,14 @@ from flowmesh.models.result import (
 )
 from flowmesh.models.workflows import Workflow
 from lumid_hooks import PrincipalContext
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
@@ -83,12 +90,14 @@ from lumilake_server.dynamic.template import (
     validate_template,
 )
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.hooks.security import (
     authenticate_request,
     emit_usage,
     get_runtime_token,
     register_resource,
     require_permission,
+    require_scope,
     resolve_accessible_ids,
     run_submission_guards,
 )
@@ -112,6 +121,7 @@ from lumilake_server.runtime.runtime_graph import (
     _API_CREDENTIAL_PLACEHOLDER,
     RuntimeGraph,
 )
+from lumilake_server.runtime.runtime_manager import DataCredential
 from lumilake_server.runtime.server import LumilakeServer
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import DBLocation, IOLocation, S3Location
@@ -131,6 +141,7 @@ from lumilake_server.utils.job_storage import JobStorage, get_job_storage
 from lumilake_server.utils.lumid_data_client import (
     acatalog_column_exists,
     alist_blob_keys,
+    data_token_var,
     put_blob,
 )
 from lumilake_server.utils.parsing import split_bucket_prefix
@@ -615,6 +626,7 @@ class JobRecord:
     workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
     parent_job_id: str | None = None
     child_job_ids: list[str] = field(default_factory=list)
+    lumid_job_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.output_location:
@@ -877,8 +889,83 @@ class JobSubmitItem(BaseModel):
         return self
 
 
+LUMID_JOB_BIND_SCOPE = "lumid-job:bind"
+
+
+class LumidJobBinding(BaseModel):
+    """Binds a submission to a lum.id/data job. Its data steps then read with a
+    token scoped to that job's declared sources (revoked when it ends) instead
+    of the server's LUMID_DATA_TOKEN."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: uuid.UUID = Field(description="lum.id/data job id.")
+
+
+class LumidJobTokenRequest(BaseModel):
+    """A token request on behalf of the submitting user."""
+
+    for_sub: str = Field(min_length=1)
+
+
+class LumidJobTokenResponse(BaseModel):
+    """The jobs API's answer to a token request."""
+
+    token: str = Field(min_length=1)
+
+
+async def _lumid_job_credential(
+    binding: LumidJobBinding, for_sub: str
+) -> DataCredential:
+    """Fetch a job-scoped data token for ``for_sub``, the job's owner."""
+    if not envs.LUMID_JOBS_URL or not envs.LUMID_JOBS_RUNTIME_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="lumid_job requires LUMID_JOBS_URL (or LUMID_DATA_URL) and"
+            " LUMID_JOBS_RUNTIME_KEY on this server",
+        )
+    url = f"{envs.LUMID_JOBS_URL.rstrip('/')}/jobs/v1/jobs/{binding.job_id}/token"
+    try:
+        async with httpx.AsyncClient(timeout=envs.LUMID_DATA_TIMEOUT_SECONDS) as client:
+            resp = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {envs.LUMID_JOBS_RUNTIME_KEY}"},
+                json=LumidJobTokenRequest(for_sub=for_sub).model_dump(),
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"lum.id/data jobs API unreachable: {type(exc).__name__}",
+        ) from exc
+    if resp.status_code == 403:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"lum.id/data refused a token for job {binding.job_id} to this"
+            " caller (HTTP 403)",
+        )
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"lum.id/data refused a token for job {binding.job_id} (HTTP"
+            f" {resp.status_code})",
+        )
+    try:
+        body = LumidJobTokenResponse.model_validate_json(resp.content)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="lum.id/data returned no job token",
+        ) from exc
+    data_url = envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL
+    return DataCredential(url=data_url.rstrip("/"), token=body.token)
+
+
 class JobSubmitRequest(BaseModel):
     data: list[JobSubmitItem] = Field(description="Workflow submission entries.")
+    lumid_job: LumidJobBinding | None = Field(
+        default=None,
+        description="Run this submission as a lum.id/data job (see LumidJobBinding).",
+    )
     priority: Priority = Field(
         default=Priority.MEDIUM,
         description="Job scheduling priority: `low`, `medium`, or `high`.",
@@ -950,7 +1037,7 @@ class JobPreviewItem(BaseModel):
 class JobPreviewRequest(BaseModel):
     """Preview request accepting the same fields as ``JobSubmitRequest``, so
     one payload works against both ``/jobs`` and ``/jobs/preview``.
-    ``priority`` is accepted but ignored during preview."""
+    ``priority`` and ``lumid_job`` are accepted but ignored during preview."""
 
     data: list[JobPreviewItem] = Field(description="Workflow preview entries.")
     priority: Priority = Field(
@@ -972,6 +1059,13 @@ class JobPreviewRequest(BaseModel):
             "Hardware overrides applied during schedule preview. Accepts the"
             " same value as ``JobSubmitRequest.hardware`` so one payload works"
             " against both ``/jobs`` and ``/jobs/preview``."
+        ),
+    )
+    lumid_job: LumidJobBinding | None = Field(
+        default=None,
+        description=(
+            "Accepted for payload compatibility; ignored during preview, which reads"
+            " with the server's data token."
         ),
     )
 
@@ -1894,6 +1988,12 @@ async def _submit_dynamic_child(
         {"workflow_count": 1, "status": child_record.status},
         logger,
     )
+    # A round reads with its parent's lum.id/data job credential.
+    if parent_record is not None and parent_record.lumid_job_id is not None:
+        runtime_manager = LumilakeServer.get_started_instance().runtime_manager
+        runtime_manager.set_data_credential(
+            child_job_id, runtime_manager.get_data_credential(parent_job_id)
+        )
     task = asyncio.create_task(
         _run_job(
             child_job_id,
@@ -1938,6 +2038,12 @@ async def _submit_dynamic_child(
             f"job_timeout {job_timeout}s"
         ) from None
     return child_job_id
+
+
+def _release_parent_credentials(parent_job_id: str) -> None:
+    """Drop the credentials a dynamic parent held for its rounds."""
+    server = LumilakeServer.get_started_instance()
+    server.runtime_manager.clear_dispatch_token(parent_job_id)
 
 
 async def _fire_parent_terminal_hooks(
@@ -2429,6 +2535,7 @@ async def _run_dynamic_job(
                 save_exc,
             )
     finally:
+        _release_parent_credentials(parent_job_id)
         await _fire_parent_terminal_hooks(
             record, principal, parent_job_id, runtime_token
         )
@@ -2686,6 +2793,7 @@ async def _run_template_job(
                 save_exc,
             )
     finally:
+        _release_parent_credentials(parent_job_id)
         await _fire_parent_terminal_hooks(
             record, principal, parent_job_id, runtime_token
         )
@@ -3502,6 +3610,19 @@ async def submit_job(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="data must contain at least one entry",
         )
+    data_credential: DataCredential | None = None
+    if submit_request.lumid_job is not None:
+        require_scope(principal, LUMID_JOB_BIND_SCOPE)
+        if not IDENTITY_PROVIDERS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="lumid_job requires an authenticated lum.id principal",
+            )
+        data_credential = await _lumid_job_credential(
+            submit_request.lumid_job, principal.external_id
+        )
+    if data_credential is not None:
+        data_token_var.set(data_credential.token)
     job_id = f"req-{unique_id()}"
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
@@ -3676,6 +3797,11 @@ async def submit_job(
         org_id=principal.org_id,
         user_id=principal.external_id,
         progress=JobProgress(),
+        lumid_job_id=(
+            str(submit_request.lumid_job.job_id)
+            if submit_request.lumid_job is not None
+            else None
+        ),
     )
 
     async with jobs_lock:
@@ -3688,6 +3814,8 @@ async def submit_job(
         {"workflow_count": len(entries), "status": record.status},
         hook_logger,
     )
+    if data_credential is not None:
+        server.runtime_manager.set_data_credential(job_id, data_credential)
 
     if is_dynamic and dynamic_spec is not None:
         name = next(iter(resolved_inputs))
