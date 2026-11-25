@@ -28,6 +28,7 @@ from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_manager import DataCredential
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -37,7 +38,7 @@ _DEMO_PRINCIPAL = PrincipalContext(
     org_id="demo",
     external_id="alice@example.com",
     principal_type="user",
-    scopes=["admin"],
+    scopes=["admin", "lumid-job:bind"],
 )
 
 _VALID_DYNAMIC_YAML = """
@@ -79,6 +80,8 @@ class _AllowAllIdentity:
     async def resolve(
         self, token: str, logger: logging.Logger
     ) -> PrincipalContext | None:
+        if token == "unscoped":
+            return _DEMO_PRINCIPAL.model_copy(update={"scopes": ["admin"]})
         return _DEMO_PRINCIPAL.model_copy(deep=True) if token == "token" else None
 
 
@@ -139,6 +142,19 @@ class _AllowAllGuards:
 
 
 class _FakeRuntimeManager:
+    def __init__(self) -> None:
+        self.data_credentials: dict[str, Any] = {}
+        self.cleared: list[str] = []
+
+    def set_data_credential(self, job_id: str, credential: Any) -> None:
+        self.data_credentials[job_id] = credential
+
+    def get_data_credential(self, job_id: str) -> Any:
+        return self.data_credentials.get(job_id)
+
+    def clear_dispatch_token(self, job_id: str) -> None:
+        self.cleared.append(job_id)
+
     def set_dispatch_token(self, job_id: str, token: str | None) -> None:
         return None
 
@@ -466,6 +482,74 @@ async def test_dynamic_submit_runs_loop_to_stop(app: FastAPI, job_routes: Any) -
     subgraph_leaf = round_outputs["results"][1]
     assert len(subgraph_leaf) == 1
     assert list(subgraph_leaf.values())[0] == [{"market_cap": 10}]
+
+
+@pytest.mark.anyio
+async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    credential = DataCredential(url="https://data.example", token="job-token")
+
+    subs: list[str] = []
+
+    async def fake_credential(binding: Any, for_sub: str) -> DataCredential:
+        subs.append(for_sub)
+        return credential
+
+    monkeypatch.setattr(job_routes, "_lumid_job_credential", fake_credential)
+    body = _submit_body(_VALID_DYNAMIC_YAML)
+    body["lumid_job"] = {"job_id": "3f2b8c1e-8d4a-4f6b-9c2d-1a2b3c4d5e6f"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 200, resp.text
+    job_id = resp.json()["data"]["job_id"]
+    fake_server = job_routes._fake_runtime_server
+    fake_server.plans = [_SUBGRAPH_PLAN, {"next": "STOP"}]
+    await _run_background(app)
+    record = job_routes.jobs[job_id]
+    manager = fake_server.runtime_manager
+    assert record.child_job_ids
+    assert all(
+        manager.get_data_credential(child) == credential
+        for child in record.child_job_ids
+    )
+    assert job_id in manager.cleared
+    assert subs == ["alice@example.com"]
+
+
+@pytest.mark.anyio
+async def test_binding_without_the_scope_is_refused_before_a_token_fetch(
+    app: FastAPI, job_routes: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def fetched(binding: Any, for_sub: str) -> DataCredential:
+        raise AssertionError("the jobs API must not be called")
+
+    monkeypatch.setattr(job_routes, "_lumid_job_credential", fetched)
+    body = _submit_body(_VALID_DYNAMIC_YAML)
+    body["lumid_job"] = {"job_id": "3f2b8c1e-8d4a-4f6b-9c2d-1a2b3c4d5e6f"}
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer unscoped", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 403
+    assert "lumid-job:bind" in resp.json()["detail"]
+    # Without an identity plugin the default principal passes the scope check.
+    hooks.IDENTITY_PROVIDERS.clear()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422
 
 
 @pytest.mark.anyio

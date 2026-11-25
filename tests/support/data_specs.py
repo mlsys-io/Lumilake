@@ -6,11 +6,6 @@ from lumilake_server.data_specs import parse_data_spec
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
-def wire(op: RuntimeOp) -> dict[str, Any]:
-    """The data spec as the dict a worker receives."""
-    return op.data_spec.model_dump(exclude_none=True)
-
-
 def runtime_op(
     node_id: str,
     task_type: str,

@@ -11,7 +11,6 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from tests.support.data_specs import wire
 
 _WORKFLOW = """\
 name: trading-news
@@ -167,7 +166,10 @@ def _node(runtime_graph: RuntimeGraph, name: str) -> Any:
 
 
 def _columns(node: Any) -> dict[str, dict[str, Any]]:
-    return {col["label"]: col for col in wire(node)["template"]["columns"]}
+    return {
+        col["label"]: col
+        for col in node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
+    }
 
 
 def _node_columns(node: Any) -> dict[str, tuple[str, str]]:
@@ -185,7 +187,8 @@ def test_per_row_vlm_exports_flatten_infer_regroup(symbols: list[str]) -> None:
     (vlm_id,) = [
         node_id
         for node_id, node in runtime_graph.nodes.items()
-        if node.task_type == "python" and wire(node)["mode"] == "regroup"
+        if node.task_type == "python"
+        and node.data_spec.model_dump(exclude_none=True)["mode"] == "regroup"
     ]
     vlm_ids = {
         node_id for node_id in runtime_graph.nodes if "News_Per_row_Summary" in node_id
@@ -199,11 +202,11 @@ def test_per_row_vlm_exports_flatten_infer_regroup(symbols: list[str]) -> None:
 
     flatten = runtime_graph.nodes[f"{vlm_id}_flatten"]
     assert flatten.task_type == "python"
-    assert wire(flatten)["mode"] == "flatten"
+    assert flatten.data_spec.model_dump(exclude_none=True)["mode"] == "flatten"
     assert runtime_graph.nodes[f"{vlm_id}_embedding"].task_type == "embedding"
     assert runtime_graph.nodes[f"{vlm_id}_infer"].task_type == "inference"
 
-    plan = wire(flatten)["plan"]
+    plan = flatten.data_spec.model_dump(exclude_none=True)["plan"]
     assert {
         "kind": "literal",
         "values": symbols,
@@ -213,7 +216,9 @@ def test_per_row_vlm_exports_flatten_infer_regroup(symbols: list[str]) -> None:
 
     report = _node(runtime_graph, "News Report")
     df = next(
-        col for col in wire(report)["template"]["columns"] if col["label"] == "df"
+        col
+        for col in report.data_spec.model_dump(exclude_none=True)["template"]["columns"]
+        if col["label"] == "df"
     )
     summary = next(col for col in df["data"]["columns"] if col["label"] == "summary")
     assert summary["node"] == vlm_id
@@ -235,7 +240,9 @@ def test_per_row_vlm_binds_images_and_prompts_per_input_row() -> None:
     infer_id = f"{vlm_id}_infer"
 
     news_id = next(
-        param for param in wire(artifacts)["params"] if param["label"] == "news_id"
+        param
+        for param in artifacts.data_spec.model_dump(exclude_none=True)["params"]
+        if param["label"] == "news_id"
     )
     assert news_id["path"] == "items.table.news_id"
     assert news_id["node"] in {
@@ -243,18 +250,20 @@ def test_per_row_vlm_binds_images_and_prompts_per_input_row() -> None:
     }
 
     embedding = runtime_graph.nodes[embedding_id]
-    assert wire(embedding)["path"] == "items.content"
-    assert wire(embedding)["node"] in {
+    assert embedding.data_spec.model_dump(exclude_none=True)["path"] == "items.content"
+    assert embedding.data_spec.model_dump(exclude_none=True)["node"] in {
         node_id for node_id, node in runtime_graph.nodes.items() if node is artifacts
     }
 
-    assert wire(runtime_graph.nodes[infer_id])["image_embedding"] == {
+    assert runtime_graph.nodes[infer_id].data_spec.model_dump(exclude_none=True)[
+        "image_embedding"
+    ] == {
         "node": embedding_id,
         "path": "embedding_file",
     }
 
     flatten = runtime_graph.nodes[f"{vlm_id}_flatten"]
-    plan = wire(flatten)["plan"]
+    plan = flatten.data_spec.model_dump(exclude_none=True)["plan"]
     assert {
         "kind": "literal",
         "values": ["A", "B"],
@@ -263,7 +272,9 @@ def test_per_row_vlm_binds_images_and_prompts_per_input_row() -> None:
     } in plan
 
     df = next(
-        col for col in wire(report)["template"]["columns"] if col["label"] == "df"
+        col
+        for col in report.data_spec.model_dump(exclude_none=True)["template"]["columns"]
+        if col["label"] == "df"
     )
     summary = next(col for col in df["data"]["columns"] if col["label"] == "summary")
     assert summary["node"] == vlm_id

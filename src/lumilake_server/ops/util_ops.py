@@ -1,9 +1,10 @@
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, overload
+from typing import Any, Literal, Self, overload
 
 import dill
 
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.utils.lambda_runtime import validate_source
@@ -132,7 +133,7 @@ class FormatOp(FunctionalOp):
         return serialized
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "FormatOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         format_args = [other_ops[arg] for arg in data["format_args"]]
         format_kwargs = {k: other_ops[v] for k, v in data["format_kwargs"].items()}
         op = cls(data["template"], *format_args, **format_kwargs)
@@ -164,6 +165,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -179,6 +181,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -194,6 +197,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -208,6 +212,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -234,6 +239,7 @@ class LambdaOp(Op):
         self.timeout_s = timeout_s
         self.memory_mb = memory_mb
         self.image = image
+        self.gpu = gpu
         # A planning hint for HALO; never enforced at runtime.
         self.expected_runtime_s = expected_runtime_s
         # Opt-in task caching; passed to FlowMesh only when set.
@@ -267,7 +273,7 @@ class LambdaOp(Op):
                     # in repr() as backrefs.
                     replacement: str = repr(var_value)
 
-                    def _replace(_m: "re.Match[str]", r: str = replacement) -> str:
+                    def _replace(_m: re.Match[str], r: str = replacement) -> str:
                         return r
 
                     fn_serialized = re.sub(pattern, _replace, fn_serialized)
@@ -291,6 +297,8 @@ class LambdaOp(Op):
             data["memory_mb"] = self.memory_mb
         if self.image is not None:
             data["image"] = self.image
+        if self.gpu is not None:
+            data["gpu"] = self.gpu.model_dump(exclude_none=True)
         if self.expected_runtime_s is not None:
             data["expected_runtime_s"] = self.expected_runtime_s
         if self.cache is not None:
@@ -300,7 +308,7 @@ class LambdaOp(Op):
         return data
 
     @classmethod
-    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, "Op"]) -> "LambdaOp":
+    def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         fn_name = data.get("fn_name")
         code = data.get("_code")
         if not fn_name or not code:
@@ -309,6 +317,7 @@ class LambdaOp(Op):
         timeout_s = data.get("timeout_s")
         memory_mb = data.get("memory_mb")
         image = data.get("image")
+        gpu = GpuRequest.model_validate(data["gpu"]) if "gpu" in data else None
         expected_runtime_s = data.get("expected_runtime_s")
         cache = data.get("cache")
         sample_value = data.get("sample_value")
@@ -326,6 +335,7 @@ class LambdaOp(Op):
             timeout_s=timeout_s,
             memory_mb=memory_mb,
             image=image,
+            gpu=gpu,
             expected_runtime_s=expected_runtime_s,
             cache=cache,
             sample_value=sample_value,

@@ -10,8 +10,9 @@ Covers:
   - ``acatalog_column_exists(...)``    — async, check catalog column existence
 
 All calls read ``LUMID_DATA_URL`` and ``LUMID_DATA_TOKEN`` from ``envs``
-and set ``Authorization: Bearer <token>``.  Timeout is taken from
-``LUMID_DATA_TIMEOUT_SECONDS``.
+and set ``Authorization: Bearer <token>``. Inside a job bound to a lum.id/data
+job, every call but the archive reads and writes uses the job's token. Timeout
+is taken from ``LUMID_DATA_TIMEOUT_SECONDS``.
 """
 
 import json
@@ -19,6 +20,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import quote
 
@@ -29,6 +31,8 @@ from lumilake.log import trace_id_var
 from lumilake_server.utils.http_client import aget_json, arequest, get, post_json
 
 logger = logging.getLogger(__name__)
+
+data_token_var: ContextVar[str | None] = ContextVar("lumid_data_token", default=None)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -61,8 +65,8 @@ def _base_url() -> str:
     return url.rstrip("/")
 
 
-def _auth_headers() -> dict[str, str]:
-    token = envs.LUMID_DATA_TOKEN
+def _auth_headers(job_scoped: bool) -> dict[str, str]:
+    token = (data_token_var.get() if job_scoped else None) or envs.LUMID_DATA_TOKEN
     if not token:
         raise RuntimeError(
             "LUMID_DATA_TOKEN is required for data profiling via lumid-data-app "
@@ -71,8 +75,8 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _default_headers() -> dict[str, str]:
-    headers = _auth_headers()
+def _default_headers(job_scoped: bool) -> dict[str, str]:
+    headers = _auth_headers(job_scoped)
     trace_id = trace_id_var.get()
     if trace_id:
         headers["X-Request-ID"] = trace_id
@@ -132,7 +136,7 @@ def profile(
     result = post_json(
         url,
         json=body,
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug("POST %s elapsed=%.3fs", url, time.monotonic() - start)
@@ -160,7 +164,7 @@ async def list_blobs(prefix: str) -> tuple[dict[str, int | None], list[str]]:
     result = await aget_json(
         url,
         params={"prefix": prefix, "limit": "10000"},
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug("GET %s elapsed=%.3fs", url, time.monotonic() - start)
@@ -213,7 +217,7 @@ def put_blob(key: str, body: bytes, content_type: str) -> None:
     url = f"{_base_url()}/blobs/{encode_blob_key(key)}"
     logger.info("PUT %s body_bytes=%d", url, len(body))
     start = time.monotonic()
-    headers = {**_default_headers(), "Content-Type": content_type}
+    headers = {**_default_headers(job_scoped=False), "Content-Type": content_type}
     resp = _send_rate_limited(
         lambda: requests.put(
             url,
@@ -248,7 +252,7 @@ def get_blob(key: str) -> tuple[bytes, str]:
     url = f"{_base_url()}/blobs/{encode_blob_key(key)}"
     logger.info("GET %s", url)
     start = time.monotonic()
-    headers = _default_headers()
+    headers = _default_headers(job_scoped=False)
     resp = _send_rate_limited(
         lambda: requests.get(
             url,
@@ -287,7 +291,7 @@ async def alist_blob_keys(prefix: str, *, recursive: bool) -> list[str]:
     result = await aget_json(
         url,
         params={"prefix": prefix, "delimiter": delimiter, "limit": "10000"},
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug("GET %s elapsed=%.3fs", url, time.monotonic() - start)
@@ -333,7 +337,7 @@ async def acatalog_column_exists(schema: str, table: str, column: str) -> bool:
     resp = await arequest(
         "GET",
         url,
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug(
@@ -371,7 +375,7 @@ def retrieve_sample(sql: str) -> list[dict[str, Any]]:
     result = post_json(
         url,
         json=body,
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug("POST %s elapsed=%.3fs", url, time.monotonic() - start)
@@ -397,7 +401,7 @@ def retrieve_sample(sql: str) -> list[dict[str, Any]]:
     fetch_start = time.monotonic()
     fetch_resp = get(
         fetch_url,
-        headers=_default_headers(),
+        headers=_default_headers(job_scoped=True),
         timeout=envs.LUMID_DATA_TIMEOUT_SECONDS,
     )
     logger.debug(

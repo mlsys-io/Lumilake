@@ -7,10 +7,13 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.data_specs import (
     Column,
+    ColumnTable,
     DataSpecModel,
     ListData,
+    NodeColumn,
 )
 from lumilake_server.ops import (
+    DataOp,
     InputOp,
     LLMOp,
     Op,
@@ -186,14 +189,14 @@ class _RuntimeGraphBuilderBase:
         self,
         *,
         consumer_id: str,
-        label: str,
-        node_ref: str,
-        path: str,
+        column: NodeColumn,
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
     ) -> Column:
-        """Bind a ``node:`` reference into a spec column, mapping the declared
-        path to the upstream's read path."""
+        """Bind a node column into a spec column at the upstream's read path."""
+        label = column.label
+        node_ref = column.node
+        path = column.path or ""
         if isinstance(upstream, InputOp):
             values = inputs_dict.get(upstream.name)
             if values is None:
@@ -206,20 +209,40 @@ class _RuntimeGraphBuilderBase:
             # ``path`` (which would drill into the envelope) is meaningless
             # here. The scalar value is inlined verbatim; ``path`` must be
             # absent / empty.
-            if path not in (None, ""):
+            if column.path:
                 raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' with drill path {path!r}; "
-                    "InputOp-derived columns cannot be drilled — wrap "
-                    "record-shaped inputs in an upstream op that exposes the "
-                    "target field, or drop the ``path`` for scalar inputs."
+                    f"Column '{label}' of consumer '{consumer_id}' references InputOp"
+                    f" '{node_ref}' with drill path {column.path!r}; InputOp-derived"
+                    " columns cannot be drilled — wrap record-shaped inputs in an"
+                    " upstream op that exposes the target field, or drop the ``path``"
+                    " for scalar inputs."
                 )
             return Column(label=label, data=ListData(items=list(values)))
+        if isinstance(upstream, DataOp):
+            # A DataOp has no runtime envelope, so its values bind whole and a path
+            # would read something the op never produces.
+            if column.path is not None:
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' references DataOp"
+                    f" '{node_ref}' with drill path {column.path!r}; a DataOp-derived"
+                    " column carries the op's values whole, so it takes no path."
+                )
+            return Column(label=label, data=ListData(items=upstream.data.copy()))
         if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
         return Column(label=label, node=node_ref, path=path)
+
+    def _mark_literal_column_producers_visited(
+        self, columns: ColumnTable | None, visited_node_ids: set[str]
+    ) -> None:
+        """Mark each literal column producer visited, so the orphan check counts it."""
+        for column in columns or []:
+            if isinstance(column, NodeColumn) and isinstance(
+                self._graph_dict.get(column.node), (InputOp, DataOp)
+            ):
+                visited_node_ids.add(column.node)
 
     def _project_input_field(
         self, values: list[str], path: str, input_name: str

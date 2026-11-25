@@ -19,7 +19,6 @@ from lumilake_server.routes.jobs import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import data_profile_offload
-from tests.support.data_specs import wire
 
 
 def _llm_config(op_id: str) -> dict:
@@ -218,8 +217,10 @@ def test_forwarded_sql_param_is_literal_in_execution_graph() -> None:
         ]
         # The forwarded start_date is inlined as a literal value into the
         # template, with no node reference to a node missing from the graph.
-        assert "node" not in str(wire(retrieval)["params"])
+        assert "node" not in str(
+            retrieval.data_spec.model_dump(exclude_none=True)["params"]
+        )
         assert any(
-            value in wire(retrieval)["template"]
+            value in retrieval.data_spec.model_dump(exclude_none=True)["template"]
             for value in ("2023-01-01T00:00:00Z", "2020-01-01T00:00:00Z")
         )

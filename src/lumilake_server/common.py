@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict, dataclass, fields
-from typing import Any, ClassVar, TypedDict
+from typing import Any, ClassVar, Self, TypedDict
 
 RETRIEVAL_MODES = ("sql", "s3", "agent")
 
@@ -313,7 +313,7 @@ class GenerationConfig:
         return overlay
 
     @classmethod
-    def from_env(cls, **kwargs: Any) -> "GenerationConfig":
+    def from_env(cls, **kwargs: Any) -> Self:
         if "model" not in kwargs:
             raise ValueError("GenerationConfig.from_env requires 'model'.")
         return cls(**kwargs)

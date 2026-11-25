@@ -12,7 +12,6 @@ from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
-from tests.support.data_specs import wire
 
 _SHOUT = "def shout(inputs):\n    (text,) = inputs\n    return text.upper()"
 
@@ -152,6 +151,14 @@ def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
     just like any other non-``def`` first statement."""
     with pytest.raises(ValueError, match="first name its code binds"):
         lambda_runtime.validate_inline_source(code, "main")
+
+
+def test_inline_source_refuses_any_statement_after_the_def() -> None:
+    """A trailing statement with no binding is refused by the statement kind."""
+    with pytest.raises(ValueError, match="module-level assert statement"):
+        lambda_runtime.validate_inline_source(
+            "def main(x):\n    return x\n\nassert True", "main"
+        )
 
 
 def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
@@ -364,7 +371,12 @@ def test_yaml_limits_reach_the_op() -> None:
 
 def test_submitted_literal_lambda_is_not_folded_by_the_server() -> None:
     runtime = _build(_CHAIN)
-    rendered = json.dumps([wire(node) for node in runtime.nodes.values()])
+    rendered = json.dumps(
+        [
+            node.data_spec.model_dump(exclude_none=True)
+            for node in runtime.nodes.values()
+        ]
+    )
     assert "HELLO, WORLD!" not in rendered
     assert "def shout" in rendered
 
@@ -529,7 +541,7 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     graph = Graph.from_json(spec["graph"])
     runtime = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
     (node,) = [n for n in runtime.nodes.values() if n.task_type == "python"]
-    assert "import math" in wire(node)["code"]
+    assert "import math" in node.data_spec.model_dump(exclude_none=True)["code"]
 
 
 def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
