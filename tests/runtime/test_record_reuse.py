@@ -1398,6 +1398,45 @@ async def test_a_served_reduce_or_expand_output_is_one_whole_run_value(
     assert answers["flat_outputs"] == {output: [json.dumps(whole)]}
 
 
+def _collected_reduce_workflow(changed: bool = False) -> dict[str, Any]:
+    """The reduce fixture with a list-mode collector above it as the output, so
+    a live reader reads the partially served reduce's every group."""
+    workflow = _reduce_workflow(_REDUCE_ROWS, changed=changed)
+    collect = _lambda(
+        "Collect",
+        ["Rank"],
+        "collect",
+        "def collect(c):\n    return ['<'.join(map(str, c[0]))]\n",
+    ) | {"mode": "list"}
+    return {
+        **workflow,
+        "ops": [*workflow["ops"], collect],
+        "outputs": [{"name": "collected", "ref": "Collect"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_collector_above_a_partially_served_reduce_serves_a_third_run() -> None:
+    """A list-mode collector reads every group of a reduce its run only partly
+    serves; the served groups' stored entries answer the collector's column at
+    their positions, so it computes, and the next run serves the collector
+    instead of truncating its input and reporting a partial reduce again."""
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(_collected_reduce_workflow())
+    plan, dispatched, items = await cycle.rerun(_collected_reduce_workflow(True))
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
+    )
+    graph = _runtime_graph(_collected_reduce_workflow(True))
+    (whole,) = [item["output"] for item in items[_node(graph, "Collect")]]
+    assert whole.count("<") == 2 and whole.startswith("['t1']")
+    stored = _stored_entry(cycle.storage, "req-2", "Collect", None)
+    assert stored.value == [whole]
+    again, served = cycle.plan(_collected_reduce_workflow(True))
+    assert _decisions(again)["Collect"] == ("hit", None), _decisions(again)
+    assert served.nodes == {}
+
+
 @pytest.mark.parametrize(
     ("make", "served"),
     [("expand_reduce", ["Split", "Fold"]), ("unkeyed", ["Rank"])],
@@ -1499,7 +1538,7 @@ async def test_a_failed_record_is_recomputed_and_then_served(
 
 
 def _stored_entry(
-    storage: InMemoryJobStorage, job_id: str, op: str, record: str
+    storage: InMemoryJobStorage, job_id: str, op: str, record: str | None
 ) -> RecordEntry:
     """One job's stored entry for one record."""
     index = read_index(storage, job_id)
