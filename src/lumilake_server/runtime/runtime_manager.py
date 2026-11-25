@@ -2051,10 +2051,9 @@ class FlowmeshRuntimeManager:
             if self._runtime_op_requires_gpu(runtime_op):
                 if gpu_count <= 0:
                     raise ValueError(
-                        f"hardware.gpu={gpu_count} but runtime node "
-                        f"{node_name!r} requires a GPU worker "
-                        "(vLLM / transformers / diffusers / text-to-image, or a"
-                        " python step that sets 'gpu')."
+                        f"hardware.gpu={gpu_count} but runtime node {node_name!r}"
+                        " requires a GPU worker (vLLM / transformers / diffusers /"
+                        " text-to-image, or a python step that sets 'gpu')."
                     )
                 gpu_nodes += 1
                 node_spec = node.setdefault("spec", {})
