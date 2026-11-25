@@ -213,6 +213,10 @@ def main(inputs):
         return {{"items": [{{"output": out, "value": val}} for out, val in computed]}}
     # A partial run reads its every live row at its own position and computes only the
     # slots the store did not answer, so each row keeps its own live key.
+    if len(served) != len(rows):
+        raise ValueError(
+            "%s: %d slot(s) for %d live row(s)" % ({op_id!r}, len(served), len(rows))
+        )
     items = []
     for (key, slot), row in zip(served, rows):
         if slot == _MISSED:
@@ -437,7 +441,7 @@ def main(inputs):
         if marker is not None:
             entries.append((None, None, [i], marker))
             continue
-        key = json.dumps(value, sort_keys=True)
+        key = _group_text(value)
         if key not in by_key:
             by_key[key] = len(entries)
             entries.append((key, value, [], None))
@@ -454,7 +458,7 @@ def main(inputs):
                 {{
                     "output": own,
                     "key": by_value,
-                    "members": _live_members(slots, by_value, members),
+                    "members": members,
                 }}
             )
             continue
@@ -466,7 +470,7 @@ def main(inputs):
                     {{
                         "output": markers[0],
                         "key": by_value,
-                        "members": _live_members(slots, by_value, members),
+                        "members": members,
                     }}
                 )
                 continue
@@ -490,7 +494,7 @@ def main(inputs):
             {{
                 "output": fn(rows),
                 "key": _group_text(by_value),
-                "members": _live_members(slots, by_value, members),
+                "members": members,
             }}
         )
     if slots is None:
@@ -545,14 +549,6 @@ def _served_group(slots, by_value):
     )
 
 
-def _live_members(slots, by_value, members):
-    # A narrowed run numbers its members inside the rows it reads; the slot list holds
-    # each live group's own positions, so a computed group reports those.
-    if slots is None:
-        return members
-    record = _group_text(by_value)
-    slot = next((slot for slot in slots if slot["key"] == record), None)
-    return members if slot is None else slot["members"]
 
 
 def _served_item(slot):

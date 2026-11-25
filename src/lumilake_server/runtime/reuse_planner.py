@@ -200,8 +200,6 @@ class ReusePlan(BaseModel):
     output node the plan serves."""
     partial: dict[str, PartialRecords] = Field(default_factory=dict)
     """Node id -> the records a partially served op keeps and the ones it runs."""
-    served_children: dict[str, list[list[RecordEntry]]] = Field(default_factory=dict)
-    """Node id -> each live parent position's stored children, in child order."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -263,7 +261,6 @@ class ReusePlanner:
                 children, missed_parents, counts = expanded
                 if missed_parents:
                     missed = set(missed_parents)
-                    decision.served_children[node_id] = children
                     decision.partial[node_id] = PartialRecords(
                         children=[
                             ParentSlot(
@@ -277,6 +274,7 @@ class ReusePlanner:
                             )
                             for position in range(len(children))
                         ],
+                        stored=[entry for group in children for entry in group],
                     )
                     decision.decisions.append(
                         RecordDecision(
@@ -790,16 +788,6 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
             entries=entries,
         )
         served[node_id] = records
-    for node_id, groups in plan.served_children.items():
-        entries = [entry for group in groups for entry in group]
-        if not entries:
-            continue
-        served[node_id] = NodeRecords(
-            keyed=True,
-            values=[entry.value for entry in entries],
-            keys=[entry.address.record for entry in entries],
-            entries=entries,
-        )
     return served
 
 
@@ -843,15 +831,12 @@ def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
 def _rewritten(
     op: RuntimeOp, plan: ReusePlan, runtime_graph: RuntimeGraph
 ) -> RuntimeOp:
-    """An op reading its served inputs' values, each entry gaining values, and a
-    partially served op reading only the rows its plan did not answer."""
+    """An op reading its served inputs' values, each entry gaining values; a
+    partially served op keeps every column at its live width and gains a slot
+    list that tells its step which records it computes."""
     partial = plan.partial.get(op.node_id)
     if partial is not None:
-        if partial.groups is not None:
-            return _narrowed_groups(op, partial, plan, runtime_graph)
-        if partial.children is not None:
-            return _narrowed_children(op, partial, plan, runtime_graph)
-        return _narrowed(op, partial, plan, runtime_graph)
+        return _rewritten_slots(op, partial, plan, runtime_graph)
     served = [node for node in op.dependencies if _served_node(plan, node)]
     if not served:
         return op
@@ -884,88 +869,44 @@ def _rewritten_plan(
     return replace(op, data_spec=spec.model_copy(update={"plan": rewritten}))
 
 
-def _narrowed(
+def _rewritten_slots(
     op: RuntimeOp,
     partial: PartialRecords,
     plan: ReusePlan,
     runtime_graph: RuntimeGraph,
 ) -> RuntimeOp:
-    """A partially served op reading its whole live row set: every column keeps
-    its live width, so a literal or served column names each row by the position
-    the writer keys it at, and the slot list tells the step which rows to compute."""
+    """A partially served op as its step reads it: every column keeps its live
+    width, so a literal or served column names each record by the position the
+    writer keys it at, and the slot list tells the step what it computes and in
+    what order to emit it."""
     spec = op.data_spec
     if not isinstance(spec, PythonData) or not spec.plan:
-        raise ValueError(f"op '{op.node_id}' cannot narrow a partial run")
-    rebuilt: list[ColumnPlanEntry] = []
-    for entry in spec.plan:
-        node = entry.node
-        if node is None or not _served_node(plan, node):
-            rebuilt.append(entry)
-            continue
-        column = _plan_column(plan, node, entry, runtime_graph)
-        if column is None:
-            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
-        rebuilt.append(entry.model_copy(update={"values": column}))
-    slots = _served_entry(
+        raise ValueError(f"op '{op.node_id}' cannot rewrite a partial run")
+    slots = _partial_slots(partial)
+    if slots is None:
+        raise ValueError(f"op '{op.node_id}' cannot rewrite a partial run")
+    rebuilt = _rewritten_plan(op, spec, plan, runtime_graph)
+    data = rebuilt.data_spec
+    assert isinstance(data, PythonData)
+    return replace(
+        rebuilt, data_spec=data.model_copy(update={"plan": [*data.plan, slots]})
+    )
+
+
+def _partial_slots(partial: PartialRecords) -> ColumnPlanEntry | None:
+    """The served slot entry for a partial op: one per group or child, else one
+    record per live position."""
+    if partial.groups is not None:
+        return _served_entry(
+            [slot.model_dump(exclude_none=True) for slot in partial.groups]
+        )
+    if partial.children is not None:
+        return _served_entry(
+            [slot.model_dump(exclude_none=True) for slot in partial.children]
+        )
+    return _served_entry(
         [[key, value] for key, value in zip(partial.keys, partial.served)]
     )
-    return replace(op, data_spec=spec.model_copy(update={"plan": [*rebuilt, slots]}))
-
-
-def _narrowed_groups(
-    op: RuntimeOp,
-    partial: PartialRecords,
-    plan: ReusePlan,
-    runtime_graph: RuntimeGraph,
-) -> RuntimeOp:
-    """A reduce reading its whole live row set: every column keeps its live
-    width, so a per-row literal and a served column stay aligned, and the slot
-    list tells the step which groups to compute and in what order to emit them."""
-    spec = op.data_spec
-    if not isinstance(spec, PythonData) or not spec.plan or partial.groups is None:
-        raise ValueError(f"op '{op.node_id}' cannot narrow a partial reduce")
-    rebuilt: list[ColumnPlanEntry] = []
-    for entry in spec.plan:
-        node = entry.node
-        if node is None or not _served_node(plan, node):
-            rebuilt.append(entry)
-            continue
-        column = _plan_column(plan, node, entry, runtime_graph)
-        if column is None:
-            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
-        rebuilt.append(entry.model_copy(update={"values": column}))
-    slots = _served_entry(
-        [slot.model_dump(exclude_none=True) for slot in partial.groups]
-    )
-    return replace(op, data_spec=spec.model_copy(update={"plan": [*rebuilt, slots]}))
-
-
-def _narrowed_children(
-    op: RuntimeOp,
-    partial: PartialRecords,
-    plan: ReusePlan,
-    runtime_graph: RuntimeGraph,
-) -> RuntimeOp:
-    """An expand reading its whole live parent set: every column keeps its live
-    width, so a literal or served column names each parent by the position the
-    writer keys it at, and the slot list tells the step which parents to expand."""
-    spec = op.data_spec
-    if not isinstance(spec, PythonData) or not spec.plan or partial.children is None:
-        raise ValueError(f"op '{op.node_id}' cannot narrow a partial expand")
-    rebuilt: list[ColumnPlanEntry] = []
-    for entry in spec.plan:
-        node = entry.node
-        if node is None or not _served_node(plan, node):
-            rebuilt.append(entry)
-            continue
-        column = _plan_column(plan, node, entry, runtime_graph)
-        if column is None:
-            raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
-        rebuilt.append(entry.model_copy(update={"values": column}))
-    slots = _served_entry(
-        [slot.model_dump(exclude_none=True) for slot in partial.children]
-    )
-    return replace(op, data_spec=spec.model_copy(update={"plan": [*rebuilt, slots]}))
 
 
 def _reads_literal_lists(op: RuntimeOp) -> bool:

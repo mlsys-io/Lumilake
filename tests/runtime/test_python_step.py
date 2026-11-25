@@ -766,12 +766,11 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": rows}]
     out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
     scores = [[row[0]["s"] for row in item["output"]] for item in out["items"]]
-    assert scores == [[7, 5], [9], [2], [3]]
+    assert scores == [[7, 5], [9], [3, 2]]
     assert [(item["key"], item["members"]) for item in out["items"]] == [
         ("p1", [0, 2, 5]),
         ("p2", [1]),
-        ("1", [3]),
-        ("1", [4]),
+        ("1", [3, 4]),
     ]
 
 
