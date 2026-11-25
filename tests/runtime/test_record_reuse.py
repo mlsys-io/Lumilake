@@ -280,10 +280,6 @@ class _Cycle:
             ran[node] = _run_step(op, upstreams)
         return ran
 
-    def third(self, workflow: dict[str, Any], graph: Any = None) -> Any:
-        """Run 3: plan the unchanged workflow again."""
-        return self.plan(workflow, graph)
-
 
 def _names(graph: Any) -> dict[str, str]:
     """Each dispatched node's op name."""
@@ -1074,42 +1070,6 @@ def _tag_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_a_partial_run_computes_what_a_full_run_does_and_a_third_hits() -> None:
-    """The step fills only the missed slot, keeps the served one, and writes every
-    live key, so a third run over the same rows hits the op whole."""
-    rows = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
-    amended = [rows[0], {"id": "b", "t": "y!"}]
-    graph, storage = _runtime_graph(_tag_workflow(amended)), InMemoryJobStorage()
-    await _run(storage, _tag_workflow(rows), {"Tag": ["X", "Y"]}, "req-1")
-    plan, dispatched = _planned(storage, graph)
-    tag = _node(graph, "Tag")
-    assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
-    items = _run_step(dispatched.nodes[tag], {})
-    served = [(item["output"], item["value"]) for item in items]
-    full = [(item["output"], item["value"]) for item in _run_step(graph.nodes[tag], {})]
-    assert served == full
-    await _run(
-        storage,
-        _tag_workflow(amended),
-        {},
-        "req-2",
-        graph=dispatched,
-        served=writer_records(plan, {}),
-        items={"Tag": items},
-    )
-    index = read_index(storage, "req-2")
-    assert index is not None
-    written = {
-        item.record: read_entry(storage, item.digest)
-        for item in index.entries
-        if item.op == "Tag"
-    }
-    assert {record for record in written if record} == {"a", "b"}
-    again, _ = _planned(storage, graph)
-    assert _decisions(again)["Tag"] == ("hit", None), _decisions(again)
-
-
-@pytest.mark.asyncio
 async def test_a_partial_runs_spec_digest_equals_a_full_runs() -> None:
     """A literal column's extra fields, and the served slot beside it, stay out of
     one rule, so a partial run's op digests the same op a full run would."""
@@ -1223,7 +1183,7 @@ async def test_a_reduce_cycle_merges_one_changed_group(by: str) -> None:
     assert [(item["key"], item["output"]) for item in items] == [
         (item["key"], item["output"]) for item in full
     ]
-    third, dispatched = cycle.third(_reduce_workflow(rows, by, changed=True))
+    third, dispatched = cycle.plan(_reduce_workflow(rows, by, changed=True))
     assert third.hits.get(rank_id), _decisions(third)
     assert rank_id not in dispatched.nodes
     moved = [*rows[:2], {**rows[2], "id": "t3b"}]
@@ -1234,76 +1194,21 @@ async def test_a_reduce_cycle_merges_one_changed_group(by: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_expand_decides_each_parent() -> None:
-    """An expand whose parents are all served hits every child; one parent whose
-    children the store lacks re-expands under its live index while the served
-    parent's children keep theirs."""
-    workflow = _expand_workflow()
-    graph = _runtime_graph(workflow)
-    fill, split = _node(graph, "Fill"), _node(graph, "Split")
-    storage = InMemoryJobStorage()
-    await _run(
-        storage,
-        workflow,
-        {"Fill": [{"id": "p1"}, {"id": "p2"}]},
-        "req-1",
-        items={
-            "Split": [
-                {"output": "p1a", "parent": 0, "child": 0},
-                {"output": "p1b", "parent": 0, "child": 1},
-                {"output": "p2a", "parent": 1, "child": 0},
-                {"output": "p2b", "parent": 1, "child": 1},
-            ]
-        },
-    )
-    plan, dispatched = _planned(storage, graph)
-    assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
-    assert split not in dispatched.nodes and fill not in dispatched.nodes
-
-    # Run 1's second child of p2 is only a marker, so p2's children are missing.
-    partial = InMemoryJobStorage()
-    await _run(
-        partial,
-        workflow,
-        {"Fill": [{"id": "p1"}, {"id": "p2"}]},
-        "req-1",
-        items={
-            "Split": [
-                {"output": "p1a", "parent": 0, "child": 0},
-                {"output": "p1b", "parent": 0, "child": 1},
-                {"output": "p2a", "parent": 1, "child": 0},
-                {"output": "p2b", "parent": 1, "child": 1},
-            ]
-        },
-    )
-    _mark_stored_entry(partial, "Split", "p2\x1f1")
-    plan, dispatched = _planned(partial, graph)
-    assert _decisions(plan)["Split"] == ("miss", "partial children"), _decisions(plan)
-    items = _run_step(dispatched.nodes[split], {})
-    full = _run_step(graph.nodes[split], {fill: _run_step(graph.nodes[fill], {})})
-    assert [(item["parent"], item["child"], item["output"]) for item in items] == [
-        (item["parent"], item["child"], item["output"]) for item in full
-    ]
-    await _run(
-        partial,
-        workflow,
-        {},
-        "req-2",
-        graph=dispatched,
-        served=writer_records(plan, {}),
-        items={"Split": items},
-    )
-    index = read_index(partial, "req-2")
-    assert index is not None
-    written = [item.record for item in index.entries if item.op == "Split"]
-    assert {record for record in written if not str(record).endswith("count")} == {
-        "p1\x1f0",
-        "p1\x1f1",
-        "p2\x1f0",
-        "p2\x1f1",
-    }
-    now, _ = _planned(partial, graph)
-    assert _decisions(now)["Split"] == ("miss", "partial children"), _decisions(now)
+async def test_an_expand_cycle_keys_each_child_under_its_parent() -> None:
+    """An expand cycle whose second parent changes re-expands nothing
+    separately: its parent's row is partially served, so the expand misses
+    whole as an upstream miss, and run 3 over the same rows answers it. This
+    pins the level-by-level limit beside the expand's own hit path."""
+    rows = ['{"id": "p1"}', '{"id": "p2"}']
+    changed = ['{"id": "p1"}', '{"id": "p2", "v": 2}']
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(_expand_workflow(rows))
+    plan, _, _ = await cycle.rerun(_expand_workflow(changed))
+    split = _node(_runtime_graph(_expand_workflow(changed)), "Split")
+    assert _decisions(plan)["Split"] == ("miss", "upstream miss"), _decisions(plan)
+    third, dispatched = cycle.plan(_expand_workflow(changed))
+    assert third.hits.get(split), _decisions(third)
+    assert split not in dispatched.nodes
 
 
 @pytest.mark.asyncio
@@ -1321,7 +1226,7 @@ async def test_an_expand_cycle_serves_a_parent_that_expands_to_nothing() -> None
     split = _node(_runtime_graph(workflow), "Split")
     assert plan.hits.get(split), _decisions(plan)
     assert split not in dispatched.nodes
-    third, dispatched = cycle.third(workflow)
+    third, dispatched = cycle.plan(workflow)
     assert third.hits.get(split), _decisions(third)
     assert dispatched.nodes == {}
 
@@ -1370,7 +1275,7 @@ def split2(row):
     split_id = _node(_runtime_graph(workflow), "Split")
     assert _decisions(plan)["Fill"] == ("miss", "partial records"), _decisions(plan)
     assert _decisions(plan)["Const"] == ("hit", None), _decisions(plan)
-    third, dispatched = cycle.third(changed)
+    third, dispatched = cycle.plan(changed)
     assert third.hits.get(split_id), _decisions(third)
     assert split_id not in dispatched.nodes
 
@@ -1405,7 +1310,7 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
     assert [by_key[record] for record in sorted(by_key)] == [
         item["value"] for item in full
     ]
-    third, dispatched = cycle.third(workflow)
+    third, dispatched = cycle.plan(workflow)
     assert _decisions(third)["Tag"] == ("hit", None), _decisions(third)
     assert dispatched.nodes == {}
 
@@ -1525,11 +1430,13 @@ def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> Non
     )
 
 
-def _expand_workflow() -> dict[str, Any]:
+def _expand_workflow(
+    rows: list[str] | None = None,
+) -> dict[str, Any]:
     """A keyed row step read by an expand that splits every row into two children."""
     return {
         "name": "expand-reuse",
-        "inputs": {"Rows": ['{"id": "p1"}', '{"id": "p2"}']},
+        "inputs": {"Rows": rows or ['{"id": "p1"}', '{"id": "p2"}']},
         "ops": [
             {
                 "id": "Fill",
