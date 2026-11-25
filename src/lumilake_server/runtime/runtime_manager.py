@@ -2162,14 +2162,10 @@ class FlowmeshRuntimeManager:
         if runtime_op.data_spec.gpu_request is not None:
             return True
         backend = (runtime_op.backend or "").strip().lower()
-        if backend in {"vllm", "transformers", "diffusers"}:
+        if backend in {"vllm", "transformers", "diffusers", "omni"}:
             return True
         task_type = (runtime_op.task_type or "").strip().lower()
-        # omni_text2image is what ImageGenerationOp lowers to (runtime_graph/llm.py).
-        # Without it here the scheduler sized such a batch with gpu_group_size=0,
-        # dispatched it to a CPU worker, and HALO then failed with "requires at least
-        # one GPU worker because the graph contains GPU nodes": no image generation ran.
-        return task_type in {"inference", "embedding", "diffusion", "omni_text2image"}
+        return task_type in {"inference", "embedding", "diffusion"}
 
     @staticmethod
     def _build_flat_schedule_hint(
