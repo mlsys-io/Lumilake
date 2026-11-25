@@ -18,6 +18,7 @@ from weakref import WeakValueDictionary
 from lumilake.log import Logger
 from lumilake_server.data_specs import (
     ColumnPlanEntry,
+    DataFrame,
     JoinDescription,
     PythonData,
 )
@@ -1758,18 +1759,30 @@ def _record_values(
     response: Any, plan: RecordPlan, items: Sequence[Mapping[str, Any]]
 ) -> list[Any]:
     """The values one task produced, in order, under ``items``: one output per
-    item, a retrieval's rows, or a rowwise API task's grouped rows."""
-    values: list[Any] = []
+    item, a retrieval's rows, a rowwise API task's grouped rows, or a local
+    rowwise model task's per-row outputs grouped into one item."""
     if plan.column is not None:
         return [row for item in items for row in _table_rows(item.get("table"))]
     typed = typed_row_step(plan.op)
+    values: list[Any] = []
     for item in items:
         rows = item.get("rows")
         if isinstance(rows, list):
             values.extend(_row_value(row) for row in rows)
+        elif _grouped_model_output(item, plan):
+            values.extend(item["output"])
         else:
             values.append(_item_output(item, typed))
     return values
+
+
+def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
+    """Whether an item holds a rowwise model task's per-row outputs as one list."""
+    return (
+        isinstance(plan.op.data_spec, DataFrame)
+        and isinstance(item, Mapping)
+        and isinstance(item.get("output"), list)
+    )
 
 
 def _row_value(row: Any) -> Any:

@@ -22,7 +22,13 @@ from lumilake_server.data_specs import (
     parse_data_spec,
 )
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder
+from lumilake_server.ops import (
+    LLMChatOp,
+    OpMessage,
+    RecordKey,
+    as_output,
+    input_placeholder,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
@@ -36,6 +42,7 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
+    _seed_first_order,
     rebuilt_output,
     served_column,
     served_records,
@@ -251,6 +258,41 @@ async def test_a_chat_op_hits_on_its_record_keys(
         runtime_graph=_chat_graph(rows, seeds), round_number=0, job_id="req-2"
     )
     assert _decisions(plan)["Join"] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_served_local_chat_keeps_its_grouped_item_shape() -> None:
+    """A served local rowwise chat answers its reader with the live grouped
+    item, one ``output`` list holding every row's reply, not one item per row."""
+    graph = _chat_graph(_BASE_ROWS)
+    join = _node(graph, "Join")
+    replies = [row["id"] for row in _BASE_ROWS]
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-1",
+        graph=graph,
+        items={"Join": [{"output": replies}]},
+    )
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None)
+    assert not any(n == join for n in dispatched.nodes)
+    final = dispatched.nodes[_node(graph, "Final")]
+    assert isinstance(final.data_spec, PythonData)
+    (entry,) = final.data_spec.plan
+    assert entry.values == [["a", "b"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [7, True, None, '{"a": 1}', {"a": 1}, ["a"], "plain", 0.5],
+    ids=["int", "bool", "null", "json-text", "dict", "list", "text", "float"],
+)
+async def test_a_row_steps_served_item_equals_its_live_item(value: Any) -> None:
+    """A served row step's item is the live one, typed ``value`` under it."""
 
 
 @pytest.mark.asyncio
@@ -852,3 +894,106 @@ async def test_a_read_with_an_upstream_stays_in_the_main_graph(
         _reusing(graph), Schedule({"w": [key, read]})
     )
     assert reads == {}
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_run_stores_the_seeded_chat_it_redispatched() -> None:
+    """Keyed Cases served and a seeded keyed chat re-dispatched: the reuse write
+    holds the chat's per-row records, so a third run serves the chat."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    seeds = "lambda_keyed_Seeds_1"
+    graph = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            seeds: replace(
+                graph.nodes[mark],
+                node_id=seeds,
+                dependencies=(),
+                data_spec=PythonData(
+                    mode="list", fn_name="seeds", code="lambda c: [7, 9]"
+                ),
+            ),
+        },
+        node_order=[*graph.node_order, seeds],
+    )
+    graph.op_names[seeds] = "Seeds"
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(
+            update={"seeds": NodeRead(node=seeds, path="value.items.output")}
+        ),
+    )
+    graph.record_keys[join] = RecordKey(node=mark, path="id")
+    replies = ["A", "B"]
+    items: dict[str, list[Any]] = {
+        "Seeds": [{"output": 7}, {"output": 9}],
+        "Join": [{"output": replies}],
+    }
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Mark": _BASE_ROWS, "Join": replies},
+        "req-1",
+        graph=graph,
+        items=items,
+    )
+    changed = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            join: replace(
+                graph.nodes[join],
+                data_spec=graph.nodes[join].data_spec.model_copy(
+                    update={"messages": [{"role": "user", "content": "{q}?"}]}
+                ),
+            ),
+        },
+    )
+    plan, dispatched = _planned(storage, changed)
+    assert _decisions(plan)["Mark"] == ("hit", None), _decisions(plan)
+    assert _decisions(plan)["Join"] == ("miss", "no entry"), _decisions(plan)
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+        items=items,
+    )
+    chat = graph.op_names[join]
+    index = read_index(storage, "req-2")
+    assert index is not None
+    stored = [e for e in index.entries if e.op == chat]
+    assert {e.record for e in stored} == {"a", "b"}
+    again, _ = _planned(storage, changed, job_id="req-3")
+    assert _decisions(again)["Join"] == ("hit", None), _decisions(again)
+
+
+def test_a_seed_node_that_depends_on_a_later_node_stays_after_it() -> None:
+    """A seed node ordered after its chat but reading a node between them keeps
+    that node ahead of it, so the plan order stays topological."""
+    base = _chat_graph(_BASE_ROWS)
+    mark, join = _node(base, "Mark"), _node(base, "Join")
+    between = replace(base.nodes[mark], node_id="b", dependencies=(mark,))
+    seed = replace(base.nodes[mark], node_id="s", dependencies=("b",))
+    graph = replace(
+        base,
+        nodes={**base.nodes, "b": between, "s": seed},
+        node_order=[mark, join, "b", "s"],
+    )
+    graph.op_names["s"] = "Seed"
+    spec = graph.nodes[join].data_spec
+    assert isinstance(spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(update={"seeds": NodeRead(node="s")}),
+    )
+    order = _seed_first_order(graph)
+    assert order.index(mark) < order.index(join)
+    assert order.index("b") < order.index("s")
+    assert order.index("s") < order.index(join)

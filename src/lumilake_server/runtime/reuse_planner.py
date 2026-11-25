@@ -52,6 +52,7 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.job_storage import JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
@@ -166,7 +167,7 @@ class ReusePlanner:
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
-        for node_id in order:
+        for node_id in _seed_first_order(runtime_graph):
             plan = plans[node_id]
             if plan.key_path is not None:
                 decision.key_paths[node_id] = plan.key_path
@@ -588,6 +589,11 @@ def _wrap(op: RuntimeOp) -> _Wrapping | None:
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
+def _grouped_items(op: RuntimeOp) -> bool:
+    """Whether a local rowwise chat groups every row's reply into one item."""
+    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
+
+
 def _plan_column(
     plan: ReusePlan,
     node: str,
@@ -597,34 +603,40 @@ def _plan_column(
     """An answered input's column for a python step, built as the worker builds it."""
     if node in plan.content:
         return _content_column(plan, node, entry)
+    producer = runtime_graph.nodes[node]
     return served_column(
         plan.hits[node],
         entry,
-        wrapped=_wrap(runtime_graph.nodes[node]),
+        _wrap(producer),
+        _grouped_items(producer),
     )
 
 
-def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
-    """A hit producer's item outputs, one list per keyed row or per whole-op value."""
-    if entries[0].address.record is not None:
-        return [[entry.value] for entry in entries]
-    return [[output] for output in entries[0].value]
+def served_lists(entries: Sequence[RecordEntry], grouped: bool) -> list[list[Any]]:
+    """A hit producer's item outputs: one list per keyed row, one whole-op value,
+    or every keyed row folded into the one grouped list a local chat emits."""
+    if entries[0].address.record is None:
+        return [[output] for output in entries[0].value]
+    if grouped:
+        return [[[entry.value for entry in entries]]]
+    return [[entry.value] for entry in entries]
 
 
 def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
-    wrapped: _Wrapping | None,
+    wrapping: _Wrapping | None,
+    grouped: bool = False,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
         return None
     items: list[Any] = []
-    for values in served_lists(entries):
+    for values in served_lists(entries, grouped):
         for item in values:
-            if wrapped == "text":
+            if wrapping == "text":
                 items.append({"output": _output_text(item), "value": item})
-            elif wrapped == "output":
+            elif wrapping == "output":
                 items.append({"output": item})
             else:
                 items.append(item)
@@ -838,6 +850,28 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
+def _seed_first_order(runtime_graph: RuntimeGraph) -> list[str]:
+    """Topological order with each seed node ordered ahead of the chat reading it."""
+    graph: dict[str, set[str]] = {node_id: set() for node_id in runtime_graph.nodes}
+    for node_id, node in runtime_graph.nodes.items():
+        for dep in node.dependencies:
+            if dep in graph:
+                graph[dep].add(node_id)
+        spec = node.data_spec
+        if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
+            if spec.seeds.node in graph:
+                graph[spec.seeds.node].add(node_id)
+    order_index = {node: idx for idx, node in enumerate(runtime_graph.node_order)}
+    return [
+        node_id
+        for node_id in topological_sort(
+            graph,
+            secondary_key=lambda node_id: order_index.get(node_id, len(order_index)),
+        )
+        if node_id in runtime_graph.nodes
+    ]
+
+
 def _seeded_records(
     plan: RecordPlan,
     stored: Mapping[str, list[RecordEntry]],
@@ -942,7 +976,7 @@ def _unserved_reader_reason(
         for entry in spec.plan:
             if entry.node != op.node_id:
                 continue
-            if served_column(hit, entry, _wrap(op)) is None:
+            if served_column(hit, entry, _wrap(op), _grouped_items(op)) is None:
                 return "value not servable"
     return None
 
