@@ -1638,7 +1638,7 @@ def _collect_node_records(
     # entries answer at their positions too.
     for node_id, node_records in (served or {}).items():
         produced_records = records.get(node_id)
-        if produced_records is None:
+        if produced_records is None or node_id not in produced:
             continue
         for entry in node_records.entries:
             produced_records.digests[entry.address.record, entry.address.round] = (
