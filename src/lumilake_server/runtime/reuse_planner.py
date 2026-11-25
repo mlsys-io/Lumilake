@@ -148,9 +148,8 @@ class ParentSlot(BaseModel):
 
     parent: int
     children: list[Any] | None = None
-    count: RecordEntry | None = None
-    """The store's count entry for this parent, indexed so a parent answered
-    with no children keeps its count."""
+    count: RecordEntry | None = Field(default=None, exclude=True)
+    """The count entry the run indexes for this parent; the step never reads it."""
 
 
 class PartialRecords(BaseModel):

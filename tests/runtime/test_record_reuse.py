@@ -1389,11 +1389,25 @@ async def test_a_recomputed_failed_record_replaces_its_marker(
     cycle = _Cycle(InMemoryJobStorage())
     await cycle.full(workflow, fail=_fails(op, make))
     assert is_marker(_stored_entry(cycle.storage, "req-1", op, record).value)
-    plan, _, _ = await cycle.rerun(workflow)
+    plan, dispatched, _ = await cycle.rerun(workflow)
     assert _decisions(plan)[op] == ("miss", reason), _decisions(plan)
+    if make == "expand":
+        assert _slot_fields(dispatched, workflow, op) == [
+            {"children", "parent"},
+            {"parent"},
+        ]
     stored = _stored_entry(cycle.storage, "req-2", op, record)
     assert not is_marker(stored.value), stored.value
     cycle.serves(workflow, op)
+
+
+def _slot_fields(graph: Any, workflow: dict[str, Any], op: str) -> list[set[str]]:
+    """Each slot of the dispatched op's slot list as one field-name set."""
+    spec = graph.nodes[_node(_runtime_graph(workflow), op)].data_spec
+    assert isinstance(spec, PythonData)
+    slots = spec.plan[-1].values or []
+    assert slots
+    return [set(slot) for slot in slots]
 
 
 def _fails(op: str, make: str) -> Callable[[str, Mapping[str, Any]], str | None]:
