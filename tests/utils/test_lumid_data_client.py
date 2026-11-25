@@ -120,8 +120,8 @@ class TestAlistBlobKeys:
         _base_url_and_token(monkeypatch)
         page = {
             "objects": [
-                {"key": "pfx/a.txt"},
                 {"key": "pfx/b.txt"},
+                {"key": "pfx/a.txt"},
             ],
             "truncated": False,
         }

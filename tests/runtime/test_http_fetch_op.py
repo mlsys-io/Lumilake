@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 import yaml
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.data_specs import PythonData, build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     HttpFetchOp,
     LLMChatOp,
     OpMessage,
@@ -113,7 +113,7 @@ def test_http_fetch_op_yaml_lowers_to_an_api_node() -> None:
 def test_http_fetch_op_reads_its_upstream_result_path() -> None:
     """A fetch over a retrieval reads its table rows, not its ``output``."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",

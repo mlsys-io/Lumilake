@@ -46,7 +46,7 @@ ops:
           AND id IS NOT NULL
           AND path IS NOT NULL
           AND path <> ''
-        ORDER BY "publishedDate" DESC
+        ORDER BY "publishedDate" DESC, id
         LIMIT 5;
       params:
         - label: symbol

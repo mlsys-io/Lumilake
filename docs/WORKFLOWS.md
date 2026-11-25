@@ -145,6 +145,8 @@ For `DataRetrievalOp` placeholders whose upstream is another `DataRetrievalOp`, 
 
 An `aggregate_table` or `rowwise_columns` column may reference a workflow input or a `DataOp` by `node` alone: the column carries that op's literal values whole and takes no `path`.
 
+A `sql`-mode retrieval must define its row order; see [`docs/OPS.md`](OPS.md#dataretrievalop) for the rule and its refusals.
+
 Live sampling is **off by default**. The recommended path is to set `sample_value` on the upstream `data_spec` — that supplies a representative value at build time with zero live execution. To explicitly opt in to bounded live queries, set `LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING=1`. To skip data profiling entirely, set `LUMILAKE_DISABLE_DATA_PROFILE=1`.
 
 When live sampling is enabled, preflight routes a bounded `LIMIT N` query through lumid-data-app (`POST /retrieve`), subject to the shared `LUMID_DATA_TIMEOUT_SECONDS` HTTP timeout. lumid-data-app is responsible for enforcing SELECT-only / read-only semantics and any per-tenant rate or row caps; the Lumilake server does not open database connections directly.

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
@@ -16,7 +17,6 @@ from lumilake_server.data_specs import (
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     FormatOp,
     LambdaOp,
     LLMChatOp,
@@ -185,7 +185,7 @@ def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
     materialize as a python step so the retrieval node can reference it."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -215,7 +215,7 @@ def test_lambda_named_only_by_retrieval_dependency_materializes() -> None:
     unemitted node."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1357,7 +1357,7 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     path fails the way it fails in FlowMesh."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",

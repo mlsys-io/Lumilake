@@ -1,13 +1,13 @@
 """The metadata an op declares matches the nodes its lowering emits."""
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LambdaOp,
     LLMChatOp,
     OpMessage,
@@ -84,7 +84,7 @@ def test_chat_shape_decides_how_its_consumer_reads_it(
 def test_profilable_matches_whether_profile_mode_profiles_the_op(
     data_spec: dict, profilable: bool
 ) -> None:
-    op = DataRetrievalOp(data_spec=data_spec)
+    op = retrieval_op(data_spec)
 
     assert op.profilable is profilable
     profiled = [

@@ -255,6 +255,15 @@ class PythonData(DataSpecModel):
         return self.gpu
 
 
+class InputRefSpec(DataSpecModel):
+    """The input key and ref path a projected literal list came from."""
+
+    model_config = ConfigDict(extra="allow")
+
+    key: str
+    path: str | None = None
+
+
 class RetrievalParam(DataSpecModel):
     """One retrieval placeholder bound to a literal list or an upstream read,
     carrying any other key the user wrote for the worker."""
@@ -265,6 +274,7 @@ class RetrievalParam(DataSpecModel):
     data: ListData | None = None
     node: str | None = None
     path: str | None = None
+    input_ref: InputRefSpec | None = None
 
 
 class RetrievalData(DataSpecModel):
@@ -272,6 +282,7 @@ class RetrievalData(DataSpecModel):
 
     type: Literal["lumid"]
     mode: Literal["sql", "s3", "agent"]
+    rows: Literal["one"] | None = None
     lumid_data_url: str | None = None
     lumid_data_token: str | None = None
     params: list[RetrievalParam] = Field(default_factory=list)

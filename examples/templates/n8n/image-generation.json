@@ -74,7 +74,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT\n  symbol,\n  id,\n  title,\n  \"publishedDate\" AS published,\n  COALESCE(category, 'general') AS category,\n  LEFT(COALESCE(summary, text, ''), 300) AS synopsis,\n  path\nFROM lumilake_demo.news_metadata\nWHERE symbol = '{{ $('Stock') }}'\n  AND id IS NOT NULL\n  AND path IS NOT NULL\n  AND path <> ''\nORDER BY \"publishedDate\" DESC\nLIMIT 5;",
+        "query": "SELECT\n  symbol,\n  id,\n  title,\n  \"publishedDate\" AS published,\n  COALESCE(category, 'general') AS category,\n  LEFT(COALESCE(summary, text, ''), 300) AS synopsis,\n  path\nFROM lumilake_demo.news_metadata\nWHERE symbol = '{{ $('Stock') }}'\n  AND id IS NOT NULL\n  AND path IS NOT NULL\n  AND path <> ''\nORDER BY \"publishedDate\" DESC, id\nLIMIT 5;",
         "options": {}
       },
       "type": "n8n-nodes-base.postgres",

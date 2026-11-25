@@ -34,6 +34,7 @@ from lumilake_server.data_specs import (
     ListData,
     LiteralColumn,
     PythonData,
+    RetrievalParam,
 )
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
@@ -116,13 +117,23 @@ def _empty_runtime_graph() -> RuntimeGraph:
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
 
 
-def _dict_list_writer(data: dict[str, Any]) -> _ListSpecWriter:
-    """Write a rewritten list back into a retrieval param's dict spec."""
+def _param_input_ref(param: RetrievalParam) -> InputRef | None:
+    """The ``input_ref`` a retrieval param declares, as the column-shaped ref."""
+    ref = param.input_ref
+    if ref is None:
+        return None
+    return {"key": ref.key, "path": ref.path}
+
+
+def _param_list_writer(param: RetrievalParam) -> _ListSpecWriter:
+    """Write a rewritten list back into a retrieval param's typed spec."""
 
     def write(items: list[Any], grouped: bool) -> None:
-        data["items"] = items
+        assert param.data is not None
+        update: dict[str, Any] = {"items": items}
         if grouped:
-            data["grouped"] = True
+            update["grouped"] = True
+        param.data = param.data.model_copy(update=update)
 
     return write
 
@@ -1792,38 +1803,31 @@ class LumilakeServer:
         """Yield each input-bound literal list: label, items and an items writer."""
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
-                params = op.data_spec.get("params")
-                if isinstance(params, list):
-                    for param in params:
-                        if not isinstance(param, dict):
-                            continue
-                        label = param.get("label")
-                        data = param.get("data")
-                        if not isinstance(label, str) or not isinstance(data, dict):
-                            continue
-                        data_type = data.get("type")
-                        items = data.get("items")
-                        if data_type != "list" or not isinstance(items, list):
-                            continue
-                        input_ref: InputRef | None = None
-                        if isinstance(param.get("input_ref"), dict):
-                            input_ref = {
-                                "key": param["input_ref"]["key"],
-                                "path": param["input_ref"].get("path"),
-                            }
-                        yield label, items, input_ref, _dict_list_writer(data)
+                for param in op.data_spec.params:
+                    label = param.label
+                    data = param.data
+                    if label is None or data is None:
+                        continue
+                    if not isinstance(data.items, list):
+                        continue
+                    yield (
+                        label,
+                        data.items,
+                        _param_input_ref(param),
+                        _param_list_writer(param),
+                    )
             if isinstance(op, LLMChatOp):
                 for column in op.rowwise_columns or []:
                     if not isinstance(column, LiteralColumn):
                         continue
-                    data = column.data
-                    if not isinstance(data, ListData) or not isinstance(
-                        data.items, list
+                    column_data = column.data
+                    if not isinstance(column_data, ListData) or not isinstance(
+                        column_data.items, list
                     ):
                         continue
                     yield (
                         column.label,
-                        data.items,
+                        column_data.items,
                         column.input_ref,
                         _column_list_writer(column),
                     )
@@ -1936,12 +1940,13 @@ class LumilakeServer:
                 continue
             replacement = merged_inputs[rewrite_target_key]
             if input_ref is not None:
-                projected = project_input_values(
-                    replacement,
-                    input_ref["path"],
-                    input_ref["key"],
+                data = list(
+                    project_input_values(
+                        replacement,
+                        input_ref["path"],
+                        input_ref["key"],
+                    )
                 )
-                data = list(projected)
             else:
                 data = list(replacement)
             write(data, len(replacement) > 1)

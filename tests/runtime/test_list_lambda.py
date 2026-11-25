@@ -2,13 +2,13 @@ import textwrap
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LambdaOp,
     LLMChatOp,
     LLMVisionOp,
@@ -365,7 +365,7 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     ``flatten``: the VLM's regroup step already emits one output list per source
     symbol, and flattening would expand image-level values into per-image rows."""
     stock = input_placeholder("Stock")
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "s3",
@@ -423,7 +423,7 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     LLM must compile, with a stage entry for the retrieval (one element per
     retrieval item) alongside the LLM entry, matching the standalone path."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",

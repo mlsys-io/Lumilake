@@ -277,7 +277,7 @@ def get_blob(key: str) -> tuple[bytes, str]:
 
 
 async def alist_blob_keys(prefix: str, *, recursive: bool) -> list[str]:
-    """Return absolute blob keys under ``prefix``.
+    """Return absolute blob keys under ``prefix``, sorted lexicographically.
 
     ``recursive=True`` lists all keys (no delimiter); ``recursive=False`` uses
     delimiter ``"/"`` for a single level. The ``/blobs`` endpoint has no cursor,
@@ -316,7 +316,7 @@ async def alist_blob_keys(prefix: str, *, recursive: bool) -> list[str]:
         k = obj.get("key")
         if isinstance(k, str) and k:
             keys.append(k)
-    return keys
+    return sorted(keys)
 
 
 async def acatalog_column_exists(schema: str, table: str, column: str) -> bool:

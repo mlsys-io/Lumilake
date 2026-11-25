@@ -15,12 +15,12 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -241,7 +241,7 @@ def test_hardware_signature_gpu_model_distinct_partitions_distinct() -> None:
 def _cpu_only_compiled() -> Any:
     """CompiledGraph whose only op is a CPU-only DataRetrievalOp."""
     symbol = input_placeholder("Symbol")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",

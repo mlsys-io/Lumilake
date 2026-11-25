@@ -4,6 +4,7 @@ import types
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
@@ -213,7 +214,7 @@ def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
     FlowMesh ``${node.path}`` dispatch-time placeholder and declares the node
     as a dependency."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1021,7 +1022,7 @@ def test_retrieval_param_referencing_single_row_node_builds() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1792,7 +1793,7 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
             "rowwise_columns",
         ),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1813,7 +1814,7 @@ def _retrieval_with_params(upstream: LLMChatOp, stock: Any) -> DataRetrievalOp:
         {"label": "symbol", "node": stock.id},
         {"label": "start_date", "node": upstream.id, "path": "items.output"},
     ]
-    return DataRetrievalOp(
+    return retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1893,7 +1894,7 @@ def test_retrieval_param_feeding_multi_row_embedding_fails_closed() -> None:
         content=stock,
         config=GenerationConfig(model="bge-m3", api=ApiConfig()),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",

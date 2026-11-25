@@ -82,14 +82,14 @@ def test_parse_n8n_templates(template_path: Path, monkeypatch: pytest.MonkeyPatc
     from lumilake_server.ops import DataRetrievalOp as _DROp
 
     for op in graph.iter_ops(_DROp):
-        ds = op.data_spec
-        assert ds.get("type") == "lumid", f"op {op.id} has type {ds.get('type')!r}"
-        assert ds.get("mode") in {
+        retrieval = op.data_spec
+        assert retrieval.type == "lumid", f"op {op.id} has type {retrieval.type!r}"
+        assert retrieval.mode in {
             "sql",
             "s3",
             "agent",
-        }, f"op {op.id} has unknown mode {ds.get('mode')!r}"
-        assert "connection_string" not in ds
+        }, f"op {op.id} has unknown mode {retrieval.mode!r}"
+        assert "connection_string" not in (op.data_spec.model_extra or {})
 
 
 def test_rowwise_agent_reference_uses_table_path() -> None:
@@ -301,7 +301,7 @@ def _code_node_workflow(notes: str) -> dict:
 
 
 _SQL_UPSTREAM = {
-    "parameters": {"operation": "executeQuery", "query": "SELECT 1"},
+    "parameters": {"operation": "executeQuery", "query": "SELECT 1 ORDER BY 1"},
     "type": N8N_POSTGRES_NODE,
     "name": "SQL",
     "id": "sql-node",

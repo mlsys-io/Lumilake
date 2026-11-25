@@ -41,7 +41,7 @@ def _sql_config(op_id: str) -> dict:
         "id": op_id,
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
 
 
@@ -84,7 +84,7 @@ def test_forward_explicit_sql_column_reference_binds_and_rewrites():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE s = {p}",
+                "template": "SELECT * FROM t WHERE s = {p} ORDER BY 1",
                 "params": [
                     {"label": "p", "node": sql_id, "path": "items.table.symbol"}
                 ],
@@ -203,7 +203,7 @@ def test_forward_rewritten_ops_parse_through_yaml_parser():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE c = {p}",
+                "template": "SELECT * FROM t WHERE c = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": sql_id, "path": "items.table.close"}],
             },
         }
@@ -232,7 +232,7 @@ def test_validate_rejects_reference_to_unavailable_earlier_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
+                "template": "SELECT * FROM t WHERE id = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
             },
         }
@@ -253,7 +253,7 @@ def test_validate_accepts_reference_to_available_earlier_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
+                "template": "SELECT * FROM t WHERE id = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
             },
         }
@@ -270,7 +270,7 @@ def test_validate_rejects_export_not_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
@@ -283,7 +283,7 @@ def test_validate_accepts_export_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
@@ -297,7 +297,7 @@ def test_admit_subgraph_forwards_export_to_validation():
         "id": "q1",
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
@@ -320,7 +320,7 @@ def test_build_round_round2_graph_has_no_round1_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE s = {p}",
+                "template": "SELECT * FROM t WHERE s = {p} ORDER BY 1",
                 "params": [
                     {"label": "p", "node": sql_id, "path": "items.table.symbol"}
                 ],
