@@ -1417,6 +1417,58 @@ def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> Non
     )
 
 
+def _reduce_literal_workflow() -> dict[str, Any]:
+    """A keyed row step and a per-row literal list of the same length, read by a
+    reduce that groups the served keyed input and reads the literal whole."""
+    tag, rank = _REDUCE_OPS
+    rank = {**rank, "inputs": ["Tag", "Weights"]}
+    return {
+        "name": "reduce-literal",
+        "inputs": {"Rows": [json.dumps(row) for row in _REDUCE_ROWS]},
+        "ops": [
+            tag,
+            {
+                "id": "Weights",
+                "op": "DataOp",
+                "inputs": [],
+                "data": ["w1", "w2", "w3"],
+            },
+            rank,
+        ],
+        "outputs": [{"name": "ranked", "ref": "Rank"}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_partial_reduce_with_a_per_row_literal_runs_on_the_worker() -> None:
+    """A partial reduce that also reads a per-row literal of the live length runs:
+    every column is at live width, so the step's row check passes and it emits
+    one item per live group. Covers finding 5."""
+    workflow = _reduce_literal_workflow()
+    graph = _runtime_graph(workflow)
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        workflow,
+        {"Tag": _REDUCE_ROWS},
+        "req-1",
+        graph=graph,
+        items={
+            "Rank": [
+                {"output": ["t1"], "key": "p1", "members": [0]},
+            ]
+        },
+        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
+    )
+    plan, dispatched = _planned(storage, graph)
+    rank = _node(graph, "Rank")
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
+    )
+    items = _run_step(dispatched.nodes[rank], {})
+    assert [item["key"] for item in items] == ["p1", "p2", "p3"]
+
+
 def _seeded_expand_workflow() -> dict[str, Any]:
     """A keyed row step read by an expand whose row function draws a seed from
     the same input's ``seed`` column."""

@@ -891,37 +891,26 @@ def _narrowed_groups(
     plan: ReusePlan,
     runtime_graph: RuntimeGraph,
 ) -> RuntimeOp:
-    """A reduce reading only the members of its missed groups: each input column
-    keeps the rows of those groups, so the step recomputes those groups alone,
-    and the slot list carries the live groups for it to emit in order."""
+    """A reduce reading its whole live row set: every column keeps its live
+    width, so a per-row literal and a served column stay aligned, and the slot
+    list tells the step which groups to compute and in what order to emit them."""
     spec = op.data_spec
     if not isinstance(spec, PythonData) or not spec.plan or partial.groups is None:
         raise ValueError(f"op '{op.node_id}' cannot narrow a partial reduce")
-    wanted = {slot.key for slot in partial.groups if slot.served is None}
-    spec_by = spec.by or ""
-    narrowed: list[ColumnPlanEntry] = []
+    rebuilt: list[ColumnPlanEntry] = []
     for entry in spec.plan:
         node = entry.node
         if node is None or not _served_node(plan, node):
-            narrowed.append(entry)
+            rebuilt.append(entry)
             continue
         column = _plan_column(plan, node, entry, runtime_graph)
         if column is None:
             raise ValueError(f"op '{op.node_id}' cannot rebuild a served column")
-        rows = [_decoded(value) for value in column]
-        keep = [
-            position
-            for position, row in enumerate(rows)
-            if _value_at_path(row, spec_by) is not _UNSET
-            and key_text(_value_at_path(row, spec_by)) in wanted
-        ]
-        narrowed.append(
-            entry.model_copy(update={"values": [column[at] for at in keep]})
-        )
+        rebuilt.append(entry.model_copy(update={"values": column}))
     slots = _served_entry(
         [slot.model_dump(exclude_none=True) for slot in partial.groups]
     )
-    return replace(op, data_spec=spec.model_copy(update={"plan": [*narrowed, slots]}))
+    return replace(op, data_spec=spec.model_copy(update={"plan": [*rebuilt, slots]}))
 
 
 def _narrowed_children(
