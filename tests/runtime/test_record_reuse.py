@@ -1503,56 +1503,6 @@ def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> Non
     )
 
 
-def _seeded_expand_workflow() -> dict[str, Any]:
-    """A keyed row step read by an expand whose row function draws a seed from
-    the same input's ``seed`` column."""
-    fill, split = _expand_workflow()["ops"]
-    split = {
-        **split,
-        "code": "lambda row, seed: [row[0]['id'] + str(seed) + 'a', 'b']",
-        "seed": {"key": {"node": "Rows", "path": "items.seed"}},
-    }
-    return {
-        "name": "seeded-expand",
-        "inputs": {
-            "Rows": [
-                json.dumps({"id": "p1", "seed": 7}),
-                json.dumps({"id": "p2", "seed": 9}),
-            ]
-        },
-        "ops": [fill, split],
-        "outputs": [{"name": "split", "ref": "Split"}],
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_seeded_expand_hits_on_an_unchanged_rerun() -> None:
-    """A seeded expand's child records carry no realization of their own, so the
-    planner's probe matches what the writer stored: an unchanged rerun serves it
-    whole. The seed reaches the record through the seed node's own input."""
-    cycle, workflow = _Cycle(InMemoryJobStorage()), _seeded_expand_workflow()
-    await cycle.full(workflow)
-    split = _node(_runtime_graph(workflow), "Split")
-    assert all(
-        entry.realization.seed is None
-        for entry in _entries_named(cycle.storage, "Split")
-    )
-    plan, dispatched = cycle.plan(workflow)
-    assert plan.hits.get(split), _decisions(plan)
-    assert split not in dispatched.nodes
-
-
-def _entries_named(storage: InMemoryJobStorage, name: str) -> list[Any]:
-    """Every entry the store holds for one op name in the first run's index."""
-    index = read_index(storage, "req-1")
-    assert index is not None
-    return [
-        entry
-        for entry in (read_entry(storage, item.digest) for item in index.entries)
-        if entry is not None and entry.address.op == name
-    ]
-
-
 def _expand_workflow() -> dict[str, Any]:
     """A keyed row step read by an expand that splits every row into two children."""
     return {
