@@ -1,12 +1,12 @@
 """Whole-op reuse: a reusing plan answers an op whose every record the store
 already holds and dispatches the rest."""
 
+import atexit
 import json
 import logging
 import posixpath
 import shutil
 import tempfile
-from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -227,30 +227,36 @@ class _Cycle:
         self.run = 0
         self.items: dict[str, list[Any]] = {}
 
-    async def full(self, workflow: dict[str, Any], graph: Any = None) -> Any:
+    async def full(self, workflow: dict[str, Any]) -> Any:
         """Run 1: every python step of the workflow, run as its worker does over
         its upstreams, written the way dispatch writes it."""
-        graph = _runtime_graph(workflow) if graph is None else graph
         self.run += 1
-        self.items = self._steps(graph)
-        await self._write(graph, workflow)
-        return self.plan(workflow, graph)
+        self.items = self._steps(_runtime_graph(workflow))
+        await self._write(_runtime_graph(workflow), workflow)
+        return self.plan(workflow)
 
-    def plan(self, workflow: dict[str, Any], graph: Any = None) -> Any:
+    def plan(self, workflow: dict[str, Any]) -> Any:
         """Plan ``workflow`` against what the runs so far stored."""
-        graph = _runtime_graph(workflow) if graph is None else graph
-        return _planned(self.storage, graph, job_id=f"req-{self.run + 1}")
+        return _planned(
+            self.storage, _runtime_graph(workflow), job_id=f"req-{self.run + 1}"
+        )
 
-    async def rerun(self, workflow: dict[str, Any], graph: Any = None) -> Any:
+    def serves(self, workflow: dict[str, Any], op: str) -> None:
+        """Assert the next plan answers ``op`` whole and dispatches it nowhere."""
+        plan, dispatched = self.plan(workflow)
+        node = _node(_runtime_graph(workflow), op)
+        assert plan.hits.get(node), _decisions(plan)
+        assert node not in dispatched.nodes
+
+    async def rerun(self, workflow: dict[str, Any]) -> Any:
         """Run 2: plan, run every step the plan left in the graph over its
         upstreams as its worker does, and store this run's own items under the
         live keys."""
-        graph = _runtime_graph(workflow) if graph is None else graph
-        plan, dispatched = self.plan(workflow, graph)
+        plan, dispatched = self.plan(workflow)
         self.run += 1
         items = self._steps(dispatched)
         self.items |= items
-        await self._write(dispatched, workflow, served=writer_records(plan, {}))
+        await self._write(dispatched, workflow, writer_records(plan, {}))
         return plan, dispatched, items
 
     async def _write(
@@ -288,48 +294,43 @@ def _names(graph: Any) -> dict[str, str]:
 
 
 def _run_step(op: Any, inputs: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """Run one dispatched op's generated step as its worker does, over upstreams."""
+    """Run one dispatched op's generated step as its worker does, over upstreams,
+    staging each upstream's items as a finished task reads them back."""
     plan = op.data_spec.plan
     blobs = [python_step.runtime_blob(), *python_step.literal_blobs(plan).values()]
     spec = python_step.flowmesh_spec(
         op.node_id, op.data_spec, {b.key: b for b in blobs}
     )
-    mounts = {blob.mount_path: blob for blob in blobs}
-    for mounted in mounts.values():
+    for mounted in blobs:
         relative = mounted.mount_path.removeprefix(_BLOBS_ROOT).lstrip("/")
-        path = Path(_MOUNT["root"]) / relative
+        path = _mount_root() / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(mounted.body)
-    code = spec["code"].replace(_BLOBS_ROOT, _MOUNT["root"])
-    namespace: dict[str, Any] = {}
-    exec(code, namespace)
-    return namespace["main"](_stage_inputs(inputs))["items"]
-
-
-_BLOBS_ROOT = posixpath.dirname(python_step.TASK_RUNTIME_MOUNT)
-_MOUNT: dict[str, str] = {}
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _mount_root() -> Iterator[None]:
-    """A mount root under the worktree for the blobs a generated step reads."""
-    scratch = Path(__file__).parents[2] / "tmp-step-mounts"
-    scratch.mkdir(exist_ok=True)
-    _MOUNT["root"] = tempfile.mkdtemp(dir=scratch)
-    yield
-    shutil.rmtree(_MOUNT["root"], ignore_errors=True)
-
-
-def _stage_inputs(inputs: dict[str, list[Any]]) -> dict[str, str]:
-    """Each upstream's items as a finished task stage the step reads back."""
     staged: dict[str, str] = {}
     for node, items in inputs.items():
-        directory = Path(tempfile.mkdtemp(dir=_MOUNT["root"]))
+        directory = Path(tempfile.mkdtemp(dir=_mount_root()))
         (directory / "results.json").write_text(
             json.dumps({"task_id": "t", "result": {"items": items}})
         )
         staged[node] = str(directory)
-    return staged
+    namespace: dict[str, Any] = {}
+    exec(spec["code"].replace(_BLOBS_ROOT, str(_mount_root())), namespace)
+    return namespace["main"](staged)["items"]
+
+
+_BLOBS_ROOT = posixpath.dirname(python_step.TASK_RUNTIME_MOUNT)
+_MOUNT: dict[str, Path] = {}
+
+
+def _mount_root() -> Path:
+    """A mount root under the worktree for the blobs a generated step reads."""
+    if "root" not in _MOUNT:
+        scratch = Path(__file__).parents[2] / "tmp-step-mounts"
+        scratch.mkdir(exist_ok=True)
+        root = Path(tempfile.mkdtemp(dir=scratch))
+        atexit.register(shutil.rmtree, root, True)
+        _MOUNT["root"] = root
+    return _MOUNT["root"]
 
 
 @pytest.mark.asyncio
@@ -658,6 +659,26 @@ _READER, _ONE = {"role": "user", "content": "Read"}, [{"id": "a", "q": "/one"}]
 def _lambda(op_id: str, src: list[str], fn: str, code: str) -> dict[str, Any]:
     """One row Lambda op as YAML names it."""
     return {"id": op_id, "op": "LambdaOp", "inputs": src, "fn_name": fn, "code": code}
+
+
+def _op(op_id: str, src: list[str], fn: str, code: str, mode: str) -> dict[str, Any]:
+    """One Lambda op in the given mode as YAML names it."""
+    return {**_lambda(op_id, src, fn, code), "mode": mode}
+
+
+def _pipeline(
+    name: str,
+    ops: list[dict[str, Any]],
+    output: str,
+    rows: list[str] | None = None,
+) -> dict[str, Any]:
+    """A one-input workflow whose ops are ``ops`` and whose output is ``output``."""
+    return {
+        "name": name,
+        "inputs": {"Rows": rows or ['{"id": "p1"}', '{"id": "p2"}']},
+        "ops": ops,
+        "outputs": [{"name": name, "ref": output}],
+    }
 
 
 def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
@@ -1052,22 +1073,9 @@ async def test_a_read_with_an_upstream_stays_in_the_main_graph(
 
 def _tag_workflow(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """One keyed row step over a literal input, so its own step reads the rows."""
-    return {
-        "name": "tag",
-        "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": [
-            {
-                "id": "Tag",
-                "op": "LambdaOp",
-                "inputs": ["Rows"],
-                "mode": "row",
-                "fn_name": "tag",
-                "key": {"node": "Rows", "path": "id"},
-                "code": "def tag(c):\n    return c[0]['t'].upper()\n",
-            }
-        ],
-        "outputs": [{"name": "tag", "ref": "Tag"}],
-    }
+    tag = _op("Tag", ["Rows"], "tag", "lambda c: c[0]['t'].upper()", "row")
+    tag["key"] = {"node": "Rows", "path": "id"}
+    return _pipeline("tag", [tag], "Tag", [json.dumps(row) for row in rows])
 
 
 @pytest.mark.asyncio
@@ -1108,23 +1116,13 @@ def _with_tag_entry(workflow: dict[str, Any]) -> Any:
 
 
 _REDUCE_OPS: list[dict[str, Any]] = [
+    {**_op("Tag", ["Rows"], "tag", "lambda row: row[0]", "row")}
+    | {"key": {"node": "Rows", "path": "id"}},
     {
-        "id": "Tag",
-        "op": "LambdaOp",
-        "inputs": ["Rows"],
-        "mode": "row",
-        "fn_name": "tag",
-        "key": {"node": "Rows", "path": "id"},
-        "code": "lambda row: row[0]",
-    },
-    {
-        "id": "Rank",
-        "op": "LambdaOp",
-        "inputs": ["Tag"],
-        "mode": "reduce",
+        **_op(
+            "Rank", ["Tag"], "rank", "lambda rows: [r[0]['id'] for r in rows]", "reduce"
+        ),
         "by": "patient",
-        "fn_name": "rank",
-        "code": "def rank(rows):\n    return [r[0]['id'] for r in rows]\n",
     },
 ]
 _REDUCE_ROWS = [
@@ -1142,16 +1140,16 @@ def _reduce_workflow(
     alters the last literal, which changes one group's inputs alone."""
     tag, rank = _REDUCE_OPS
     weights = ["w1", "w2", "w3!"] if changed else ["w1", "w2", "w3"]
-    return {
-        "name": "reduce-reuse",
-        "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": [
+    return _pipeline(
+        "reduce-reuse",
+        [
             tag,
             {"id": "Weights", "op": "DataOp", "inputs": [], "data": weights},
             {**rank, "by": by, "inputs": ["Tag", "Weights"]},
         ],
-        "outputs": [{"name": "ranked", "ref": "Rank"}],
-    }
+        "Rank",
+        [json.dumps(row) for row in rows],
+    )
 
 
 @pytest.mark.parametrize("by", ["patient", "meta"])
@@ -1184,9 +1182,7 @@ async def test_a_reduce_cycle_merges_one_changed_group(by: str) -> None:
     assert [(item["key"], item["output"]) for item in items] == [
         (item["key"], item["output"]) for item in full
     ]
-    third, dispatched = cycle.plan(_reduce_workflow(rows, by, changed=True))
-    assert third.hits.get(rank_id), _decisions(third)
-    assert rank_id not in dispatched.nodes
+    cycle.serves(_reduce_workflow(rows, by, changed=True), "Rank")
     moved = [*rows[:2], {**rows[2], "id": "t3b"}]
     plan, _ = _planned(
         cycle.storage, _runtime_graph(_reduce_workflow(moved, by, changed=True))
@@ -1194,28 +1190,22 @@ async def test_a_reduce_cycle_merges_one_changed_group(by: str) -> None:
     assert _decisions(plan)["Rank"] == ("miss", "input dispatched"), _decisions(plan)
 
 
+@pytest.mark.parametrize("variant", ["changed_parent", "empty_parent"])
 @pytest.mark.asyncio
-async def test_an_expand_cycle_keys_each_child_under_its_parent() -> None:
-    """An expand cycle whose second parent changes re-expands nothing
-    separately: its parent's row is partially served, so the expand misses
-    whole as an upstream miss, and run 3 over the same rows answers it. This
-    pins the level-by-level limit beside the expand's own hit path."""
-    rows = ['{"id": "p1"}', '{"id": "p2"}']
-    changed = ['{"id": "p1"}', '{"id": "p2", "v": 2}']
-    cycle = _Cycle(InMemoryJobStorage())
-    await cycle.full(_expand_workflow(rows))
-    plan, _, _ = await cycle.rerun(_expand_workflow(changed))
-    split = _node(_runtime_graph(_expand_workflow(changed)), "Split")
-    assert _decisions(plan)["Split"] == ("miss", "upstream miss"), _decisions(plan)
-    third, dispatched = cycle.plan(_expand_workflow(changed))
-    assert third.hits.get(split), _decisions(third)
-    assert split not in dispatched.nodes
-
-
-@pytest.mark.asyncio
-async def test_an_expand_cycle_serves_a_parent_that_expands_to_nothing() -> None:
-    """An expand whose second parent returns no child is served on an unchanged
-    rerun, and a third run still serves every node."""
+async def test_an_expand_cycle_decides_each_parent(variant: str) -> None:
+    """Two expand cycle variants. A changed parent's row is partially served, so
+    the expand misses whole as an upstream miss and a third run over the same
+    rows answers it: the level-by-level limit beside the expand's hit path. A
+    parent that expands to nothing is served on an unchanged rerun instead."""
+    if variant == "changed_parent":
+        rows = ['{"id": "p1"}', '{"id": "p2"}']
+        changed = ['{"id": "p1"}', '{"id": "p2", "v": 2}']
+        cycle = _Cycle(InMemoryJobStorage())
+        await cycle.full(_expand_workflow(rows))
+        plan, _, _ = await cycle.rerun(_expand_workflow(changed))
+        assert _decisions(plan)["Split"] == ("miss", "upstream miss"), _decisions(plan)
+        cycle.serves(_expand_workflow(changed), "Split")
+        return
     workflow = _expand_workflow()
     workflow["ops"][1] = {
         **workflow["ops"][1],
@@ -1223,12 +1213,8 @@ async def test_an_expand_cycle_serves_a_parent_that_expands_to_nothing() -> None
     }
     cycle = _Cycle(InMemoryJobStorage())
     await cycle.full(workflow)
-    plan, dispatched = cycle.plan(workflow)
-    split = _node(_runtime_graph(workflow), "Split")
-    assert plan.hits.get(split), _decisions(plan)
-    assert split not in dispatched.nodes
-    third, dispatched = cycle.plan(workflow)
-    assert third.hits.get(split), _decisions(third)
+    cycle.serves(workflow, "Split")
+    _, dispatched = cycle.plan(workflow)
     assert dispatched.nodes == {}
 
 
@@ -1241,25 +1227,13 @@ async def test_an_expand_cycle_keys_by_its_parent_beside_a_served_list() -> None
     fill, split = workflow["ops"]
     workflow["inputs"] = {**workflow["inputs"], "Fixed": ["1", "2"]}
     workflow["ops"] = [
-        {
-            "id": "Const",
-            "op": "LambdaOp",
-            "inputs": ["Fixed"],
-            "mode": "list",
-            "fn_name": "fixed",
-            "code": "lambda c: [len(c)]",
-        },
+        _lambda("Const", ["Fixed"], "fixed", "lambda c: [len(c)]") | {"mode": "list"},
         fill,
         {
             **split,
             "inputs": ["Fill", "Const"],
             "fn_name": "split2",
-            "code": (
-                """
-def split2(row):
-    return [row[0]['id'] + str(row[1]), row[0]['id'] + 'b']
-"""
-            ),
+            "code": "lambda row: [row[0]['id'] + 'a', row[0]['id'] + 'b']",
         },
     ]
     workflow["outputs"] = [{"name": "split", "ref": "Split"}]
@@ -1273,12 +1247,9 @@ def split2(row):
         },
     }
     plan, _, _ = await cycle.rerun(changed)
-    split_id = _node(_runtime_graph(workflow), "Split")
     assert _decisions(plan)["Fill"] == ("miss", "partial records"), _decisions(plan)
     assert _decisions(plan)["Const"] == ("hit", None), _decisions(plan)
-    third, dispatched = cycle.plan(changed)
-    assert third.hits.get(split_id), _decisions(third)
-    assert split_id not in dispatched.nodes
+    cycle.serves(changed, "Split")
 
 
 @pytest.mark.asyncio
@@ -1311,21 +1282,33 @@ async def test_a_row_cycle_stores_every_record_and_a_third_run_hits() -> None:
     assert [by_key[record] for record in sorted(by_key)] == [
         item["value"] for item in full
     ]
-    third, dispatched = cycle.plan(workflow)
-    assert _decisions(third)["Tag"] == ("hit", None), _decisions(third)
+    cycle.serves(workflow, "Tag")
+    _, dispatched = cycle.plan(workflow)
     assert dispatched.nodes == {}
 
 
+@pytest.mark.parametrize(
+    ("make", "served"),
+    [("expand_reduce", ["Split", "Fold"]), ("unkeyed", ["Rank"])],
+)
 @pytest.mark.asyncio
-async def test_an_expand_hit_feeds_a_reduce_reading_it() -> None:
-    """An expand the store answers whole is a stored source for a reduce that
-    reads it, so the reduce decides its groups instead of missing as
-    ``input dispatched``. Covers finding 2."""
-    cycle, workflow = _Cycle(InMemoryJobStorage()), _expand_reduce_workflow()
+async def test_an_unchanged_reduce_over_a_mixed_input_serves(
+    make: str, served: list[str]
+) -> None:
+    """An unchanged replay serves a reduce that reads a mixed input: an expand the
+    store answers whole is its stored source, so it decides its groups rather than
+    missing as ``input dispatched``, and a reduce whose group reads an unkeyed
+    value beside its keyed rows serves too because the planner names the group's
+    inputs the way the writer does. Covers findings 2 and 6."""
+    workflow = (
+        _expand_reduce_workflow()
+        if make == "expand_reduce"
+        else _reduce_unkeyed_workflow()
+    )
+    cycle = _Cycle(InMemoryJobStorage())
     await cycle.full(workflow)
-    plan, _ = cycle.plan(workflow)
-    assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
-    assert _decisions(plan)["Fold"] == ("hit", None), _decisions(plan)
+    for op in served:
+        cycle.serves(workflow, op)
 
 
 def _expand_reduce_workflow() -> dict[str, Any]:
@@ -1336,21 +1319,9 @@ def _expand_reduce_workflow() -> dict[str, Any]:
         **split,
         "code": "lambda row: [{'parent': row[0]['id'], 'x': s} for s in 'ab']",
     }
-    fold = {
-        "id": "Fold",
-        "op": "LambdaOp",
-        "inputs": ["Split"],
-        "mode": "reduce",
-        "by": "parent",
-        "fn_name": "fold",
-        "code": "lambda rows: [r[0] for r in rows]",
-    }
-    return {
-        "name": "expand-reduce",
-        "inputs": {"Rows": ['{"id": "p1"}', '{"id": "p2"}']},
-        "ops": [fill, split, fold],
-        "outputs": [{"name": "folded", "ref": "Fold"}],
-    }
+    fold = _lambda("Fold", ["Split"], "fold", "lambda rows: [r[0] for r in rows]")
+    fold |= {"mode": "reduce", "by": "parent"}
+    return _pipeline("expand-reduce", [fill, split, fold], "Fold")
 
 
 def _reduce_unkeyed_workflow() -> dict[str, Any]:
@@ -1358,133 +1329,80 @@ def _reduce_unkeyed_workflow() -> dict[str, Any]:
     reduce that groups the keyed input and reads the whole-op value as an
     unkeyed input."""
     tag, rank = _REDUCE_OPS
+    globals_op = _op("Globals", ["Rows"], "globs", "lambda c: [len(c[0])]", "list")
     rank = {**rank, "inputs": ["Tag", "Globals"]}
-    globals_op = {
-        "id": "Globals",
-        "op": "LambdaOp",
-        "inputs": ["Rows"],
-        "mode": "list",
-        "fn_name": "globs",
-        "code": "lambda c: [len(c[0])]",
-    }
-    return {
-        "name": "reduce-unkeyed",
-        "inputs": {
-            "Rows": [
-                json.dumps({"id": "t1", "patient": "p1"}),
-                json.dumps({"id": "t2", "patient": "p1"}),
-            ]
-        },
-        "ops": [globals_op, tag, rank],
-        "outputs": [{"name": "ranked", "ref": "Rank"}],
-    }
+    rows = [{"id": "t1", "patient": "p1"}, {"id": "t2", "patient": "p1"}]
+    return _pipeline(
+        "reduce-unkeyed", [globals_op, tag, rank], "Rank", [json.dumps(r) for r in rows]
+    )
 
 
+@pytest.mark.parametrize(
+    ("op", "record", "reason", "make"),
+    [
+        ("Rank", "p2", "partial group records", "reduce"),
+        ("Split", "p2\x1f1", "partial children", "expand"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_a_reduce_reading_an_unkeyed_input_serves_its_group() -> None:
-    """The planner names each group's inputs the way the writer does, so a
-    reduce whose group reads an unkeyed input beside its keyed rows serves that
-    group on an unchanged rerun. Covers finding 6."""
-    cycle, workflow = _Cycle(InMemoryJobStorage()), _reduce_unkeyed_workflow()
-    await cycle.full(workflow)
-    plan, dispatched = cycle.plan(workflow)
-    rank = _node(_runtime_graph(workflow), "Rank")
-    assert plan.hits.get(rank), _decisions(plan)
-    assert rank not in dispatched.nodes
-
-
-@pytest.mark.asyncio
-async def test_a_recomputed_failed_record_replaces_its_marker() -> None:
+async def test_a_recomputed_failed_record_replaces_its_marker(
+    op: str, record: str, reason: str, make: str
+) -> None:
     """A reduce group and an expand child the store holds as a marker are holes,
     so run 2 recomputes each; the computed value replaces the stored marker, so
     run 3 serves the op whole. A marker left in place would keep the record a
     hole forever."""
-    reduce_workflow = _reduce_workflow(_REDUCE_ROWS)
-    cycle = _Cycle(InMemoryJobStorage())
-    await cycle.full(reduce_workflow)
-    _mark_stored_entry(cycle.storage, "Rank", "p2")
-    plan, _, _ = await cycle.rerun(reduce_workflow)
-    rank = _node(_runtime_graph(reduce_workflow), "Rank")
-    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
-        plan
+    workflow = (
+        _reduce_workflow(_REDUCE_ROWS) if make == "reduce" else _expand_workflow()
     )
-    slots = plan.partial[rank].groups
-    assert slots is not None
-    assert [slot.key for slot in slots if slot.served is None] == ["p2"]
-    stored = _stored_entry(cycle.storage, "req-2", "Rank", "p2")
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    _stored_entry(cycle.storage, "req-1", op, record, mark=True)
+    plan, _, _ = await cycle.rerun(workflow)
+    assert _decisions(plan)[op] == ("miss", reason), _decisions(plan)
+    stored = _stored_entry(cycle.storage, "req-2", op, record)
     assert not is_marker(stored.value), stored.value
-    third, dispatched = cycle.plan(reduce_workflow)
-    assert third.hits.get(rank), _decisions(third)
-    assert rank not in dispatched.nodes
-
-    child_cycle, expand_workflow = _Cycle(InMemoryJobStorage()), _expand_workflow()
-    await child_cycle.full(expand_workflow)
-    _mark_stored_entry(child_cycle.storage, "Split", "p2\x1f1")
-    plan, _, _ = await child_cycle.rerun(expand_workflow)
-    split = _node(_runtime_graph(expand_workflow), "Split")
-    assert _decisions(plan)["Split"] == ("miss", "partial children"), _decisions(plan)
-    stored = _stored_entry(child_cycle.storage, "req-2", "Split", "p2\x1f1")
-    assert not is_marker(stored.value), stored.value
-    third, dispatched = child_cycle.plan(expand_workflow)
-    assert third.hits.get(split), _decisions(third)
-    assert split not in dispatched.nodes
+    cycle.serves(workflow, op)
 
 
 def _stored_entry(
-    storage: InMemoryJobStorage, job_id: str, op: str, record: str
+    storage: InMemoryJobStorage,
+    job_id: str,
+    op: str,
+    record: str,
+    *,
+    mark: bool = False,
 ) -> RecordEntry:
-    """One job's stored entry for one record."""
+    """One job's stored entry for one record; ``mark`` rewrites its value to a
+    failed record's marker, keeping the success key the planner finds it at."""
     index = read_index(storage, job_id)
     assert index is not None
     found = index.find(op=op, record=record, round_number=0)
     assert found is not None
     entry = read_entry(storage, found.digest)
     assert entry is not None
-    return entry
-
-
-def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> None:
-    """Rewrite one stored entry's value to a failed record's marker, keeping its
-    success key so the planner finds it where it stored it."""
-    index = read_index(storage, "req-1")
-    assert index is not None
-    found = index.find(op=op, record=record, round_number=0)
-    assert found is not None
-    entry = read_entry(storage, found.digest)
-    assert entry is not None
+    if not mark:
+        return entry
     marker = {"_fail": {"op": op, "reason": "boom"}}
     storage.save_blob(
         entry_object_name(entry.digest),
         entry.model_copy(update={"value": marker}).body(),
         "application/json",
     )
+    return entry.model_copy(update={"value": marker})
 
 
 def _expand_workflow(
     rows: list[str] | None = None,
 ) -> dict[str, Any]:
     """A keyed row step read by an expand that splits every row into two children."""
-    return {
-        "name": "expand-reuse",
-        "inputs": {"Rows": rows or ['{"id": "p1"}', '{"id": "p2"}']},
-        "ops": [
-            {
-                "id": "Fill",
-                "op": "LambdaOp",
-                "inputs": ["Rows"],
-                "mode": "row",
-                "fn_name": "fill",
-                "key": {"node": "Rows", "path": "id"},
-                "code": "lambda row: row[0]",
-            },
-            {
-                "id": "Split",
-                "op": "LambdaOp",
-                "inputs": ["Fill"],
-                "mode": "expand",
-                "fn_name": "split",
-                "code": "lambda row: [row[0]['id'] + 'a', row[0]['id'] + 'b']",
-            },
-        ],
-        "outputs": [{"name": "split", "ref": "Split"}],
-    }
+    fill = _op("Fill", ["Rows"], "fill", "lambda row: row[0]", "row")
+    fill["key"] = {"node": "Rows", "path": "id"}
+    split = _op(
+        "Split",
+        ["Fill"],
+        "split",
+        "lambda row: [row[0]['id'] + 'a', row[0]['id'] + 'b']",
+        "expand",
+    )
+    return _pipeline("expand-reuse", [fill, split], "Split", rows)
