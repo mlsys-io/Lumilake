@@ -4,6 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.parser.keyed_seed import SAMPLE_FN_NAME
 from lumilake_server.routes.jobs import (
     _validate_list_lambda_slice_span,
     _validate_runtime_graphs,
@@ -217,3 +218,42 @@ def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> 
         )
     assert exc_info.value.status_code == 422
     assert "fan-out" in exc_info.value.detail
+
+
+def test_a_sampled_chat_spanning_multiple_slices_names_its_generated_fan_out() -> None:
+    """A keyed chat op's n > 1 fan-out puts it in the whole-result class, so a
+    multi-slice job is refused; the message names that fan-out rather than a
+    list-mode Lambda the user never wrote."""
+    fan_out_id, chat_id = "g__sample_workflow_Answer", "g__llm_workflow_Answer"
+    fan_out = runtime_op(
+        node_id=fan_out_id,
+        task_type="python",
+        backend="python",
+        model="",
+        data_spec={"mode": "expand", "fn_name": SAMPLE_FN_NAME},
+        model_spec={},
+        inference_spec={},
+    )
+    chat = runtime_op(
+        node_id=chat_id,
+        task_type="inference",
+        backend="vllm",
+        model="m",
+        data_spec={},
+        model_spec={},
+        inference_spec={},
+        dependencies=(fan_out_id,),
+    )
+    graph = RuntimeGraph(
+        nodes={fan_out_id: fan_out, chat_id: chat},
+        node_order=[fan_out_id, chat_id],
+        output_node_map={chat_id: "answers"},
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_list_lambda_slice_span(
+            {"g": graph},
+            {"g": [_slice("g__slice_1", 0, 1), _slice("g__slice_2", 1, 1)]},
+        )
+    detail = exc_info.value.detail
+    assert "per-sample fan-out" in detail
+    assert "list-mode Lambda" not in detail
