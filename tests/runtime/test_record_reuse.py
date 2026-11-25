@@ -1249,6 +1249,32 @@ async def test_an_expand_cycle_decides_each_parent(variant: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_expand_a_chat_reads_serves_it_its_children() -> None:
+    """A chat reads an expand's children one scalar per prompt row, so the expand
+    is served whole and the dispatched chat carries those stored children."""
+    workflow = _expand_workflow()
+    workflow["ops"].append(
+        _ask(
+            "LLMChatOp",
+            ["Split"],
+            messages=[_SPEAK],
+            rowwise_template="{v}",
+            rowwise_columns=[{"label": "v", "node": "Split", "path": "items.output"}],
+        )
+        | {"id": "Ask"}
+    )
+    workflow["outputs"] = [{"name": "split", "ref": "Ask"}]
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    plan, dispatched = cycle.plan(workflow)
+    assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
+    graph = _runtime_graph(workflow)
+    assert _node(graph, "Split") not in dispatched.nodes
+    spec = dispatched.nodes[_node(graph, "Ask")].data_spec
+    assert spec.columns[0].data.items == ["p1a", "p1b", "p2a", "p2b"]
+
+
+@pytest.mark.asyncio
 async def test_an_expand_cycle_keys_by_its_parent_beside_a_served_list() -> None:
     """An expand reading a keyed parent and an unkeyed whole-op list keys its
     children under that parent while the list is served and the parent reruns,
