@@ -1205,8 +1205,10 @@ async def test_a_reduce_reuses_its_unchanged_groups() -> None:
     )
     plan, dispatched = _planned(storage, graph)
     assert _decisions(plan)["Rank"] == ("miss", "partial group records")
-    assert plan.hit_groups[rank_id] == ["p1", "p2"]
-    assert plan.missed_groups[rank_id] == ["p3"]
+    slots = plan.partial[rank_id].groups
+    assert slots is not None
+    assert [slot.key for slot in slots if slot.served is not None] == ["p1", "p2"]
+    assert [slot.key for slot in slots if slot.served is None] == ["p3"]
     items = _run_step(dispatched.nodes[rank_id], {})
     full = _run_step(graph.nodes[rank_id], {tag_id: _run_step(graph.nodes[tag_id], {})})
     assert [(item["key"], item["output"]) for item in items] == [
@@ -1396,7 +1398,9 @@ async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
     assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
         plan
     )
-    assert plan.missed_groups.get(rank) == ["p2", "p3"], plan.missed_groups
+    slots = plan.partial[rank].groups
+    assert slots is not None
+    assert [slot.key for slot in slots if slot.served is None] == ["p2", "p3"]
     assert rank in dispatched.nodes
 
 

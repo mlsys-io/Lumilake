@@ -196,12 +196,6 @@ class ReusePlan(BaseModel):
     output node the plan serves."""
     partial: dict[str, PartialRecords] = Field(default_factory=dict)
     """Node id -> the records a partially served op keeps and the ones it runs."""
-    hit_groups: dict[str, list[str]] = Field(default_factory=dict)
-    """Node id -> the reduce groups the store answers, in group order."""
-    missed_groups: dict[str, list[str]] = Field(default_factory=dict)
-    """Node id -> the reduce groups its dispatched run recomputes."""
-    partial_children: dict[str, list[int]] = Field(default_factory=dict)
-    """Node id -> the live parent positions an expand recomputes children for."""
     served_children: dict[str, list[list[RecordEntry]]] = Field(default_factory=dict)
     """Node id -> each live parent position's stored children, in child order."""
 
@@ -265,7 +259,6 @@ class ReusePlanner:
                 children, missed_parents = expanded
                 if missed_parents:
                     missed = set(missed_parents)
-                    decision.partial_children[node_id] = list(missed_parents)
                     decision.served_children[node_id] = children
                     decision.partial[node_id] = PartialRecords(
                         children=[
@@ -318,7 +311,6 @@ class ReusePlanner:
                 group_reason, slots, answered = grouped
                 hit_groups = [slot.key for slot in slots if slot.served is not None]
                 missed_groups = [slot.key for slot in slots if slot.served is None]
-                decision.hit_groups[node_id] = hit_groups
                 if group_reason != "partial group records":
                     decision.decisions.append(
                         RecordDecision(
@@ -331,10 +323,7 @@ class ReusePlanner:
                     misses.add(node_id)
                     continue
                 if missed_groups:
-                    decision.missed_groups[node_id] = missed_groups
                     decision.partial[node_id] = PartialRecords(
-                        keys=[str(key) for key in missed_groups],
-                        missed=list(range(len(missed_groups))),
                         groups=slots,
                         stored=[answered[key] for key in hit_groups],
                     )
