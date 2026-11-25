@@ -99,7 +99,6 @@ async def test_token_is_fetched_with_the_runtime_key(
     assert cred.url == "https://lum.id/data"
     assert str(seen[0].url) == f"https://lum.id/data/jobs/v1/jobs/{_JOB_ID}/token"
     assert seen[0].headers["authorization"] == "Bearer rt-key"
-    # The hub binds the token to the job's owner: we must say who asked.
     assert json.loads(seen[0].content) == {"for_sub": "owner-sub"}
 
 
@@ -178,16 +177,3 @@ async def test_someone_elses_job_is_a_403_not_a_token(
             LumidJobBinding(job_id=_JOB_UUID), "intruder-sub"
         )
     assert exc.value.status_code == 403
-
-
-@pytest.mark.asyncio
-async def test_no_principal_is_refused_before_any_call(
-    monkeypatch: pytest.MonkeyPatch, jobs_env: None
-) -> None:
-    seen = _patch_client(
-        monkeypatch, lambda r: httpx.Response(200, json={"token": "t"})
-    )
-    with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID), "")
-    assert exc.value.status_code == 422
-    assert seen == []

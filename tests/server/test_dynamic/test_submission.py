@@ -490,7 +490,10 @@ async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
 ) -> None:
     credential = DataCredential(url="https://data.example", token="job-token")
 
+    subs: list[str] = []
+
     async def fake_credential(binding: Any, for_sub: str) -> DataCredential:
+        subs.append(for_sub)
         return credential
 
     monkeypatch.setattr(job_routes, "_lumid_job_credential", fake_credential)
@@ -516,6 +519,7 @@ async def test_dynamic_rounds_inherit_the_job_credential_and_parent_drops_it(
         for child in record.child_job_ids
     )
     assert job_id in manager.cleared
+    assert subs == ["alice@example.com"]
 
 
 @pytest.mark.anyio
@@ -537,6 +541,14 @@ async def test_binding_without_the_scope_is_refused_before_a_token_fetch(
         )
     assert resp.status_code == 403
     assert "lumid-job:bind" in resp.json()["detail"]
+    monkeypatch.setattr(job_routes, "IDENTITY_PROVIDERS", [])
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == 422
 
 
 @pytest.mark.anyio

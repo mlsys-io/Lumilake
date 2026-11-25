@@ -90,6 +90,7 @@ from lumilake_server.dynamic.template import (
     validate_template,
 )
 from lumilake_server.graphs import CompiledGraph
+from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.hooks.security import (
     authenticate_request,
     emit_usage,
@@ -901,6 +902,12 @@ class LumidJobBinding(BaseModel):
     job_id: uuid.UUID = Field(description="lum.id/data job id.")
 
 
+class LumidJobTokenRequest(BaseModel):
+    """A token request on behalf of the submitting user."""
+
+    for_sub: str = Field(min_length=1)
+
+
 class LumidJobTokenResponse(BaseModel):
     """The jobs API's answer to a token request."""
 
@@ -910,19 +917,7 @@ class LumidJobTokenResponse(BaseModel):
 async def _lumid_job_credential(
     binding: LumidJobBinding, for_sub: str
 ) -> DataCredential:
-    """Fetch a job-scoped data token from the lum.id/data jobs API with this
-    server's runtime service key. The token never enters the job record.
-
-    ``for_sub`` is the lum.id sub of the principal whose request carried the
-    binding. The hub issues the token only if that user owns the job, so a
-    submitter who quotes someone else's ``job_id`` gets a 403 here instead of
-    that job's data token.
-    """
-    if not for_sub:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="lumid_job requires an authenticated lum.id principal",
-        )
+    """Fetch a job-scoped data token for ``for_sub``, the job's owner."""
     if not envs.LUMID_JOBS_URL or not envs.LUMID_JOBS_RUNTIME_KEY:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -935,7 +930,7 @@ async def _lumid_job_credential(
             resp = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {envs.LUMID_JOBS_RUNTIME_KEY}"},
-                json={"for_sub": for_sub},
+                json=LumidJobTokenRequest(for_sub=for_sub).model_dump(),
             )
     except httpx.HTTPError as exc:
         raise HTTPException(
@@ -945,7 +940,8 @@ async def _lumid_job_credential(
     if resp.status_code == 403:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"lum.id/data job {binding.job_id} does not belong to the caller",
+            detail=f"lum.id/data refused a token for job {binding.job_id} to this"
+            " caller (HTTP 403)",
         )
     if resp.status_code != 200:
         raise HTTPException(
@@ -3616,8 +3612,13 @@ async def submit_job(
         )
     if submit_request.lumid_job is not None:
         require_scope(principal, LUMID_JOB_BIND_SCOPE)
+        if not IDENTITY_PROVIDERS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="lumid_job requires an authenticated lum.id principal",
+            )
     data_credential = (
-        await _lumid_job_credential(submit_request.lumid_job, principal.principal_id)
+        await _lumid_job_credential(submit_request.lumid_job, principal.external_id)
         if submit_request.lumid_job is not None
         else None
     )
