@@ -889,10 +889,7 @@ class LumidJobBinding(BaseModel):
     token scoped to that job's declared sources (revoked when it ends) instead
     of the server's LUMID_DATA_TOKEN."""
 
-    job_id: str = Field(
-        description="lum.id/data job id (UUID).",
-        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-    )
+    job_id: uuid.UUID = Field(description="lum.id/data job id.")
 
 
 class LumidJobTokenResponse(BaseModel):
@@ -3765,7 +3762,7 @@ async def submit_job(
         user_id=principal.external_id,
         progress=JobProgress(),
         lumid_job_id=(
-            submit_request.lumid_job.job_id
+            str(submit_request.lumid_job.job_id)
             if submit_request.lumid_job is not None
             else None
         ),

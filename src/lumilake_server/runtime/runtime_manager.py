@@ -2066,14 +2066,8 @@ class FlowmeshRuntimeManager:
         credential. The queue partitions by data-credential digest, so all
         members of a batch share one credential (or none, in which case the
         server's LUMID_DATA_TOKEN built into the graph stays)."""
-        credential = next(
-            (
-                self.get_data_credential(request_id)
-                for request_id in member_request_ids
-                if self.get_data_credential(request_id) is not None
-            ),
-            None,
-        )
+        credentials = [self.get_data_credential(r) for r in member_request_ids]
+        credential = next((c for c in credentials if c is not None), None)
         if credential is not None:
             _rewrite_data_credentials(task_spec, credential)
 

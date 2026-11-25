@@ -1,5 +1,6 @@
 """Binding a submission to a lum.id/data job: validation and token fetch."""
 
+import uuid
 from typing import Any
 
 import httpx
@@ -18,12 +19,13 @@ from lumilake_server.routes.jobs import (
 )
 
 _JOB_ID = "3f2b8c1e-8d4a-4f6b-9c2d-1a2b3c4d5e6f"
+_JOB_UUID = uuid.UUID(_JOB_ID)
 
 
 def test_binding_requires_a_uuid_job_id() -> None:
-    assert LumidJobBinding(job_id=_JOB_ID).job_id == _JOB_ID
+    assert str(LumidJobBinding(job_id=_JOB_UUID).job_id) == _JOB_ID
     with pytest.raises(ValidationError):
-        LumidJobBinding(job_id="../../admin")
+        LumidJobBinding.model_validate({"job_id": "../../admin"})
 
 
 def test_submit_request_accepts_an_optional_binding() -> None:
@@ -40,7 +42,7 @@ def test_submit_request_accepts_an_optional_binding() -> None:
         }
     )
     assert req.lumid_job is not None
-    assert req.lumid_job.job_id == _JOB_ID
+    assert str(req.lumid_job.job_id) == _JOB_ID
     unbound = JobSubmitRequest.model_validate(
         {
             "data": [
@@ -86,7 +88,7 @@ async def test_token_is_fetched_with_the_runtime_key(
         monkeypatch,
         lambda r: httpx.Response(200, json={"token": "ljt_abc", "job_id": _JOB_ID}),
     )
-    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+    cred = await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
     assert cred.token == "ljt_abc"
     assert cred.url == "https://lum.id/data"
     assert str(seen[0].url) == f"https://lum.id/data/jobs/v1/jobs/{_JOB_ID}/token"
@@ -108,7 +110,7 @@ async def test_refused_or_malformed_token_is_a_502(
 ) -> None:
     _patch_client(monkeypatch, lambda r: response)
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
     assert exc.value.status_code == 502
 
 
@@ -121,7 +123,7 @@ async def test_unreachable_jobs_api_is_a_502(
 
     _patch_client(monkeypatch, boom)
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
     assert exc.value.status_code == 502
 
 
@@ -134,7 +136,7 @@ async def test_missing_runtime_key_is_refused_before_any_call(
         monkeypatch, lambda r: httpx.Response(200, json={"token": "t"})
     )
     with pytest.raises(HTTPException) as exc:
-        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_ID))
+        await jobs_routes._lumid_job_credential(LumidJobBinding(job_id=_JOB_UUID))
     assert exc.value.status_code == 422
     assert seen == []
 
