@@ -1764,25 +1764,17 @@ def _record_values(
     if plan.column is not None:
         return [row for item in items for row in _table_rows(item.get("table"))]
     typed = typed_row_step(plan.op)
+    grouped = grouped_local_chat(plan.op)
     values: list[Any] = []
     for item in items:
         rows = item.get("rows")
         if isinstance(rows, list):
             values.extend(_row_value(row) for row in rows)
-        elif _grouped_model_output(item, plan):
+        elif grouped and isinstance(item.get("output"), list):
             values.extend(item["output"])
         else:
             values.append(_item_output(item, typed))
     return values
-
-
-def _grouped_model_output(item: Any, plan: RecordPlan) -> bool:
-    """Whether an item holds a rowwise model task's per-row outputs as one list."""
-    return (
-        isinstance(plan.op.data_spec, DataFrame)
-        and isinstance(item, Mapping)
-        and isinstance(item.get("output"), list)
-    )
 
 
 def _row_value(row: Any) -> Any:
@@ -1809,6 +1801,12 @@ def typed_row_step(op: RuntimeOp) -> bool:
         and isinstance(spec, PythonData)
         and spec.mode in (None, "row", "parse")
     )
+
+
+def grouped_local_chat(op: RuntimeOp) -> bool:
+    """Whether ``op`` is a local rowwise chat that groups every row's reply into
+    one item."""
+    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
 
 
 def _item_output(item: Any, typed: bool) -> Any:

@@ -40,6 +40,7 @@ from lumilake_server.runtime.record_writer import (
     RecordPlan,
     _decoded,
     content_value,
+    grouped_local_chat,
     input_nodes,
     input_values,
     literal_rows,
@@ -52,7 +53,6 @@ from lumilake_server.runtime.record_writer import (
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.utils.graph import topological_sort
 from lumilake_server.utils.job_storage import JobStorage
 
 _SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
@@ -167,7 +167,7 @@ class ReusePlanner:
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
-        for node_id in _seed_first_order(runtime_graph):
+        for node_id in runtime_graph.topological_order(_seed_edges(runtime_graph)):
             plan = plans[node_id]
             if plan.key_path is not None:
                 decision.key_paths[node_id] = plan.key_path
@@ -589,11 +589,6 @@ def _wrap(op: RuntimeOp) -> _Wrapping | None:
     return "output" if op.task_type in _WRAPPED_TASKS else None
 
 
-def _grouped_items(op: RuntimeOp) -> bool:
-    """Whether a local rowwise chat groups every row's reply into one item."""
-    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
-
-
 def _plan_column(
     plan: ReusePlan,
     node: str,
@@ -608,7 +603,7 @@ def _plan_column(
         plan.hits[node],
         entry,
         _wrap(producer),
-        _grouped_items(producer),
+        grouped_local_chat(producer),
     )
 
 
@@ -626,7 +621,7 @@ def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
     wrapping: _Wrapping | None,
-    grouped: bool = False,
+    grouped: bool,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
@@ -752,9 +747,13 @@ def _dispatch_record_keys(
         inherited = plan.key_paths.get(node_id)
         if node_id in keys or inherited is None:
             continue
-        sources = [node for node in op.dependencies if plan.key_paths.get(node)]
-        if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=inherited)
+        served = [
+            node
+            for node in op.dependencies
+            if node in plan.hits and plan.key_paths.get(node) is not None
+        ]
+        if len(served) == 1:
+            keys[node_id] = RecordKey(node=served[0], path=inherited)
     return keys
 
 
@@ -850,26 +849,14 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
-def _seed_first_order(runtime_graph: RuntimeGraph) -> list[str]:
-    """Topological order with each seed node ordered ahead of the chat reading it."""
-    graph: dict[str, set[str]] = {node_id: set() for node_id in runtime_graph.nodes}
+def _seed_edges(runtime_graph: RuntimeGraph) -> dict[str, list[str]]:
+    """Each seed node paired with the chats reading it, so they sort after it."""
+    edges: dict[str, list[str]] = {}
     for node_id, node in runtime_graph.nodes.items():
-        for dep in node.dependencies:
-            if dep in graph:
-                graph[dep].add(node_id)
         spec = node.data_spec
         if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
-            if spec.seeds.node in graph:
-                graph[spec.seeds.node].add(node_id)
-    order_index = {node: idx for idx, node in enumerate(runtime_graph.node_order)}
-    return [
-        node_id
-        for node_id in topological_sort(
-            graph,
-            secondary_key=lambda node_id: order_index.get(node_id, len(order_index)),
-        )
-        if node_id in runtime_graph.nodes
-    ]
+            edges.setdefault(spec.seeds.node, []).append(node_id)
+    return edges
 
 
 def _seeded_records(
@@ -976,7 +963,7 @@ def _unserved_reader_reason(
         for entry in spec.plan:
             if entry.node != op.node_id:
                 continue
-            if served_column(hit, entry, _wrap(op), _grouped_items(op)) is None:
+            if served_column(hit, entry, _wrap(op), grouped_local_chat(op)) is None:
                 return "value not servable"
     return None
 
