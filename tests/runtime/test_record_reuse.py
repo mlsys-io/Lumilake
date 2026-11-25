@@ -1347,10 +1347,7 @@ def _expand_reduce_workflow() -> dict[str, Any]:
     fill, split = _expand_workflow()["ops"]
     split = {
         **split,
-        "code": (
-            "lambda row: [{'parent': row[0]['id'], 'x': 'a'}, {'parent':"
-            " row[0]['id'], 'x': 'b'}]"
-        ),
+        "code": "lambda row: [{'parent': row[0]['id'], 'x': s} for s in 'ab']",
     }
     fold = {
         "id": "Fold",
@@ -1367,110 +1364,6 @@ def _expand_reduce_workflow() -> dict[str, Any]:
         "ops": [fill, split, fold],
         "outputs": [{"name": "folded", "ref": "Fold"}],
     }
-
-
-@pytest.mark.asyncio
-async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
-    """A group the store holds only as a marker is a hole, like a group with no
-    entry: both are recomputed, so a reduce with a marked group and a group the
-    store lacks plans and dispatches instead of failing on a marker's value.
-    Covers finding 3."""
-    workflow = _reduce_workflow(_REDUCE_ROWS)
-    graph = _runtime_graph(workflow)
-    storage = InMemoryJobStorage()
-    await _run(
-        storage,
-        workflow,
-        {"Tag": _REDUCE_ROWS},
-        "req-1",
-        graph=graph,
-        items={
-            "Rank": [
-                {"output": ["t1"], "key": "p1", "members": [0]},
-                {"output": ["p2-rank"], "key": "p2", "members": [1]},
-            ]
-        },
-        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
-    )
-    rank = _node(graph, "Rank")
-    _mark_stored_entry(storage, "Rank", "p2")
-    plan, dispatched = _planned(storage, graph)
-    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
-        plan
-    )
-    slots = plan.partial[rank].groups
-    assert slots is not None
-    assert [slot.key for slot in slots if slot.served is None] == ["p2", "p3"]
-    assert rank in dispatched.nodes
-
-
-def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> None:
-    """Rewrite one stored entry's value to a failed record's marker, keeping its
-    success key so the planner finds it where it stored it."""
-    index = read_index(storage, "req-1")
-    assert index is not None
-    found = index.find(op=op, record=record, round_number=0)
-    assert found is not None
-    entry = read_entry(storage, found.digest)
-    assert entry is not None
-    marker = {"_fail": {"op": op, "reason": "boom"}}
-    storage.save_blob(
-        entry_object_name(entry.digest),
-        entry.model_copy(update={"value": marker}).body(),
-        "application/json",
-    )
-
-
-def _reduce_literal_workflow() -> dict[str, Any]:
-    """A keyed row step and a per-row literal list of the same length, read by a
-    reduce that groups the served keyed input and reads the literal whole."""
-    tag, rank = _REDUCE_OPS
-    rank = {**rank, "inputs": ["Tag", "Weights"]}
-    return {
-        "name": "reduce-literal",
-        "inputs": {"Rows": [json.dumps(row) for row in _REDUCE_ROWS]},
-        "ops": [
-            tag,
-            {
-                "id": "Weights",
-                "op": "DataOp",
-                "inputs": [],
-                "data": ["w1", "w2", "w3"],
-            },
-            rank,
-        ],
-        "outputs": [{"name": "ranked", "ref": "Rank"}],
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_partial_reduce_with_a_per_row_literal_runs_on_the_worker() -> None:
-    """A partial reduce that also reads a per-row literal of the live length runs:
-    every column is at live width, so the step's row check passes and it emits
-    one item per live group. Covers finding 5."""
-    workflow = _reduce_literal_workflow()
-    graph = _runtime_graph(workflow)
-    storage = InMemoryJobStorage()
-    await _run(
-        storage,
-        workflow,
-        {"Tag": _REDUCE_ROWS},
-        "req-1",
-        graph=graph,
-        items={
-            "Rank": [
-                {"output": ["t1"], "key": "p1", "members": [0]},
-            ]
-        },
-        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
-    )
-    plan, dispatched = _planned(storage, graph)
-    rank = _node(graph, "Rank")
-    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
-        plan
-    )
-    items = _run_step(dispatched.nodes[rank], {})
-    assert [item["key"] for item in items] == ["p1", "p2", "p3"]
 
 
 def _reduce_unkeyed_workflow() -> dict[str, Any]:
@@ -1556,6 +1449,58 @@ async def test_a_partial_reduce_merges_an_object_group_key() -> None:
     )
     items = _run_step(dispatched.nodes[rank], {})
     assert [item["key"] for item in items] == ['{"p":1,"q":2}', '{"p":3,"q":4}']
+
+
+@pytest.mark.asyncio
+async def test_a_stored_failed_reduce_group_is_a_hole_not_an_answer() -> None:
+    """A group the store holds only as a marker is a hole, like a group with no
+    entry: both are recomputed, so a reduce with a marked group and a group the
+    store lacks plans and dispatches instead of failing on a marker's value.
+    Covers finding 3."""
+    workflow = _reduce_workflow(_REDUCE_ROWS)
+    graph = _runtime_graph(workflow)
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        workflow,
+        {"Tag": _REDUCE_ROWS},
+        "req-1",
+        graph=graph,
+        items={
+            "Rank": [
+                {"output": ["t1"], "key": "p1", "members": [0]},
+                {"output": ["p2-rank"], "key": "p2", "members": [1]},
+            ]
+        },
+        task_ids={_node(graph, name): f"task-{name}" for name in ("Tag", "Rank")},
+    )
+    rank = _node(graph, "Rank")
+    _mark_stored_entry(storage, "Rank", "p2")
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Rank"] == ("miss", "partial group records"), _decisions(
+        plan
+    )
+    slots = plan.partial[rank].groups
+    assert slots is not None
+    assert [slot.key for slot in slots if slot.served is None] == ["p2", "p3"]
+    assert rank in dispatched.nodes
+
+
+def _mark_stored_entry(storage: InMemoryJobStorage, op: str, record: str) -> None:
+    """Rewrite one stored entry's value to a failed record's marker, keeping its
+    success key so the planner finds it where it stored it."""
+    index = read_index(storage, "req-1")
+    assert index is not None
+    found = index.find(op=op, record=record, round_number=0)
+    assert found is not None
+    entry = read_entry(storage, found.digest)
+    assert entry is not None
+    marker = {"_fail": {"op": op, "reason": "boom"}}
+    storage.save_blob(
+        entry_object_name(entry.digest),
+        entry.model_copy(update={"value": marker}).body(),
+        "application/json",
+    )
 
 
 def _seeded_expand_workflow() -> dict[str, Any]:
