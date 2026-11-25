@@ -1401,6 +1401,26 @@ async def test_a_served_reduce_or_expand_output_is_one_whole_run_value(
     assert answers["flat_outputs"] == {output: [json.dumps(whole)]}
 
 
+@pytest.mark.parametrize("make", ["reduce", "expand"])
+@pytest.mark.asyncio
+async def test_an_items_output_of_a_whole_run_op_runs(make: str) -> None:
+    """An output that names the whole item archives every item as a whole run
+    emits it, envelope and all, which no stored value holds, so the op runs."""
+    workflow = (
+        _reduce_workflow(_REDUCE_ROWS) if make == "reduce" else _expand_workflow()
+    )
+    workflow["outputs"][0]["path"] = "items"
+    cycle = _Cycle(InMemoryJobStorage())
+    await cycle.full(workflow)
+    plan, dispatched = cycle.plan(workflow)
+    output = _node(_runtime_graph(workflow), "Rank" if make == "reduce" else "Split")
+    assert output in dispatched.nodes
+    assert _decisions(plan)[_names(_runtime_graph(workflow))[output]] == (
+        "miss",
+        "value not servable",
+    )
+
+
 def _collected_reduce_workflow(changed: bool = False) -> dict[str, Any]:
     """The reduce fixture with a list-mode collector above it as the output, so
     a live reader reads the partially served reduce's every group."""
