@@ -2,10 +2,12 @@
 
 import copy
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import ColumnPlanEntry
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
@@ -19,6 +21,7 @@ from lumilake_server.parser.keyed_seed import (
     rewrite_native_keys,
     seed_op,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 from tests.support.data_specs import wire
@@ -237,6 +240,22 @@ def _fan_out(payload: dict[str, Any]) -> Any:
     return lambda_runtime.materialize(op["_code"], op["fn_name"]), op
 
 
+def _run_fan_out(
+    spec: dict[str, Any], inputs: dict[str, str], mount: Path
+) -> list[Any]:
+    """Run the fan-out through the wrapper a worker runs, and return its items."""
+    namespace: dict[str, Any] = {}
+    code = python_step.wrapper_source(
+        "fan-out",
+        spec["fn_name"],
+        spec["code"],
+        [ColumnPlanEntry.model_validate(entry) for entry in spec["plan"]],
+        "expand",
+    ).replace(python_step.TASK_RUNTIME_MOUNT, str(mount))
+    exec(code, namespace)
+    return namespace["main"](inputs)["items"]
+
+
 def _sample_cells(payload: dict[str, Any]) -> list[dict[str, Any]]:
     fn, _ = _fan_out(payload)
     return [item for cell in _COLUMN for item in fn((cell,))]
@@ -319,13 +338,17 @@ def test_a_native_sample_count_keys_each_sample() -> None:
     )
 
 
-def test_a_whole_cell_column_keeps_the_raw_cell() -> None:
-    """A column with no path hands the chat the cell as it stands, as n = 1 does."""
+def test_a_whole_cell_column_keeps_the_raw_cell(tmp_path: Path) -> None:
+    """The task's own read path hands the fan-out a whole-cell column as it stands,
+    so the chat renders the cell's text, as n = 1 does."""
     loaded = copy.deepcopy(_ANSWER)
     loaded["inputs"] = ["Load"]
     loaded["rowwise_template"] = "{whole}"
     loaded["rowwise_columns"] = [{"label": "whole", "node": "Load", "path": ""}]
-    loaded["rowwise_seed"] = {"key": {"node": "Load", "path": "items.output.case_id"}}
+    loaded["rowwise_seed"] = {
+        "key": {"node": "Load", "path": "items.output.case_id"},
+        "pairing": "shared",
+    }
     loaded["config"] = {"model": "m", "n": 3}
     payload = {
         "seed": 7,
@@ -341,14 +364,30 @@ def test_a_whole_cell_column_keeps_the_raw_cell() -> None:
             loaded,
         ],
     }
-    for source in (_whole_cell(3), payload):
+    mount = tmp_path / "lumilake-runtime.py"
+    mount.write_bytes(python_step.runtime_blob().body)
+    for source, upstream in ((_whole_cell(3), False), (payload, True)):
         spec = next(
             wire(node)
             for node in _graph(source).nodes.values()
             if wire(node).get("fn_name") == SAMPLE_FN_NAME
         )
-        # Each whole-cell entry reads as it stands, not the JSON it decodes to.
-        assert [entry.get("whole") for entry in spec["plan"]] == [True]
+        inputs: dict[str, str] = {}
+        if upstream:
+            (node_id,) = (
+                entry["node"] for entry in spec["plan"] if entry["kind"] == "stage"
+            )
+            stage = tmp_path / node_id
+            stage.mkdir()
+            (stage / "results.json").write_text(
+                json.dumps({"result": {"items": [{"output": c} for c in _COLUMN]}})
+            )
+            inputs[node_id] = str(stage)
+        items = _run_fan_out(spec, inputs, mount)
+        # Each whole-cell item carries the cell's own JSON text, not the decoded value.
+        rendered = [item["output"]["whole"] for item in items]
+        assert len(rendered) == len(_COLUMN) * 3
+        assert rendered[::3] == _COLUMN
 
 
 def test_a_sample_count_needs_local_columns() -> None:
