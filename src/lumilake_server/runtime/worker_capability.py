@@ -115,14 +115,12 @@ def profile_fits_gpu_request(
     )
 
 
-def gated_nodes_gpu_requests(
-    nodes: Iterable[tuple[str, DataSpecModel]],
+def python_steps_gpu_requests(
+    data_specs: Iterable[DataSpecModel],
 ) -> tuple[GpuRequest, ...]:
-    """The distinct GPU requests among the python steps of ``nodes``, in order."""
+    """The distinct GPU requests the python steps among ``data_specs`` carry."""
     requests: dict[str, GpuRequest] = {}
-    for task_type, data_spec in nodes:
-        if task_type not in CAPABILITY_GATED_TASK_TYPES:
-            continue
+    for data_spec in data_specs:
         request = python_step_gpu_request(data_spec)
         if request is not None:
             requests.setdefault(request.model_dump_json(), request)
@@ -133,14 +131,9 @@ GpuRequirement = tuple[frozenset[str], tuple[GpuRequest, ...]]
 """One GPU-group requirement: task types to advertise and requests to carry."""
 
 
-def gated_nodes_gpu_requirements(
-    task_types: frozenset[str], requests: Iterable[GpuRequest]
-) -> tuple[GpuRequirement, ...]:
-    """One requirement per request, paired with the task types its step needs."""
-    paired = tuple((task_types, (request,)) for request in requests)
-    if paired or not task_types:
-        return paired
-    return ((task_types, ()),)
+def gpu_requirements(requests: Iterable[GpuRequest]) -> tuple[GpuRequirement, ...]:
+    """One requirement per request: a GPU worker running python that carries it."""
+    return tuple((frozenset({PYTHON_TASK_TYPE}), (request,)) for request in requests)
 
 
 def gpu_worker_can_run(
@@ -154,25 +147,16 @@ def gpu_worker_can_run(
     )
 
 
-def split_required_task_types(
+def cpu_required_task_types(
     nodes: Iterable[tuple[str, DataSpecModel]],
-) -> tuple[frozenset[str], frozenset[str]]:
-    """The gated task types ``nodes`` need from the CPU group and from the GPU group.
-
-    ``nodes`` yields a ``(task_type, data_spec)`` pair per node. A python step
-    that requests GPUs runs on a GPU worker, so its task type is a GPU
-    requirement; every other gated step is a CPU requirement.
-    """
-    cpu_types: set[str] = set()
-    gpu_types: set[str] = set()
-    for task_type, data_spec in nodes:
-        if task_type not in CAPABILITY_GATED_TASK_TYPES:
-            continue
-        if python_step_requests_gpu(data_spec):
-            gpu_types.add(task_type)
-        else:
-            cpu_types.add(task_type)
-    return frozenset(cpu_types), frozenset(gpu_types)
+) -> frozenset[str]:
+    """The gated task types ``nodes`` need from the CPU group: every gated step but a
+    python step that requests GPUs, which runs on a GPU worker."""
+    return CAPABILITY_GATED_TASK_TYPES.intersection(
+        task_type
+        for task_type, data_spec in nodes
+        if not python_step_requests_gpu(data_spec)
+    )
 
 
 def model_spec_gpu_memory_utilization(model_spec: Mapping[str, Any]) -> float | None:

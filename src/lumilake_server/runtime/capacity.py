@@ -7,7 +7,7 @@ from typing import Any
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
     advertised_task_types,
-    gated_nodes_gpu_requirements,
+    gpu_requirements,
     gpu_worker_can_run,
     holds_gpu_utilizations,
 )
@@ -63,7 +63,6 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
-        required_gpu_task_types: frozenset[str] = frozenset(),
         required_gpu_requests: Sequence[GpuRequest] = (),
     ) -> int:
         """Number of whole dispatches the idle workers can serve at once.
@@ -73,12 +72,11 @@ class FreeCapacity:
         the smallest ``eligible // group size`` over the claimed classes, where
         eligible workers meet ``hardware`` when the snapshot carries profiles.
         ``required_task_types`` are the gated task types the CPU group must
-        cover and ``required_gpu_task_types`` those the GPU group must cover:
-        each dispatch's group holds an eligible worker advertising all of them,
+        cover: each dispatch's group holds an eligible worker advertising all of them,
         so the count is also bounded by the number of such workers, and is
         ``0`` when there is none, no group of that class, or no profiles (the
         cases in which :meth:`eligible_workers` returns ``None``). Each GPU
-        requirement (a step's own request with the task types it needs) bounds
+        requirement (a python step's own request) bounds
         the count by the workers that run it. ``0`` when no class is claimed.
         """
         eligible_cpu = self._meeting_hardware(
@@ -105,14 +103,12 @@ class FreeCapacity:
                 <= advertised_task_types(self.profiles.get(w, {}))
             ]
             counts.append(len(capable_cpu))
-        if required_gpu_task_types or required_gpu_requests:
+        if required_gpu_requests:
             if gpu_group_size < 1 or not self.profiles:
                 return 0
             # Concurrent dispatches draw their groups from the same workers, so each
             # requirement bounds the count by the workers that serve it.
-            gates = self._gpu_gates(
-                eligible_gpu, required_gpu_task_types, required_gpu_requests
-            )
+            gates = self._gpu_gates(eligible_gpu, required_gpu_requests)
             counts.extend(len(gate) for gate in gates)
         return min(counts, default=0)
 
@@ -138,7 +134,6 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
-        required_gpu_task_types: frozenset[str] = frozenset(),
         required_gpu_requests: Sequence[GpuRequest] = (),
     ) -> bool:
         """True when enough idle workers of each class also meet ``hardware``.
@@ -155,7 +150,6 @@ class FreeCapacity:
                 worker_meets_hardware=worker_meets_hardware,
                 hardware=hardware,
                 required_task_types=required_task_types,
-                required_gpu_task_types=required_gpu_task_types,
                 required_gpu_requests=required_gpu_requests,
             )
             is not None
@@ -169,22 +163,19 @@ class FreeCapacity:
         worker_meets_hardware: Any,
         hardware: Any,
         required_task_types: frozenset[str] = frozenset(),
-        required_gpu_task_types: frozenset[str] = frozenset(),
         required_gpu_requests: Sequence[GpuRequest] = (),
         required_gpu_utilizations: frozenset[float] = frozenset(),
     ) -> tuple[list[str], list[str]] | None:
         """Return ``(selected_cpu, selected_gpu)`` workers that meet ``hardware``, or
         ``None`` while the free set cannot serve the batch: too few idle workers, no CPU
-        worker advertising a required task type, no GPU worker advertising a required
-        GPU task type or carrying the step's own GPU request, or no GPU worker whose
-        memory fraction holds the batch's largest utilization."""
+        worker advertising a required task type, no GPU worker running python that
+        carries a python step's own GPU request, or no GPU worker whose memory fraction
+        holds the batch's largest utilization."""
         if self.cpu_count < cpu_group_size or self.gpu_count < gpu_group_size:
             return None
         if required_task_types and (cpu_group_size < 1 or not self.profiles):
             return None
-        if (required_gpu_task_types or required_gpu_requests) and (
-            gpu_group_size < 1 or not self.profiles
-        ):
+        if required_gpu_requests and (gpu_group_size < 1 or not self.profiles):
             return None
         fraction_gate = required_gpu_utilizations if gpu_group_size > 0 else frozenset()
         if fraction_gate and not self.profiles:
@@ -215,9 +206,7 @@ class FreeCapacity:
             if not any(w in capable for w in selected_cpu):
                 selected_cpu[-1] = capable[0]
         selected_gpu = eligible_gpu[:gpu_group_size]
-        gates = self._gpu_gates(
-            eligible_gpu, required_gpu_task_types, required_gpu_requests
-        )
+        gates = self._gpu_gates(eligible_gpu, required_gpu_requests)
         if gates:
             if not all(gates):
                 return None
@@ -252,10 +241,7 @@ class FreeCapacity:
         return (selected_cpu, selected_gpu)
 
     def _gpu_gates(
-        self,
-        workers: Sequence[str],
-        required_task_types: frozenset[str],
-        required_requests: Sequence[GpuRequest],
+        self, workers: Sequence[str], required_requests: Sequence[GpuRequest]
     ) -> list[frozenset[str]]:
         """The workers of ``workers`` that serve each GPU-group requirement."""
         return [
@@ -266,9 +252,7 @@ class FreeCapacity:
                     self.profiles.get(worker, {}), task_types, request
                 )
             )
-            for task_types, request in gated_nodes_gpu_requirements(
-                required_task_types, required_requests
-            )
+            for task_types, request in gpu_requirements(required_requests)
         ]
 
 

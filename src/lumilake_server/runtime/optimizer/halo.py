@@ -17,7 +17,7 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import RetrievalData
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, RetrievalData
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -30,12 +30,12 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
     advertised_task_types,
+    cpu_required_task_types,
     fraction_holds_utilization,
     gpu_memory_fraction,
     profile_fits_gpu_request,
     python_step_gpu_request,
     python_step_requests_gpu,
-    split_required_task_types,
 )
 
 from .multimodal_cost import MultimodalCostCoefficients, compute_gpu_exec_cost
@@ -1028,8 +1028,15 @@ class HaloOptimizer(BaseOptimizer):
         task types in ``CAPABILITY_GATED_TASK_TYPES`` are checked; other nodes
         are placed by engine alone.
         """
-        cpu_types, gpu_types = split_required_task_types(
+        cpu_types = cpu_required_task_types(
             (op.task_type, op.data_spec) for op in graph.nodes.values()
+        )
+        gpu_types = (
+            frozenset({PYTHON_TASK_TYPE})
+            if any(
+                python_step_requests_gpu(op.data_spec) for op in graph.nodes.values()
+            )
+            else frozenset()
         )
         for on_gpu, needed in ((False, cpu_types), (True, gpu_types)):
             names = [

@@ -15,9 +15,9 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.runtime.worker_capability import (
-    gated_nodes_gpu_requests,
+    cpu_required_task_types,
+    python_steps_gpu_requests,
     requires_cpu_worker,
-    split_required_task_types,
 )
 from lumilake_server.utils.utils import unique_id
 
@@ -271,15 +271,13 @@ class PriorityJobManager(BaseJobManager):
         ]
         if cpu_group_size <= 0 and requires_cpu_worker(nodes):
             cpu_group_size = 1
-        cpu_task_types, gpu_task_types = split_required_task_types(nodes)
         return capacity.dispatch_count(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=self._worker_meets_hardware,
             hardware=self._hardware_from_signature(partition[4]),
-            required_task_types=cpu_task_types,
-            required_gpu_task_types=gpu_task_types,
-            required_gpu_requests=gated_nodes_gpu_requests(nodes),
+            required_task_types=cpu_required_task_types(nodes),
+            required_gpu_requests=python_steps_gpu_requests(spec for _, spec in nodes),
         )
 
     def _partition_eligible(

@@ -152,11 +152,11 @@ def _gpu_claim(
 def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_request() -> (
     None
 ):
-    required = frozenset({"python"})
     free = _gpu_free({"gpu-vllm": _GPU_VLLM, "gpu-python": _GPU_PYTHON})
-    assert _gpu_claim(free, required_gpu_task_types=required) == ["gpu-python"]
+    one = (GpuRequest(),)
+    assert _gpu_claim(free, required_gpu_requests=one) == ["gpu-python"]
     plain = _gpu_free({"gpu-vllm": _GPU_VLLM})
-    assert _gpu_claim(plain, required_gpu_task_types=required) is None
+    assert _gpu_claim(plain, required_gpu_requests=one) is None
 
     cards = {
         "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
@@ -170,12 +170,7 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
         {"gpu-h100": _gpu_profile([_H100], []), "gpu-rtx": cards["gpu-rtx"]}
     )
     h100 = GpuRequest(type="H100")
-    assert (
-        _gpu_claim(
-            split, 2, required_gpu_task_types=required, required_gpu_requests=(h100,)
-        )
-        is None
-    )
+    assert _gpu_claim(split, 2, required_gpu_requests=(h100,)) is None
 
 
 def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
@@ -220,11 +215,9 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
         "a": profiles["gpu-a100"],
         "c": profiles["gpu-h100"],
     }
-    python = frozenset({"python"})
     claim = _gpu_claim(
         _gpu_free(lead),
         2,
-        required_gpu_task_types=python,
         required_gpu_requests=(a100, h100),
     )
     assert sorted(claim or []) == ["a", "c"]
