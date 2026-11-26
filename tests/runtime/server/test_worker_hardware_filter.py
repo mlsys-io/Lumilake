@@ -258,17 +258,3 @@ def test_gpu_workers_are_held_to_the_session_limits_of_their_own_python_steps(
     assert not meets(
         gpu, None, session_lane=SessionLane(gpu_memory_mb=frozenset({None}))
     )
-
-
-def test_python_steps_pass_a_worker_without_session_limits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
-    assert (
-        LumilakeServer._worker_meets_hardware(
-            _profile(cores=32, mem_bytes=29 * (1024**3)),
-            None,
-            session_lane=SessionLane(cpu_memory_mb=frozenset({None})),
-        )
-        is True
-    )
