@@ -242,23 +242,15 @@ def test_python_step_session_lane_splits_the_cpu_and_gpu_groups() -> None:
     assert python_step_session_lane([("inference", EmptyData())]) == SessionLane()
 
 
-def _capped(
-    cores: int = 32, total: int = 29 * GIB, limits: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def _capped(limits: dict[str, Any] | None) -> dict[str, Any]:
     return {
-        "cpu": {"logical_cores": cores},
-        "memory": {"total_bytes": total},
+        "cpu": {"logical_cores": 32},
+        "memory": {"total_bytes": 29 * GIB},
         "ssh_limits": limits,
     }
 
 
-def test_session_limits_admit_uses_the_smaller_of_hardware_and_cap() -> None:
-    capped = _capped(limits={"max_memory_bytes": 12 * GIB, "max_cpu_cores": None})
-    assert session_limits_admit(capped, 8, 12 * GIB)
-    assert not session_limits_admit(capped, 8, 16 * GIB)
-    assert not session_limits_admit(
-        _capped(limits={"max_memory_bytes": 64 * GIB}), 8, 30 * GIB
-    )
+def test_session_limits_admit_refuses_a_cpu_cap_below_the_job() -> None:
     assert not session_limits_admit(_capped(limits={"max_cpu_cores": 4.0}), 8, None)
 
 

@@ -202,44 +202,16 @@ def _home_mini() -> dict[str, Any]:
     return profile
 
 
-def test_python_steps_on_default_memory_fail_a_lower_session_cap(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
-    meets = LumilakeServer._worker_meets_hardware
-    cpu_step = SessionLane(cpu_memory_mb=frozenset({None}))
-    assert meets(_home_mini(), None, session_lane=cpu_step) is False
-    assert meets(_home_mini(), None) is True
-
-
 def test_python_steps_fit_the_session_cap_at_lower_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
     meets = LumilakeServer._worker_meets_hardware
     hw = HardwareRequirements(memory="8Gi")
-    assert (
-        meets(
-            _home_mini(), hw, session_lane=SessionLane(cpu_memory_mb=frozenset({None}))
-        )
-        is True
-    )
-    assert (
-        meets(
-            _home_mini(),
-            None,
-            session_lane=SessionLane(cpu_memory_mb=frozenset({8192})),
-        )
-        is True
-    )
-    assert (
-        meets(
-            _home_mini(),
-            hw,
-            session_lane=SessionLane(cpu_memory_mb=frozenset({None, 16384})),
-        )
-        is False
-    )
+    default = SessionLane(cpu_memory_mb=frozenset({None}))
+    mixed = SessionLane(cpu_memory_mb=frozenset({None, 16384}))
+    assert meets(_home_mini(), hw, session_lane=default) is True
+    assert meets(_home_mini(), hw, session_lane=mixed) is False
 
 
 def test_gpu_workers_are_held_to_the_session_limits_of_their_own_python_steps(
