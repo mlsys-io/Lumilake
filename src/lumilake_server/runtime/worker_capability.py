@@ -8,7 +8,7 @@ fraction of a card its engine reserves. An optimizer compares the two.
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Self
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -41,6 +41,16 @@ class SessionLane(NamedTuple):
     def is_empty(self) -> bool:
         """True when no step of the batch runs in a session."""
         return not self.cpu_memory_mb and not self.gpu_memory_mb
+
+    @classmethod
+    def union(cls, *lanes: Self) -> Self:
+        """One lane holding every step of ``lanes``, empty for no lanes."""
+        cpu: frozenset[int | None] = frozenset()
+        gpu: frozenset[int | None] = frozenset()
+        for lane in lanes:
+            cpu |= lane.cpu_memory_mb
+            gpu |= lane.gpu_memory_mb
+        return cls(cpu_memory_mb=cpu, gpu_memory_mb=gpu)
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -229,7 +239,7 @@ def format_memory_bytes(value: int | None) -> str:
     ):
         if value >= size and value % size == 0:
             return f"{value // size}{suffix}"
-    return f"{value}B"
+    return f"{value}"
 
 
 def session_limits_admit(

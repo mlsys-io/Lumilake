@@ -1115,26 +1115,27 @@ class LumilakeServer:
         """Why no worker can take ``workflow``, naming what each task asks for."""
         hardware = workflow.config.hardware_requirements
         cpu = resolve_cpu(hardware)
+        memory = resolve_memory(hardware)
         lane = workflow.python_step_session_lane
-        message = (
-            "no worker in the cluster can satisfy this request "
-            f"(cpu={cpu} memory={resolve_memory(hardware)} per task, "
-            f"required_cpu={self.config.cpu_worker_group_size} "
-            f"required_gpu={self.config.gpu_worker_group_size})"
+        if lane.is_empty():
+            return (
+                "no worker in the cluster can satisfy this request "
+                f"(cpu={cpu} memory={memory} per task, "
+                f"required_cpu={self.config.cpu_worker_group_size} "
+                f"required_gpu={self.config.gpu_worker_group_size})"
+            )
+        session_memory = session_memory_bytes(
+            lane.cpu_memory_mb | lane.gpu_memory_mb,
+            self._parse_memory_to_bytes(memory),
         )
-        if not lane.is_empty():
-            session_memory = session_memory_bytes(
-                lane.cpu_memory_mb | lane.gpu_memory_mb,
-                self._parse_memory_to_bytes(resolve_memory(hardware)),
-            )
-            message += (
-                "; python steps must also fit each worker's session limits "
-                "(ssh_limits), and theirs ask for "
-                f"cpu={cpu} memory={format_memory_bytes(session_memory)} per task: "
-                "lower hardware.cpu, and hardware.memory or the step's memory_mb, "
-                "to fit them"
-            )
-        return message
+        return (
+            "no worker in the cluster can satisfy this request "
+            f"(cpu={cpu} memory={format_memory_bytes(session_memory)} per task, "
+            f"required_cpu={self.config.cpu_worker_group_size} "
+            f"required_gpu={self.config.gpu_worker_group_size}); python steps "
+            "must also fit each worker's session limits (ssh_limits): lower "
+            "hardware.cpu, and hardware.memory or the step's memory_mb, to fit them"
+        )
 
     async def _try_claim_workers(
         self, batch: BatchSelection, free: FreeCapacity
