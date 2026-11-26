@@ -1138,6 +1138,44 @@ async def test_permanently_unsatisfiable_holds_python_steps_to_session_limits(
 
 
 @pytest.mark.asyncio
+async def test_reserve_batch_skips_python_steps_no_worker_can_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step over every worker's session cap is not batched with the
+    placeable work of its partition, which still dispatches."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        worker_meets_hardware=LumilakeServer._worker_meets_hardware,
+    )
+    await manager.enqueue(_as_python_job(_build_job("req-python", "graph-python")))
+    await manager.enqueue(
+        _as_python_job(_build_job("req-small", "graph-small"), memory_mb=8192)
+    )
+    capacity = _free_capacity(
+        cpu=("cpu-0",),
+        profiles={
+            "cpu-0": {
+                "cpu": {"logical_cores": 32},
+                "memory": {"total_bytes": 29 * 1024**3},
+                "gpu": {"devices": []},
+                "ssh_limits": {"max_memory_bytes": 12 * 1024**3},
+            }
+        },
+    )
+
+    reservation = await manager.reserve_batch(2, capacity=capacity)
+
+    assert reservation is not None
+    assert [item.request_id for item in reservation.selection.workflows] == [
+        "req-small"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_permanently_unsatisfiable_empty_when_total_capacity_satisfies() -> None:
     """When total cluster capacity can satisfy every partition, nothing is
     reported as permanently unsatisfiable."""

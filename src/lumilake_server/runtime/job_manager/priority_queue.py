@@ -629,12 +629,14 @@ class PriorityJobManager(BaseJobManager):
 
         When ``capacity`` is given, partitions the current free capacity cannot
         run are excluded from selection before the round-robin pick and before
-        starvation pinning. Once the anchor partition and its candidates are
-        chosen, the policy is told how many whole dispatches ``capacity`` can
-        serve for them (``None`` without ``capacity``) before it selects. When
-        a candidate is starved, the batch is filled by the starvation path
-        (starved items first, then affinity clustering pinned around them) and
-        the policy is not called; otherwise the policy selects the batch.
+        starvation pinning, and so are candidates whose python steps need more
+        than the capacity's workers admit. Once the anchor partition and its
+        candidates are chosen, the policy is told how many whole dispatches
+        ``capacity`` can serve for them (``None`` without ``capacity``) before it
+        selects. When a candidate is starved, the batch is filled by the
+        starvation path (starved items first, then affinity clustering pinned
+        around them) and the policy is not called; otherwise the policy selects
+        the batch.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -661,18 +663,19 @@ class PriorityJobManager(BaseJobManager):
                         if item.miss_count >= self._starvation_limit:
                             starved_global.append(item)
 
+            eligible_lanes: set[PartitionLane] | None = None
             if capacity is not None:
-                eligible = {
-                    partition
-                    for partition, session_memory_mb in present_lanes
-                    if self._partition_eligible(partition, capacity, session_memory_mb)
+                eligible_lanes = {
+                    lane
+                    for lane in present_lanes
+                    if self._partition_eligible(lane[0], capacity, lane[1])
                 }
                 starved_global = [
                     item
                     for item in starved_global
-                    if self._partition_of(item) in eligible
+                    if _lane_of(self._partition_of(item), item) in eligible_lanes
                 ]
-                present_partitions = eligible
+                present_partitions = {partition for partition, _ in eligible_lanes}
 
             if not present_partitions:
                 self._not_empty.clear()
@@ -711,6 +714,14 @@ class PriorityJobManager(BaseJobManager):
             candidates, user_rr_priorities_to_advance = (
                 self._build_candidate_pool_for_partition_locked(anchor_partition)
             )
+            if eligible_lanes is not None:
+                # An ineligible lane's python step needs more than the capacity
+                # holds, so its items must not ride along in the batch.
+                candidates = [
+                    item
+                    for item in candidates
+                    if _lane_of(anchor_partition, item) in eligible_lanes
+                ]
             if not candidates:
                 self._not_empty.clear()
                 return None
