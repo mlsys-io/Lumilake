@@ -88,12 +88,13 @@ from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
+    SessionLane,
     advertised_task_types,
     cpu_required_task_types,
     gpu_memory_fraction,
     gpu_worker_can_run,
     holds_gpu_utilizations,
-    python_step_memory_mb,
+    python_step_session_lane,
     python_steps_gpu_requests,
     requires_cpu_worker,
     session_limits_admit,
@@ -1117,7 +1118,7 @@ class LumilakeServer:
             f"required_cpu={self.config.cpu_worker_group_size} "
             f"required_gpu={self.config.gpu_worker_group_size})"
         )
-        if workflow.python_step_memory_mb:
+        if not workflow.python_step_session_lane.is_empty():
             message += (
                 "; python steps must also fit each worker's session limits "
                 "(ssh_limits): lower hardware.cpu, and hardware.memory or the "
@@ -1149,7 +1150,7 @@ class LumilakeServer:
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
         meets_hardware = partial(
             self._worker_meets_hardware,
-            session_memory_mb=python_step_memory_mb(nodes),
+            session_lane=python_step_session_lane(nodes),
         )
 
         def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
@@ -1269,7 +1270,7 @@ class LumilakeServer:
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         nodes = [(op.task_type, op.data_spec) for op in runtime_graph.nodes.values()]
-        session_memory_mb = python_step_memory_mb(nodes)
+        session_lane = python_step_session_lane(nodes)
         requires_cpu = requires_cpu_worker(nodes)
         needed_cpu_task_types = cpu_required_task_types(nodes)
         needed_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
@@ -1284,7 +1285,7 @@ class LumilakeServer:
                 raw_profile,
                 hardware,
                 worker_has_gpu=is_gpu,
-                session_memory_mb=session_memory_mb,
+                session_lane=session_lane,
             ):
                 continue
             profile = self._normalize_worker_profile(raw_profile)
@@ -1405,7 +1406,7 @@ class LumilakeServer:
         hardware: HardwareRequirements | None,
         *,
         worker_has_gpu: bool | None = None,
-        session_memory_mb: frozenset[int | None] = frozenset(),
+        session_lane: SessionLane = SessionLane(),
     ) -> bool:
         """Compare a raw FlowMesh worker profile to a per-job requirement.
 
@@ -1419,16 +1420,25 @@ class LumilakeServer:
         the caller has already classified the worker; default delegates to
         ``_has_gpu(worker_profile)``.
 
-        ``session_memory_mb`` lists what the work's python steps ask for in MiB
-        (``None`` for a step on the job's memory). FlowMesh caps each python step
-        at the worker's ``ssh_limits``, so the job's CPU and the largest of those
-        memories (the job's values, else the env defaults) must fit under those
+        ``session_lane`` holds what each group's python steps ask for in MiB
+        (``None`` for a step on the job's memory). FlowMesh caps a python step at
+        the worker's ``ssh_limits``, so a CPU worker must hold the CPU group's
+        steps and a GPU worker its own; the job's CPU and the largest of those
+        memories (the job's values, else the env defaults) must fit under the
         limits as well as under the hardware.
 
         Missing worker fields (e.g. ``cpu.logical_cores`` is ``None``) are
         treated as unknown and pass — Lumilake's contract is "filter the
         obvious no-go workers"; FlowMesh remains the authority on dispatch.
         """
+        is_gpu_worker = (
+            worker_has_gpu
+            if worker_has_gpu is not None
+            else cls._has_gpu(worker_profile)
+        )
+        session_memory_mb = (
+            session_lane.gpu_memory_mb if is_gpu_worker else session_lane.cpu_memory_mb
+        )
         if session_memory_mb:
             job_memory = cls._parse_memory_to_bytes(resolve_memory(hardware))
             step_memory = [
@@ -1451,11 +1461,6 @@ class LumilakeServer:
             total = (worker_profile.get("memory") or {}).get("total_bytes")
             if required is not None and isinstance(total, int) and total < required:
                 return False
-        is_gpu_worker = (
-            worker_has_gpu
-            if worker_has_gpu is not None
-            else cls._has_gpu(worker_profile)
-        )
         if not is_gpu_worker:
             return True
         gpu_section = worker_profile.get("gpu") or {}

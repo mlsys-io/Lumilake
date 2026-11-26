@@ -8,7 +8,7 @@ fraction of a card its engine reserves. An optimizer compares the two.
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -21,6 +21,26 @@ CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 """Task types that run on a CPU worker, unless the node asks for GPUs."""
+
+
+class SessionLane(NamedTuple):
+    """What each class of a batch's workers must admit as a session.
+
+    ``cpu_memory_mb`` holds the memory every python step in the batch's CPU group
+    asks for, in MiB (``None`` for a step on the job's memory). FlowMesh caps a
+    worker's python or SSH session at its ``ssh_limits``, so the job's CPU and
+    each of those memories must fit under the limits. ``gpu_memory_mb`` holds the
+    same for the python steps that ask for GPUs themselves, which run on a GPU
+    worker; a GPU worker running other task types is held to its hardware alone,
+    as FlowMesh does not cap those sessions.
+    """
+
+    cpu_memory_mb: frozenset[int | None] = frozenset()
+    gpu_memory_mb: frozenset[int | None] = frozenset()
+
+    def is_empty(self) -> bool:
+        """True when no step of the batch runs in a session."""
+        return not self.cpu_memory_mb and not self.gpu_memory_mb
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -157,20 +177,26 @@ def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
     )
 
 
-def python_step_memory_mb(
+def python_step_session_lane(
     nodes: Iterable[tuple[str, DataSpecModel]],
-) -> frozenset[int | None]:
-    """The memory each python step among ``nodes`` asks for, in MiB.
+) -> SessionLane:
+    """The session lanes the python steps among ``nodes`` put on the batch's groups.
 
-    ``None`` stands for a step that takes the job's memory. Empty when no node is
-    a python step. FlowMesh runs a python step in a session container, which the
-    worker's ``ssh_limits`` cap, so placement holds these steps to those limits.
+    A python step without a GPU request runs on a CPU worker and lands in
+    ``cpu_memory_mb``; one that asks for GPUs runs on a GPU worker and lands in
+    ``gpu_memory_mb``.
     """
-    return frozenset(
-        data_spec.memory_mb if isinstance(data_spec, PythonData) else None
-        for task_type, data_spec in nodes
-        if (task_type or "").strip().lower() == PYTHON_TASK_TYPE
-    )
+    cpu_memory_mb: set[int | None] = set()
+    gpu_memory_mb: set[int | None] = set()
+    for task_type, data_spec in nodes:
+        if (task_type or "").strip().lower() != PYTHON_TASK_TYPE:
+            continue
+        memory_mb = data_spec.memory_mb if isinstance(data_spec, PythonData) else None
+        if data_spec.gpu_request is None:
+            cpu_memory_mb.add(memory_mb)
+        else:
+            gpu_memory_mb.add(memory_mb)
+    return SessionLane(frozenset(cpu_memory_mb), frozenset(gpu_memory_mb))
 
 
 def session_limits_admit(

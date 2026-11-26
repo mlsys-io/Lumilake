@@ -16,7 +16,9 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.runtime.worker_capability import (
+    SessionLane,
     cpu_required_task_types,
+    python_step_session_lane,
     python_steps_gpu_requests,
     requires_cpu_worker,
 )
@@ -76,9 +78,10 @@ def _partition_requires_gpu(partition: PartitionKey) -> bool:
 
 
 class WorkerHardwareCheck(Protocol):
-    """Whether a worker profile meets a hardware requirement. ``session_memory_mb``
-    is the memory the work's python steps ask for in MiB (``None`` for a step on
-    the job's memory); see ``LumilakeServer._worker_meets_hardware``."""
+    """Whether a worker profile meets a hardware requirement. ``session_lane``
+    holds the memory the work's python steps ask for per worker group, in MiB
+    (``None`` for a step on the job's memory); see
+    ``LumilakeServer._worker_meets_hardware``."""
 
     def __call__(
         self,
@@ -86,7 +89,7 @@ class WorkerHardwareCheck(Protocol):
         hardware: Any,
         /,
         *,
-        session_memory_mb: frozenset[int | None] = ...,
+        session_lane: SessionLane = ...,
     ) -> bool: ...
 
 
@@ -95,19 +98,19 @@ def _meets_any_hardware(
     hardware: Any,
     /,
     *,
-    session_memory_mb: frozenset[int | None] = frozenset(),
+    session_lane: SessionLane = SessionLane(),
 ) -> bool:
     return True
 
 
-PartitionLane = tuple[PartitionKey, frozenset[int | None]]
-"""``(partition, python_step_memory_mb)``: the items of a partition that share one
-placement test. Python steps must also fit each worker's session limits, so a
-partition's python items can be unplaceable while its other items are not."""
+PartitionLane = tuple[PartitionKey, SessionLane]
+"""``(partition, python_step_session_lane)``: the items of a partition that share
+one placement test. Python steps must also fit each worker's session limits, so
+a partition's python items can be unplaceable while its other items are not."""
 
 
 def _lane_of(partition: PartitionKey, item: WorkflowItem) -> PartitionLane:
-    return (partition, item.python_step_memory_mb)
+    return (partition, item.python_step_session_lane)
 
 
 def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
@@ -334,8 +337,19 @@ class PriorityJobManager(BaseJobManager):
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=partial(
                 self._worker_meets_hardware,
-                session_memory_mb=frozenset().union(
-                    *(item.python_step_memory_mb for item in candidates)
+                session_lane=SessionLane(
+                    frozenset().union(
+                        *(
+                            item.python_step_session_lane.cpu_memory_mb
+                            for item in candidates
+                        )
+                    ),
+                    frozenset().union(
+                        *(
+                            item.python_step_session_lane.gpu_memory_mb
+                            for item in candidates
+                        )
+                    ),
                 ),
             ),
             hardware=self._hardware_from_signature(_partition_hardware(partition)),
@@ -347,7 +361,7 @@ class PriorityJobManager(BaseJobManager):
         self,
         partition: PartitionKey,
         capacity: FreeCapacity,
-        session_memory_mb: frozenset[int | None] = frozenset(),
+        session_lane: SessionLane = SessionLane(),
     ) -> bool:
         """True when ``capacity`` holds enough idle workers to run ``partition``.
 
@@ -356,8 +370,9 @@ class PriorityJobManager(BaseJobManager):
         CPU-only partition needs only the CPU group size. When the capacity
         snapshot carries worker profiles, the candidate workers must also meet
         the partition's hardware signature, so selection never picks a
-        partition that cannot be claimed. ``session_memory_mb``, the memory the
-        items' python steps ask for, holds the workers to their session limits too.
+        partition that cannot be claimed. ``session_lane``, the memory the
+        items' python steps ask for per worker group, holds the workers to their
+        session limits too.
         """
         cpu_group_size, gpu_group_size = self._partition_group_sizes(partition)
         if not capacity.can_satisfy(
@@ -371,7 +386,7 @@ class PriorityJobManager(BaseJobManager):
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=partial(
-                self._worker_meets_hardware, session_memory_mb=session_memory_mb
+                self._worker_meets_hardware, session_lane=session_lane
             ),
             hardware=hardware,
         )
@@ -448,6 +463,10 @@ class PriorityJobManager(BaseJobManager):
                     data_credential_digest=job.data_credential_digest,
                     data_token=job.data_token,
                     requires_gpu=job.requires_gpu.get(graph_name, False),
+                    python_step_session_lane=python_step_session_lane(
+                        (op.task_type, op.data_spec)
+                        for op in runtime_graph.nodes.values()
+                    ),
                 )
             )
         async with self._lock:
@@ -588,10 +607,8 @@ class PriorityJobManager(BaseJobManager):
                     del self._unsatisfiable_count[lane]
             now = time.monotonic()
             for lane in present_lanes:
-                partition, session_memory_mb = lane
-                if self._partition_eligible(
-                    partition, total_capacity, session_memory_mb
-                ):
+                partition, session_lane = lane
+                if self._partition_eligible(partition, total_capacity, session_lane):
                     self._unsatisfiable_since.pop(lane, None)
                     self._unsatisfiable_count.pop(lane, None)
                     continue

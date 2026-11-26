@@ -21,6 +21,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import SessionLane
 from tests.support.data_specs import runtime_op
 
 
@@ -426,7 +427,7 @@ def _profile_ok(
     _hardware: Any,
     /,
     *,
-    session_memory_mb: frozenset[int | None] = frozenset(),
+    session_lane: SessionLane = SessionLane(),
 ) -> bool:
     return bool(profile["ok"])
 

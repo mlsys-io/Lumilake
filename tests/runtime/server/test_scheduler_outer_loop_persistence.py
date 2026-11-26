@@ -7,6 +7,7 @@ from support.runtime_server import attach_request_states, make_runtime_op
 
 from lumilake_server.data_specs import PythonData, RetrievalData
 from lumilake_server.runtime.capacity import FreeCapacity
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None:
@@ -450,7 +451,7 @@ class _DoomedJobManager:
                 public_graph_name="g",
                 slice_index=0,
                 config=SimpleNamespace(hardware_requirements=None),
-                python_step_memory_mb=frozenset({None}),
+                python_step_session_lane=SessionLane(cpu_memory_mb=frozenset({None})),
             )
         ]
 
