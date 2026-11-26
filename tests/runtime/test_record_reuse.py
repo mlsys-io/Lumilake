@@ -35,6 +35,7 @@ from lumilake_server.runtime.record_store import (
     RecordAddress,
     RecordEntry,
     RecordSource,
+    digest_of,
     is_marker,
 )
 from lumilake_server.runtime.record_writer import (
@@ -102,6 +103,7 @@ def _stored(value: Any, op: str, record: str | None = None) -> RecordEntry:
     return RecordEntry(
         digest="d",
         address=RecordAddress(op=op, record=record, round=0),
+        spec_digest=digest_of({"op": op}),
         value=value,
         source=RecordSource(job="req-1", round=0, task_id=""),
         written_at=0.0,
@@ -377,7 +379,7 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     assert _decisions(plan) == {
         "Mark": ("hit", None),
         "Join": ("hit", None),
-        "Final": ("miss", "no entry"),
+        "Final": ("miss", "spec changed"),
     }
     assert list(dispatched.nodes) == [_node(graph, "Final")]
     await _run(
@@ -468,7 +470,7 @@ async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
     planner, graph = _planner(storage), _runtime_graph(changed)
     plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
-    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    assert _decisions(plan)["Parsed"] == ("miss", "spec changed"), _decisions(plan)
     served = served_records(plan)
     await _run(
         storage, changed, {"Parsed": parsed}, "req-2", graph=dispatched, served=served
@@ -807,7 +809,7 @@ async def test_a_served_prompt_feeds_a_model_op(
         (_ROWS["Mark"], ("hit", None), ("hit", None)),
         (
             [{**_ROWS["Mark"][0], "text": "X"}, _ROWS["Mark"][1]],
-            ("miss", "no entry"),
+            ("miss", "input changed"),
             ("miss", "upstream miss"),
         ),
     ],

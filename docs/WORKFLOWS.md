@@ -94,7 +94,7 @@ A reusing job with a keyed model op first runs the python steps above it in a ph
 
 A retrieval re-runs, so its consumers hit while its rows are unchanged; a retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a model op that reads a retrieval keeps that retrieval dispatched.
 
-A job records one decision per op, `hit` or `miss` with the first reason it missed; see [`docs/API.md`](API.md).
+A job records one decision per op, `hit` or `miss`, and one row per record naming that record's own decision and miss cause (`spec changed`, `input changed`, `membership changed`, `version changed`, `no entry`, and the rest); see [`docs/API.md`](API.md). A record's stored entry names the ordered input keys it read and the model revision the op pins, so a deleted or an added key misses only the affected group and leaves every other record served. A standalone python task's declared `image` is its own version: a different declared image misses that task's records with `version changed`. The version is the declared string, so a rebuilt image that keeps a mutable tag such as `:latest` is not detected. Addresses are keyed by op name, so two workflows that share an op name share its address and a differing op spec there misses as `spec changed`. A change inside a `RouterOp` branch is not tracked per key: a branch is a whole-op record, so a change there misses the branch whole and its readers report `upstream miss`.
 
 ## n8n code-node notes
 

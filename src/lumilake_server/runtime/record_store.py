@@ -8,7 +8,7 @@ ids, workers and row positions never enter the digest.
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -61,6 +61,47 @@ def op_spec_digest(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
         "data_spec": _without_data_data_spec(data_spec_dict(op), logical_names),
     }
     return digest_of({"digest_version": DIGEST_VERSION, "spec": spec})
+
+
+_SHAPE_KEYS = ("mode", "by", "join", "attach", "row_key")
+"""The data-spec fields that say how an op reads its inputs."""
+
+
+def op_namespace(op: RuntimeOp, logical_names: Mapping[str, str]) -> str:
+    """A stored address's scope: the op's name and its own plan's read shape."""
+    spec = _without_code(_without_data_data_spec(data_spec_dict(op), logical_names))
+    shape = {key: spec[key] for key in _SHAPE_KEYS if key in spec}
+    plan = spec.get("plan")
+    if isinstance(plan, list):
+        shape["plan"] = _plan_shape(plan)
+    return digest_of(
+        {
+            "digest_version": DIGEST_VERSION,
+            "op": logical_names.get(op.node_id, op.node_id),
+            "reads": shape,
+        }
+    )
+
+
+def _plan_shape(plan: Sequence[Any]) -> list[Any]:
+    """Each plan entry's kind and the node it reads, without its rows."""
+    return [
+        (
+            {
+                "kind": entry.get("kind"),
+                "node": entry.get("node"),
+                "label": entry.get("label"),
+            }
+            if isinstance(entry, Mapping)
+            else entry
+        )
+        for entry in plan
+    ]
+
+
+def _without_code(data_spec: Mapping[str, Any]) -> dict[str, Any]:
+    """A data spec without the code it runs, which its signature already covers."""
+    return {key: item for key, item in data_spec.items() if key != "code"}
 
 
 _DATA_KEYS = frozenset({"items", "values"})
@@ -259,7 +300,7 @@ def marker_reason(value: Any) -> Any:
 
 
 class RecordAddress(BaseModel):
-    """Where a record is: its op, its key at that op, and the semantic round."""
+    """Where a record is: its op, the spec that computed it, its key and round."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -267,6 +308,8 @@ class RecordAddress(BaseModel):
     record: str | None = None
     """``None`` for an op whose rows carry no logical key: one whole-op entry."""
     round: int = 0
+    scope: str = ""
+    """The index scope the op's address objects live under, set on a stored entry."""
 
 
 class RecordRealization(BaseModel):
@@ -295,6 +338,39 @@ class EffectVersions(BaseModel):
     value_version: str | None = None
     """An unversioned read's version: the value digest of the record it emitted."""
 
+    revision: str | None = None
+    """The model revision the record was computed with, when the op pins one."""
+    image: str | None = None
+    """The image the record ran in, when the op pins one: a standalone python
+    task's declared image, the only image the dispatched task spec names."""
+
+
+def model_revision(op: RuntimeOp) -> str | None:
+    """The model revision the op's spec pins, if any: the engine source's own
+    revision, as the model spec carries it."""
+    source = op.model_spec.get("source")
+    if not isinstance(source, Mapping):
+        return None
+    revision = source.get("revision")
+    return revision if isinstance(revision, str) and revision else None
+
+
+def op_image(op: RuntimeOp) -> str | None:
+    """The image the op's task runs in, when its spec pins one: a standalone
+    python step's declared image."""
+    image = data_spec_dict(op).get("image")
+    return image if isinstance(image, str) and image else None
+
+
+def effect_versions(op: RuntimeOp, *, unversioned: bool = False) -> EffectVersions:
+    """The versions a record of ``op`` depends on: its snapshot state, the model
+    revision and the image the op itself pins."""
+    return EffectVersions(
+        unversioned=unversioned,
+        revision=model_revision(op),
+        image=op_image(op),
+    )
+
 
 class RecordSource(BaseModel):
     """The physical production of an entry: which job, round and task, where."""
@@ -310,6 +386,16 @@ class RecordSource(BaseModel):
     of them reads back from this entry."""
 
 
+class InputMembership(BaseModel):
+    """What one input contributed to a record: the ordered record keys it read,
+    so an addition, a deletion or a re-route is visible beside the values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node: str
+    keys: list[str] = Field(default_factory=list)
+
+
 class RecordEntry(BaseModel):
     """One stored record, written once to ``records/<digest>.json``."""
 
@@ -317,6 +403,9 @@ class RecordEntry(BaseModel):
 
     digest: str
     address: RecordAddress
+    spec_digest: str
+    """The op spec digest the record was computed with, so a miss beside it
+    names a differing spec ahead of a differing input."""
     status: Literal["ok", "failed"] = "ok"
     value: Any = None
     value_digest: str | None = None
@@ -328,6 +417,9 @@ class RecordEntry(BaseModel):
     the signature so a changed input value changes it."""
     member_keys: list[str] = Field(default_factory=list)
     """A group's member record keys, in the order it read them."""
+    membership: list[InputMembership] = Field(default_factory=list)
+    """Each input's ordered record keys, and a route branch's received keys, so
+    a consumer names the membership it read, not only the values."""
     realization: RecordRealization = Field(default_factory=RecordRealization)
     versions: EffectVersions = Field(default_factory=EffectVersions)
     source: RecordSource
@@ -341,6 +433,19 @@ class RecordEntry(BaseModel):
         return cls.model_validate(json.loads(body.decode("utf-8")))
 
 
+def membership_of(
+    inputs: Sequence[tuple[str, Sequence[str | None]]],
+) -> list[InputMembership]:
+    """Each input's ordered record keys; an input with no node name or no key
+    anywhere is left out, so a whole-op or literal input adds no membership."""
+    found: list[InputMembership] = []
+    for node, keys in inputs:
+        ordered = [key for key in keys if key is not None]
+        if node and ordered:
+            found.append(InputMembership(node=node, keys=ordered))
+    return found
+
+
 def _record_body(
     *,
     spec_digest: str,
@@ -349,15 +454,17 @@ def _record_body(
     input_values: list[str],
     realization: RecordRealization,
     versions: EffectVersions,
+    membership: list[InputMembership] | None = None,
 ) -> dict[str, Any]:
     """What a record's key covers, before the status tells a success from a
     failure."""
     return {
         "digest_version": DIGEST_VERSION,
         "spec": spec_digest,
-        "address": address.model_dump(mode="json"),
+        "address": address.model_dump(mode="json", exclude={"spec", "scope"}),
         "inputs": input_digests,
         "input_values": input_values,
+        "membership": [group.model_dump(mode="json") for group in membership or []],
         "realization": realization.model_dump(mode="json"),
         "versions": versions.model_dump(mode="json"),
     }
@@ -371,16 +478,17 @@ def entry_digest(
     input_values: list[str],
     realization: RecordRealization,
     versions: EffectVersions,
+    membership: list[InputMembership] | None = None,
 ) -> str:
     """The signature digest: the key of the record these inputs decide.
 
     It covers the op spec, the record address, each input record's signature,
-    the value that input returned, the realization and the effect versions. A
-    consumer that probed before running can compute it. An input record's own
-    signature names what that input read, so recomputing an input with changed
-    inputs gives it a new signature even when its value comes out equal, and
-    its consumers' signatures change with it: the key cuts off by signature,
-    never by value."""
+    the value that input returned, each input's ordered record keys, the
+    realization and the effect versions. A consumer that probed before running
+    can compute it. An input record's own signature names what that input read,
+    so recomputing an input with changed inputs gives it a new signature even
+    when its value comes out equal, and its consumers' signatures change with
+    it: the key cuts off by signature, never by value."""
     return digest_of(
         _record_body(
             spec_digest=spec_digest,
@@ -389,6 +497,7 @@ def entry_digest(
             input_values=input_values,
             realization=realization,
             versions=versions,
+            membership=membership,
         )
     )
 
@@ -401,6 +510,7 @@ def failed_record_digest(
     input_values: list[str],
     realization: RecordRealization,
     versions: EffectVersions,
+    membership: list[InputMembership] | None = None,
 ) -> str:
     """A failed attempt's key: the success key's own inputs, realization and
     versions, with the status added, so it never answers a request for a
@@ -414,6 +524,7 @@ def failed_record_digest(
                 input_values=input_values,
                 realization=realization,
                 versions=versions,
+                membership=membership,
             ),
             "status": "failed",
         }
@@ -426,6 +537,12 @@ def entry_object_name(digest: str) -> str:
 
 def index_object_name(job_id: str) -> str:
     return f"{RECORD_PREFIX}/jobs/{job_id}.json"
+
+
+def address_object_name(scope: str, record: str | None, round_number: int) -> str:
+    """One record's address object: the newest entry written there."""
+    address = digest_of({"record": address_text(record)})
+    return f"{RECORD_PREFIX}/addresses/{scope}/{round_number}/{address}.json"
 
 
 class RecordIndexEntry(BaseModel):
@@ -472,6 +589,27 @@ class RecordIndex(BaseModel):
             ):
                 return entry
         return None
+
+
+class RecordAddressEntry(BaseModel):
+    """The newest digest written at one logical address."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    digest: str
+    written_at: float
+
+    def body(self) -> bytes:
+        return canonical_json(self.model_dump(mode="json")).encode("utf-8")
+
+    @classmethod
+    def from_body(cls, body: bytes) -> Self:
+        return cls.model_validate(json.loads(body.decode("utf-8")))
+
+
+def address_text(record: str | None) -> str:
+    """A record's key as the address index names it; the whole op is ``""``."""
+    return "" if record is None else record
 
 
 def row_key(value: Any, path: str) -> str | None:
