@@ -199,6 +199,39 @@ def python_step_session_lane(
     return SessionLane(frozenset(cpu_memory_mb), frozenset(gpu_memory_mb))
 
 
+def session_memory_bytes(
+    session_memory_mb: frozenset[int | None], job_memory_bytes: int | None
+) -> int | None:
+    """The largest memory the ``session_memory_mb`` steps ask for, in bytes.
+
+    A step on the job's memory (``None``) is counted at ``job_memory_bytes``, so
+    this is the memory the session-limits check is made against.
+    """
+    step_memory = [
+        job_memory_bytes if memory_mb is None else memory_mb * 1024**2
+        for memory_mb in session_memory_mb
+    ]
+    return max((b for b in step_memory if b is not None), default=None)
+
+
+def format_memory_bytes(value: int | None) -> str:
+    """``value`` as a Kubernetes-style memory string, e.g. ``2048Mi`` or ``12Gi``.
+
+    ``None`` formats as ``unknown``, for a memory the profile did not report.
+    """
+    if value is None:
+        return "unknown"
+    for suffix, size in (
+        ("Ti", 1024**4),
+        ("Gi", 1024**3),
+        ("Mi", 1024**2),
+        ("Ki", 1024),
+    ):
+        if value >= size and value % size == 0:
+            return f"{value // size}{suffix}"
+    return f"{value}B"
+
+
 def session_limits_admit(
     profile: Mapping[str, Any], cpu: int, memory_bytes: int | None
 ) -> bool:

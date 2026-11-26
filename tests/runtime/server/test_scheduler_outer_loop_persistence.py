@@ -5,8 +5,10 @@ from typing import Any, cast
 import pytest
 from support.runtime_server import attach_request_states, make_runtime_op
 
+from lumilake import envs
 from lumilake_server.data_specs import PythonData, RetrievalData
 from lumilake_server.runtime.capacity import FreeCapacity
+from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.worker_capability import SessionLane
 
 
@@ -433,8 +435,14 @@ async def test_scheduler_aborts_reservation_when_workers_unavailable(
 class _DoomedJobManager:
     """Yields one workflow that is permanently unsatisfiable, then cancels."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        hardware: HardwareRequirements | None = None,
+        session_lane: SessionLane = SessionLane(cpu_memory_mb=frozenset({None})),
+    ) -> None:
         self._calls = 0
+        self._hardware = hardware
+        self._session_lane = session_lane
         self.commits: list[Any] = []
         self.removed: list[list[str]] = []
 
@@ -450,8 +458,8 @@ class _DoomedJobManager:
                 workflow_id="wf-1",
                 public_graph_name="g",
                 slice_index=0,
-                config=SimpleNamespace(hardware_requirements=None),
-                python_step_session_lane=SessionLane(cpu_memory_mb=frozenset({None})),
+                config=SimpleNamespace(hardware_requirements=self._hardware),
+                python_step_session_lane=self._session_lane,
             )
         ]
 
@@ -468,15 +476,16 @@ class _DoomedJobManager:
         self.removed.append(list(workflow_ids))
 
 
-@pytest.mark.asyncio
-async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
-    """A partition no worker can ever satisfy is failed loudly and dropped
-    from the queue, rather than sitting silently forever."""
+async def _fail_unplaceable(
+    server_factory: Any,
+    job_manager: _DoomedJobManager,
+) -> str:
+    """Run one scheduler pass that fails ``job_manager``'s workflow, and return
+    the error the caller is handed."""
     server = server_factory()
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
     server.config.capacity_aware_selection = True
-    job_manager = _DoomedJobManager()
     server.job_manager = cast(Any, job_manager)
 
     async def _no_accumulation_wait(free: Any = None) -> None:
@@ -487,12 +496,7 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
 
     server._maybe_wait_for_batch_accumulation = _no_accumulation_wait  # type: ignore[method-assign]
     server._run_batch = _noop_run_batch  # type: ignore[method-assign]
-
-    # Capacity holds only CPU workers; the queued batch needs a GPU, so it is
-    # permanently unsatisfiable and must be failed.
     _patch_capacity(server, ["cpu-0"], [])
-
-    # Attach a real request state so _fail_unplaceable_batch can finalize it.
     handlers = attach_request_states(
         server,
         [
@@ -508,17 +512,39 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
 
     await server._scheduler_loop()
 
-    # The batch was never reserved/committed; it was failed and removed.
     assert job_manager.commits == []
     assert job_manager.removed == [["wf-1"]]
-    handler = handlers["req-1"]
-    assert len(handler.results) == 1
-    result = handler.results[0]
+    result = handlers["req-1"].results[0]
     assert result.error_info is not None
-    assert any("placement_failed" in err for err in result.error_info)
-    error = next(err["error"] for err in result.error_info if "placement_failed" in err)
+    return next(err["error"] for err in result.error_info if "placement_failed" in err)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_fails_unplaceable_batch_loudly(server_factory: Any) -> None:
+    """A partition no worker can ever satisfy is failed loudly and dropped
+    from the queue, rather than sitting silently forever."""
+    error = await _fail_unplaceable(server_factory, _DoomedJobManager())
+
     assert "memory=" in error
     assert "session limits" in error
+
+
+@pytest.mark.asyncio
+async def test_unplaceable_error_names_the_memory_the_session_check_used(
+    server_factory: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A step's ``memory_mb`` above the job's memory is what the check fails on,
+    so the error names it instead of the job's memory."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    job_manager = _DoomedJobManager(
+        hardware=HardwareRequirements(memory="8Gi"),
+        session_lane=SessionLane(cpu_memory_mb=frozenset({16384})),
+    )
+
+    error = await _fail_unplaceable(server_factory, job_manager)
+
+    assert "memory=16Gi per task" in error
 
 
 class _GpuThenCpuJobManager:

@@ -91,6 +91,7 @@ from lumilake_server.runtime.worker_capability import (
     SessionLane,
     advertised_task_types,
     cpu_required_task_types,
+    format_memory_bytes,
     gpu_memory_fraction,
     gpu_worker_can_run,
     holds_gpu_utilizations,
@@ -98,6 +99,7 @@ from lumilake_server.runtime.worker_capability import (
     python_steps_gpu_requests,
     requires_cpu_worker,
     session_limits_admit,
+    session_memory_bytes,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
@@ -1112,17 +1114,25 @@ class LumilakeServer:
     def _unplaceable_error(self, workflow: WorkflowItem) -> str:
         """Why no worker can take ``workflow``, naming what each task asks for."""
         hardware = workflow.config.hardware_requirements
+        cpu = resolve_cpu(hardware)
+        lane = workflow.python_step_session_lane
         message = (
             "no worker in the cluster can satisfy this request "
-            f"(cpu={resolve_cpu(hardware)} memory={resolve_memory(hardware)} per task, "
+            f"(cpu={cpu} memory={resolve_memory(hardware)} per task, "
             f"required_cpu={self.config.cpu_worker_group_size} "
             f"required_gpu={self.config.gpu_worker_group_size})"
         )
-        if not workflow.python_step_session_lane.is_empty():
+        if not lane.is_empty():
+            session_memory = session_memory_bytes(
+                lane.cpu_memory_mb | lane.gpu_memory_mb,
+                self._parse_memory_to_bytes(resolve_memory(hardware)),
+            )
             message += (
                 "; python steps must also fit each worker's session limits "
-                "(ssh_limits): lower hardware.cpu, and hardware.memory or the "
-                "step's memory_mb, to fit them"
+                "(ssh_limits), and theirs ask for "
+                f"cpu={cpu} memory={format_memory_bytes(session_memory)} per task: "
+                "lower hardware.cpu, and hardware.memory or the step's memory_mb, "
+                "to fit them"
             )
         return message
 
@@ -1439,17 +1449,14 @@ class LumilakeServer:
         session_memory_mb = (
             session_lane.gpu_memory_mb if is_gpu_worker else session_lane.cpu_memory_mb
         )
-        if session_memory_mb:
-            job_memory = cls._parse_memory_to_bytes(resolve_memory(hardware))
-            step_memory = [
-                job_memory if mb is None else mb * 1024**2 for mb in session_memory_mb
-            ]
-            if not session_limits_admit(
-                worker_profile,
-                resolve_cpu(hardware),
-                max((b for b in step_memory if b is not None), default=None),
-            ):
-                return False
+        if session_memory_mb and not session_limits_admit(
+            worker_profile,
+            resolve_cpu(hardware),
+            session_memory_bytes(
+                session_memory_mb, cls._parse_memory_to_bytes(resolve_memory(hardware))
+            ),
+        ):
+            return False
         if hardware is None:
             return True
         if hardware.cpu is not None:
