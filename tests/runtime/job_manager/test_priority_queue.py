@@ -1142,7 +1142,8 @@ async def test_reserve_batch_skips_python_steps_no_worker_can_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A python step over every worker's session cap is not batched with the
-    placeable work of its partition, which still dispatches."""
+    placeable work of its partition, which still dispatches even when the queue
+    ahead of it holds more unplaceable steps than one quantum."""
     monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
     manager = PriorityJobManager(
         optimizer=MagicMock(spec=BaseOptimizer),
@@ -1151,7 +1152,10 @@ async def test_reserve_batch_skips_python_steps_no_worker_can_place(
         gpu_worker_group_size=1,
         worker_meets_hardware=LumilakeServer._worker_meets_hardware,
     )
-    await manager.enqueue(_as_python_job(_build_job("req-python", "graph-python")))
+    for index in range(9):
+        await manager.enqueue(
+            _as_python_job(_build_job(f"req-python-{index}", f"graph-{index}"))
+        )
     await manager.enqueue(
         _as_python_job(_build_job("req-small", "graph-small"), memory_mb=8192)
     )

@@ -729,16 +729,10 @@ class PriorityJobManager(BaseJobManager):
                 rr_partition_to_advance = picked
 
             candidates, user_rr_priorities_to_advance = (
-                self._build_candidate_pool_for_partition_locked(anchor_partition)
+                self._build_candidate_pool_for_partition_locked(
+                    anchor_partition, eligible_lanes
+                )
             )
-            if eligible_lanes is not None:
-                # An ineligible lane's python step needs more than the capacity
-                # holds, so its items must not ride along in the batch.
-                candidates = [
-                    item
-                    for item in candidates
-                    if _lane_of(anchor_partition, item) in eligible_lanes
-                ]
             if not candidates:
                 self._not_empty.clear()
                 return None
@@ -944,7 +938,9 @@ class PriorityJobManager(BaseJobManager):
                 )
 
     def _build_candidate_pool_for_partition_locked(
-        self, partition: PartitionKey
+        self,
+        partition: PartitionKey,
+        eligible_lanes: set[PartitionLane] | None = None,
     ) -> tuple[list[WorkflowItem], tuple[Priority, ...]]:
         """Peek the candidate pool plus the priorities whose user-level RR
         pointer should be rotated by ``commit_reservation``.
@@ -956,7 +952,7 @@ class PriorityJobManager(BaseJobManager):
             if quantum == 0:
                 continue
             picked, advance = self._peek_round_robin_for_partition_locked(
-                priority, quantum, partition
+                priority, quantum, partition, eligible_lanes
             )
             candidates.extend(picked)
             if advance:
@@ -1015,11 +1011,15 @@ class PriorityJobManager(BaseJobManager):
         priority: Priority,
         limit: int,
         partition: PartitionKey,
+        eligible_lanes: set[PartitionLane] | None = None,
     ) -> tuple[list[WorkflowItem], bool]:
-        """Peek the next ``limit`` items for ``partition`` without rotating.
+        """Peek the next ``limit`` placeable items for ``partition`` without
+        rotating.
 
-        Returns ``(candidates, should_advance)``. ``should_advance`` is True
-        when the caller's ``commit_reservation`` should rotate this
+        An item in a lane outside ``eligible_lanes`` needs more than the free
+        capacity holds, so it is skipped and the quantum fills from work that
+        can dispatch. Returns ``(candidates, should_advance)``. ``should_advance``
+        is True when the caller's ``commit_reservation`` should rotate this
         priority's user-level RR pointer; rotation is deferred so aborts
         leave the pointer untouched.
         """
@@ -1058,6 +1058,10 @@ class PriorityJobManager(BaseJobManager):
                 and _hardware_signature(item.config.hardware_requirements)
                 == hardware_signature
                 and (requires_gpu is None or item.requires_gpu == requires_gpu)
+                and (
+                    eligible_lanes is None
+                    or _lane_of(partition, item) in eligible_lanes
+                )
             ]
             if user_items:
                 filtered[user_id] = user_items
