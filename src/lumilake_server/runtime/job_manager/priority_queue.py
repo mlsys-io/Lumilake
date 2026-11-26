@@ -337,19 +337,8 @@ class PriorityJobManager(BaseJobManager):
             gpu_group_size=gpu_group_size,
             worker_meets_hardware=partial(
                 self._worker_meets_hardware,
-                session_lane=SessionLane(
-                    frozenset().union(
-                        *(
-                            item.python_step_session_lane.cpu_memory_mb
-                            for item in candidates
-                        )
-                    ),
-                    frozenset().union(
-                        *(
-                            item.python_step_session_lane.gpu_memory_mb
-                            for item in candidates
-                        )
-                    ),
+                session_lane=SessionLane.union(
+                    *(item.python_step_session_lane for item in candidates)
                 ),
             ),
             hardware=self._hardware_from_signature(_partition_hardware(partition)),
