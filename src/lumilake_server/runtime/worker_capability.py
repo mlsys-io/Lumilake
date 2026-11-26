@@ -14,6 +14,7 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,
     GpuRequest,
+    PythonData,
 )
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
@@ -154,3 +155,49 @@ def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
         and data_spec.gpu_request is None
         for task_type, data_spec in nodes
     )
+
+
+def python_step_memory_mb(
+    nodes: Iterable[tuple[str, DataSpecModel]],
+) -> frozenset[int | None]:
+    """The memory each python step among ``nodes`` asks for, in MiB.
+
+    ``None`` stands for a step that takes the job's memory. Empty when no node is
+    a python step. FlowMesh runs a python step in a session container, which the
+    worker's ``ssh_limits`` cap, so placement holds these steps to those limits.
+    """
+    return frozenset(
+        data_spec.memory_mb if isinstance(data_spec, PythonData) else None
+        for task_type, data_spec in nodes
+        if (task_type or "").strip().lower() == PYTHON_TASK_TYPE
+    )
+
+
+def session_limits_admit(
+    profile: Mapping[str, Any], cpu: int, memory_bytes: int | None
+) -> bool:
+    """True when a session on this worker can have ``cpu`` cores and ``memory_bytes``.
+
+    A session gets the smaller of the worker's hardware and its ``ssh_limits``,
+    the same bound FlowMesh's dispatcher applies to a python or SSH task. A
+    dimension the profile does not report passes.
+    """
+    limits = profile.get("ssh_limits")
+    if not isinstance(limits, Mapping):
+        return True
+    cores = (profile.get("cpu") or {}).get("logical_cores")
+    max_cores = limits.get("max_cpu_cores")
+    if isinstance(cores, int) and isinstance(max_cores, int | float):
+        if min(cores, max_cores) < cpu:
+            return False
+    total = (profile.get("memory") or {}).get("total_bytes")
+    max_memory = limits.get("max_memory_bytes")
+    if (
+        memory_bytes is not None
+        and isinstance(total, int)
+        and total > 0
+        and isinstance(max_memory, int)
+        and min(total, max_memory) < memory_bytes
+    ):
+        return False
+    return True

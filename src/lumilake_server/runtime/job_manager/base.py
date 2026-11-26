@@ -11,6 +11,7 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import python_step_memory_mb
 
 
 class AbortReason(StrEnum):
@@ -42,6 +43,13 @@ class WorkflowItem:
     data_token: str | None = field(default=None, repr=False)
     miss_count: int = 0
     requires_gpu: bool = False
+
+    @property
+    def python_step_memory_mb(self) -> frozenset[int | None]:
+        """The memory each python step of the workflow asks for, in MiB."""
+        return python_step_memory_mb(
+            (op.task_type, op.data_spec) for op in self.runtime_graph.nodes.values()
+        )
 
 
 def format_workflow_item(item: WorkflowItem) -> str:

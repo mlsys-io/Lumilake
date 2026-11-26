@@ -135,6 +135,8 @@ Used by FlowMesh worker placement as the fallback when a job does not pass an ex
 | `HARDWARE_GPU_REQUIREMENT` | GPUs per worker. Defaults to `1`. |
 | `HARDWARE_GPU_MEMORY_REQUIREMENT` | GPU memory per worker. Defaults to `8Gi`. |
 
+FlowMesh runs a python step (`LambdaOp`) in a session container capped by the worker's `ssh_limits`, so a job with python steps is placed only on workers whose session limits hold its CPU and the largest memory its python steps ask for: a step's own `memory_mb`, else the job's `memory`, else `HARDWARE_MEMORY_REQUIREMENT`. A job no worker can place this way fails with an error naming the per-task CPU and memory; lower `hardware.cpu`, and `hardware.memory` or the step's `memory_mb`, to fit. Other task types are held to the worker's hardware alone.
+
 Jobs with different per-job override tuples (the raw ``hardware`` payload — ``None`` is its own partition, ``{"cpu": 8}`` is another, ``{"cpu": 8, "memory": "16Gi"}`` is another) land in distinct FlowMesh dispatches because a single FlowMesh task spec carries one hardware tuple. The partition is keyed on the raw override, not the env-resolved value, so two jobs that happen to resolve to the same effective spec via env defaults still split.
 
 The worker filter is role-aware: ``cpu`` and ``memory`` filter every worker (CPU and GPU), but ``gpu`` and ``gpu_memory`` only filter GPU-capable workers. A mixed CPU+GPU graph that sets ``gpu=1`` therefore still picks up CPU workers for its CPU ops; ``gpu`` is not a job-wide "GPU workers only" switch. Submitting `--gpu 0` against a workflow that contains a GPU op (vLLM / transformers / diffusers / text-to-image) is rejected with a clear error before the optimizer runs.

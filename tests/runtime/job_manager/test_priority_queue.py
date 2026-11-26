@@ -1,10 +1,13 @@
 import logging
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake import envs
+from lumilake_server.data_specs import PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.policies.fifo import FifoSchedulingPolicy
@@ -18,6 +21,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.server import LumilakeServer
 from tests.support.data_specs import runtime_op
 
 
@@ -1076,6 +1080,61 @@ async def test_permanently_unsatisfiable_reports_unplaceable_partition() -> None
     doomed = await manager.permanently_unsatisfiable(_free_capacity(cpu=("cpu-0",)))
 
     assert [item.request_id for item in doomed] == ["req-gpu"]
+
+
+def _as_python_job(job: Job, memory_mb: int | None = None) -> Job:
+    graphs = {
+        name: RuntimeGraph(
+            nodes={
+                node_id: replace(
+                    op, task_type="python", data_spec=PythonData(memory_mb=memory_mb)
+                )
+                for node_id, op in graph.nodes.items()
+            },
+            node_order=graph.node_order,
+            output_node_map=graph.output_node_map,
+        )
+        for name, graph in job.runtime_graphs.items()
+    }
+    return replace(job, runtime_graphs=graphs, data_profile_graphs=graphs)
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_holds_python_steps_to_session_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step that needs more memory than every worker's session cap is
+    reported, while non-python work and a python step that fits are not."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=0,
+        worker_meets_hardware=LumilakeServer._worker_meets_hardware,
+    )
+    await manager.enqueue(_as_python_job(_build_job("req-python", "graph-python")))
+    await manager.enqueue(
+        _as_python_job(_build_job("req-small", "graph-small"), memory_mb=8192)
+    )
+    await manager.enqueue(_build_job("req-inference", "graph-inference"))
+    capacity = _free_capacity(
+        cpu=("cpu-0",),
+        profiles={
+            "cpu-0": {
+                "cpu": {"logical_cores": 32},
+                "memory": {"total_bytes": 29 * 1024**3},
+                "gpu": {"devices": []},
+                "ssh_limits": {"max_memory_bytes": 12 * 1024**3},
+            }
+        },
+    )
+
+    doomed = await manager.permanently_unsatisfiable(capacity)
+
+    assert [item.request_id for item in doomed] == ["req-python"]
 
 
 @pytest.mark.asyncio

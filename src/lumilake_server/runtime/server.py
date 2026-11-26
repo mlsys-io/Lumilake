@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable, Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, ClassVar, Self
 
 import lumid_hooks
@@ -80,6 +81,8 @@ from lumilake_server.runtime.runtime_manager import (
     DataCredential,
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
+    resolve_cpu,
+    resolve_memory,
 )
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
@@ -90,8 +93,10 @@ from lumilake_server.runtime.worker_capability import (
     gpu_memory_fraction,
     gpu_worker_can_run,
     holds_gpu_utilizations,
+    python_step_memory_mb,
     python_steps_gpu_requests,
     requires_cpu_worker,
+    session_limits_admit,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
@@ -1087,11 +1092,7 @@ class LumilakeServer:
                     "placement_failed": workflow.workflow_id,
                     "graph": workflow.public_graph_name,
                     "slice_index": workflow.slice_index,
-                    "error": (
-                        "no worker in the cluster can satisfy this request "
-                        f"(required_cpu={self.config.cpu_worker_group_size} "
-                        f"required_gpu={self.config.gpu_worker_group_size})"
-                    ),
+                    "error": self._unplaceable_error(workflow),
                 }
             )
             state.pending_workflows.discard(workflow.workflow_id)
@@ -1106,6 +1107,23 @@ class LumilakeServer:
             )
             await state.handler.put_result(response)
         await self.job_manager.remove_workflows(workflow_ids)
+
+    def _unplaceable_error(self, workflow: WorkflowItem) -> str:
+        """Why no worker can take ``workflow``, naming what each task asks for."""
+        hardware = workflow.config.hardware_requirements
+        message = (
+            "no worker in the cluster can satisfy this request "
+            f"(cpu={resolve_cpu(hardware)} memory={resolve_memory(hardware)} per task, "
+            f"required_cpu={self.config.cpu_worker_group_size} "
+            f"required_gpu={self.config.gpu_worker_group_size})"
+        )
+        if workflow.python_step_memory_mb:
+            message += (
+                "; python steps must also fit each worker's session limits "
+                "(ssh_limits): lower hardware.cpu, and hardware.memory or the "
+                "step's memory_mb, to fit them"
+            )
+        return message
 
     async def _try_claim_workers(
         self, batch: BatchSelection, free: FreeCapacity
@@ -1129,12 +1147,16 @@ class LumilakeServer:
         required_cpu = cpu_required_task_types(nodes)
         required_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
+        meets_hardware = partial(
+            self._worker_meets_hardware,
+            session_memory_mb=python_step_memory_mb(nodes),
+        )
 
         def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
             return capacity.eligible_workers(
                 cpu_group_size=cpu_group_size,
                 gpu_group_size=gpu_group_size,
-                worker_meets_hardware=self._worker_meets_hardware,
+                worker_meets_hardware=meets_hardware,
                 hardware=hardware,
                 required_task_types=required_cpu,
                 required_gpu_requests=required_gpu_requests,
@@ -1155,8 +1177,9 @@ class LumilakeServer:
             total = await self._snapshot_total_capacity()
             if claim(total) is None:
                 # No worker in the cluster can ever run this batch: claim as if
-                # unconstrained so the optimizer fails it with a clear error
-                # instead of leaving it waiting for capacity that never appears.
+                # unconstrained (no task-type, GPU or session-limit gate) so the
+                # optimizer fails it with a clear error instead of leaving it
+                # waiting for capacity that never appears.
                 selected = free.eligible_workers(
                     cpu_group_size=cpu_group_size,
                     gpu_group_size=gpu_group_size,
@@ -1246,6 +1269,7 @@ class LumilakeServer:
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         nodes = [(op.task_type, op.data_spec) for op in runtime_graph.nodes.values()]
+        session_memory_mb = python_step_memory_mb(nodes)
         requires_cpu = requires_cpu_worker(nodes)
         needed_cpu_task_types = cpu_required_task_types(nodes)
         needed_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
@@ -1257,7 +1281,10 @@ class LumilakeServer:
             raw_profile = await self.runtime_manager.get_worker_profile(worker)
             is_gpu = self._has_gpu(raw_profile)
             if not self._worker_meets_hardware(
-                raw_profile, hardware, worker_has_gpu=is_gpu
+                raw_profile,
+                hardware,
+                worker_has_gpu=is_gpu,
+                session_memory_mb=session_memory_mb,
             ):
                 continue
             profile = self._normalize_worker_profile(raw_profile)
@@ -1378,6 +1405,7 @@ class LumilakeServer:
         hardware: HardwareRequirements | None,
         *,
         worker_has_gpu: bool | None = None,
+        session_memory_mb: frozenset[int | None] = frozenset(),
     ) -> bool:
         """Compare a raw FlowMesh worker profile to a per-job requirement.
 
@@ -1391,10 +1419,27 @@ class LumilakeServer:
         the caller has already classified the worker; default delegates to
         ``_has_gpu(worker_profile)``.
 
+        ``session_memory_mb`` lists what the work's python steps ask for in MiB
+        (``None`` for a step on the job's memory). FlowMesh caps each python step
+        at the worker's ``ssh_limits``, so the job's CPU and the largest of those
+        memories (the job's values, else the env defaults) must fit under those
+        limits as well as under the hardware.
+
         Missing worker fields (e.g. ``cpu.logical_cores`` is ``None``) are
         treated as unknown and pass — Lumilake's contract is "filter the
         obvious no-go workers"; FlowMesh remains the authority on dispatch.
         """
+        if session_memory_mb:
+            job_memory = cls._parse_memory_to_bytes(resolve_memory(hardware))
+            step_memory = [
+                job_memory if mb is None else mb * 1024**2 for mb in session_memory_mb
+            ]
+            if not session_limits_admit(
+                worker_profile,
+                resolve_cpu(hardware),
+                max((b for b in step_memory if b is not None), default=None),
+            ):
+                return False
         if hardware is None:
             return True
         if hardware.cpu is not None:

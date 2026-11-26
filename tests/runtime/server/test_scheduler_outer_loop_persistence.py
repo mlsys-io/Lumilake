@@ -449,6 +449,8 @@ class _DoomedJobManager:
                 workflow_id="wf-1",
                 public_graph_name="g",
                 slice_index=0,
+                config=SimpleNamespace(hardware_requirements=None),
+                python_step_memory_mb=frozenset({None}),
             )
         ]
 
@@ -513,6 +515,9 @@ async def test_scheduler_fails_unplaceable_batch_loudly(server_factory) -> None:
     result = handler.results[0]
     assert result.error_info is not None
     assert any("placement_failed" in err for err in result.error_info)
+    error = next(err["error"] for err in result.error_info if "placement_failed" in err)
+    assert "memory=" in error
+    assert "session limits" in error
 
 
 class _GpuThenCpuJobManager:

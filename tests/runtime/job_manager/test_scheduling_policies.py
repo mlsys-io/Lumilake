@@ -421,6 +421,16 @@ class _LaneRecorder(CohortPackSchedulingPolicy):
         super().observe_free_lanes(free_lanes)
 
 
+def _profile_ok(
+    profile: Any,
+    _hardware: Any,
+    /,
+    *,
+    session_memory_mb: frozenset[int | None] = frozenset(),
+) -> bool:
+    return bool(profile["ok"])
+
+
 async def _lanes_seen(
     *,
     requires_gpu: bool,
@@ -438,7 +448,7 @@ async def _lanes_seen(
         policy="cohort_pack",
         cpu_worker_group_size=cpu_group_size,
         gpu_worker_group_size=gpu_group_size,
-        worker_meets_hardware=lambda profile, _hardware: bool(profile["ok"]),
+        worker_meets_hardware=_profile_ok,
     )
     recorder = _LaneRecorder()
     manager._policy_impl = recorder
