@@ -929,7 +929,7 @@ class PriorityJobManager(BaseJobManager):
     def _build_candidate_pool_for_partition_locked(
         self,
         partition: PartitionKey,
-        eligible_lanes: set[PartitionLane] | None = None,
+        eligible_lanes: set[PartitionLane] | None,
     ) -> tuple[list[WorkflowItem], tuple[Priority, ...]]:
         """Peek the candidate pool plus the priorities whose user-level RR
         pointer should be rotated by ``commit_reservation``.
@@ -1000,7 +1000,7 @@ class PriorityJobManager(BaseJobManager):
         priority: Priority,
         limit: int,
         partition: PartitionKey,
-        eligible_lanes: set[PartitionLane] | None = None,
+        eligible_lanes: set[PartitionLane] | None,
     ) -> tuple[list[WorkflowItem], bool]:
         """Peek the next ``limit`` placeable items for ``partition`` without
         rotating.

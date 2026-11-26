@@ -535,7 +535,7 @@ async def test_unplaceable_error_names_the_memory_the_session_check_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A step's ``memory_mb`` above the job's memory is what the check fails on,
-    so the error names it instead of the job's memory."""
+    so the error names it too, after the job's own memory."""
     monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
     job_manager = _DoomedJobManager(
         hardware=HardwareRequirements(memory="8Gi"),
@@ -544,7 +544,8 @@ async def test_unplaceable_error_names_the_memory_the_session_check_used(
 
     error = await _fail_unplaceable(server_factory, job_manager)
 
-    assert "memory=16Gi per task" in error
+    assert "memory=8Gi per task" in error
+    assert "session limits (ssh_limits) at memory=16Gi per task" in error
 
 
 class _GpuThenCpuJobManager:

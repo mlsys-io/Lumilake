@@ -1117,24 +1117,30 @@ class LumilakeServer:
         cpu = resolve_cpu(hardware)
         memory = resolve_memory(hardware)
         lane = workflow.python_step_session_lane
-        if lane.is_empty():
-            return (
-                "no worker in the cluster can satisfy this request "
-                f"(cpu={cpu} memory={memory} per task, "
-                f"required_cpu={self.config.cpu_worker_group_size} "
-                f"required_gpu={self.config.gpu_worker_group_size})"
-            )
-        session_memory = session_memory_bytes(
-            lane.cpu_memory_mb | lane.gpu_memory_mb,
-            self._parse_memory_to_bytes(memory),
-        )
-        return (
+        prefix = (
             "no worker in the cluster can satisfy this request "
-            f"(cpu={cpu} memory={format_memory_bytes(session_memory)} per task, "
+            f"(cpu={cpu} memory={memory} per task, "
             f"required_cpu={self.config.cpu_worker_group_size} "
-            f"required_gpu={self.config.gpu_worker_group_size}); python steps "
-            "must also fit each worker's session limits (ssh_limits): lower "
-            "hardware.cpu, and hardware.memory or the step's memory_mb, to fit them"
+            f"required_gpu={self.config.gpu_worker_group_size})"
+        )
+        if lane.is_empty():
+            return prefix
+        job_memory = self._parse_memory_to_bytes(memory)
+        session_memory = session_memory_bytes(
+            lane.cpu_memory_mb | lane.gpu_memory_mb, job_memory
+        )
+        python_clause = (
+            "; python steps must also fit each worker's session limits (ssh_limits)"
+        )
+        if session_memory is not None and session_memory != job_memory:
+            python_clause += (
+                f" at memory={format_memory_bytes(session_memory)} per task"
+            )
+        return (
+            prefix
+            + python_clause
+            + ": lower hardware.cpu, and hardware.memory or the step's memory_mb, "
+            "to fit them"
         )
 
     async def _try_claim_workers(
