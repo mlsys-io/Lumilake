@@ -16,6 +16,7 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ColumnPlanEntry,
     DataFrame,
+    ListData,
     NodeRead,
     PythonData,
     parse_data_spec,
@@ -24,6 +25,7 @@ from lumilake_server.ops import RecordKey
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_keys import child_count_key, child_key
+from lumilake_server.runtime.record_model_rows import cut_rows, merge_id, pass_id
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -58,13 +60,11 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils.job_storage import JobStorage
 
-_SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding"})
-"""Task types whose stored value a served op carries whole; an api, diffusion
-or fetch task archives its value as an artifact instead."""
-
-_MISSED = "\x00lumilake-missed"
-"""The slot a partially served op's dispatched run fills; the merge step reads
-it back as the position of a computed row."""
+_SERVED_TASKS = frozenset({"python", "inference", "classification", "embedding", "api"})
+"""Task types whose stored value a served op carries whole; a diffusion task archives
+its value as an artifact instead. A hosted model call is an ``api``
+task, and a fetch is one too, but a fetch reads an unversioned URL and never
+reaches this rule."""
 
 
 def _served_entry(values: list[Any]) -> ColumnPlanEntry:
@@ -75,11 +75,28 @@ def _served_entry(values: list[Any]) -> ColumnPlanEntry:
 
 def _partially_servable(plan: RecordPlan) -> bool:
     """Whether an op can run on only its missed records and be merged back: a
-    keyed one-to-one python step, whose rows a merge step can place by key."""
-    if not plan.keyed or plan.op.task_type != PYTHON_TASK_TYPE:
+    keyed one-to-one python step whose rows a merge step can place by key, or a
+    keyed model op whose rows a merge step places in live order."""
+    if not plan.keyed:
         return False
+    if plan.op.task_type != PYTHON_TASK_TYPE:
+        return _model_serves_rows(plan)
     spec = plan.op.data_spec
     return isinstance(spec, PythonData) and spec.mode in (None, "row", "parse")
+
+
+def _model_serves_rows(plan: RecordPlan) -> bool:
+    """Whether a keyed model op reads its rows one per record, so a partial run can
+    cut those rows to the missed ones: a rowwise chat, or a list-fed model
+    op with a literal row list or a node a pass-through narrows."""
+    spec = plan.op.data_spec
+    if isinstance(spec, DataFrame):
+        return True
+    if not isinstance(spec, ListData):
+        return False
+    return isinstance(spec.items, list) or (
+        spec.node is not None and spec.items is None
+    )
 
 
 @dataclass(frozen=True)
@@ -206,6 +223,12 @@ class ReusePlan(BaseModel):
     output node the plan serves."""
     partial: dict[str, PartialRecords] = Field(default_factory=dict)
     """Node id -> the records a partially served op keeps and the ones it runs."""
+    aliases: dict[str, str] = Field(default_factory=dict)
+    """Merge step id -> the partially served op whose records it rebuilds, so a reader's
+    input identity is the op's, as in a full run."""
+    pass_throughs: dict[str, str] = Field(default_factory=dict)
+    """Pass-through step id -> the served producer whose rows it carries, so a reader
+    names that producer's records and the writer never stores the step."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -385,13 +408,16 @@ class ReusePlanner:
             )
             reason, hit = outcome.reason, outcome.entries
             if outcome.partial is not None:
-                decision.partial[node_id] = outcome.partial
+                merge_step = _merge_step(plan.op.task_type, outcome.partial)
+                carries = not merge_step or node_id not in runtime_graph.output_node_map
+                if carries:
+                    decision.partial[node_id] = outcome.partial
                 decision.decisions.append(
                     RecordDecision(
                         op=plan.op_name,
                         node=node_id,
                         decision="miss",
-                        reason="partial records",
+                        reason="partial records" if carries else "value not servable",
                         records=len(outcome.partial.missed),
                     )
                 )
@@ -698,7 +724,7 @@ class ReusePlanner:
             if first_reason is None:
                 first_reason = reason
             missed.append(position)
-            slots.append(_MISSED)
+            slots.append(python_step.MISSED)
         if not missed:
             return _Decision(entries=entries)
         if len(missed) == len(records):
@@ -841,6 +867,17 @@ def output_runs(shape: OutputShape, entries: Sequence[RecordEntry]) -> bool:
     )
 
 
+def _merge_step(task_type: str, partial: PartialRecords) -> bool:
+    """Whether a merge step rebuilds a partially served op. Only a model op of
+    records gets one: a python step is rewritten in place and keeps its own id and
+    output path, and a grouped op emits in one step."""
+    return (
+        partial.groups is None
+        and partial.children is None
+        and task_type != PYTHON_TASK_TYPE
+    )
+
+
 def _rewritten(
     op: RuntimeOp, plan: ReusePlan, runtime_graph: RuntimeGraph
 ) -> RuntimeOp:
@@ -849,16 +886,20 @@ def _rewritten(
     list that tells its step which records it computes."""
     partial = plan.partial.get(op.node_id)
     if partial is not None:
+        if op.task_type != PYTHON_TASK_TYPE:
+            return _narrowed_model(op, partial)
         return _rewritten_slots(op, partial, plan, runtime_graph)
     served = [node for node in op.dependencies if _served_node(plan, node)]
     if not served:
         return op
+    if op.task_type != PYTHON_TASK_TYPE:
+        # A model op reads its served producer's rows through a pass-through step, which
+        # carries them, so its spec, and its digest, stay a full run's and its address
+        # is the one a full run stores.
+        return op
     spec = op.data_spec
     if isinstance(spec, PythonData) and spec.plan:
         return replace(op, data_spec=_rewritten_plan(op, spec, plan, runtime_graph))
-    if _reads_literal_lists(op):
-        literals = _replace_with_literals(data_spec_dict(op), plan, runtime_graph)
-        return replace(op, data_spec=parse_data_spec(op.task_type, literals))
     raise ValueError(f"op '{op.node_id}' cannot read a served record")
 
 
@@ -918,15 +959,18 @@ def _partial_slots(partial: PartialRecords) -> ColumnPlanEntry:
     )
 
 
-def _reads_literal_lists(op: RuntimeOp) -> bool:
-    """Whether the op reads its rows in positions a literal list fills."""
-    return (
-        op.task_type != PYTHON_TASK_TYPE and _list_refs(data_spec_dict(op)) is not None
-    )
+def _narrowed_model(op: RuntimeOp, partial: PartialRecords) -> RuntimeOp:
+    """A partially served model op reading only its missed rows: each literal rows
+    list is cut to the missed positions, so it reads exactly the rows this
+    run computes. A node reference keeps its whole list, and a pass-through step
+    narrows the producer instead."""
+    spec = cut_rows(data_spec_dict(op), partial.missed)
+    return replace(op, data_spec=parse_data_spec(op.task_type, spec))
 
 
 def _list_refs(value: Any) -> list[Mapping[str, Any]] | None:
-    """Every reference a literal list can replace, or ``None`` for one it cannot."""
+    """Every node reference a data spec makes, or ``None`` when one carries an
+    expression, which no stored value can fill in place."""
     refs: list[Mapping[str, Any]] = []
 
     def walk(item: Any) -> bool:
@@ -943,34 +987,6 @@ def _list_refs(value: Any) -> list[Mapping[str, Any]] | None:
         return True
 
     return refs if walk(value) else None
-
-
-def _replace_with_literals(
-    value: Any, plan: ReusePlan, runtime_graph: RuntimeGraph
-) -> Any:
-    """One data-spec side with every served reference replaced by its values."""
-    if isinstance(value, Mapping):
-        node = value.get("node")
-        if isinstance(node, str) and _served_node(plan, node):
-            typed = typed_row_step(runtime_graph.nodes[node])
-            items = _model_entry_values(plan.hits[node], value.get("path"), typed)
-            if any(item is _UNSET for item in items):
-                raise ValueError("op reads a field the stored value does not hold")
-            if value.get("type") == "list":
-                return {**value, "items": items}
-            if "label" in value:
-                return {
-                    "label": value["label"],
-                    "data": {"type": "list", "items": items},
-                }
-            return {"type": "list", "items": items}
-        return {
-            key: _replace_with_literals(item, plan, runtime_graph)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_replace_with_literals(item, plan, runtime_graph) for item in value]
-    return value
 
 
 _OUTPUT_ENVELOPES = ("value.items.output", "items.output")
@@ -1200,14 +1216,30 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
         if node_id in plan.served_nodes():
             continue
         nodes[node_id] = _rewritten(runtime_graph.nodes[node_id], plan, runtime_graph)
+    output_node_map = runtime_graph.output_node_map.copy()
+    before, after = _plumbing_nodes(plan, nodes, output_node_map, runtime_graph)
+    op_names = runtime_graph.op_names.copy()
+    for node_id in runtime_graph.node_order:
+        if node_id not in nodes:
+            continue
+        for step_id in before.get(node_id, ()):
+            source = plan.pass_throughs[step_id]
+            op_names[step_id] = runtime_graph.op_names.get(source, source)
+        for merge in after.get(node_id, ()):
+            op_names[merge] = runtime_graph.op_names.get(node_id, node_id)
+    order: list[str] = []
+    for node_id in runtime_graph.node_order:
+        if node_id not in nodes:
+            continue
+        order.extend(node for node in before.get(node_id, ()) if node in nodes)
+        order.append(node_id)
+        order.extend(node for node in after.get(node_id, ()) if node in nodes)
     return RuntimeGraph(
         nodes=nodes,
-        node_order=[
-            node_id for node_id in runtime_graph.node_order if node_id in nodes
-        ],
+        node_order=order,
         output_node_map={
             node_id: name
-            for node_id, name in runtime_graph.output_node_map.items()
+            for node_id, name in output_node_map.items()
             if node_id in nodes
         },
         output_paths={
@@ -1217,8 +1249,219 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
         },
         dsl_to_runtime=runtime_graph.dsl_to_runtime.copy(),
         record_keys=_dispatch_record_keys(runtime_graph, plan, nodes),
-        op_names=runtime_graph.op_names.copy(),
+        op_names=op_names,
     )
+
+
+def _plumbing_nodes(
+    plan: ReusePlan,
+    nodes: dict[str, RuntimeOp],
+    output_node_map: dict[str, str],
+    runtime_graph: RuntimeGraph,
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """Each partial model op's pass-through steps to place before it and its merge
+    step to place after it, rewiring readers and the output mapping."""
+    before: dict[str, list[str]] = {}
+    after: dict[str, list[str]] = {}
+    for node_id, partial in plan.partial.items():
+        op = nodes.get(node_id)
+        if op is None or not _merge_step(op.task_type, partial):
+            continue
+        rewired = op
+        for source in [node for node in op.dependencies if node in plan.hits]:
+            step_id = _pass_through(
+                nodes, plan, runtime_graph, node_id, source, partial
+            )
+            before.setdefault(node_id, []).append(step_id)
+            rewired = _reference(source, step_id, rewired)
+        nodes[node_id] = rewired
+        merge = merge_id(node_id)
+        nodes[merge] = _merge_op(merge, node_id, partial)
+        after.setdefault(node_id, []).append(merge)
+        plan.aliases[merge] = node_id
+        _point_readers_at(nodes, node_id, merge)
+        if node_id in output_node_map:
+            output_node_map[merge] = output_node_map.pop(node_id)
+    for node_id in [node for node in nodes if node not in plan.partial]:
+        op = nodes[node_id]
+        if op.task_type == PYTHON_TASK_TYPE:
+            continue
+        for source in [node for node in op.dependencies if node in plan.hits]:
+            step_id = _pass_through(nodes, plan, runtime_graph, node_id, source, None)
+            before.setdefault(node_id, []).append(step_id)
+            nodes[node_id] = _reference(source, step_id, nodes[node_id])
+    return before, after
+
+
+def _pass_through(
+    nodes: dict[str, RuntimeOp],
+    plan: ReusePlan,
+    runtime_graph: RuntimeGraph,
+    node_id: str,
+    source: str,
+    partial: PartialRecords | None,
+) -> str:
+    """The pass-through step ``node_id`` reads ``source`` through: every served row
+    for an op that computes all of them, or the rows its partial run reads."""
+    rows = _served_rows(plan, runtime_graph.nodes[source])
+    positions = None
+    if rows is not None:
+        positions = (
+            list(range(len(rows))) if partial is None else _positions(rows, partial)
+        )
+    if rows is None or positions is None:
+        raise ValueError(f"op '{node_id}' cannot read a served row list")
+    step_id = pass_id(node_id, source)
+    nodes[step_id] = _pass_op(step_id, positions, rows)
+    plan.pass_throughs[step_id] = source
+    return step_id
+
+
+def _point_readers_at(nodes: dict[str, RuntimeOp], node_id: str, merge: str) -> None:
+    """Every dispatched reader of ``node_id`` reads the merge step instead: its
+    dependency edge and the references its data spec names, so it takes every
+    live row rather than the computed ones alone."""
+    for reader_id, reader in list(nodes.items()):
+        if reader_id in (merge, node_id) or node_id not in reader.dependencies:
+            continue
+        spec = data_spec_dict(reader)
+        _rename_refs(spec, node_id, merge)
+        nodes[reader_id] = replace(
+            reader,
+            data_spec=parse_data_spec(reader.task_type, spec),
+            dependencies=tuple(
+                merge if node == node_id else node for node in reader.dependencies
+            ),
+        )
+
+
+def _merge_op(merge: str, node_id: str, partial: PartialRecords) -> RuntimeOp:
+    """The merge step: a slot list of every live row's stored value, and the partial
+    run's computed rows flattened back to one per row."""
+    slots = [
+        {"key": key, "value": value} for key, value in zip(partial.keys, partial.served)
+    ]
+    return _plumbing_op(
+        merge,
+        PythonData(
+            mode="merge",
+            plan=[
+                ColumnPlanEntry(kind="literal", values=slots),
+                ColumnPlanEntry(kind="stage", node=node_id, flatten=True),
+            ],
+            timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+        ),
+        dependencies=(node_id,),
+    )
+
+
+def _pass_op(
+    step_id: str,
+    positions: Sequence[int],
+    rows: list[Mapping[str, Any]],
+) -> RuntimeOp:
+    """The pass-through step: the served producer's rows at ``positions``, in live
+    order, as literals, since the store served that producer and no task
+    emitted them."""
+    return _plumbing_op(
+        step_id,
+        PythonData(
+            mode="pass_through",
+            plan=[
+                ColumnPlanEntry(kind="literal", values=rows),
+                ColumnPlanEntry(kind="literal", values=list(positions)),
+            ],
+            timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+        ),
+        dependencies=(),
+    )
+
+
+def _served_rows(plan: ReusePlan, source: RuntimeOp) -> list[Mapping[str, Any]] | None:
+    """A served producer's whole item list, each row rebuilt the way its own step emits
+    it, or ``None`` when the store holds no entry for it.
+
+    Every producer row is expanded, whether it was stored per record key or as
+    one whole-op value, so the count is the row count the partial run reads."""
+    entries = plan.hits.get(source.node_id)
+    if not entries:
+        return None
+    wrapped = _wrap(source)
+    return [
+        _served_item(item, wrapped)
+        for entries_of_row in served_lists(entries)
+        for item in entries_of_row
+    ]
+
+
+def _positions(
+    rows: Sequence[Mapping[str, Any]], partial: PartialRecords
+) -> list[int] | None:
+    """The producer rows a partial op reads: its missed positions when the column
+    carries one value per live record, the single row a broadcasting column
+    repeats over every row this run computes, or ``None`` when the column's rows
+    match neither the live records nor one value."""
+    missed = list(partial.missed)
+    if len(rows) == len(partial.keys):
+        return missed
+    if len(rows) == 1:
+        return [0] * len(missed)
+    return None
+
+
+def _served_item(value: Any, wrapped: _Wrapping | None) -> Mapping[str, Any]:
+    """One stored value as the item its producer's step emitted."""
+    if wrapped == "text":
+        return {"output": _output_text(value), "value": value}
+    if wrapped == "output":
+        return {"output": _output_text(value)}
+    return {"output": value}
+
+
+def _plumbing_op(
+    node_id: str,
+    spec: PythonData,
+    *,
+    dependencies: tuple[str, ...],
+) -> RuntimeOp:
+    """A generated python step a partial run inserts to carry rows between the op
+    it narrows and its readers."""
+    return RuntimeOp(
+        node_id=node_id,
+        task_type=PYTHON_TASK_TYPE,
+        backend=python_step.BACKEND,
+        model="",
+        data_spec=spec,
+        model_spec={},
+        inference_spec={},
+        dependencies=dependencies,
+    )
+
+
+def _reference(source: str, step_id: str, op: RuntimeOp) -> RuntimeOp:
+    """The op reading ``step_id`` where it named ``source``, its dependency edge and
+    paths rewritten so the step's items, which are the producer's own, read
+    as they did."""
+    spec = data_spec_dict(op)
+    _rename_refs(spec, source, step_id)
+    return replace(
+        op,
+        data_spec=parse_data_spec(op.task_type, spec),
+        dependencies=tuple(
+            step_id if node == source else node for node in op.dependencies
+        ),
+    )
+
+
+def _rename_refs(value: Any, old: str, new: str) -> None:
+    if isinstance(value, dict):
+        if value.get("node") == old:
+            value["node"] = new
+        for item in value.values():
+            _rename_refs(item, old, new)
+    elif isinstance(value, list):
+        for item in value:
+            _rename_refs(item, old, new)
 
 
 def _dispatch_record_keys(

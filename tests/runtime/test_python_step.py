@@ -1516,3 +1516,48 @@ def test_row_wrapper_field_path_resolves_without_json_decode(tmp_path: Path) -> 
         {},
     )
     assert _flowmesh_walk(out, "value.items.value.question") == ["what?"]
+
+
+def _run_generated(source: str, inputs: dict[str, str]) -> Any:
+    """Run one generated step's code over staged upstreams."""
+    namespace: dict[str, Any] = {}
+    code = source.replace(python_step.TASK_RUNTIME_MOUNT, _materialize_task_runtime())
+    exec(code, namespace)
+    return namespace["main"](inputs)
+
+
+def test_a_merge_step_refuses_a_row_count_it_cannot_place(tmp_path: Path) -> None:
+    """A merge whose run computed a different number of rows than it has missed slots
+    refuses rather than misplacing a value."""
+    slots = [{"key": "a", "value": python_step.MISSED}] * 2
+    plan = _entries(
+        [
+            {"kind": "literal", "values": slots},
+            {"kind": "stage", "node": "ask", "flatten": True},
+        ]
+    )
+    computed = _stage(tmp_path, "ask", {"items": [{"output": ["only"]}]})
+    with pytest.raises(ValueError, match="1 computed row"):
+        _run_generated(python_step.merge_source("m", plan), {"ask": computed})
+
+
+def test_a_carried_pass_through_reads_rows_the_mount_holds(tmp_path: Path) -> None:
+    """A served producer's rows above the inline cutoff are mounted, so the step
+    reads them and the missed positions by entry rather than inline."""
+    rows = [{"output": "p" * 200, "value": index} for index in range(8)]
+    plan = _entries(
+        [
+            {"kind": "literal", "values": rows},
+            {"kind": "literal", "values": [7, 0]},
+        ]
+    )
+    blobs = _published_blobs(plan)
+    for blob in blobs.values():
+        mounted = tmp_path / blob.mount_path.rsplit("/", 1)[-1]
+        mounted.parent.mkdir(parents=True, exist_ok=True)
+        mounted.write_bytes(blob.body)
+    spec = python_step.flowmesh_spec(
+        "pass", PythonData(mode="pass_through", plan=plan), blobs
+    )
+    code = spec["code"].replace(python_step.LITERAL_MOUNT_ROOT, str(tmp_path))
+    assert _run_generated(code, {}) == {"items": [rows[7], rows[0]]}

@@ -22,6 +22,7 @@ from lumilake_server.data_specs import (
     PythonData,
 )
 from lumilake_server.ops import RecordKey
+from lumilake_server.ops.http_fetch_ops import FETCH_MODEL
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import (
     child_count_key,
@@ -60,16 +61,19 @@ from lumilake_server.utils.retrieval_key import retrieval_key_column
 _LAMBDA_TASK_TYPE = "python"
 """The task type a Lambda, join or parse op lowers to."""
 
-_UNVERSIONED_TASKS = frozenset({"data_retrieval", "api"})
+_UNVERSIONED_TASKS = frozenset({"data_retrieval"})
 """Task types that read a source no snapshot records."""
-
-_CONTENT_ADDRESSED_TASKS = frozenset({"data_retrieval"})
-"""Unversioned task types whose value is a read rather than a draw."""
 
 
 def reads_unversioned(op: RuntimeOp) -> bool:
-    """Whether the op reads a source no snapshot records."""
-    return op.task_type in _UNVERSIONED_TASKS
+    """Whether the op reads a source no snapshot records: a retrieval, or a fetch from
+    a URL outside the workflow. A hosted model call is a draw of its own,
+    versioned as a local one is."""
+    return op.task_type in _UNVERSIONED_TASKS or op.model == FETCH_MODEL
+
+
+_CONTENT_ADDRESSED_TASKS = frozenset({"data_retrieval"})
+"""Unversioned task types whose value is a read rather than a draw."""
 
 
 def content_addressed(op: RuntimeOp) -> bool:
@@ -252,37 +256,54 @@ class RecordWriter:
         node_owners: Mapping[str, set[str]] | None = None,
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
+        alias: Mapping[str, str] | None = None,
     ) -> int:
         """Write the records of every node this batch produced and return how many.
 
-        ``served`` holds the records a reuse plan answered without a task;
-        they enter each storing member's index too.
-        """
+        ``served`` holds the records a reuse plan answered without a task; they
+        enter each storing member's index too. ``alias`` maps every generated step a
+        partial run inserted to what it stands for: a merge step to its partially
+        served op, a pass-through to its producer."""
         if not self._enabled:
             return 0
+        aliases = {} if alias is None else alias
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order, served)
         records, items_of = _collect_node_records(
             runtime_graph, plans, order, node_task_map, results, served
         )
+        _rebuild_aliased_ops(order, aliases, records)
+        merged_ops = set(aliases.values())
         store = {} if member_store is None else member_store
         rounds_of = {} if member_rounds is None else member_rounds
         owners_of = {} if node_owners is None else node_owners
         unversioned: set[str] = set()
         written: list[tuple[RecordEntry, list[tuple[str, int]]]] = []
+        written_ops = set()
         for node_id in order:
-            node_records = records.get(node_id)
-            if node_records is None:
+            target = aliases.get(node_id, node_id)
+            if target != node_id and target not in plans:
+                # A pass-through carries its producer's rows; they are stored already.
+                continue
+            if target == node_id and node_id in merged_ops:
+                # Its merge step carries every live row; its own task has only the
+                # computed ones.
+                continue
+            if target in written_ops:
                 continue
             task_id = node_task_map.get(node_id)
             if task_id is None:
                 continue
-            plan = plans[node_id]
+            plan = plans[target]
+            node_records = records.get(target)
+            if node_records is None:
+                continue
             storing = _storing_owners(
                 node_id, member_job_ids, store=store, owners=owners_of
             )
             if not storing:
                 continue
+            written_ops.add(target)
             if reads_unversioned(plan.op):
                 unversioned.add(node_id)
             versions = EffectVersions(unversioned=node_id in unversioned)
@@ -304,7 +325,7 @@ class RecordWriter:
                         node_records=node_records,
                         records=records,
                         inputs=record_inputs(
-                            plan, records, member_round, plans, content_nodes
+                            plan, records, member_round, plans, content_nodes, aliases
                         ),
                         items=items_of.get(node_id, []),
                         versions=versions,
@@ -1071,9 +1092,10 @@ def record_inputs(
     round_number: int,
     plans: Mapping[str, RecordPlan],
     content_nodes: Collection[str] = (),
+    alias: Mapping[str, str] | None = None,
 ) -> list[RecordInput]:
     """The inputs a node reads at ``round_number``, in its declared order."""
-    return _record_inputs(plan, records, round_number, plans, content_nodes)
+    return _record_inputs(plan, records, round_number, plans, content_nodes, alias)
 
 
 def _record_inputs(
@@ -1082,17 +1104,21 @@ def _record_inputs(
     round_number: int,
     plans: Mapping[str, RecordPlan],
     content_nodes: Collection[str] = (),
+    alias: Mapping[str, str] | None = None,
 ) -> list[RecordInput]:
     """The inputs a node reads, in its declared order, at ``round_number``, each
-    literal rows list included at the row's position."""
+    literal rows list included at the row's position. A merge step names the partially
+    served op whose records it carries."""
+    aliases = {} if alias is None else alias
     inputs: list[RecordInput] = []
     for node in _input_nodes(plan):
-        produced = records.get(node)
+        source = aliases.get(node, node)
+        produced = records.get(source)
         if produced is not None:
             addressing = (
-                content_addressed(plans[node].op)
-                if node in plans
-                else node in content_nodes
+                content_addressed(plans[source].op)
+                if source in plans
+                else source in content_nodes
             )
             if addressing:
                 inputs.append(content_input(produced))
@@ -1497,11 +1523,14 @@ def _mode_of(op: RuntimeOp) -> str | None:
 
 def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
     """Each runtime node's op name, so no address or spec digest carries a job
-    id, a prefix, a slice suffix or a graph scope."""
+    id, a prefix, a slice suffix or a graph scope. A generated step carries the
+    name of the op it stands for through ``op_names``."""
     names: dict[str, str] = {}
     for op_name, node_ids in runtime_graph.dsl_to_runtime.items():
         for node_id in node_ids:
             names[node_id] = runtime_graph.op_names.get(node_id, op_name)
+    for node_id, name in runtime_graph.op_names.items():
+        names.setdefault(node_id, name)
     return names
 
 
@@ -1526,7 +1555,7 @@ def _key_path(
 def _one_to_one(op: RuntimeOp) -> bool:
     """Whether the op maps each input row to exactly one output row."""
     if op.task_type == _LAMBDA_TASK_TYPE:
-        return _mode_of(op) in ("row", "parse", None)
+        return _mode_of(op) in ("row", "parse", None, "merge")
     return _mode_of(op) not in {"list", "reduce", "pairs", "regroup"}
 
 
@@ -1748,6 +1777,29 @@ def _join_row_key(
         return key
     found = composite_key(value, key_paths) if key_paths else None
     return found if found is not None else fallback
+
+
+def _rebuild_aliased_ops(
+    order: Sequence[str],
+    aliases: Mapping[str, str],
+    records: dict[str, NodeRecords],
+) -> None:
+    """Rebuild a partially served op's records from its merge step's items: one value
+    and key per live row, so the op is stored under its own address and a
+    reader names it, not the merge step."""
+    for merge, op_id in aliases.items():
+        node_records = records.get(merge)
+        if node_records is None:
+            continue
+        keys = _reuse_keys(node_records.items)
+        if keys is None:
+            continue
+        records[op_id] = NodeRecords(
+            keyed=True,
+            values=[_item_output(item, False) for item in node_records.items],
+            keys=keys,
+            items=list(node_records.items),
+        )
 
 
 def _reuse_keys(items: Sequence[Mapping[str, Any]]) -> list[str | None] | None:

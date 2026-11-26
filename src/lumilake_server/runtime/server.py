@@ -3297,6 +3297,9 @@ class LumilakeServer:
             raise
         except Exception as exc:
             raise RuntimeExecutionError(exc) from exc
+        # The reuse plan may replace an output's op with a generated step, so the
+        # demux reads the mapping the runtime settled on rather than the planned one.
+        output_mapping = batch_request_info.output_node_map
         flat_outputs = connector_result["flat_outputs"]
         chat_histories = connector_result["chat_histories"]
         task_node_map = connector_result.get("task_node_map")

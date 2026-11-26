@@ -30,6 +30,9 @@ LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
 WHOLE_RESULT_MODES = ("list", "expand", "reduce")
+MISSED = "\x00lumilake-missed"
+"""The slot a partial model run fills: the merge step reads it back as the position of
+a computed row."""
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
@@ -611,6 +614,63 @@ def main(inputs):
 """
 
 
+_MERGE_MAIN = """\
+
+def main(inputs):
+    slots = _column(_PLAN[0], inputs, lambda v: v)
+    computed = _column(_PLAN[1], inputs, text)
+    missed = sum(1 for slot in slots if slot["value"] == _MISSED)
+    if missed != len(computed):
+        raise ValueError(
+            "%s: %d computed row(s) for %d missed slot(s)"
+            % (_NODE, len(computed), missed)
+        )
+    fill = iter(computed)
+    items = []
+    for slot in slots:
+        if slot["value"] == _MISSED:
+            output = next(fill)
+        else:
+            output = slot["value"]
+        items.append({{"output": output, "key": slot["key"]}})
+    return {{"items": items}}
+
+
+_MISSED = "\\x00lumilake-missed"
+"""
+
+
+_PASS_MAIN = """\
+
+def main(inputs):
+    rows, positions = (_column(entry, inputs, lambda v: v) for entry in _PLAN)
+    return {{"items": [rows[int(position)] for position in positions]}}
+"""
+
+
+def merge_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for a merge step: one item per live record, the store's
+    value or the one the partial run computed, in live order."""
+    return (_RESHAPE_PRELUDE + _MERGE_MAIN).format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=plan_json(plan),
+    )
+
+
+def pass_through_source(node_id: str, plan: ColumnPlan) -> str:
+    """The python-task code for a pass-through step whose producer the store served:
+    it carries the rows as literals, since no task emitted them, and a list above
+    the inline cutoff is mounted, so the code reads it by entry."""
+    return (_RESHAPE_PRELUDE + _PASS_MAIN).format(
+        op_id=node_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=plan_json(plan),
+    )
+
+
 def flatten_step_source(node_id: str, plan: ColumnPlan) -> str:
     """The python-task code for expanding a grouped upstream column to one
     value per row."""
@@ -871,6 +931,10 @@ def flowmesh_spec(
         code = pairs_source(node_id, plan)
     elif mode == "flatten_step":
         code = flatten_step_source(node_id, plan)
+    elif mode == "merge":
+        code = merge_source(node_id, plan)
+    elif mode == "pass_through":
+        code = pass_through_source(node_id, plan)
     elif mode == "parse":
         code = parse_source(node_id, plan, _required(data_spec.parse, "parse", mode))
     else:

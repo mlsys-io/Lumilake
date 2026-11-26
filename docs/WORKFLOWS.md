@@ -84,9 +84,13 @@ Set `store: true` at the top level of a YAML document, beside `graph` in a nativ
 
 ## Reusing stored records (`reuse:`)
 
-Set `reuse: true` beside `store: true` at the top level of a YAML document, or beside `graph` in a native payload, to keep what an earlier storing run already computed; without `store: true` the submit is refused with 422. An op is kept only when every one of its records is stored: one missing record reruns the whole op, and its consumers with it.
+Set `reuse: true` beside `store: true` at the top level of a YAML document, or beside `graph` in a native payload, to keep what an earlier storing run already computed; without `store: true` the submit is refused with 422. An op is kept when every one of its records is stored; a keyed op the store answers only in part recomputes just the missing rows, and its consumers read every live row.
 
-A python step, chat, classification or embedding op is kept when the store holds every one of its records. A kept op's consumers read its stored values, and a request the store answers in full submits nothing. A kept output is rebuilt from those records, and a chat, completion or dynamic round output runs instead. An output is kept only from a keyed row op or a list-mode Lambda, and a dynamic round's outputs always rerun.
+A python step, chat, classification, embedding or hosted (`api`) chat op is kept when the store holds every one of its records. A kept op's consumers read its stored values, and a request the store answers in full submits nothing. A kept output is rebuilt from those records, and a chat, completion or dynamic round output runs instead. An output is kept only from a keyed row op or a list-mode Lambda, and a dynamic round's outputs always rerun.
+
+A keyed model op reads its rows one per record, so a partial run computes only the rows the store lacks and serves the rest. The rows it reads are cut to those records, a served producer's rows reach it through a generated step, and a generated step merges the recomputed rows back in live order for the op's consumers. Those steps are not stored, and the records a run writes are the ones a full run would. A model op that is a workflow output has no partial run, because only a full run keeps the output's chat history and archives every path the output names; the same op feeding another op still reuses its stored rows.
+
+A reusing job with a keyed model op first runs the python steps above it in a phase of their own and stores their rows, so the plan probes that op on the rows they emit. A step whose own inputs reach a model op, or a step this phase leaves out, stays in the main run. A run whose every record the store holds dispatches nothing.
 
 A retrieval re-runs, so its consumers hit while its rows are unchanged; a retrieval below any other op re-runs together with its consumers. A python step reads a re-ran retrieval's rows at any path, and a model op that reads a retrieval keeps that retrieval dispatched.
 

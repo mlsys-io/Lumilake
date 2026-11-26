@@ -28,6 +28,8 @@ PythonMode = Literal[
     "reduce",
     "join",
     "parse",
+    "merge",
+    "pass_through",
 ]
 
 ReduceOnFail = Literal["drop_failed", "fail_group"]

@@ -5,6 +5,8 @@ from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op
 
 MAX_RETRIES = 10
+FETCH_MODEL = "http-fetch"
+"""The model an ``HttpFetchOp`` lowers to, so its URL read stays unversioned."""
 
 
 @dataclass

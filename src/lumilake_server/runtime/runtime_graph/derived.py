@@ -15,7 +15,7 @@ from lumilake_server.ops.classification_ops import (
     ClassificationOp,
     literal_pairs,
 )
-from lumilake_server.ops.http_fetch_ops import HttpFetchOp
+from lumilake_server.ops.http_fetch_ops import FETCH_MODEL, HttpFetchOp
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.lowering import (
@@ -172,7 +172,7 @@ class _DerivedBuilder(_VisionBuilder):
             inference_spec={},
             api_spec=api_spec,
             backend="api",
-            model="http-fetch",
+            model=FETCH_MODEL,
             dependencies=dependencies or None,
             source_op=op,
         )

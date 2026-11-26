@@ -22,7 +22,6 @@ from lumilake_server.data_specs import (
     ColumnPlanEntry,
     DataFrame,
     GraphTemplateData,
-    ListData,
     NodeRead,
     PythonData,
     parse_data_spec,
@@ -397,7 +396,11 @@ async def test_one_changed_op_reruns_only_it_and_its_descendants() -> None:
     ("rows", "seeds", "expected"),
     [
         (_BASE_ROWS, None, ("hit", None)),
-        ([{"id": "a", "q": "X"}, {"id": "b", "q": "two"}], None, ("miss", "no entry")),
+        (
+            [{"id": "a", "q": "X"}, {"id": "b", "q": "two"}],
+            None,
+            ("miss", "partial records"),
+        ),
         ([{"q": "x"}, {"q": "y"}], None, ("miss", "unkeyed row")),
         (_BASE_ROWS, [7, 9], ("hit", None)),
     ],
@@ -782,13 +785,19 @@ async def test_a_served_prompt_feeds_a_model_op(
     plan, dispatched = _planned(storage, graph)
     reason = "read by a non-literal op" if items is None else None
     assert _decisions(plan)["Prompt"] == ("miss" if reason else "hit", reason)
-    ask = _node(graph, "Ask")
-    spec = dispatched.nodes[ask].data_spec
     if items is None:
-        assert spec == graph.nodes[ask].data_spec
+        assert dispatched.nodes[_node(graph, "Ask")].data_spec == (
+            graph.nodes[_node(graph, "Ask")].data_spec
+        )
         return
-    column = spec if isinstance(spec, ListData) else spec.columns[0].data
-    assert isinstance(column, ListData) and column.items == items
+    step = next(
+        node
+        for node in dispatched.nodes
+        if plan.pass_throughs.get(node) == _node(graph, "Prompt")
+    )
+    entry, positions = dispatched.nodes[step].data_spec.plan
+    assert [json.loads(row["output"]) for row in entry.values] == stored
+    assert positions.values == list(range(len(entry.values)))
 
 
 @pytest.mark.asyncio
@@ -1250,7 +1259,7 @@ async def test_an_expand_cycle_decides_each_parent(variant: str) -> None:
 @pytest.mark.asyncio
 async def test_an_expand_a_chat_reads_serves_it_its_children() -> None:
     """A chat reads an expand's children one scalar per prompt row, so the expand
-    is served whole and the dispatched chat carries those stored children."""
+    is served whole and a pass-through step carries those stored children."""
     workflow = _expand_workflow()
     workflow["ops"].append(
         _ask(
@@ -1269,8 +1278,19 @@ async def test_an_expand_a_chat_reads_serves_it_its_children() -> None:
     assert _decisions(plan)["Split"] == ("hit", None), _decisions(plan)
     graph = _runtime_graph(workflow)
     assert _node(graph, "Split") not in dispatched.nodes
-    spec = dispatched.nodes[_node(graph, "Ask")].data_spec
-    assert spec.columns[0].data.items == ["p1a", "p1b", "p2a", "p2b"]
+    step = next(
+        node
+        for node in dispatched.nodes
+        if plan.pass_throughs.get(node) == _node(graph, "Split")
+    )
+    assert [
+        row["output"] for row in dispatched.nodes[step].data_spec.plan[0].values
+    ] == [
+        "p1a",
+        "p1b",
+        "p2a",
+        "p2b",
+    ]
 
 
 @pytest.mark.asyncio

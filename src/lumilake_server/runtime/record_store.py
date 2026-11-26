@@ -133,11 +133,17 @@ def _without_data_data_spec(
 ) -> Any:
     """A data spec without the rows the task reads: a python step's ``items``
     and plan ``values``, every literal rows list and a top-level ``seeds`` list.
-    A schema naming ``items`` elsewhere stays, because it changes the value."""
+    A schema naming ``items`` elsewhere stays, because it changes the value.
+
+    The spec's own ``node`` is the reference a list-fed model op reads, so it
+    takes its logical name too, like every nested one."""
     dropped = frozenset({*_DATA_KEYS, "seeds"})
     kept: dict[str, Any] = {}
     for key, item in data_spec.items():
         if key in dropped:
+            continue
+        if key == "node" and isinstance(item, str):
+            kept[key] = logical_names.get(item, item)
             continue
         if key == "plan" and isinstance(item, list):
             kept[key] = [

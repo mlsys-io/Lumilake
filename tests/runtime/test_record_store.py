@@ -476,7 +476,7 @@ async def _asked(graph: Any, job_id: str = "req-1") -> RecordEntry:
     "spec", [{"temperature": 0.7}, {"do_sample": False, "temperature": 0.7}]
 )
 async def test_a_draw_no_seed_reproduces_gets_its_own_key(spec: dict[str, Any]) -> None:
-    """A draw no seed pins names its production."""
+    """A draw no seed pins names its production; a hosted call's seed pins it."""
     unseeded = _paths_graph(task_type="inference", inference_spec=spec)
     runs = [await _asked(unseeded, job) for job in ("req-one", "req-two")]
     draws = [f"{job}/task-AskX" for job in ("req-one", "req-two")]
@@ -486,8 +486,8 @@ async def test_a_draw_no_seed_reproduces_gets_its_own_key(spec: dict[str, Any]) 
     seeded = {e.digest for e in by_seed}
     assert len(seeded) == 2 and seeded.isdisjoint(e.digest for e in runs)
     same = [await _asked(_hosted(7), job) for job in ("req-one", "req-two")]
-    realized = [(e.realization.seed, e.realization.production) for e in same]
-    assert realized == [(7, draw) for draw in draws]
+    assert {(e.realization.seed, e.realization.production) for e in same} == {(7, None)}
+    assert len({e.digest for e in same}) == 1
 
 
 @pytest.mark.asyncio

@@ -1169,6 +1169,32 @@ class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
         return {"flat_outputs": flat_outputs, "chat_histories": {}, "task_node_map": {}}
 
 
+class _MergedOutputRuntimeManager(RecordingRuntimeManager):
+    """Fakes FlowMesh dispatch the way the reuse path leaves it: the output's op
+    is replaced by a generated merge step, so the batch's output mapping names
+    that step and the flat output comes back under it."""
+
+    def __init__(self, *, outputs: list[str]) -> None:
+        super().__init__()
+        self._outputs = outputs
+
+    async def process_request(
+        self,
+        request_info: Any,
+        schedule: Schedule,
+        worker_ids: list[str],
+        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+    ) -> dict[str, Any]:
+        (node_id,) = request_info.output_node_map
+        merge = f"{node_id}/merge"
+        request_info.output_node_map = {merge: request_info.output_node_map[node_id]}
+        return {
+            "flat_outputs": {merge: list(self._outputs)},
+            "chat_histories": {},
+            "task_node_map": {},
+        }
+
+
 class _RowwisePythonDownstreamListLambdaRuntimeManager(RecordingRuntimeManager):
     """Fakes FlowMesh dispatch for a row-mode python step downstream of a
     list-mode Lambda. The row-mode step emits one output per upstream element,
@@ -1572,6 +1598,40 @@ async def test_list_lambda_output_single_slice_demux_accepts_one_value(
     assert len(observations) == 1
     assert json.loads(observations[0]) == whole_list
     assert resp.chat_histories["shared"]["observations"] == [history]
+
+
+@pytest.mark.asyncio
+async def test_a_merge_output_step_is_demuxed_under_its_own_id(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partly served output comes back under the merge step the reuse plan put
+    in its place, so the demux reads the mapping the runtime settled on rather
+    than the one the optimizer planned."""
+    server = server_factory()
+    server.runtime_manager = _MergedOutputRuntimeManager(outputs=["a|X", "b|Z"])
+    workflows = [
+        make_workflow(
+            workflow_id="wf-merge",
+            request_id="req-merge",
+            graph_name="ga",
+            public_graph_name="shared",
+            slice_length=2,
+            total_length=2,
+        )
+    ]
+    (handler,) = attach_request_states(server, workflows).values()
+    monkeypatch.setattr(
+        server,
+        "_merge_group_compiled_graph",
+        lambda items: SimpleNamespace(_coalesce_rewrite_hits={}),
+    )
+    _install_rowwise_api_build_and_schedule(server, "sentences")
+    await server._run_batch(["worker-1"], make_batch(workflows))
+
+    resp = handler.results[0]
+    assert resp.error_info is None, resp.error_info
+    assert resp.outputs["shared"]["sentences"] == ["a|X", "b|Z"]
 
 
 @pytest.mark.asyncio

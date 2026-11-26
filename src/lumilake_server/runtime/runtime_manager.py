@@ -52,12 +52,15 @@ from lumilake_server.runtime.record_writer import (
     RecordWriter,
     content_addressed,
     read_back_records,
+    reads_unversioned,
+    resolve_plans,
 )
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.retrieval_key_check import key_problem
 from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
+    _partially_servable,
     rebuilt_output,
     writer_records,
 )
@@ -267,6 +270,152 @@ def _sub_run_reads(runtime_graph: RuntimeGraph) -> list[str]:
         if content_addressed(op) and all(node in reads for node in op.dependencies):
             reads.add(node_id)
     return [node_id for node_id in runtime_graph.node_order if node_id in reads]
+
+
+_MODEL_TASK_TYPES = frozenset({"inference", "classification", "embedding", "api"})
+"""Task types that call a model, so their keyed rows a partial run probes per
+record. A structural step above one plans first, in a phase of its own."""
+
+
+def _has_partial_candidate(runtime_graph: RuntimeGraph) -> bool:
+    """Whether any keyed model op in the graph could serve a partial run, so a phase
+    that emits its structural rows is worth dispatching. An op the store
+    answers whole is not one: it reads no rows this run computes, and neither
+    is a fetch, which reads a URL no snapshot records."""
+    plans = resolve_plans(runtime_graph, runtime_graph.topological_order())
+    return any(
+        op.task_type in _MODEL_TASK_TYPES
+        and not reads_unversioned(op)
+        and _partially_servable(plans[node_id])
+        for node_id, op in runtime_graph.nodes.items()
+    )
+
+
+def _sub_run_structure(runtime_graph: RuntimeGraph) -> list[str]:
+    """The structural steps a reusing job runs before it plans its model ops:
+    every python step above a model op, up to the next model op. Their emitted
+    rows are the keys the model ops below them probe per record.
+
+    A step stays in only when every node below it runs in the same phase, so a
+    step that reaches a model op, or another step this phase leaves out, stays
+    in the main run, which dispatches it with that upstream."""
+    nodes = runtime_graph.nodes
+    phase = set(_sub_run_reads(runtime_graph))
+    kept: set[str] = set()
+    for node_id in runtime_graph.topological_order():
+        if nodes[node_id].task_type not in _MODEL_TASK_TYPES:
+            continue
+        if reads_unversioned(nodes[node_id]):
+            continue
+        stack = list(nodes[node_id].dependencies)
+        while stack:
+            dep = stack.pop()
+            if dep not in nodes or nodes[dep].task_type in _MODEL_TASK_TYPES:
+                continue
+            if nodes[dep].task_type == PYTHON_TASK_TYPE:
+                kept.add(dep)
+            stack.extend(nodes[dep].dependencies)
+    pruned = True
+    while pruned:
+        pruned = False
+        for node_id in sorted(kept):
+            if node_id in phase or _below_all_run(nodes, node_id, phase | kept):
+                continue
+            kept.discard(node_id)
+            pruned = True
+    return [node_id for node_id in runtime_graph.node_order if node_id in kept]
+
+
+def _below_all_run(
+    nodes: Mapping[str, RuntimeOp], node_id: str, phase: Collection[str]
+) -> bool:
+    """Whether every node a step reads, at any depth, runs in the phase."""
+    stack = list(nodes[node_id].dependencies)
+    seen: set[str] = set()
+    while stack:
+        dep = stack.pop()
+        if dep in seen or dep not in nodes:
+            continue
+        seen.add(dep)
+        if dep in phase:
+            continue
+        if nodes[dep].task_type in _MODEL_TASK_TYPES:
+            return False
+        if nodes[dep].task_type == PYTHON_TASK_TYPE:
+            return False
+        stack.extend(nodes[dep].dependencies)
+    return True
+
+
+def _generated_steps(plan: ReusePlan) -> dict[str, str]:
+    """Every generated step a partial run inserted, mapped to what it stands
+    for: its aliases (a merge step) and its pass-throughs (a producer)."""
+    return {**plan.aliases, **plan.pass_throughs}
+
+
+def _follow_generated_steps(request_info: RequestInfo, plan: ReusePlan) -> None:
+    """Point a batch output at the step that replaces its op. Only a partly served
+    model op is replaced, by its merge step, so the rename follows ``plan.aliases``
+    alone; an op the store answers keeps its own id, since its output is rebuilt
+    from its records."""
+    replacement = {source: merge for merge, source in plan.aliases.items()}
+    request_info.output_node_map = {
+        replacement.get(node_id, node_id): mapping
+        for node_id, mapping in request_info.output_node_map.items()
+    }
+
+
+def _assign_generated_steps(
+    schedule: Schedule,
+    runtime_graph: RuntimeGraph,
+    worker_ids: Collection[str] = (),
+    gpu_worker_ids: Collection[str] = (),
+) -> None:
+    """Place every generated step a reuse plan inserted, so the schedule covers the
+    graph it dispatches.
+
+    A generated step is a python task, which a GPU worker may not advertise, so
+    it goes to a CPU worker whenever the batch has one, and the model op's
+    worker is the fallback for a batch of GPU workers alone. The batch's workers
+    are the candidates, not the ones left after served nodes are dropped: a
+    worker whose every node the store served still runs the steps."""
+    placed = {
+        node_id: worker
+        for worker, nodes in schedule.worker_assignment.items()
+        for node_id in nodes
+    }
+    batch_workers = list(worker_ids) or list(schedule.worker_assignment)
+    cpu_workers = [worker for worker in batch_workers if worker not in gpu_worker_ids]
+    for node_id in runtime_graph.node_order:
+        if node_id in placed:
+            continue
+        if cpu_workers:
+            worker: str | None = cpu_workers[0]
+        else:
+            worker = _neighbour_worker(runtime_graph, node_id, placed, batch_workers)
+        if worker is not None:
+            schedule.worker_assignment.setdefault(worker, []).append(node_id)
+            placed[node_id] = worker
+
+
+def _neighbour_worker(
+    runtime_graph: RuntimeGraph,
+    node_id: str,
+    placed: Mapping[str, str],
+    batch_workers: Sequence[str],
+) -> str | None:
+    """The worker of the nearest placed node a generated step reads or feeds, and the
+    batch's first worker when none is placed."""
+    neighbours = list(runtime_graph.nodes[node_id].dependencies)
+    neighbours.extend(
+        other_id
+        for other_id, op in runtime_graph.nodes.items()
+        if node_id in op.dependencies
+    )
+    return next(
+        (placed[node] for node in neighbours if node in placed),
+        batch_workers[0] if batch_workers else None,
+    )
 
 
 def _sub_schedule(schedule: Schedule, node_ids: Sequence[str]) -> Schedule:
@@ -1599,7 +1748,7 @@ class FlowmeshRuntimeManager:
 
         reuse_plan: ReusePlan | None = None
         if request_info.reuse_records:
-            reuse_plan = await self._plan_reuse(request_info, schedule)
+            reuse_plan = await self._plan_reuse(request_info, schedule, worker_ids)
             if reuse_plan is not None and not request_info.runtime_graph.nodes:
                 return await self._reused_outputs(request_info, reuse_plan)
 
@@ -1964,6 +2113,7 @@ class FlowmeshRuntimeManager:
                     )
                 ),
                 content_nodes=() if reuse_plan is None else set(reuse_plan.content),
+                alias=None if reuse_plan is None else _generated_steps(reuse_plan),
             )
         return {
             "flat_outputs": flat_outputs,
@@ -2014,14 +2164,21 @@ class FlowmeshRuntimeManager:
         }
 
     async def _plan_reuse(
-        self, request_info: RequestInfo, schedule: Schedule
+        self, request_info: RequestInfo, schedule: Schedule, worker_ids: Sequence[str]
     ) -> ReusePlan | None:
         """Answer the batch from the store and dispatch only what it missed; a
         failure keeps the job's full run."""
         if not _batch_reuses_as_one(request_info):
             return None
         try:
-            content_values = await self._run_unversioned_reads(request_info, schedule)
+            if _sub_run_structure(
+                request_info.runtime_graph
+            ) and _has_partial_candidate(request_info.runtime_graph):
+                content_values = await self._run_structure(request_info, schedule)
+            else:
+                content_values = await self._run_unversioned_reads(
+                    request_info, schedule
+                )
             plan, planned_graph = await asyncio.to_thread(
                 ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
                 runtime_graph=request_info.runtime_graph,
@@ -2037,6 +2194,7 @@ class FlowmeshRuntimeManager:
             )
             return None
         request_info.runtime_graph = planned_graph
+        _follow_generated_steps(request_info, plan)
         self._reuse_content_reads[request_info.request_id] = content_values
         self._reuse_read_outputs[request_info.request_id] = (
             await self._aggregate_read_outputs(request_info)
@@ -2047,6 +2205,12 @@ class FlowmeshRuntimeManager:
             for worker, nodes in schedule.worker_assignment.items()
             if (kept := [node for node in nodes if node not in served])
         }
+        _assign_generated_steps(
+            schedule,
+            request_info.runtime_graph,
+            worker_ids,
+            request_info.gpu_worker_ids,
+        )
         return plan
 
     async def _run_unversioned_reads(
@@ -2056,11 +2220,54 @@ class FlowmeshRuntimeManager:
         reads = _sub_run_reads(request_info.runtime_graph)
         if not reads:
             return {}
+        read_graph = _sub_graph(request_info.runtime_graph, reads)
+        results, node_task_map = await self._submit_sub_run(
+            request_info, schedule, reads, "unversioned read"
+        )
+        self._record_reads(request_info, read_graph, results, node_task_map)
+        self.logger.info(
+            "Record reuse re-ran %d unversioned read(s) of job %s: %s",
+            len(reads),
+            request_info.request_id,
+            ", ".join(reads),
+        )
+        return read_back_records(read_graph, node_task_map, results)
+
+    def _record_reads(
+        self,
+        request_info: RequestInfo,
+        read_graph: RuntimeGraph,
+        results: Mapping[str, Any],
+        node_task_map: Mapping[str, str],
+    ) -> None:
+        """Check each re-ran read's key and keep the responses its outputs need."""
+        for node_id, task_id in node_task_map.items():
+            response = results[task_id]
+            if isinstance(response, dict):
+                self._assert_retrieval_key(read_graph, [node_id], response)
+        self._reuse_read_responses[request_info.request_id] = {
+            node_id: (results[task_id], read_graph.output_paths.get(node_id))
+            for node_id, task_id in node_task_map.items()
+            if node_id in read_graph.output_node_map
+        }
+
+    async def _submit_sub_run(
+        self,
+        request_info: RequestInfo,
+        schedule: Schedule,
+        node_ids: Sequence[str],
+        label: str,
+        graph: RuntimeGraph | None = None,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Submit one phase's nodes as a sub-run, wait for it and read its results
+        back; ``label`` names the phase in a failure, and ``graph``
+        holds the phase's nodes when that is not the request's own graph."""
         if await self.is_request_cancelled(request_info.request_id):
             raise RequestCancelledError(request_info.request_id)
-        read_graph = _sub_graph(request_info.runtime_graph, reads)
+        source = request_info.runtime_graph if graph is None else graph
+        sub_graph = _sub_graph(source, node_ids)
         task_spec, _, _ = await self._build_task_spec(
-            request_info, read_graph, schedule=_sub_schedule(schedule, reads)
+            request_info, sub_graph, schedule=_sub_schedule(schedule, node_ids)
         )
         self._resolve_api_credentials(request_info.member_request_ids, task_spec)
         task_spec["metadata"]["annotations"]["custom"] = {
@@ -2072,12 +2279,6 @@ class FlowmeshRuntimeManager:
             self._batch_workflow_id[
                 (request_info.request_id, request_info.batch_id)
             ] = workflow_id
-        self.logger.info(
-            "Record reuse re-ran %d unversioned read(s) of job %s: %s",
-            len(reads),
-            request_info.request_id,
-            ", ".join(reads),
-        )
         node_names = [
             node.get("name")
             for node in task_spec["spec"]["graph"].get("nodes", [])
@@ -2099,21 +2300,105 @@ class FlowmeshRuntimeManager:
                 None,
             )
             if node_id is None:
-                raise RuntimeError(f"unversioned read task {task_id} names no node")
+                raise RuntimeError(f"{label} task {task_id} names no node")
             if status[task_id] == "FAILED":
                 reason = self._task_failure_reason(task_id, node_task_map)
-                raise RuntimeError(f"unversioned read {node_id} failed{reason}")
+                raise RuntimeError(f"{label} {node_id} failed{reason}")
             results[task_id] = await self._read_task_result(task_id)
-        for node_id, task_id in node_task_map.items():
-            response = results[task_id]
-            if isinstance(response, dict):
-                self._assert_retrieval_key(read_graph, [node_id], response)
-        self._reuse_read_responses[request_info.request_id] = {
-            node_id: (results[task_id], read_graph.output_paths.get(node_id))
-            for node_id, task_id in node_task_map.items()
-            if node_id in read_graph.output_node_map
+        return results, node_task_map
+
+    async def _stored_steps(
+        self, request_info: RequestInfo, node_ids: Collection[str]
+    ) -> tuple[dict[str, NodeRecords], RuntimeGraph]:
+        """The steps among ``node_ids`` a plan over the whole graph answers from the
+        store, so a phase dispatches only the ones this run owes, and the
+        graph a partial run dispatches, so a kept step reads a stored producer's
+        values.
+
+        The whole graph is planned, because a step's input identity names the
+        inputs it reads, which a trimmed graph would not carry. That pass reads
+        the store's index and entries once, which costs little next to the
+        FlowMesh round trip the phase makes next."""
+        if not node_ids:
+            return {}, request_info.runtime_graph
+        plan, planned_graph = await asyncio.to_thread(
+            ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
+            runtime_graph=request_info.runtime_graph,
+            round_number=request_info.round_number,
+            job_id=request_info.request_id,
+        )
+        stored = {
+            node_id: records
+            for node_id, records in writer_records(plan, {}).items()
+            if node_id in node_ids
         }
-        return read_back_records(read_graph, node_task_map, results)
+        return stored, planned_graph
+
+    def _read_records(
+        self,
+        request_info: RequestInfo,
+        graph: RuntimeGraph,
+        stored: Mapping[str, NodeRecords],
+    ) -> dict[str, NodeRecords]:
+        """The content records a phase that dispatched nothing contributes."""
+        return {
+            node_id: records
+            for node_id, records in stored.items()
+            if node_id in graph.nodes and content_addressed(graph.nodes[node_id])
+        }
+
+    async def _run_structure(
+        self, request_info: RequestInfo, schedule: Schedule
+    ) -> dict[str, NodeRecords]:
+        """Run and store the structural steps above this batch's model ops, so the
+        plan that follows probes each model op on the rows they emit.
+
+        The steps and the unversioned reads they read run in one sub-run: a step
+        reading a read takes that read's rows the way 3b already inlines them.
+        Returns the read records, which the plan needs as its content values."""
+        structure = _sub_run_structure(request_info.runtime_graph)
+        if not request_info.store_records:
+            return await self._run_unversioned_reads(request_info, schedule)
+        phase = [
+            node_id
+            for node_id in request_info.runtime_graph.node_order
+            if node_id in structure
+            or node_id in _sub_run_reads(request_info.runtime_graph)
+        ]
+        stored, planned = await self._stored_steps(request_info, phase)
+        phase = [node_id for node_id in phase if node_id not in stored]
+        if not phase:
+            # Every structural step the store already answers: no task is worth it.
+            return self._read_records(
+                request_info,
+                _sub_graph(request_info.runtime_graph, list(stored)),
+                stored,
+            )
+        graph = _sub_graph(planned, phase)
+        results, node_task_map = await self._submit_sub_run(
+            request_info, schedule, phase, "structural step", planned
+        )
+        self._record_reads(request_info, graph, results, node_task_map)
+        await self._write_records(
+            request_info,
+            runtime_graph=graph,
+            node_task_map=node_task_map,
+            workflow_id="",
+            results=results,
+            served=stored,
+        )
+        self.logger.info(
+            "Record reuse ran %d step(s) of job %s before planning: %s",
+            len(phase),
+            request_info.request_id,
+            ", ".join(phase),
+        )
+        records = read_back_records(graph, node_task_map, results)
+        return {
+            node_id: rec
+            for node_id, rec in records.items()
+            if node_id in node_task_map and content_addressed(graph.nodes[node_id])
+        }
 
     async def _aggregate_read_outputs(
         self, request_info: RequestInfo
@@ -2171,6 +2456,7 @@ class FlowmeshRuntimeManager:
         results: Mapping[str, Any],
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
+        alias: Mapping[str, str] | None = None,
     ) -> None:
         """Write this batch's records once; a write error never fails the job."""
         writer = RecordWriter(
@@ -2194,6 +2480,7 @@ class FlowmeshRuntimeManager:
                 node_owners=request_info.task_owner_members,
                 served=served,
                 content_nodes=content_nodes,
+                alias=alias,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
