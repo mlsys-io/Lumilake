@@ -626,6 +626,14 @@ def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
         _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
 
 
+def test_a_marked_broadcast_row_leaves_require_match_alone(tmp_path: Path) -> None:
+    """A marked first-input row passes through, so require_match skips its key."""
+    fields = "cardinality: one_to_many, row_key: [unit, rid], require_match: true"
+    rows = [_UNITS[0], _MARK, _UNITS[2]]
+    out = _broadcast(tmp_path, rows=rows, sizes=_SIZES, tags=["A", "C"], fields=fields)
+    assert out == [_JOINED[0], _MARK, _JOINED[2]]
+
+
 def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
     """A marked further-input row marks each row of its key."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]

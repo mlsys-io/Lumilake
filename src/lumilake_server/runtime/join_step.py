@@ -388,7 +388,8 @@ def _broadcast(inputs):
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
-    first_keys = {{key for _, key, _ in keyed}}
+    # Only a live row's key is matched: a marked row's output is its marker.
+    first_keys = {{key for record, key, _ in keyed if record not in marked}}
     dropped = set()
     appended = []
     for index, column in zip(indexes[1:], columns[1:]):
