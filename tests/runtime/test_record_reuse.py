@@ -63,7 +63,10 @@ from lumilake_server.runtime.reuse_planner import (
     writer_records,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import (
+    FlowmeshRuntimeManager,
+    _first_level,
+)
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 from tests.runtime.runtime_manager.conftest import job_storage as job_storage
 from tests.runtime.runtime_manager.conftest import serve
@@ -2217,3 +2220,72 @@ async def test_an_aligned_step_declaring_another_nodes_key_serves_per_row(
     rerun = await once([rows[0], {"id": "b", "q": "TWO"}])
     assert rerun["Ask"] == rerun["Tag"] == "miss", rerun
     assert state["prompts"] == ["/one", "/TWO"]
+
+
+_TWO_LEVELS = {
+    "name": "two-levels",
+    "inputs": {"Rows": ['{"id": "a", "q": "one"}', '{"id": "b", "q": "two"}']},
+    "ops": [
+        {**_lambda("Fill", ["Rows"], "fill", "lambda c: c[0]"), "key": _ROWS_KEY},
+        {
+            "id": "Ask",
+            **_ask(
+                "LLMChatOp",
+                ["Fill"],
+                messages=[_SPEAK],
+                rowwise_template="{v}",
+                rowwise_columns=[
+                    {"label": "v", "node": "Fill", "path": "items.output.q"}
+                ],
+                key={"node": "Fill", "path": "id"},
+            ),
+        },
+        {
+            "id": "Second",
+            **_lambda("Second", ["Ask"], "second", "lambda c: c[0].upper()"),
+            "key": {"node": "Ask", "path": "id"},
+        },
+        {
+            "id": "Final",
+            **_ask(
+                "LLMChatOp",
+                ["Second"],
+                messages=[_SPEAK],
+                rowwise_template="{v}",
+                rowwise_columns=[
+                    {"label": "v", "node": "Second", "path": "items.output"}
+                ],
+                key={"node": "Second", "path": "id"},
+            ),
+        },
+        {
+            "id": "Tag",
+            **_lambda("Tag", ["Final"], "tag", "lambda c: c[0] + '?'"),
+            "mode": "row",
+        },
+    ],
+    "outputs": [{"name": "answer", "ref": "Tag"}],
+}
+
+
+def test_the_first_level_stops_before_the_next_model_op() -> None:
+    """Each round's level holds one chat and the python steps that reach it, and
+    the steps above the next chat wait for the round that plans it, so the
+    rounds never dispatch one node twice."""
+    graph = _runtime_graph(_TWO_LEVELS)
+    ask, second, final = (_node(graph, name) for name in ("Ask", "Second", "Final"))
+    fill, tag = _node(graph, "Fill"), _node(graph, "Tag")
+    levels = _first_level(graph)
+    assert fill in levels and ask in levels
+    assert second not in levels and final not in levels and tag not in levels
+    remaining, rounds = set(graph.nodes), []
+    while current := _first_level(
+        replace(
+            graph,
+            nodes={node: graph.nodes[node] for node in remaining},
+            node_order=[node for node in graph.node_order if node in remaining],
+        )
+    ):
+        rounds.append(set(current))
+        remaining -= set(current)
+    assert rounds == [{fill, ask}, {second, final}], rounds

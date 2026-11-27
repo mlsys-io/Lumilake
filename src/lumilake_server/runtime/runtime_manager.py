@@ -384,6 +384,37 @@ def _below_all_run(
     return True
 
 
+def _first_level(planned: RuntimeGraph) -> list[str]:
+    """The first model level a plan still dispatches: one model op, the python
+    steps that read into it, and their own python ancestry up to the next model
+    op.
+
+    A step that only feeds a later model op stays out, so the round that plans
+    that op runs it exactly once and no step is dispatched in two levels."""
+    nodes = planned.nodes
+    model = next(
+        (
+            node_id
+            for node_id in planned.node_order
+            if nodes[node_id].task_type in _MODEL_TASK_TYPES
+        ),
+        None,
+    )
+    if model is None:
+        return []
+    wave = {model}
+    stack = list(nodes[model].dependencies)
+    while stack:
+        dep = stack.pop()
+        if dep in wave or dep not in nodes:
+            continue
+        if nodes[dep].task_type in _MODEL_TASK_TYPES:
+            continue
+        wave.add(dep)
+        stack.extend(nodes[dep].dependencies)
+    return [node_id for node_id in planned.node_order if node_id in wave]
+
+
 def _generated_steps(plan: ReusePlan) -> dict[str, str]:
     """Every generated step a partial run inserted, mapped to what it stands
     for: its aliases (a merge step) and its pass-throughs (a producer)."""
