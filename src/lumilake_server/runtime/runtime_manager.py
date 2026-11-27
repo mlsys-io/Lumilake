@@ -539,24 +539,29 @@ def _with_generated(
 
 
 def _with_between_steps(
-    planned: RuntimeGraph, nodes: Sequence[str], wave: Sequence[str]
+    planned: RuntimeGraph, nodes: Sequence[str], plan: ReusePlan
 ) -> list[str]:
     """A level's nodes with the python steps that read its ops and feed only a
     later model op, so the plan after them reads their stored rows. A step a
     model op also feeds, or one the level already holds, stays out.
 
     ``planned`` is the level's graph, where a partly served wave op's readers
-    name its merge step, so a step here reads a node the level already holds."""
+    name its merge step, so a step here reads a node the level already holds.
+    The steps join in topological order, each once every input it reads is in
+    the level or served, so a chain of steps between two levels lands whole and
+    a step with an input the level leaves out stays with its reader."""
     kept = set(nodes)
-    steps = [
-        node_id
-        for node_id in planned.node_order
-        if node_id not in kept
-        and planned.nodes[node_id].task_type == PYTHON_TASK_TYPE
-        and any(dep in kept for dep in planned.nodes[node_id].dependencies)
-        and _feeds_only_model(planned, node_id)
-    ]
-    kept.update(steps)
+    served = plan.served_nodes()
+    for node_id in planned.topological_order():
+        if node_id in kept or planned.nodes[node_id].task_type != PYTHON_TASK_TYPE:
+            continue
+        dependencies = planned.nodes[node_id].dependencies
+        if (
+            dependencies
+            and all(dep in kept or dep in served for dep in dependencies)
+            and _feeds_only_model(planned, node_id)
+        ):
+            kept.add(node_id)
     return [node_id for node_id in planned.node_order if node_id in kept]
 
 
@@ -2540,7 +2545,7 @@ class FlowmeshRuntimeManager:
         servable, and a plan before this sub-run would miss the next level."""
         graph = without_hits(source, plan)
         nodes = _with_generated(graph, plan, wave)
-        nodes = _with_between_steps(graph, nodes, wave)
+        nodes = _with_between_steps(graph, nodes, plan)
         graph = _sub_graph(graph, nodes)
         level_schedule = _sub_schedule(schedule, graph.node_order)
         _assign_generated_steps(

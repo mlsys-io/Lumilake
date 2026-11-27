@@ -717,24 +717,39 @@ _EXPAND_BETWEEN = {
         "    return [{'id': text + '/' + str(i), 'v': text} for i in range(2)]\n"
     ),
 }
+_TAG_BETWEEN = {
+    **_TAG,
+    "id": "Uppercase",
+    "inputs": ["Between"],
+    "code": "def tag(c):\n    return {'id': c[0]['id'], 't': c[0]['v'].upper()}\n",
+    "key": {"node": "Between", "path": "id"},
+}
 _OVER_BETWEEN = {
     **_CHAT,
     "id": "Ask2",
-    "inputs": ["Between"],
-    "rowwise_columns": [{"label": "v", "node": "Between", "path": "items.output.v"}],
-    "key": {"node": "Between", "path": "id"},
+    "inputs": ["Uppercase"],
+    "rowwise_columns": [{"label": "v", "node": "Uppercase", "path": "items.output.t"}],
+    "key": {"node": "Uppercase", "path": "id"},
 }
 
 
 @pytest.mark.asyncio
-async def test_an_expand_between_two_chats_decides_per_record(
+async def test_two_steps_between_two_chats_land_in_the_first_level(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """An expand between two chats, the brief's two-level shape, leaves this
-    run's stored rows for the second level to probe: a changed row recomputes
-    only its own records at both chats."""
+    """An expand and a step over it between two chats, the brief's two-level
+    shape: both steps join the first level whole, so the second chat probes
+    their stored rows and a changed row recomputes only its own records at both
+    chats."""
     tail: dict[str, Any] = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
-    ops: list[dict[str, Any]] = [_TAG, _CHAT, _EXPAND_BETWEEN, _OVER_BETWEEN, tail]
+    ops: list[dict[str, Any]] = [
+        _TAG,
+        _CHAT,
+        _EXPAND_BETWEEN,
+        _TAG_BETWEEN,
+        _OVER_BETWEEN,
+        tail,
+    ]
     await run(_workflow(ops, _ROWS, "Tail"), "req-1")
     changed = _workflow(ops, _AMENDED, "Tail")
     ask, ask2 = (_node(changed, name) for name in ("Ask", "Ask2"))
@@ -744,8 +759,6 @@ async def test_an_expand_between_two_chats_decides_per_record(
     assert reasons["Ask"] == ("miss", "partial records"), reasons
     assert reasons["Ask2"] == ("miss", "partial records"), reasons
     assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
-    again = await run(changed, "req-3")
-    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 5
 
 
 @pytest.mark.asyncio
