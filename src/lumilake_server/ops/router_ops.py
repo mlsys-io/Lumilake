@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Self
 
+from lumilake_server.ops.util_ops import LambdaMode
+
 ROUTER_OP = "RouterOp"
 
 _MATCHES = ("contains", "equals")
@@ -217,7 +219,7 @@ def expand_routers(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "id": f"{router.id}.{branch}",
                 "op": "LambdaOp",
                 "inputs": router.inputs.copy(),
-                "mode": "list",
+                "mode": LambdaMode.LIST,
                 "fn_name": f"route_{branch}",
                 "code": branch_lambda_code(router, branch),
             }

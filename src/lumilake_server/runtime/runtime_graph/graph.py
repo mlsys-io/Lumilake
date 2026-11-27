@@ -12,9 +12,11 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
+    PythonMode,
     remap_model,
     remap_node_dict,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.graph import topological_sort
@@ -172,15 +174,13 @@ class RuntimeGraph:
         ]
 
     def list_lambda_cardinality_nodes(self) -> set[str]:
-        """Node ids that emit one whole-list value per run: list-mode Lambdas and
-        their dependents, up to a row-mode python step. Aligned-mode Lambdas are
-        row-cardinality, so they are neither seeds nor barriers here."""
+        """Node ids emitting one whole-list value: whole-result Lambdas, dependents."""
         list_lambda_nodes = {
             node_id
             for node_id, node in self.nodes.items()
             if node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
-            and node.data_spec.mode == "list"
+            and node.data_spec.mode in python_step.WHOLE_RESULT_MODES
         }
         list_lambda_dependent: set[str] = set()
         for node_id in self.node_order:
@@ -189,7 +189,8 @@ class RuntimeGraph:
                 list_lambda_dependent.add(node_id)
                 continue
             if node.task_type == PYTHON_TASK_TYPE and not (
-                isinstance(node.data_spec, PythonData) and node.data_spec.mode == "list"
+                isinstance(node.data_spec, PythonData)
+                and node.data_spec.mode in python_step.WHOLE_RESULT_MODES
             ):
                 continue
             if any(dep in list_lambda_dependent for dep in node.dependencies):
@@ -205,7 +206,7 @@ class RuntimeGraph:
             for node_id, node in self.nodes.items()
             if node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
-            and node.data_spec.mode == "list"
+            and node.data_spec.mode is PythonMode.LIST
         }
         reached: set[str] = set()
         for node_id in self.node_order:
@@ -237,9 +238,7 @@ class RuntimeGraph:
         return set(node.dependencies)
 
     def list_lambda_direct_read_nodes(self) -> set[str]:
-        """Node ids whose list column binds a list-mode ``LambdaOp`` one hop
-        away. FlowMesh runs such a task once per element, so the task's items
-        are the whole list and the aggregator folds them into one value."""
+        """Node ids whose list column binds a whole-result ``LambdaOp`` one hop away."""
         reads: dict[str, str | None] = {}
         for node_id, node in self.nodes.items():
             data_spec = node.data_spec
@@ -252,7 +251,7 @@ class RuntimeGraph:
             and (upstream := self.nodes.get(node_ref)) is not None
             and upstream.task_type == PYTHON_TASK_TYPE
             and isinstance(upstream.data_spec, PythonData)
-            and upstream.data_spec.mode == "list"
+            and upstream.data_spec.mode in python_step.WHOLE_RESULT_MODES
         }
 
     def with_node_prefix(self, prefix: str, separator: str = "__") -> Self:

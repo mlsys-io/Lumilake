@@ -411,7 +411,7 @@ def test_n8n_code_node_expected_runtime_reaches_the_op() -> None:
 
 
 def test_n8n_code_node_mode_reaches_the_op() -> None:
-    workflow = _code_node_workflow('{"mode":"list"}')
+    workflow = _code_node_workflow('{"mode":"reduce","by":"id"}')
     payload = {
         "graphs": [
             {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
@@ -422,7 +422,8 @@ def test_n8n_code_node_mode_reaches_the_op() -> None:
     from lumilake_server.ops import LambdaOp as _LambdaOp
 
     (op,) = [o for o in graph.iter_ops() if isinstance(o, _LambdaOp)]
-    assert op.mode == "list"
+    assert op.mode == "reduce"
+    assert op.by == "id"
 
 
 def test_n8n_code_node_rejects_an_unknown_mode() -> None:
@@ -432,7 +433,7 @@ def test_n8n_code_node_rejects_an_unknown_mode() -> None:
             {"name": "graph", "workflow": workflow, "inputs": {"Input": ["NVDA"]}}
         ]
     }
-    with pytest.raises(ValueError, match="'mode'"):
+    with pytest.raises(ValueError, match="Code node 'Code': mode"):
         parse_n8n_payload(payload)
 
 

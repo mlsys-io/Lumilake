@@ -9,6 +9,7 @@ from lumilake_server.data_specs import (
     DataSpecModel,
     ListData,
     PythonData,
+    PythonMode,
 )
 from lumilake_server.ops import DataOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.classification_ops import (
@@ -95,7 +96,7 @@ class _DerivedBuilder(_VisionBuilder):
             name=node_id,
             task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
-                mode="flatten_step",
+                mode=PythonMode.FLATTEN_STEP,
                 # No path: the worker's flatten branch expands both shapes —
                 # a local group's ``output`` list and API ``rows``.
                 plan=[ColumnPlanEntry(kind="stage", node=upstream.node, flatten=True)],
@@ -199,7 +200,7 @@ class _DerivedBuilder(_VisionBuilder):
         else:
             pairs_node_id = f"{op_id}__pairs"
             pairs_data_spec = PythonData(
-                mode="pairs",
+                mode=PythonMode.PAIRS,
                 plan=[
                     self._stage_plan(query_values),
                     self._stage_plan(candidate_values),

@@ -1,13 +1,13 @@
 import json
 import textwrap
-from typing import Any, Literal
+from typing import Any
 
 import pytest
 from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
-from lumilake_server.data_specs import build_column_table
+from lumilake_server.data_specs import PythonData, PythonMode, build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -15,6 +15,7 @@ from lumilake_server.ops import (
     FormatOp,
     ImageGenerationOp,
     InputOp,
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     LLMCompletionOp,
@@ -1604,9 +1605,9 @@ def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
     return [str(value) for value in items[0]]
 
 
-@pytest.mark.parametrize("mode", ["list", "aligned"])
+@pytest.mark.parametrize("mode", [LambdaMode.LIST, LambdaMode.ALIGNED])
 def test_embedding_op_consuming_list_lambda_uses_value_items_output(
-    mode: Literal["list", "aligned"],
+    mode: LambdaMode,
 ) -> None:
     """An EmbeddingOp whose content is a LambdaOp binds ``value.items.output``,
     the field of the python step's result holding the emitted column."""
@@ -1864,7 +1865,7 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
     one source would silently drop one. The builder must fail loudly instead
     of overwriting the first mapping."""
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")
+    explode = LambdaOp([stock], _explode_fn, mode=LambdaMode.LIST)
     out_a = as_output("a", explode)
     out_b = as_output("b", explode)
     compiled = Graph.from_ops([out_a, out_b]).compile(Stock=["NVDA", "AAPL"])
@@ -1875,6 +1876,26 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
 
 def _row_lambda_fn(row: tuple[SingleDtype, ...]) -> str:
     return str(row[0]).upper()
+
+
+def test_prefixed_row_step_below_a_list_lambda_is_a_fanout_node() -> None:
+    """The node prefix must keep the list mode a ``PythonMode`` member, so a
+    row step reading only that Lambda stays in its fan-out."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode=LambdaMode.LIST)
+    shout = LambdaOp([explode], fn=_row_lambda_fn)
+    compiled = Graph.from_ops([as_output("shouted", shout)]).compile(
+        Stock=["NVDA", "AAPL"]
+    )
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled, node_prefix="g")
+
+    (explode_id,) = runtime_graph.dsl_to_runtime[explode.id]
+    (shout_id,) = runtime_graph.dsl_to_runtime[shout.id]
+    explode_spec = runtime_graph.nodes[explode_id].data_spec
+    assert isinstance(explode_spec, PythonData)
+    assert explode_spec.mode is PythonMode.LIST
+    assert shout_id in runtime_graph.list_lambda_fanout_nodes()
 
 
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
@@ -2591,7 +2612,7 @@ def _build_read_rule_case(case: str, rows: Op, stock: Op) -> tuple[Op, Op, bool]
         accepted = False
     elif case == "rowwise_vlm_into_list_lambda":
         upstream = _rowwise_vlm(rows, stock)
-        consumer = LambdaOp([upstream], fn=_explode_fn, mode="list")
+        consumer = LambdaOp([upstream], fn=_explode_fn, mode=LambdaMode.LIST)
         accepted = True
     else:
         raise AssertionError(case)
@@ -2653,7 +2674,7 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     the task depends on instead of the rendered message; a literal producer
     binds its values decoded, one row each."""
     rows = input_placeholder("rows")
-    prompts = LambdaOp([rows], _explode_fn, mode="list")
+    prompts = LambdaOp([rows], _explode_fn, mode=LambdaMode.LIST)
     turn = LLMChatOp(
         [],
         config=GenerationConfig(model="m"),

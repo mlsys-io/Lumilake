@@ -1,8 +1,21 @@
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, Self, overload
+from enum import StrEnum
+from typing import Any, Self
 
 import dill
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.ops.data_ops import DataOp
@@ -16,43 +29,127 @@ MAX_IMAGE_TIMEOUT_S = 3600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
+
+class LambdaMode(StrEnum):
+    """The modes a LambdaOp accepts: the row and whole-result python modes."""
+
+    ROW = "row"
+    LIST = "list"
+    ALIGNED = "aligned"
+    EXPAND = "expand"
+    REDUCE = "reduce"
+
+
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
+ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
+ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
 
 
-def _validate_limits(
-    timeout_s: float | None,
-    memory_mb: int | None,
-    image: str | None,
-    expected_runtime_s: float | None,
-) -> None:
-    if timeout_s is not None:
-        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
-            raise ValueError(f"timeout_s must be a number, got {timeout_s!r}")
-        cap = MAX_IMAGE_TIMEOUT_S if image else MAX_TIMEOUT_S
-        if not 0 < timeout_s <= cap:
-            raise ValueError(f"timeout_s must be in (0, {cap:g}], got {timeout_s}")
-    if expected_runtime_s is not None:
-        if isinstance(expected_runtime_s, bool) or not isinstance(
-            expected_runtime_s, (int, float)
+class LambdaSpec(BaseModel):
+    """The YAML `LambdaOp` entry fields, built by every source of the op."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    fn_name: StrictStr
+    code: StrictStr = Field(alias="_code")
+    mode: LambdaMode = LambdaMode.ROW
+    by: StrictStr | None = None
+    timeout_s: StrictFloat | None = Field(default=None, gt=0)
+    memory_mb: StrictInt | None = Field(
+        default=None, ge=MIN_MEMORY_MB, le=MAX_MEMORY_MB
+    )
+    image: StrictStr | None = None
+    gpu: GpuRequest | None = None
+    expected_runtime_s: StrictFloat | None = Field(default=None, gt=0)
+    cache: StrictBool | None = None
+
+    @field_validator("image")
+    @classmethod
+    def _image_not_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("must be a non-empty string")
+        return value
+
+    @model_validator(mode="after")
+    def _by_needs_reduce(self) -> Self:
+        if self.mode is not LambdaMode.REDUCE:
+            if self.by is not None:
+                raise ValueError(
+                    f"'by' is only valid in reduce mode (got mode {self.mode.value!r})"
+                )
+            return self
+        parts = self.by.split(".") if self.by is not None else []
+        if not parts or any(not part or part != part.strip() for part in parts):
+            raise ValueError(
+                "reduce mode requires 'by' to be a dotted path of non-empty segments"
+                f" (got {self.by!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _runtime_within_timeout(self) -> Self:
+        cap = MAX_IMAGE_TIMEOUT_S if self.image else MAX_TIMEOUT_S
+        if self.timeout_s is not None and self.timeout_s > cap:
+            raise ValueError(f"timeout_s must be in (0, {cap:g}], got {self.timeout_s}")
+        effective_timeout = (
+            self.timeout_s if self.timeout_s is not None else MAX_TIMEOUT_S
+        )
+        if (
+            self.expected_runtime_s is not None
+            and self.expected_runtime_s > effective_timeout
         ):
             raise ValueError(
-                f"expected_runtime_s must be a number, got {expected_runtime_s!r}"
+                f"expected_runtime_s must be in (0, {effective_timeout:g}], got"
+                f" {self.expected_runtime_s}"
             )
-        effective_timeout = timeout_s if timeout_s is not None else MAX_TIMEOUT_S
-        if not 0 < expected_runtime_s <= effective_timeout:
-            raise ValueError(
-                "expected_runtime_s must be in (0,"
-                f" {effective_timeout:g}], got {expected_runtime_s}"
-            )
-    if memory_mb is not None:
-        if isinstance(memory_mb, bool) or not isinstance(memory_mb, int):
-            raise ValueError(f"memory_mb must be an integer, got {memory_mb!r}")
-        if not MIN_MEMORY_MB <= memory_mb <= MAX_MEMORY_MB:
-            raise ValueError(
-                f"memory_mb must be in [{MIN_MEMORY_MB}, {MAX_MEMORY_MB}],"
-                f" got {memory_mb}"
-            )
+        return self
+
+
+def build_lambda_spec(
+    fields: dict[str, Any], where: str, names: dict[str, str] | None = None
+) -> LambdaSpec:
+    """Validate one `LambdaOp` entry, naming the op and field in the error."""
+    try:
+        return LambdaSpec.model_validate(fields)
+    except ValidationError as exc:
+        parts: list[str] = []
+        for error in exc.errors():
+            message = error["msg"].removeprefix("Value error, ")
+            field = ".".join(str(loc) for loc in error["loc"])
+            field = names[field] if names is not None and field in names else field
+            parts.append(f"{field}: {message}" if field else message)
+        raise ValueError(f"{where}: {'; '.join(parts)}") from exc
+
+
+def _serialize_fn(fn: Callable[..., Any]) -> str:
+    """The source of a Python-authored Lambda, with its closure values inlined."""
+    fn_serialized = (
+        dill.source.getsource(fn)
+        .replace("ops.SingleDtype", "str | list[dict[str, str]]")
+        .replace("Message", "dict[str, str]")
+        .replace(".role", "['role']")
+        .replace(".content", "['content']")
+    )
+    if fn.__closure__:
+        closure_vars = {}
+        if fn.__code__.co_freevars:
+            for var_name, cell in zip(fn.__code__.co_freevars, fn.__closure__):
+                try:
+                    closure_vars[var_name] = cell.cell_contents
+                except ValueError:
+                    pass
+        for var_name, var_value in closure_vars.items():
+            pattern = r"\b" + re.escape(var_name) + r"\b"
+            # Callable replacement: re.sub would otherwise interpret backslashes in
+            # repr() as backrefs.
+            replacement: str = repr(var_value)
+
+            def _replace(_m: re.Match[str], r: str = replacement) -> str:
+                return r
+
+            fn_serialized = re.sub(pattern, _replace, fn_serialized)
+    return fn_serialized
 
 
 class SubmittedFunction:
@@ -145,23 +242,16 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
     return FormatOp(template, *args, **kwargs)
 
 
-LambdaMode = Literal["row", "list", "aligned"]
-
-
 @Op.registry.register("LambdaOp")
 class LambdaOp(Op):
-    fn: RowLambdaFn | ListLambdaFn
-    mode: LambdaMode
+    fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
 
-    LAMBDA_MODES = ("row", "list", "aligned")
-
-    @overload
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
-        fn: RowLambdaFn,
+        fn: Callable[..., Any],
         code: str | None = None,
-        mode: Literal["row"] = "row",
+        mode: LambdaMode = LambdaMode.ROW,
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
@@ -169,177 +259,100 @@ class LambdaOp(Op):
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        inputs: Sequence[list[str] | Op],
-        fn: ListLambdaFn,
-        code: str | None = None,
-        mode: Literal["list"] = "list",
-        timeout_s: float | None = None,
-        memory_mb: int | None = None,
-        image: str | None = None,
-        gpu: GpuRequest | None = None,
-        expected_runtime_s: float | None = None,
-        cache: bool | None = None,
-        sample_value: Any | None = None,
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self,
-        inputs: Sequence[list[str] | Op],
-        fn: ListLambdaFn,
-        code: str | None = None,
-        mode: Literal["aligned"] = "aligned",
-        timeout_s: float | None = None,
-        memory_mb: int | None = None,
-        image: str | None = None,
-        gpu: GpuRequest | None = None,
-        expected_runtime_s: float | None = None,
-        cache: bool | None = None,
-        sample_value: Any | None = None,
-    ) -> None: ...
-
-    def __init__(
-        self,
-        inputs: Sequence[list[str] | Op],
-        fn: RowLambdaFn | ListLambdaFn,
-        code: str | None = None,
-        mode: LambdaMode = "row",
-        timeout_s: float | None = None,
-        memory_mb: int | None = None,
-        image: str | None = None,
-        gpu: GpuRequest | None = None,
-        expected_runtime_s: float | None = None,
-        cache: bool | None = None,
-        sample_value: Any | None = None,
+        by: str | None = None,
     ) -> None:
-        if mode not in self.LAMBDA_MODES:
-            raise ValueError(
-                f"LambdaOp mode must be one of {self.LAMBDA_MODES} (got {mode!r})"
-            )
-        if image is not None and not image.strip():
-            raise ValueError("LambdaOp image must be a non-empty string")
-        if cache is not None and not isinstance(cache, bool):
-            raise ValueError(f"LambdaOp cache must be a bool, got {cache!r}")
-        _validate_limits(timeout_s, memory_mb, image, expected_runtime_s)
-        input_ops: list[Op] = []
-        for inp in inputs:
-            if isinstance(inp, Op):
-                input_ops.append(inp)
-            else:
-                input_ops.append(DataOp(inp))
+        input_ops: list[Op] = [
+            inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs
+        ]
         super().__init__(input_ops)
         self.fn = fn
-        self.mode = mode
-        # Limits for the FlowMesh python task a standalone LambdaOp compiles to.
-        self.timeout_s = timeout_s
-        self.memory_mb = memory_mb
-        self.image = image
-        self.gpu = gpu
-        # A planning hint for HALO; never enforced at runtime.
-        self.expected_runtime_s = expected_runtime_s
-        # Opt-in task caching; passed to FlowMesh only when set.
-        self.cache = cache
-        # A representative value for data-profile preflight placeholders; never
-        # executed at runtime.
         self.sample_value = sample_value
-        if code:
-            self.code: str = code
-        else:
-            fn_serialized = (
-                dill.source.getsource(fn)
-                .replace("ops.SingleDtype", "str | list[dict[str, str]]")
-                .replace("Message", "dict[str, str]")
-                .replace(".role", "['role']")
-                .replace(".content", "['content']")
-            )
-            if self.fn.__closure__:
-                closure_vars = {}
-                if self.fn.__code__.co_freevars:
-                    for var_name, cell in zip(
-                        self.fn.__code__.co_freevars, self.fn.__closure__
-                    ):
-                        try:
-                            closure_vars[var_name] = cell.cell_contents
-                        except ValueError:
-                            pass
-                for var_name, var_value in closure_vars.items():
-                    pattern = r"\b" + re.escape(var_name) + r"\b"
-                    # Callable replacement: re.sub would otherwise interpret backslashes
-                    # in repr() as backrefs.
-                    replacement: str = repr(var_value)
+        self.code = code or _serialize_fn(fn)
+        self.spec = build_lambda_spec(
+            {
+                "fn_name": fn.__name__,
+                "_code": self.code,
+                "mode": mode,
+                "by": by,
+                "timeout_s": timeout_s,
+                "memory_mb": memory_mb,
+                "image": image,
+                "gpu": gpu,
+                "expected_runtime_s": expected_runtime_s,
+                "cache": cache,
+            },
+            "LambdaOp",
+        )
 
-                    def _replace(_m: re.Match[str], r: str = replacement) -> str:
-                        return r
+    @property
+    def mode(self) -> LambdaMode:
+        return self.spec.mode
 
-                    fn_serialized = re.sub(pattern, _replace, fn_serialized)
-            self.code = fn_serialized
+    @property
+    def by(self) -> str | None:
+        return self.spec.by
+
+    @property
+    def timeout_s(self) -> float | None:
+        return self.spec.timeout_s
+
+    @property
+    def memory_mb(self) -> int | None:
+        return self.spec.memory_mb
+
+    @property
+    def image(self) -> str | None:
+        return self.spec.image
+
+    @property
+    def gpu(self) -> GpuRequest | None:
+        return self.spec.gpu
+
+    @property
+    def expected_runtime_s(self) -> float | None:
+        return self.spec.expected_runtime_s
+
+    @property
+    def cache(self) -> bool | None:
+        """Opt-in task caching; passed to FlowMesh only when set."""
+        return self.spec.cache
 
     @property
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
-        return self.mode in ("list", "aligned")
+        return self.mode in (LambdaMode.LIST, LambdaMode.ALIGNED)
 
     def _serialize(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
-            "fn_name": self.fn.__name__,
-            "_code": self.code,
-            "_inputs": [inp.id for inp in self.inputs],
-            "mode": self.mode,
-        }
-        if self.timeout_s is not None:
-            data["timeout_s"] = self.timeout_s
-        if self.memory_mb is not None:
-            data["memory_mb"] = self.memory_mb
-        if self.image is not None:
-            data["image"] = self.image
-        if self.gpu is not None:
-            data["gpu"] = self.gpu.model_dump(exclude_none=True)
-        if self.expected_runtime_s is not None:
-            data["expected_runtime_s"] = self.expected_runtime_s
-        if self.cache is not None:
-            data["cache"] = self.cache
+        data = self.spec.model_dump(by_alias=True, exclude_none=True)
+        data["_inputs"] = [inp.id for inp in self.inputs]
         if self.sample_value is not None:
             data["sample_value"] = self.sample_value
         return data
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
-        fn_name = data.get("fn_name")
-        code = data.get("_code")
-        if not fn_name or not code:
-            raise ValueError("LambdaOp serialization missing function code or name")
-
-        timeout_s = data.get("timeout_s")
-        memory_mb = data.get("memory_mb")
-        image = data.get("image")
-        gpu = GpuRequest.model_validate(data["gpu"]) if "gpu" in data else None
-        expected_runtime_s = data.get("expected_runtime_s")
-        cache = data.get("cache")
-        sample_value = data.get("sample_value")
+        spec = build_lambda_spec(data, f"LambdaOp '{data.get('_id', '?')}'")
         try:
-            fn = SubmittedFunction(code, fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
         except ValueError as exc:
-            raise ValueError(f"Invalid LambdaOp function '{fn_name}': {exc}") from exc
-
-        input_ops = [other_ops[inp] for inp in data["_inputs"]]
-        return cls(
-            inputs=input_ops,
+            raise ValueError(
+                f"Invalid LambdaOp function '{spec.fn_name}': {exc}"
+            ) from exc
+        op = cls(
+            inputs=[other_ops[inp] for inp in data["_inputs"]],
             fn=fn,
-            code=code,
-            mode=data.get("mode", "row"),
-            timeout_s=timeout_s,
-            memory_mb=memory_mb,
-            image=image,
-            gpu=gpu,
-            expected_runtime_s=expected_runtime_s,
-            cache=cache,
-            sample_value=sample_value,
+            code=spec.code,
+            mode=spec.mode,
+            by=spec.by,
+            timeout_s=spec.timeout_s,
+            memory_mb=spec.memory_mb,
+            image=spec.image,
+            gpu=spec.gpu,
+            expected_runtime_s=spec.expected_runtime_s,
+            cache=spec.cache,
+            sample_value=data.get("sample_value"),
         )
+        return op
 
 
 def lambda_op(inputs: list[list[str] | Op], fn: RowLambdaFn) -> LambdaOp:
