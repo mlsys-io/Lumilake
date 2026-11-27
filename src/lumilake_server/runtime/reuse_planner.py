@@ -570,6 +570,8 @@ class ReusePlanner:
             return None
         parent_keys = _expand_parent_keys(plan, stored)
         if parent_keys is None:
+            parent_keys = _content_parent_keys(plan, decision)
+        if parent_keys is None:
             return None
         return self._decide_children(
             plan, parent_keys, inputs, round_number=round_number
@@ -740,6 +742,23 @@ def _expand_parent_keys(
         return None
     source = sources[0]
     keys = [entry.address.record for entry in stored[source]]
+    if not keys or any(key is None for key in keys):
+        return None
+    return [str(key) for key in keys]
+
+
+def _content_parent_keys(plan: RecordPlan, decision: ReusePlan) -> list[str] | None:
+    """A live parent key per row an expand reads, from an unversioned read the
+    plan re-ran and its rows read keyed; ``None`` when that read is not its one
+    keyed input."""
+    keyed = [
+        node
+        for node in input_nodes(plan)
+        if node in decision.content and decision.content[node].keyed
+    ]
+    if len(keyed) != 1:
+        return None
+    keys = decision.content[keyed[0]].keys
     if not keys or any(key is None for key in keys):
         return None
     return [str(key) for key in keys]
