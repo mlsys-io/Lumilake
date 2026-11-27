@@ -255,14 +255,13 @@ def session_limits_admit(
         and min(profile.cpu_cores, profile.max_session_cpu_cores) < cpu
     ):
         return False
-    total = profile.memory_total_bytes
-    max_memory = profile.max_session_memory_bytes
     if (
         memory_bytes is not None
-        and total is not None
-        and total > 0
-        and max_memory is not None
-        and min(total, max_memory) < memory_bytes
+        and profile.memory_total_bytes is not None
+        and profile.memory_total_bytes > 0
+        and profile.max_session_memory_bytes is not None
+        and min(profile.memory_total_bytes, profile.max_session_memory_bytes)
+        < memory_bytes
     ):
         return False
     return True
