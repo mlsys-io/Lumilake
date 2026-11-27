@@ -427,8 +427,8 @@ def _broadcast(inputs):
                 continue
             if len(more[key]) > 1:
                 raise ValueError(
-                    "%s: key %s repeats in a further input; declare many_to_many"
-                    % (_NODE, key)
+                    "%s: key %s repeats in a further input, which pairs one row per"
+                    " key" % (_NODE, key)
                 )
             if record in appended:
                 continue

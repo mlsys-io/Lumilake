@@ -404,6 +404,12 @@ def test_one_to_many_needs_a_row_key() -> None:
         _pairs(_CASES, _GIRLS, "cardinality: one_to_many")
 
 
+def test_many_to_many_reads_no_row_key() -> None:
+    """Each pair of a key's rows is one output row, so row_key has nothing to name."""
+    with pytest.raises(ValueError, match="many_to_many reads no row_key"):
+        _pairs(_CASES, _GIRLS, "cardinality: many_to_many, row_key: [unit, q]")
+
+
 def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None:
     """An undeclared repeat fails the job, naming the cardinality that reads it."""
     with pytest.raises(ValueError, match="declare one_to_many or many_to_many"):
