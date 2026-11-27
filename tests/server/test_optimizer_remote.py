@@ -5,9 +5,10 @@ import json
 import httpx
 import pytest
 import respx
+from support.worker_profiles import worker_profile
 
 from lumilake import envs as envs_mod
-from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_hook.optimizer import RemoteOptimizer as HookRemoteOptimizer
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -73,7 +74,7 @@ def test_remote_optimizer_posts_schedule_and_maps_response(
     schedule = optimizer.generate_schedule(
         graph,
         worker_names=["w1"],
-        worker_profiles={"w1": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))},
+        worker_profiles={"w1": worker_profile(devices=(GpuDevice(),))},
     )
 
     assert isinstance(schedule, Schedule)
@@ -112,9 +113,7 @@ def test_remote_optimizer_refuses_a_gpu_python_step_before_dispatch(
         RemoteOptimizer(optimizer_type="halo-greedy").generate_schedule(
             graph,
             worker_names=["w1"],
-            worker_profiles={
-                "w1": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))
-            },
+            worker_profiles={"w1": worker_profile(devices=(GpuDevice(),))},
         )
     assert not route.called
 
@@ -144,9 +143,8 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
         _make_graph(),
         worker_names=["w1"],
         worker_profiles={
-            "w1": WorkerProfile(
-                gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)),
-                gpu_memory_fraction=0.5,
+            "w1": worker_profile(
+                devices=(GpuDevice(name="H100"),), gpu_memory_fraction=0.5
             ),
             "w2": WorkerProfile(),
         },
@@ -311,9 +309,7 @@ def test_hook_remote_optimizer_posts_the_profiles_as_json() -> None:
     respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
         side_effect=_capture
     )
-    profile = WorkerProfile(
-        gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)), gpu_memory_fraction=0.5
-    )
+    profile = worker_profile(devices=(GpuDevice(name="H100"),), gpu_memory_fraction=0.5)
     schedule = HookRemoteOptimizer(
         base_url="http://127.0.0.1:9000", optimizer_type="halo-greedy"
     ).generate_schedule(
