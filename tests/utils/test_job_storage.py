@@ -1,10 +1,11 @@
+from dataclasses import fields
 from typing import Any
 
 import pytest
 
 from lumilake_server.records import JobRecord, JobStatus
 from lumilake_server.schemas.io import S3Location
-from lumilake_server.utils.job_storage import InMemoryJobStorage
+from lumilake_server.utils.job_storage import InMemoryJobStorage, _record_payload
 
 
 def _record(job_id: str, status: JobStatus, submitted_at: str) -> JobRecord:
@@ -64,6 +65,12 @@ def test_list_summaries_paginates_descending_by_submission_time() -> None:
     assert total == 3
     assert [item.job_id for item in page_1] == ["job-3", "job-2"]
     assert [item.job_id for item in page_2] == ["job-1"]
+
+
+def test_record_payload_stores_every_record_field() -> None:
+    record = _record("job-1", "pending", "2026-02-20T00:00:00+00:00")
+
+    assert set(_record_payload(record)) == {f.name for f in fields(JobRecord)}
 
 
 def test_record_rejects_invalid_status() -> None:
