@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Mapping
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -372,6 +372,8 @@ def _remap_entry(key: str, item: Any, mapping: Mapping[str, str]) -> Any:
 
 
 def _remap_value(value: Any, mapping: Mapping[str, str]) -> Any:
+    if isinstance(value, Enum):
+        return value
     if isinstance(value, BaseModel):
         return remap_model(value, mapping)
     if isinstance(value, dict):
