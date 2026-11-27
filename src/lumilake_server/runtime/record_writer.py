@@ -890,7 +890,9 @@ class RecordWriter:
                 job=job_id,
                 entries=[
                     RecordIndexEntry(op=op, record=record, round=round_, digest=digest)
-                    for (op, record, round_), digest in sorted(listed.items())
+                    for (op, record, round_), digest in sorted(
+                        listed.items(), key=_index_order
+                    )
                 ],
             )
             await asyncio.to_thread(
@@ -899,6 +901,17 @@ class RecordWriter:
                 index.body(),
                 "application/json",
             )
+
+
+def _index_order(
+    item: tuple[tuple[str, str | None, int], str],
+) -> tuple[str, int, str, int]:
+    """A record index's sort key, by op, record and round, as an index lists them.
+
+    A whole-op record carries no key, and ``None`` compares with no string, so
+    it sorts ahead of every keyed record of the same op rather than failing."""
+    (op, record, round_), _ = item
+    return (op, 0 if record is None else 1, record or "", round_)
 
 
 def _register(

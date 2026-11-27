@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 import yaml
 
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import ColumnPlanEntry, PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import RecordKey
 from lumilake_server.parser import parse_yaml_payload
@@ -405,6 +405,47 @@ async def test_whole_op_record_names_every_input_row() -> None:
     storage, _ = await _write(kept, {"Mark": _TWO_ROWS, "Keep": [_TWO_ROWS[1]]})
     name = _declared_name(kept, "Keep")
     assert [k for k in _indexed(storage, "req-1") if k[0] == name] == [(name, "b")]
+
+
+@pytest.mark.asyncio
+async def test_an_index_lists_a_whole_op_record_beside_a_keyed_one() -> None:
+    """One job's index lists a whole-op record beside keyed records of one op.
+
+    A generated pass-through step carries its producer's op name and no record
+    key, so an index that sorted raw tuples compared ``None`` with a string when
+    the next level wrote and failed; it lists that record ahead of the keys."""
+    graph = _runtime_graph(_payload())
+    mark = _node_id(graph, "Mark")
+    storage = InMemoryJobStorage()
+    await _write(graph, {"Mark": _TWO_ROWS}, storage=storage)
+    passer = replace(
+        graph.nodes[mark],
+        node_id=f"{mark}/pass",
+        dependencies=(),
+        data_spec=PythonData(
+            mode="pass_through",
+            plan=[ColumnPlanEntry(kind="literal", values=[{"output": {"q": 1}}])],
+        ),
+    )
+    passed = replace(
+        graph,
+        nodes={"pass": passer},
+        node_order=["pass"],
+        op_names={**graph.op_names, "pass": _declared_name(graph, "Mark")},
+    )
+    await RecordWriter(storage=storage, enabled=True, logger=_LOG).write(
+        job_id="req-1",
+        member_job_ids=["req-1"],
+        round_number=0,
+        runtime_graph=passed,
+        node_task_map={"pass": "task-pass"},
+        results={"task-pass": {"items": [{"output": {"q": 1}}]}},
+    )
+    index = read_index(storage, "req-1")
+    assert index is not None
+    name = _declared_name(graph, "Mark")
+    listed = [entry.record for entry in index.entries if entry.op == name]
+    assert listed == [None, "a", "b"], listed
 
 
 def _paths_graph(**changes: Any) -> Any:
