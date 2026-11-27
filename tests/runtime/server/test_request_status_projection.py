@@ -24,24 +24,25 @@ def _status(
     succeeded: int = 0,
     pending: int = 0,
     completed: bool = False,
-    batches: tuple[BatchProgressEntry, ...] = (),
+    batches: list[BatchProgressEntry] | None = None,
     batch_completed: int = 0,
     batch_running: int = 0,
     eta_seconds: float | None = None,
 ) -> RuntimeStatus:
+    entries = batches or []
     return RuntimeStatus(
         execution=ProgressStep(
             completed=completed,
             details=ProgressDetails(succeeded=succeeded, pending=pending),
         ),
         batch_progress=BatchProgress(
-            total=len(batches),
+            total=len(entries),
             completed=batch_completed,
             running=batch_running,
-            batches=list(batches),
+            batches=entries,
             overall_progress=OverallProgress(
-                total_nodes=sum(batch.nodes.total for batch in batches),
-                completed_nodes=sum(batch.nodes.succeeded for batch in batches),
+                total_nodes=sum(batch.nodes.total for batch in entries),
+                completed_nodes=sum(batch.nodes.succeeded for batch in entries),
             ),
             eta_seconds=eta_seconds,
         ),
@@ -68,7 +69,7 @@ async def test_get_request_status_mirrors_shared_execution_progress(
             "exec-1": _status(
                 succeeded=1,
                 pending=2,
-                batches=(_batch("batch-1", "RUNNING", 1, 2, 3),),
+                batches=[_batch("batch-1", "RUNNING", 1, 2, 3)],
                 batch_running=1,
                 eta_seconds=10.0,
             )
@@ -101,7 +102,7 @@ async def test_get_request_status_runtime_percentage_is_capped(server_factory) -
         status_by_request={
             "exec-1": _status(
                 succeeded=3,
-                batches=(_batch("batch-1", "RUNNING", 3, 0, 3),),
+                batches=[_batch("batch-1", "RUNNING", 3, 0, 3)],
                 batch_running=1,
             )
         }
@@ -135,7 +136,7 @@ async def test_get_request_status_projects_input_completion(server_factory) -> N
     runtime_manager = RecordingRuntimeManager(
         status_by_request={
             "exec-1": _status(
-                batches=(_batch("batch-1", "COMPLETED", 2, 0, 2),),
+                batches=[_batch("batch-1", "COMPLETED", 2, 0, 2)],
                 batch_completed=1,
                 batch_running=1,
                 eta_seconds=10.0,
@@ -174,13 +175,13 @@ async def test_get_request_status_keeps_completed_batches_with_running_batch(
             "exec-old": _status(
                 succeeded=2,
                 completed=True,
-                batches=(_batch("batch-old", "COMPLETED", 2, 0, 2),),
+                batches=[_batch("batch-old", "COMPLETED", 2, 0, 2)],
                 batch_completed=1,
             ),
             "exec-new": _status(
                 succeeded=1,
                 pending=1,
-                batches=(_batch("batch-new", "RUNNING", 1, 1, 2),),
+                batches=[_batch("batch-new", "RUNNING", 1, 1, 2)],
                 batch_running=1,
                 eta_seconds=12.0,
             ),
