@@ -202,37 +202,9 @@ class HaloOptimizer(BaseOptimizer):
             halo_edges: list[Edge] = []
             for node_id in graph.node_order:
                 op = graph.nodes[node_id]
-                engine = self._map_engine(op.backend, op.task_type)
                 deps = tuple(op.dependencies)
                 dependencies[node_id] = deps
-
-                db_queries: tuple[DBQuery, ...] = ()
-                if engine == "db":
-                    sql_template = ""
-                    if isinstance(op.data_spec, RetrievalData):
-                        sql_template = op.data_spec.template or ""
-                    db_queries = (
-                        DBQuery(
-                            name=f"{node_id}_query",
-                            sql=sql_template,
-                            parameters={},
-                        ),
-                    )
-
-                halo_nodes[node_id] = Node(
-                    id=node_id,
-                    type=op.task_type,
-                    engine=engine,
-                    model=op.model,
-                    inputs=deps,
-                    outputs=tuple(),
-                    db_queries=db_queries,
-                    gpu_memory_utilization=op.gpu_memory_utilization,
-                    gpu_request=op.data_spec.gpu_request,
-                    data_spec=op.data_spec,
-                    inference_spec=op.inference_spec,
-                    parent=deps[0] if deps else None,
-                )
+                halo_nodes[node_id] = self._build_node(node_id, op)
                 for dep in deps:
                     halo_edges.append(Edge(source=dep, target=node_id, mapping={}))
 
@@ -387,6 +359,38 @@ class HaloOptimizer(BaseOptimizer):
             return schedule
         except Exception as exc:
             raise RuntimeError("Halo optimizer failed to generate schedule") from exc
+
+    def _build_node(self, node_id: str, op: RuntimeOp) -> Node:
+        """The schedule view of one runtime op, shared with an optimizer that
+        subclasses this one to place nodes differently."""
+        engine = self._map_engine(op.backend, op.task_type)
+        deps = tuple(op.dependencies)
+        db_queries: tuple[DBQuery, ...] = ()
+        if engine == "db":
+            sql_template = ""
+            if isinstance(op.data_spec, RetrievalData):
+                sql_template = op.data_spec.template or ""
+            db_queries = (
+                DBQuery(
+                    name=f"{node_id}_query",
+                    sql=sql_template,
+                    parameters={},
+                ),
+            )
+        return Node(
+            id=node_id,
+            type=op.task_type,
+            engine=engine,
+            model=op.model,
+            inputs=deps,
+            outputs=tuple(),
+            db_queries=db_queries,
+            gpu_memory_utilization=op.gpu_memory_utilization,
+            gpu_request=op.data_spec.gpu_request,
+            data_spec=op.data_spec,
+            inference_spec=op.inference_spec,
+            parent=deps[0] if deps else None,
+        )
 
     def _build_workers(
         self,
