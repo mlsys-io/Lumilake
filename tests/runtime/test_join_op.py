@@ -520,12 +520,30 @@ def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> Non
 
 
 def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
-    """A missing key leaves its rows out under null_fill and marks them."""
-    only_u1, missing = [_SIZES[0]], {**_UNITS[2], "tag": "C"}
-    assert _broadcast(tmp_path, sizes=only_u1) == [_JOINED[0], _JOINED[1], missing]
+    """A further input that lacks a key leaves its rows with the fields they carry."""
+    missing = {**_UNITS[2], "tag": "C"}
+    sizes = [_SIZES[0]]
+    assert _broadcast(tmp_path, sizes=sizes) == [_JOINED[0], _JOINED[1], missing]
     fail = "row_key: [unit, rid], on_missing: fail_row"
-    rows = _broadcast(tmp_path, sizes=only_u1, fields=fail)
-    assert rows[:2] == _JOINED[:2] and "key" in rows[2]["_fail"]["reason"]
+    assert _broadcast(tmp_path, sizes=sizes, fields=fail) == [
+        _JOINED[0],
+        _JOINED[1],
+        missing,
+    ]
+
+
+def test_a_broadcast_join_marks_the_rows_an_attach_source_lacks(
+    tmp_path: Path,
+) -> None:
+    """on_missing: fail_row marks the rows an attach source has no key for."""
+    fields = "row_key: [unit, rid], on_missing: fail_row"
+    part = [{"unit": "u1", "part": "P"}]
+    rows = _broadcast(tmp_path, tags=["P"], part=part, fields=fields)
+    assert rows[:2] == [
+        {**_UNITS[0], "size": 2, "part": "P"},
+        {**_UNITS[1], "size": 2, "part": "P"},
+    ]
+    assert "key" in rows[2]["_fail"]["reason"]
 
 
 def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:

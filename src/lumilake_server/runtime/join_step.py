@@ -411,10 +411,7 @@ def _broadcast(inputs):
                 marked[record] = more_marked[key]
                 continue
             if key not in more:
-                # A row this input lacks a key for is a marker under fail_row and simply
-                # misses the fields under null_fill.
-                if _ON_MISSING == "fail_row":
-                    marked[record] = _failed("key %s is missing from %r" % (key, where))
+                # A row this input lacks a key for keeps the fields it carries.
                 continue
             if len(more[key]) > 1:
                 raise ValueError(
