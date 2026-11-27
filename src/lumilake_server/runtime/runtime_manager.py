@@ -60,9 +60,11 @@ from lumilake_server.runtime.record_writer import (
 from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.retrieval_key_check import key_problem
 from lumilake_server.runtime.reuse_planner import (
+    RecordDecision,
     ReusePlan,
     ReusePlanner,
     _partially_servable,
+    _without_hits,
     rebuilt_output,
     writer_records,
 )
@@ -78,6 +80,9 @@ from lumilake_server.utils.job_storage import ArchiveError, get_job_storage
 from lumilake_server.utils.retrieval_key import retrieval_key_column
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
+_MAX_MODEL_LEVELS = 8
+"""How many model levels a reusing job plans and dispatches one at a time, so a
+chain that keeps finding a new level cannot loop without bound."""
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
@@ -413,6 +418,62 @@ def _first_level(planned: RuntimeGraph) -> list[str]:
         wave.add(dep)
         stack.extend(nodes[dep].dependencies)
     return [node_id for node_id in planned.node_order if node_id in wave]
+
+
+def _served_for_level(
+    plan: ReusePlan,
+    written: Mapping[str, Sequence[RecordEntry]],
+    graph: RuntimeGraph,
+) -> dict[str, NodeRecords]:
+    """The records a level's writer reads a served producer through: the store's
+    hits and the entries this run wrote, each shaped as the writer reads a
+    finished node. The level graph holds a pass-through in place of the
+    producer, so the writer names the producer's records, not the step's."""
+    served: dict[str, NodeRecords] = {}
+    for node_id, entries in {**plan.hits, **written}.items():
+        if node_id in graph.nodes or not entries:
+            continue
+        node_records = NodeRecords(
+            keyed=entries[0].address.record is not None,
+            values=[entry.value for entry in entries],
+            keys=[entry.address.record for entry in entries],
+            entries=list(entries),
+        )
+        for entry in entries:
+            node_records.digests[entry.address.record, entry.address.round] = (
+                entry.digest,
+                entry.value_digest,
+            )
+        served[node_id] = node_records
+    return served
+
+
+def _with_generated(
+    planned: RuntimeGraph, plan: ReusePlan, wave: Sequence[str]
+) -> list[str]:
+    """A level's nodes with the generated steps its dispatch reads: the
+    pass-through that carries a served producer's rows into it and the merge
+    step that rebuilds a partly served op."""
+    level = set(wave)
+    return [
+        node_id
+        for node_id in planned.node_order
+        if node_id in level or node_id in plan.pass_throughs or node_id in plan.aliases
+    ]
+
+
+def _report_level_runs(
+    plan: ReusePlan, level_runs: Mapping[str, RecordDecision]
+) -> ReusePlan:
+    """The plan's decisions with every dispatched level's miss put back, so a run
+    that computed a level reports why instead of the hit its own records answer
+    on the next round."""
+    if not level_runs:
+        return plan
+    plan.decisions = [
+        level_runs.get(decision.node, decision) for decision in plan.decisions
+    ]
+    return plan
 
 
 def _generated_steps(plan: ReusePlan) -> dict[str, str]:
@@ -2274,6 +2335,113 @@ class FlowmeshRuntimeManager:
             request_info.gpu_worker_ids,
         )
         return plan
+
+    async def _plan_levels(
+        self, request_info: RequestInfo, schedule: Schedule, worker_ids: Sequence[str]
+    ) -> tuple[
+        dict[str, NodeRecords], ReusePlan, RuntimeGraph, dict[str, RecordDecision]
+    ]:
+        """Run the structural phase, then plan and dispatch one model level at a
+        time, so every level's expands and joins have this run's stored rows
+        before the next level plans.
+
+        The phase writes the structural steps above the first model op. Each
+        round then plans over the whole graph on what is stored and dispatches
+        the first model level with its own python ancestry, so the round after
+        probes the level below on those records and its keyed model ops decide
+        per record. ``level_runs`` holds each dispatched op's miss, so the
+        report keeps the reason it ran rather than the hit its own records then
+        answer."""
+        source = request_info.runtime_graph
+        phase = await self._run_structure(request_info, schedule)
+        content_values, written = phase.content, phase.written
+        level_runs: dict[str, RecordDecision] = {}
+        last: set[str] = set()
+        planned = source
+        for _ in range(_MAX_MODEL_LEVELS):
+            plan, next_planned = await asyncio.to_thread(
+                ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
+                runtime_graph=source,
+                round_number=request_info.round_number,
+                job_id=request_info.request_id,
+                content_values=content_values,
+                written=written,
+            )
+            planned = next_planned
+            wave = [
+                node_id
+                for node_id in _first_level(planned)
+                if node_id not in written and node_id not in content_values
+            ]
+            if not wave or set(planned.nodes) == last:
+                break
+            last = set(planned.nodes)
+            for decision in plan.decisions:
+                if decision.node in wave:
+                    level_runs[decision.node] = decision.model_copy(
+                        update={"decision": "miss"}
+                    )
+            written, content_values = await self._run_level(
+                request_info,
+                schedule,
+                source,
+                plan,
+                wave,
+                worker_ids,
+                written,
+                content_values,
+            )
+        return content_values, plan, planned, level_runs
+
+    async def _run_level(
+        self,
+        request_info: RequestInfo,
+        schedule: Schedule,
+        source: RuntimeGraph,
+        plan: ReusePlan,
+        wave: Sequence[str],
+        worker_ids: Sequence[str],
+        written: dict[str, list[RecordEntry]],
+        content: dict[str, NodeRecords],
+    ) -> tuple[dict[str, list[RecordEntry]], dict[str, NodeRecords]]:
+        """Dispatch one model level and store its records; return the entries this
+        run now holds, with the content-addressed reads among them.
+
+        The level's sub-run comes from the plan's own graph, so a partly served
+        op dispatches with the merge step and the pass-throughs that carry its
+        rows, and the writer stores the op's records under the op itself."""
+        graph = _without_hits(source, plan)
+        graph = _sub_graph(graph, _with_generated(graph, plan, wave))
+        level_schedule = _sub_schedule(schedule, graph.node_order)
+        _assign_generated_steps(
+            level_schedule, graph, worker_ids, request_info.gpu_worker_ids
+        )
+        results, node_task_map = await self._submit_sub_run(
+            request_info, level_schedule, graph.node_order, "model level", graph
+        )
+        self._record_reads(request_info, graph, results, node_task_map)
+        wrote = await self._write_records(
+            request_info,
+            runtime_graph=graph,
+            node_task_map=node_task_map,
+            results=results,
+            alias=_generated_steps(plan),
+            content_nodes=set(plan.content),
+            served=_served_for_level(plan, written, graph),
+        )
+        self.logger.info(
+            "Record reuse ran %d node(s) of job %s before planning: %s",
+            len(wave),
+            request_info.request_id,
+            ", ".join(wave),
+        )
+        records = read_back_records(graph, node_task_map, results)
+        held = {
+            node_id: rec
+            for node_id, rec in records.items()
+            if node_id in node_task_map and content_addressed(graph.nodes[node_id])
+        }
+        return {**written, **wrote}, {**content, **held}
 
     async def _run_unversioned_reads(
         self, request_info: RequestInfo, schedule: Schedule
