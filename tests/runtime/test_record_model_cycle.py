@@ -71,6 +71,18 @@ _AFTER = {
 }
 _ROWS = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
 _AMENDED = [_ROWS[0], {"id": "b", "t": "z"}]
+_WHOLE = {
+    **_CHAT,
+    "id": "First",
+    "inputs": ["Ask"],
+    "rowwise_columns": [
+        {"label": "v", "node": "Ask", "path": "items.metadata"},
+    ],
+    "rowwise_template": "{v}",
+    "key": {"node": "Ask", "path": "id"},
+}
+"""A chat whose row column reads the chat above it at a field no stored row
+value holds, so the plan cannot serve those rows to its partial run."""
 
 
 class _Worker:
@@ -734,6 +746,25 @@ async def test_an_expand_between_two_chats_decides_per_record(
     assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 5
+
+
+@pytest.mark.asyncio
+async def test_a_model_level_a_later_reader_refuses_is_left_to_the_main_run(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A chat whose stored rows a reader cannot take stays out of a level, so an
+    unchanged rerun with that reader dispatches it once in the main run rather
+    than at a level and again there."""
+    ops: list[dict[str, Any]] = [_TAG, _CHAT, _WHOLE]
+    await run(_workflow(ops, _ROWS, "First"), "req-1")
+    graph = _workflow(ops, _ROWS, "First")
+    ask = _node(graph, "Ask")
+    before = len(worker.submissions)
+    outputs = await run(graph, "req-2")
+    assert _reasons(outputs)["Ask"] == ("miss", "read by a non-literal op"), _reasons(
+        outputs
+    )
+    assert _runs(worker, before, [ask]) == {ask: 1}
 
 
 @pytest.mark.asyncio

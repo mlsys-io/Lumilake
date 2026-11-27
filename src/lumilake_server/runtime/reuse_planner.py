@@ -280,6 +280,9 @@ class ReusePlan(BaseModel):
     pass_throughs: dict[str, str] = Field(default_factory=dict)
     """Pass-through step id -> the served producer whose rows it carries, so a reader
     names that producer's records and the writer never stores the step."""
+    refused: set[str] = Field(default_factory=set)
+    """The ops whose stored records a reader refuses, so the plan misses them
+    though the store answers them; a level leaves each to the main run."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -550,6 +553,7 @@ class ReusePlanner:
                 continue
             unserved = _unserved_reader_reason(runtime_graph, decision, plan.op, hit)
             if unserved is not None:
+                decision.refused.add(node_id)
                 decision.decisions[-1] = decision.decisions[-1].model_copy(
                     update={
                         "decision": "miss",
@@ -603,6 +607,7 @@ class ReusePlanner:
                 decision.output_shapes[node_id] = shape
         if unserved is None:
             return True
+        decision.refused.add(node_id)
         decision.decisions[-1] = decision.decisions[-1].model_copy(
             update={
                 "decision": "miss",

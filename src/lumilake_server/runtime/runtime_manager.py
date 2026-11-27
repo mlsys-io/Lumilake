@@ -408,7 +408,11 @@ def _below_all_run(
     return True
 
 
-def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
+def _first_level(
+    planned: RuntimeGraph,
+    outputs: Collection[str],
+    refused: Collection[str] = (),
+) -> list[str]:
     """The first model level a plan still dispatches: every model op this round
     can run, the python steps that read into them, and their own python
     ancestry up to the next model op.
@@ -419,7 +423,9 @@ def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
     it in full and keeps its chat history. So does one that reads an
     unversioned source, which a level would dispatch without its read. A step
     that only feeds a later model op stays out, so the round that plans that
-    op runs it exactly once and no step is dispatched in two levels."""
+    op runs it exactly once and no step is dispatched in two levels. So does a
+    plan's ``refused`` op, whose records a reader rejects, so the main run
+    dispatches it once with every reader it has."""
     nodes = planned.nodes
     below_model: dict[str, bool] = {}
     for node_id in planned.topological_order():
@@ -433,6 +439,7 @@ def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
         for node_id in planned.node_order
         if nodes[node_id].task_type in _MODEL_TASK_TYPES
         and node_id not in outputs
+        and node_id not in refused
         and not reads_unversioned(nodes[node_id])
         and not below_model[node_id]
     }
@@ -2455,6 +2462,8 @@ class FlowmeshRuntimeManager:
         content_values, written = phase.content, phase.written
         level_runs: dict[str, RecordDecision] = {}
         ran: set[str] = set()
+        """The model ops a level already dispatched, so the loop never picks one
+        again; a step stays out of it, so a later level keeps the step it reads."""
         plan = ReusePlan(outputs=source.output_node_map.copy())
         planned = source
         for _ in range(_MAX_MODEL_LEVELS):
@@ -2468,12 +2477,18 @@ class FlowmeshRuntimeManager:
             )
             wave = [
                 node_id
-                for node_id in _first_level(planned, source.output_node_map)
+                for node_id in _first_level(
+                    planned, source.output_node_map, plan.refused
+                )
                 if node_id not in ran
             ]
             if not wave:
                 break
-            ran.update(wave)
+            ran.update(
+                node_id
+                for node_id in wave
+                if planned.nodes[node_id].task_type in _MODEL_TASK_TYPES
+            )
             for decision in plan.decisions:
                 if decision.node in wave:
                     level_runs[decision.node] = decision.model_copy(
