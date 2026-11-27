@@ -2695,8 +2695,8 @@ class LumilakeServer:
                     target[0] = values[0]
                     continue
                 if output_name in own_row_count_names:
-                    # The rows cover the whole run, so only one slice may
-                    # carry them.
+                    # The fan-out covers the whole run, so only one slice may
+                    # carry it.
                     if output_name in buffers:
                         append_error(
                             state,
@@ -3391,10 +3391,9 @@ class LumilakeServer:
                     raise ValueError(
                         "Whole-run output cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda, a row step "
-                        "below one, and an inner or full join each set a row "
-                        "count over the whole run, so they cannot be "
-                        "partitioned per slice."
+                        f"group {group_key}. A list-mode Lambda, and a row step "
+                        "whose row count it sets, each produce one value per "
+                        "run and cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_outputs.setdefault(single_workflow.workflow_id, {})[
@@ -3432,10 +3431,9 @@ class LumilakeServer:
                     raise ValueError(
                         "Whole-run history cannot be split across slices: "
                         f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda, a row step "
-                        "below one, and an inner or full join each set a row "
-                        "count over the whole run, so they cannot be "
-                        "partitioned per slice."
+                        f"group {group_key}. A list-mode Lambda, and a row step "
+                        "whose row count it sets, each produce one value per "
+                        "run and cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_histories[single_workflow.workflow_id][output_name] = history
