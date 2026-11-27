@@ -4,12 +4,12 @@ advertises its task type; every other node is placed by engine alone."""
 import pytest
 from support.worker_profiles import worker_profile
 
+from lumilake_hook import GpuDevice
 from lumilake_server.runtime.optimizer.topological_sort import (
     TopologicalSortOptimizer,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.worker_capability import GpuDevice
 from tests.support.data_specs import runtime_op
 
 

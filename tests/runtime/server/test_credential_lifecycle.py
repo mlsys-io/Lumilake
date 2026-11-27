@@ -17,6 +17,7 @@ from support.runtime_server import (
 )
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder
@@ -29,7 +30,6 @@ from lumilake_server.runtime.request import (
     RequestInfo,
     WorkflowSliceMeta,
 )
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 def _handler(request_id, principal_id):

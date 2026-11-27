@@ -9,6 +9,7 @@ import pytest
 from huggingface_hub.utils import NotASafetensorsRepoError
 from support.worker_profiles import worker_profile
 
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
@@ -18,7 +19,6 @@ from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 

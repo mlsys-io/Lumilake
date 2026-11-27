@@ -10,11 +10,11 @@ uses no cost model.
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
-    WorkerProfile,
     profile_fits_gpu_request,
 )
 

@@ -4,9 +4,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
-    WorkerProfile,
     gpu_worker_can_run,
     holds_gpu_utilizations,
 )

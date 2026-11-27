@@ -7,6 +7,7 @@ import pytest
 from support.worker_profiles import worker_profile
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import estimate_area
@@ -22,7 +23,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.worker_capability import SessionLane, WorkerProfile
+from lumilake_server.runtime.worker_capability import SessionLane
 from tests.support.data_specs import runtime_op
 
 

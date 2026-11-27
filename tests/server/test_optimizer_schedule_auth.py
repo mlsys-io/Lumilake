@@ -15,11 +15,11 @@ from fastapi.testclient import TestClient
 from lumid_hooks import PrincipalContext, ResourceRef
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server import hooks
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.worker_capability import WorkerProfile
 from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------

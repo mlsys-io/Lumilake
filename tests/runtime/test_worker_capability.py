@@ -3,13 +3,12 @@
 from collections.abc import Collection
 from typing import Any
 
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
-    GpuDevice,
     SessionLane,
-    WorkerProfile,
     profile_fits_gpu_request,
     python_step_session_lane,
     requires_cpu_worker,

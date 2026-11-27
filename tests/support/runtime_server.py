@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import EmptyData
 from lumilake_server.runtime.job_manager.base import BatchSelection, WorkflowItem
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -17,7 +18,6 @@ from lumilake_server.runtime.server import (
     LumilakeServerConfig,
     RequestState,
 )
-from lumilake_server.runtime.worker_capability import WorkerProfile
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
 

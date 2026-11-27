@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.optimizer import (
     OPTIMIZER_PROVIDERS,
     OPTIMIZER_TYPES,
@@ -12,7 +13,6 @@ from lumilake_server.runtime.optimizer import (
 )
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class _StubOptimizer(BaseOptimizer):

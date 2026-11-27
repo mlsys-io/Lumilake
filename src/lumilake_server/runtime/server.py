@@ -28,6 +28,7 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
+from lumilake_hook import WorkerProfile
 from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -89,7 +90,6 @@ from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
     SessionLane,
-    WorkerProfile,
     cpu_required_task_types,
     format_memory_bytes,
     gpu_worker_can_run,

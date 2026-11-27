@@ -4,13 +4,10 @@ per-job hardware override before scheduler dispatch / preview selection."""
 import pytest
 
 from lumilake import envs
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.server import LumilakeServer
-from lumilake_server.runtime.worker_capability import (
-    GpuDevice,
-    SessionLane,
-    WorkerProfile,
-)
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 def _profile(

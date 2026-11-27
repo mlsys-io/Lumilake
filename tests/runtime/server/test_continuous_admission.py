@@ -11,11 +11,11 @@ from support.runtime_server import (
 from support.worker_profiles import worker_profile
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class _PoolRuntimeManager(RecordingRuntimeManager):

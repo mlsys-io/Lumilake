@@ -14,8 +14,9 @@ from flowmesh.models.workers import (
     WorkerInfo,
 )
 
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
-from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
+from lumilake_server.runtime.worker_capability import worker_profile
 
 
 def _worker(
@@ -64,7 +65,7 @@ def test_from_worker_keeps_every_placement_fact() -> None:
         memory=MemoryInfo(total_bytes=29 * 1024**3),
         gpu=GpuPlatformInfo(devices=[card, card]),
     )
-    profile = WorkerProfile.from_worker(
+    profile = worker_profile(
         _worker(
             "w",
             frozenset({TaskType.PYTHON}),

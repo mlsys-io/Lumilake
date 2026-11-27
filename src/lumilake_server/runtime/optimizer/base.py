@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_hook import Schedule
+from lumilake_hook import Schedule, WorkerProfile
 from lumilake_server.data_specs import parse_data_spec
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
@@ -16,7 +16,6 @@ from lumilake_server.runtime.runtime_graph import (
     merge_runtime_graphs,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 __all__ = ["BaseOptimizer", "Schedule"]
 

@@ -19,9 +19,11 @@ from .optimizer import (
 )
 from .resource_kinds import ResourceAction, ResourceKind
 from .usage import LumilakeUsageSink, UsageRow
+from .worker_profile import GpuDevice, WorkerProfile
 
 __all__ = [
     "BaseBindings",
+    "GpuDevice",
     "HookBindings",
     "IdentityProvider",
     "LumilakeUsageSink",
@@ -38,6 +40,7 @@ __all__ = [
     "SubmissionGuard",
     "UsageRow",
     "UsageSink",
+    "WorkerProfile",
     "runtime_token_var",
     "validate_remote_url",
 ]

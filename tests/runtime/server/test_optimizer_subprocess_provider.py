@@ -17,7 +17,7 @@ import lumid_hooks
 import pytest
 
 from lumilake import envs
-from lumilake_hook import BaseBindings
+from lumilake_hook import BaseBindings, WorkerProfile
 from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
@@ -26,7 +26,6 @@ from lumilake_server.runtime.server import (
     _install_plugins_sync,
     _optimizer_subprocess_entry,
 )
-from lumilake_server.runtime.worker_capability import WorkerProfile
 from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------

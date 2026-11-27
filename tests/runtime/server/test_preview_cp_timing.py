@@ -2,6 +2,7 @@
 
 import pytest
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -10,7 +11,6 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 def _tiny_preview_graphs() -> dict:

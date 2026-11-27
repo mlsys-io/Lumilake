@@ -13,6 +13,7 @@ from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
@@ -29,7 +30,6 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
-    WorkerProfile,
     cpu_required_task_types,
     fraction_holds_utilization,
     profile_fits_gpu_request,

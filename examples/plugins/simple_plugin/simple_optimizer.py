@@ -1,10 +1,10 @@
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class SimpleRoundRobinOptimizer(BaseOptimizer):

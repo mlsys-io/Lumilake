@@ -2,7 +2,7 @@
 
 from collections.abc import Collection
 
-from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
+from lumilake_hook import GpuDevice, WorkerProfile
 
 
 def worker_profile(

@@ -10,9 +10,9 @@ from typing import Any, cast
 import pytest
 from support.worker_profiles import worker_profile
 
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 

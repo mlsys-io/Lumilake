@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.runtime_graph import RuntimeGraphSchema
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class ScheduleRequest(BaseModel):

@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
@@ -56,7 +57,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
-from lumilake_server.runtime.worker_capability import WorkerProfile
+from lumilake_server.runtime.worker_capability import worker_profile
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
 
@@ -1070,7 +1071,7 @@ class FlowmeshRuntimeManager:
             f"worker {worker_id}",
         )
         assert worker.id == worker_id
-        return WorkerProfile.from_worker(worker)
+        return worker_profile(worker)
 
     async def get_request_status(
         self,

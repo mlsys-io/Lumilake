@@ -12,12 +12,11 @@ from typing import Any
 import httpx
 
 from lumilake import envs
-from lumilake_hook import validate_remote_url
+from lumilake_hook import WorkerProfile, validate_remote_url
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphSchema
-from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class RemoteOptimizer(BaseOptimizer):

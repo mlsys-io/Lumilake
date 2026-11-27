@@ -7,10 +7,11 @@ from support.runtime_server import attach_request_states, make_runtime_op
 from support.worker_profiles import worker_profile
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import PythonData, RetrievalData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.protocol import HardwareRequirements
-from lumilake_server.runtime.worker_capability import SessionLane, WorkerProfile
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 def _patch_capacity(server: Any, cpu_ids: list[str], gpu_ids: list[str]) -> None:
