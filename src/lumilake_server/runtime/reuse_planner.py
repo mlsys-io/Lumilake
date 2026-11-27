@@ -336,7 +336,7 @@ class ReusePlanner:
         round_number: int,
         job_id: str,
         content_values: Mapping[str, NodeRecords] | None = None,
-        written: Mapping[str, Sequence[RecordEntry]] | None = None,
+        written: dict[str, list[RecordEntry]] | None = None,
     ) -> tuple[ReusePlan, RuntimeGraph]:
         """Decide every op in topological order and return the graph to dispatch.
 
@@ -348,10 +348,7 @@ class ReusePlanner:
         missing: dict[str, str] = {}
         """Each missed node's own first reason, so what it feeds names that."""
         order = runtime_graph.topological_order()
-        seeded_written = {} if written is None else written
-        stored: dict[str, list[RecordEntry]] = {
-            node_id: list(entries) for node_id, entries in seeded_written.items()
-        }
+        stored: dict[str, list[RecordEntry]] = {} if written is None else written.copy()
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
@@ -664,7 +661,7 @@ class ReusePlanner:
         self,
         decision: ReusePlan,
         plan: RecordPlan,
-        entries: Sequence[RecordEntry],
+        entries: list[RecordEntry],
         runtime_graph: RuntimeGraph,
         missing: dict[str, str],
     ) -> None:
@@ -704,7 +701,7 @@ class ReusePlanner:
             )
         )
         if self._accept_hit(decision, plan, plan.op.node_id, entries, runtime_graph):
-            decision.hits[plan.op.node_id] = list(entries)
+            decision.hits[plan.op.node_id] = entries
         else:
             missing[plan.op.node_id] = decision.decisions[-1].reason or "no entry"
 

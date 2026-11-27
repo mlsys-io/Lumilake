@@ -132,7 +132,7 @@ def _own_records(node_records: NodeRecords) -> list[RecordEntry]:
 
 
 def _own_written(
-    written: Mapping[str, Sequence[RecordEntry]],
+    written: dict[str, list[RecordEntry]],
 ) -> dict[str, list[RecordEntry]]:
     """A fresh write's entries by node id, without an expand's counts: a count
     entry is not a record of its step, so no reader takes it for a row."""
@@ -481,7 +481,7 @@ def _feeds_only_model(runtime_graph: RuntimeGraph, node_id: str) -> bool:
 
 def _served_for_level(
     plan: ReusePlan,
-    written: Mapping[str, Sequence[RecordEntry]],
+    written: dict[str, list[RecordEntry]],
     graph: RuntimeGraph,
 ) -> dict[str, NodeRecords]:
     """The records a level's writer reads a served producer through: the store's
@@ -496,7 +496,7 @@ def _served_for_level(
             keyed=entries[0].address.record is not None,
             values=[entry.value for entry in entries],
             keys=[entry.address.record for entry in entries],
-            entries=list(entries),
+            entries=entries.copy(),
         )
         for entry in entries:
             node_records.digests[entry.address.record, entry.address.round] = (
