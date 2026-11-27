@@ -9,6 +9,7 @@ from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     LLMVisionOp,
@@ -335,7 +336,7 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
     tally = LambdaOp(
         [reply],
         fn=lambda items: [{"n": len(items[0])}],
-        mode="list",
+        mode=LambdaMode.LIST,
     )
     output = as_output("out", tally)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL", "MSFT"])
@@ -390,7 +391,7 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     tally = LambdaOp(
         [vision],
         fn=lambda items: [{"n": len(items[0])}],
-        mode="list",
+        mode=LambdaMode.LIST,
     )
     output = as_output("out", tally)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
@@ -404,7 +405,7 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
 
 def test_list_lambda_data_op_input_compiles() -> None:
     constant = data(["NVDA", "AAPL"])
-    explode = LambdaOp([constant], _explode_fn, mode="list")
+    explode = LambdaOp([constant], _explode_fn, mode=LambdaMode.LIST)
     output = as_output("out", explode)
     compiled = Graph.from_ops([output]).compile()
 
@@ -445,7 +446,7 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     combine = LambdaOp(
         [judge, retrieval],
         fn=lambda items: [{"n": len(items[0])}],
-        mode="list",
+        mode=LambdaMode.LIST,
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize {c}")],
@@ -497,7 +498,7 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
     """An API-backed rowwise LLMChatOp reading a list-mode Lambda must bind the
     column to the python stage at ``value.items.output``."""
     stock = input_placeholder("Stock")
-    explode = LambdaOp([stock], _explode_fn, mode="list")
+    explode = LambdaOp([stock], _explode_fn, mode=LambdaMode.LIST)
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize the rows.")],
         config=GenerationConfig(

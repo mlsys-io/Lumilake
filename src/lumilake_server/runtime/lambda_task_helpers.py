@@ -58,6 +58,73 @@ def _row_content(row: Any) -> Any:
         return row.get("text", row)
 
 
+def _table_rows(table: dict[str, Any]) -> list[dict[str, Any]]:
+    """One dict per row of a ``column -> row index -> value`` table, row-index order."""
+    rows: dict[str, dict[str, Any]] = {}
+    for column, values in table.items():
+        if not isinstance(values, dict):
+            continue
+        for index, value in values.items():
+            rows.setdefault(index, {})[column] = value
+    try:
+        ordered = sorted(rows, key=int)
+    except ValueError:
+        ordered = list(rows)
+    return [rows[index] for index in ordered]
+
+
+def _serialized_table(value: Any) -> dict[str, Any] | None:
+    """The ``column -> row index -> value`` table ``value`` holds, or ``None``."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if (
+        isinstance(value, dict)
+        and list(value) == ["df"]
+        and isinstance(value["df"], str)
+    ):
+        try:
+            table = json.loads(value["df"])
+        except ValueError:
+            return None
+        if isinstance(table, dict):
+            return table
+    return None
+
+
+def _decode(value: Any) -> Any:
+    """Decode one column value: JSON text is parsed, a table becomes its row dicts."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return value
+        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+    if isinstance(value, dict):
+        table = _serialized_table(value)
+        if table is None and "table" in value:
+            table = _serialized_table(value["table"])
+        if table is not None:
+            return _table_rows(table)
+    return value
+
+
+def _rows(
+    columns: list[list[Any]], plan: list[dict[str, Any]], op_id: str
+) -> list[tuple[Any, ...]]:
+    """The per-call rows of a decoded column set; a one-row column broadcasts."""
+    n = max((len(c) for c in columns), default=1)
+    for entry, col in zip(plan, columns):
+        if len(col) not in (1, n):
+            raise ValueError(
+                f"{op_id}: input {entry.get('node', 'literal')!r} has {len(col)} rows;"
+                f" expected 1 or {n}"
+            )
+    return [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
+
+
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
 ) -> list[str]:

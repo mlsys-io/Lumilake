@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from lumilake_server.ops.util_ops import LambdaOp
+from lumilake_server.ops.util_ops import LambdaMode, build_lambda_spec
 
 from ..common import make_id as _make_id
 from . import references, shared
@@ -34,54 +34,28 @@ def make_code(
 
     fn_name = _safe_fn_name(node_name)
     fn_code = _wrap_code(fn_name, code)
+    spec = build_lambda_spec(
+        {
+            "fn_name": fn_name,
+            "code": fn_code,
+            "mode": notes.get("mode", LambdaMode.ROW),
+            "by": notes.get("by"),
+            "image": notes.get("image"),
+            "timeout_s": notes.get("timeout-s"),
+            "memory_mb": notes.get("memory-mb"),
+            "expected_runtime_s": notes.get("expected-runtime-s"),
+            "cache": notes.get("cache"),
+        },
+        f"Code node '{node_name}'",
+        names={"timeout_s": "timeout-s", "expected_runtime_s": "expected-runtime-s"},
+    )
     op: dict[str, Any] = {
         "_id": _make_id(ctx.scope, "lambda", node_name),
         "_op": "LambdaOp",
         "_max_iter": None,
         "_inputs": input_ids,
-        "fn_name": fn_name,
-        "_code": fn_code,
     }
-    mode = notes.get("mode")
-    if mode is not None:
-        if mode not in LambdaOp.LAMBDA_MODES:
-            raise ValueError(
-                f"Code node '{node_name}' notes 'mode' must be one of "
-                f"{LambdaOp.LAMBDA_MODES} (got {mode!r})"
-            )
-        op["mode"] = mode
-    image = notes.get("image")
-    if image is not None:
-        if not isinstance(image, str) or not image.strip():
-            raise ValueError(
-                f"Code node '{node_name}' notes 'image' must be a non-empty string"
-            )
-        op["image"] = image
-    # Bounds are checked when the op is built.
-    for key, field, kind in (
-        ("timeout-s", "timeout_s", (int, float)),
-        ("memory-mb", "memory_mb", int),
-    ):
-        value = notes.get(key)
-        if value is None:
-            continue
-        if isinstance(value, bool) or not isinstance(value, kind):
-            raise ValueError(f"Code node '{node_name}' notes '{key}' must be a number")
-        op[field] = value
-    expected_runtime_s = notes.get("expected-runtime-s")
-    if expected_runtime_s is not None:
-        if isinstance(expected_runtime_s, bool) or not isinstance(
-            expected_runtime_s, (int, float)
-        ):
-            raise ValueError(
-                f"Code node '{node_name}' notes 'expected-runtime-s' must be a number"
-            )
-        op["expected_runtime_s"] = expected_runtime_s
-    cache = notes.get("cache")
-    if cache is not None:
-        if not isinstance(cache, bool):
-            raise ValueError(f"Code node '{node_name}' notes 'cache' must be a bool")
-        op["cache"] = cache
+    op.update(spec.model_dump(by_alias=True, exclude_none=True))
     is_output = notes.get("is-output")
     if is_output is not None and not isinstance(is_output, bool):
         raise ValueError(f"Code node '{node_name}' notes 'is-output' must be a bool")
