@@ -38,6 +38,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import runtime_op
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -2760,3 +2761,27 @@ def test_graph_template_dependencies_walk_a_nested_dataframe() -> None:
         "outer",
         "inner",
     ]
+
+
+def test_runtime_refs_come_from_typed_reads_not_literal_payload_keys() -> None:
+    """The ref scan reads a spec's own fields: a ``node`` key nested in a
+    literal payload is data, a plan stage and a condition node are reads."""
+    node = runtime_op(
+        node_id="n",
+        task_type="python",
+        backend="python",
+        model="python",
+        data_spec={
+            "plan": [
+                {"kind": "stage", "node": "upstream"},
+                {"kind": "literal", "values": [{"node": "in-values"}]},
+            ]
+        },
+        model_spec={},
+        inference_spec={},
+        condition={"node": "guarded", "when": "always"},
+    )
+
+    refs = list(RuntimeGraphBuilder._iter_runtime_refs(node))
+
+    assert refs == ["upstream", "guarded"]

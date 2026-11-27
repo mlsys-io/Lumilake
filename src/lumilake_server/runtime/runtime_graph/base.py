@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from lumilake import envs
@@ -11,8 +11,14 @@ from lumilake_server.data_specs import (
     DataFrame,
     DataSpecModel,
     GraphTemplate,
+    GraphTemplateData,
     ListData,
     NodeColumn,
+    NodeRead,
+    PythonData,
+    RetrievalData,
+    S3ProfileData,
+    SqlProfileData,
 )
 from lumilake_server.ops import (
     DataOp,
@@ -31,6 +37,57 @@ def _default_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
     return {"type": "local"}
+
+
+def _iter_literal_item_refs(items: object) -> Iterator[str]:
+    """Yield the node reads FlowMesh performs inside literal list items: an
+    item mapping whose ``node`` comes with ``path``. A ``node`` alone, or with
+    ``expr``, is ordinary data."""
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and "path" in item:
+                node = item.get("node")
+                if isinstance(node, str):
+                    yield node
+
+
+def _iter_columns(columns: Sequence[Column]) -> Iterator[str]:
+    """Yield the node each column reads, recursing into its nested table."""
+    for column in columns:
+        if column.node is not None:
+            yield column.node
+        data = column.data
+        if isinstance(data, DataFrame):
+            yield from _iter_columns(data.columns)
+        elif isinstance(data, ListData):
+            yield from _iter_literal_item_refs(data.items)
+
+
+def _iter_data_spec_refs(spec: DataSpecModel) -> Iterator[str]:
+    """Yield every node a typed data_spec reads: column reads, a list source,
+    a graph template's columns, a retrieval parameter, or a plan stage."""
+    if isinstance(spec, ListData):
+        if spec.node is not None:
+            yield spec.node
+        yield from _iter_literal_item_refs(spec.items)
+    elif isinstance(spec, DataFrame):
+        yield from _iter_columns(spec.columns)
+        if isinstance(spec.seeds, NodeRead):
+            yield spec.seeds.node
+    elif isinstance(spec, GraphTemplateData):
+        yield from _iter_columns(spec.template.columns)
+        if spec.image_embedding is not None:
+            yield spec.image_embedding.node
+    elif isinstance(spec, (RetrievalData, SqlProfileData, S3ProfileData)):
+        for param in spec.params:
+            if param.node is not None:
+                yield param.node
+            elif param.data is not None and param.data.node is not None:
+                yield param.data.node
+    elif isinstance(spec, PythonData):
+        for entry in spec.plan:
+            if entry.kind == "stage" and entry.node is not None:
+                yield entry.node
 
 
 class _RuntimeGraphBuilderBase:
@@ -287,48 +344,14 @@ class _RuntimeGraphBuilderBase:
 
     @staticmethod
     def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
-        """Yield every runtime node reference in a RuntimeOp: data_spec
-        column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path``, or ``expr`` outside literal list items), python plan stage
-        entries, and the condition node. Literal payloads (``node`` without
-        ``path``/``expr``) are data, not references."""
-        yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-            node.data_spec.model_dump(exclude_none=True)
-        )
+        """Yield every runtime node reference a RuntimeOp carries: the reads of
+        its data_spec, the stage entries of its python plan, and its condition."""
+        yield from _iter_data_spec_refs(node.data_spec)
         condition = node.condition
         if condition is not None:
             cond_node = condition.get("node")
             if isinstance(cond_node, str):
                 yield cond_node
-
-    @staticmethod
-    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
-        """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` key is a reference; ``expr``
-        counts only outside literal list items. Recurse into nested mappings
-        and lists, disabling ``expr`` below a ``type: list`` payload."""
-        if isinstance(value, dict):
-            node = value.get("node")
-            if isinstance(node, str) and (
-                "path" in value or (allow_expr and "expr" in value)
-            ):
-                yield node
-                return
-            if value.get("type") == "list":
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
-                return
-            if value.get("kind") == "stage":
-                stage_node = value.get("node")
-                if isinstance(stage_node, str):
-                    yield stage_node
-                    return
-            for v in value.values():
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
-        elif isinstance(value, list):
-            for v in value:
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
 
     def _guard_single_row_node_ref(
         self,
