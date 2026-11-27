@@ -60,6 +60,32 @@ def _simple_graph() -> RuntimeGraph:
     )
 
 
+def test_input_query_count_reads_a_literal_list_inside_a_template() -> None:
+    optimizer = HaloOptimizer()
+    op = runtime_op(
+        node_id="n1",
+        task_type="inference",
+        backend="vllm",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        data_spec={
+            "type": "graph_template",
+            "template": {
+                "name": "format",
+                "columns": [
+                    {"label": "x", "data": {"type": "list", "items": ["a", "b"]}}
+                ],
+                "options": {"format": {"messages": [{"content": "{x}"}]}},
+            },
+        },
+        model_spec={},
+        inference_spec={},
+    )
+    graph = RuntimeGraph(
+        nodes={"n1": op}, node_order=["n1"], output_node_map={}, dsl_to_runtime={}
+    )
+    assert optimizer._resolve_input_query_count(graph) == 2
+
+
 def test_halo_optimizer_generates_schedule_covering_all_nodes() -> None:
     optimizer = HaloOptimizer()
     graph = _simple_graph()
