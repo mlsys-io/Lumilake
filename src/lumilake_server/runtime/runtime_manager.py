@@ -855,13 +855,13 @@ class FlowmeshRuntimeManager:
     def _formulate_details(
         self,
         task_status: dict[str, str],
-    ) -> dict[str, int]:
-        return {
-            "succeeded": len([t for t in task_status.values() if t == "DONE"]),
-            "failed": len([t for t in task_status.values() if t == "FAILED"]),
-            "pending": len([t for t in task_status.values() if t == "PENDING"]),
-            "dispatched": len([t for t in task_status.values() if t == "DISPATCHED"]),
-        }
+    ) -> ProgressDetails:
+        return ProgressDetails(
+            succeeded=len([t for t in task_status.values() if t == "DONE"]),
+            failed=len([t for t in task_status.values() if t == "FAILED"]),
+            pending=len([t for t in task_status.values() if t == "PENDING"]),
+            dispatched=len([t for t in task_status.values() if t == "DISPATCHED"]),
+        )
 
     def _output_task_status_aggregated(
         self, execution_batch_keys: list[tuple[str, str]]
@@ -1028,11 +1028,16 @@ class FlowmeshRuntimeManager:
                 task_status = self._execution_task_status[batch_key]
                 node_details = self._formulate_details(task_status)
                 nodes = BatchNodeStats(
-                    succeeded=node_details["succeeded"],
-                    failed=node_details["failed"],
-                    pending=node_details["pending"],
-                    dispatched=node_details["dispatched"],
-                    total=sum(node_details.values()),
+                    succeeded=node_details.succeeded,
+                    failed=node_details.failed,
+                    pending=node_details.pending,
+                    dispatched=node_details.dispatched,
+                    total=(
+                        node_details.succeeded
+                        + node_details.failed
+                        + node_details.pending
+                        + node_details.dispatched
+                    ),
                 )
 
                 # Track overall progress using displayed total
@@ -1177,9 +1182,7 @@ class FlowmeshRuntimeManager:
             )
             data_probing = ProgressStep(
                 completed=data_profile_completed,
-                details=ProgressDetails(
-                    **self._formulate_details(all_data_profile_tasks)
-                ),
+                details=self._formulate_details(all_data_profile_tasks),
             )
         else:  # data_profile is skipped
             data_probing = ProgressStep(completed=True)
@@ -1198,7 +1201,7 @@ class FlowmeshRuntimeManager:
             )
             execution = ProgressStep(
                 completed=execution_completed,
-                details=ProgressDetails(**self._formulate_details(all_execution_tasks)),
+                details=self._formulate_details(all_execution_tasks),
             )
 
             output_task_status = self._output_task_status_aggregated(
@@ -1209,7 +1212,7 @@ class FlowmeshRuntimeManager:
             )
             outputs = ProgressStep(
                 completed=output_completed,
-                details=ProgressDetails(**self._formulate_details(output_task_status)),
+                details=self._formulate_details(output_task_status),
             )
 
         return RuntimeStatus(
