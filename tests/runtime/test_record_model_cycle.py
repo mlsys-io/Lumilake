@@ -472,6 +472,44 @@ _BOTH = {
 }
 
 
+_SPLIT = {
+    "id": "Split",
+    "op": "LambdaOp",
+    "inputs": ["Tag"],
+    "mode": "expand",
+    "fn_name": "split",
+    "code": (
+        "def split(c):\n"
+        "    return [{'id': c[0]['id'] + str(i), 'n': i} for i in range(2)]\n"
+    ),
+}
+_OVER_SPLIT = {
+    **_CHAT,
+    "id": "Over",
+    "inputs": ["Split"],
+    "rowwise_columns": [{"label": "v", "node": "Split", "path": "items.output"}],
+    "rowwise_template": "{v}",
+    "key": {"node": "Split", "path": "id"},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_chat_over_an_expand_never_reads_a_count_row(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A fresh write hands its expand's children to the plan, not the child
+    counts it stores beside them, so the chat that reads the expand runs over
+    its children alone and the run matches a fresh one."""
+    ops: list[dict[str, Any]] = [_TAG, _SPLIT, _OVER_SPLIT]
+    await run(_workflow(ops, _ROWS, "Over"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Over")
+    over = next(node for node, name in changed.op_names.items() if name == "Over")
+    await run(changed, "req-2")
+    assert len(worker.responses[f"task-{over}"]["items"]) == 4
+    await run(changed, "req-3")
+    assert len(worker.responses[f"task-{over}"]["items"]) == 4
+
+
 @pytest.mark.asyncio
 async def test_two_partly_served_chats_each_dispatch_once(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker

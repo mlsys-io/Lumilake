@@ -130,6 +130,24 @@ def _own_records(node_records: NodeRecords) -> list[RecordEntry]:
     ]
 
 
+def _own_written(
+    written: Mapping[str, Sequence[RecordEntry]],
+) -> dict[str, list[RecordEntry]]:
+    """A fresh write's entries by node id, without an expand's counts: a count
+    entry is not a record of its step, so no reader takes it for a row."""
+    return {
+        node_id: own
+        for node_id, entries in written.items()
+        if (
+            own := [
+                entry
+                for entry in entries
+                if not is_child_count_key(entry.address.record)
+            ]
+        )
+    }
+
+
 def _batch_reuses_as_one(request_info: RequestInfo) -> bool:
     """Whether every member of the batch asked for reuse under one round."""
     if not request_info.member_reuse:
@@ -2703,7 +2721,8 @@ class FlowmeshRuntimeManager:
         alias: Mapping[str, str] | None = None,
     ) -> dict[str, list[RecordEntry]]:
         """Write this batch's records once; a write error never fails the job.
-        Returns the entries written for each producing node, by node id."""
+        Returns the entries written for each producing node, by node id, with an
+        expand's child counts left out: they are not a record of its step."""
         writer = RecordWriter(
             storage=get_job_storage(),
             enabled=request_info.store_records,
@@ -2711,7 +2730,7 @@ class FlowmeshRuntimeManager:
         )
         job_ids = sorted(request_info.member_request_ids) or [request_info.request_id]
         try:
-            return await writer.write(
+            written = await writer.write(
                 job_id=job_ids[0],
                 member_job_ids=job_ids,
                 round_number=request_info.round_number,
@@ -2732,6 +2751,7 @@ class FlowmeshRuntimeManager:
                 exc,
             )
             return {}
+        return _own_written(written)
 
     async def _build_task_spec(
         self,
