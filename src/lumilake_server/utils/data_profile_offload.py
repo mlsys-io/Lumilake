@@ -8,10 +8,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from lumilake import envs
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
-    DataProfileResultsPayload,
 )
 from lumilake_server.data_specs import RetrievalParam, SqlProfileData
 from lumilake_server.graphs import CompiledGraph
@@ -81,8 +80,8 @@ class DataProfileTaskResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-# Process-lifetime cache: jobs.py writes, collect_data_profile pops by task_key.
-data_profile_registry: dict[str, dict[str, Any]] = {}
+# Process-lifetime cache: jobs.py writes, collect_data_profile reads by task_key.
+data_profile_registry: dict[str, DataProfileTaskResult] = {}
 
 
 def build_request_data_profile_tasks(
@@ -221,18 +220,6 @@ def run_data_profile_task(
             )
         ]
     return DataProfileTaskResult(data_profile_results=result_data)
-
-
-def normalize_data_profile_result(
-    payload: object,
-) -> dict[str, list[DataProfileResultRow]]:
-    if isinstance(payload, dict) and "data_profile_results" in payload:
-        parsed = DataProfileResultsPayload.model_validate(payload)
-    else:
-        parsed = DataProfileResultsPayload.model_validate(
-            {"data_profile_results": payload}
-        )
-    return parsed.data_profile_results
 
 
 def project_data_profile_results_to_runtime_graph(

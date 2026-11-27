@@ -107,7 +107,6 @@ class RecordingRuntimeManager:
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
 
@@ -146,7 +145,6 @@ class ArtifactRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flat_outputs: dict[str, list[str]] = {}
         histories: dict[str, list[list[dict[str, str]]]] = {}

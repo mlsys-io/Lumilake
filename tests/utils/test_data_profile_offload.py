@@ -2,7 +2,10 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_hook import (
+    DataProfileCostEstimate,
+    DataProfileResultRow,
+)
 from lumilake_server.data_specs import ListData, RetrievalParam, SqlProfileData
 from lumilake_server.graphs.graph import CompiledGraph
 from lumilake_server.runtime.request import WorkflowSliceMeta
@@ -161,20 +164,19 @@ def test_project_data_profile_results_to_runtime_graph_maps_raw_node_ids() -> No
         output_node_map={},
         dsl_to_runtime={"db_node": ["target__db_node"], "other": ["target__non_sql"]},
     )
-    data_profile_results_payload: dict[str, list[dict[str, Any]]] = {
+    data_profile_results = {
         "data_profile::source__db_node::source__db_node_query": [
-            {
-                "node_id": "source__db_node",
-                "raw_node_id": "db_node",
-                "query_name": "source__db_node_query",
-                "table": "public.t",
-                "cost_estimates": [{"plan_id": "default", "raw_cost": 1.2}],
-            }
+            DataProfileResultRow(
+                node_id="source__db_node",
+                raw_node_id="db_node",
+                query_name="source__db_node_query",
+                table="public.t",
+                cost_estimates=[
+                    DataProfileCostEstimate(plan_id="default", raw_cost=1.2)
+                ],
+            )
         ]
     }
-    data_profile_results = data_profile_offload.normalize_data_profile_result(
-        data_profile_results_payload
-    )
 
     projected = data_profile_offload.project_data_profile_results_to_runtime_graph(
         data_profile_results=data_profile_results,

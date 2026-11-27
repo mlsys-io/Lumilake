@@ -18,6 +18,7 @@ from lumilake_server.data_specs import (
     ColumnPlanEntry,
     ParseDescription,
     PythonData,
+    PythonMode,
 )
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.runtime import join_step, lambda_task_helpers
@@ -29,7 +30,7 @@ TASK_RUNTIME_MODULE = "lumilake_runtime"
 LITERAL_INLINE_MAX_BYTES = 1024
 LITERAL_MOUNT_ROOT = "/mnt/blobs/literals"
 
-WHOLE_RESULT_MODES = ("list", "expand", "reduce")
+WHOLE_RESULT_MODES = frozenset({PythonMode.LIST, PythonMode.EXPAND, PythonMode.REDUCE})
 BACKEND = "python"
 DEFAULT_TIMEOUT_SECONDS = 600
 MAX_BLOBS_PER_TASK = 16
@@ -657,19 +658,19 @@ def wrapper_source(
     fn_name: str,
     user_code: str,
     plan: ColumnPlan,
-    mode: str = "row",
+    mode: PythonMode = PythonMode.ROW,
     by: str | None = None,
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
     """The python-task code for one standalone LambdaOp, seeded or not."""
-    if mode == "list":
+    if mode is PythonMode.LIST:
         main = _LIST_MAIN
-    elif mode == "aligned":
+    elif mode is PythonMode.ALIGNED:
         main = _ALIGNED_MAIN
-    elif mode == "expand":
+    elif mode is PythonMode.EXPAND:
         main = _EXPAND_MAIN
-    elif mode == "reduce":
+    elif mode is PythonMode.REDUCE:
         main = _REDUCE_MAIN
     else:
         main = _ROW_MAIN
@@ -686,10 +687,10 @@ def wrapper_source(
     )
 
 
-def _required[T](value: T | None, field: str, mode: str) -> T:
+def _required[T](value: T | None, field: str, mode: PythonMode) -> T:
     """A field a python step of ``mode`` must carry."""
     if value is None:
-        raise ValueError(f"a {mode}-mode python step requires {field!r}")
+        raise ValueError(f"a {mode.value}-mode python step requires {field!r}")
     return value
 
 
@@ -700,25 +701,25 @@ def flowmesh_spec(
 ) -> dict[str, Any]:
     """The FlowMesh ``python`` task spec for a runtime python step."""
     plan, literal_mounts = resolve_plan(data_spec.plan, published_blobs)
-    mode = data_spec.mode or "row"
-    if mode == "join":
+    mode = data_spec.mode or PythonMode.ROW
+    if mode is PythonMode.JOIN:
         code = join_step.join_source(
             node_id,
             _required(data_spec.join, "join", mode),
             plan,
             TASK_RUNTIME_MOUNT,
         )
-    elif mode == "flatten":
+    elif mode is PythonMode.FLATTEN:
         code = flatten_source(
             node_id, plan, _required(data_spec.template, "template", mode)
         )
-    elif mode == "regroup":
+    elif mode is PythonMode.REGROUP:
         code = regroup_source(node_id, plan)
-    elif mode == "pairs":
+    elif mode is PythonMode.PAIRS:
         code = pairs_source(node_id, plan)
-    elif mode == "flatten_step":
+    elif mode is PythonMode.FLATTEN_STEP:
         code = flatten_step_source(node_id, plan)
-    elif mode == "parse":
+    elif mode is PythonMode.PARSE:
         code = parse_source(node_id, plan, _required(data_spec.parse, "parse", mode))
     else:
         code = wrapper_source(

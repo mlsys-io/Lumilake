@@ -8,6 +8,7 @@ from lumilake_server.common import GenerationConfig
 from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     OpMessage,
@@ -62,7 +63,7 @@ def test_chat_shape_decides_how_its_consumer_reads_it(
             )
         ),
     )
-    consumer = LambdaOp([chat], _whole_list, mode="list")
+    consumer = LambdaOp([chat], _whole_list, mode=LambdaMode.LIST)
 
     assert chat.row_shape is shape
     stage = (

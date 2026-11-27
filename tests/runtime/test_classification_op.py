@@ -10,6 +10,7 @@ from lumilake_server.ops import (
     ClassificationConfig,
     ClassificationOp,
     HttpFetchOp,
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     OpMessage,
@@ -125,7 +126,9 @@ def test_mixed_derived_chain_builds_in_dependency_order() -> None:
         config=ClassificationConfig(model="org/reranker"),
     )
     head = LambdaOp(
-        [LambdaOp([classification], titles, mode="list")], titles, mode="list"
+        [LambdaOp([classification], titles, mode=LambdaMode.LIST)],
+        titles,
+        mode=LambdaMode.LIST,
     )
     compiled = Graph.from_ops([as_output("out", head)]).compile(Query=["a", "b"])
     runtime_graph: RuntimeGraph = RuntimeGraphBuilder().build(compiled)

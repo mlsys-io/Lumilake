@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from lumilake_server.data_specs import ColumnPlanEntry
+from lumilake_server.data_specs import ColumnPlanEntry, PythonMode
 from lumilake_server.dynamic.driver import DriverProtocolError
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.dynamic.template import (
@@ -49,7 +49,9 @@ def _branch_rows(
     """Run a branch's list step over ``column`` as JSON text."""
     op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
     plan = [ColumnPlanEntry(kind="literal", values=[json.dumps(v) for v in column])]
-    code = python_step.wrapper_source(op["id"], op["fn_name"], op["code"], plan, "list")
+    code = python_step.wrapper_source(
+        op["id"], op["fn_name"], op["code"], plan, PythonMode.LIST
+    )
     mount = tmp_path / "runtime.py"
     mount.write_bytes(python_step.runtime_blob().body)
     namespace: dict[str, Any] = {}
