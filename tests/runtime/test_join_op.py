@@ -235,22 +235,10 @@ name: j
 inputs:
   Cases: [a, b, c]
 ops:
-  - id: Left
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: left
-    code: |
-      def left(row):
-          return {"case_id": row[0], "text": row[0]}
-  - id: Right
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: right
-    code: |
-      def right(row):
-          return {"case_id": row[0], "n": 1}
+  - {id: Left, op: LambdaOp, mode: row, inputs: [Cases], fn_name: left,
+     code: "def left(row):\\n    return {'case_id': row[0], 'text': row[0]}\\n"}
+  - {id: Right, op: LambdaOp, mode: row, inputs: [Cases], fn_name: right,
+     code: "def right(row):\\n    return {'case_id': row[0], 'n': 1}\\n"}
 """
     cases = (
         ("left", "", False),
@@ -267,8 +255,7 @@ ops:
             Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
             node_prefix="g",
         )
-        merged = _join_of(runtime)
-        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
+        assert (_join_of(runtime).node_id in runtime.own_row_count_nodes()) is whole_run
 
 
 def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
