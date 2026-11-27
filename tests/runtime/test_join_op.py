@@ -227,35 +227,42 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
 
 
 def test_a_join_that_joins_its_own_rows_sets_their_count() -> None:
-    """A join over the job's own rows drops or appends rows under ``inner`` and
-    ``full`` and emits a key's pairs under ``many_to_many``, so its output reads as
-    a whole-run value there; any other join keeps one row per input row."""
+    """A join sets its own rows under ``inner``, ``full`` or ``many_to_many``."""
     yaml = """
 name: j
 inputs:
   Cases: [a, b, c]
 ops:
-  - {id: Left, op: LambdaOp, mode: row, inputs: [Cases], fn_name: left,
-     code: "def left(row):\\n    return {'case_id': row[0], 'text': row[0]}\\n"}
-  - {id: Right, op: LambdaOp, mode: row, inputs: [Cases], fn_name: right,
-     code: "def right(row):\\n    return {'case_id': row[0], 'n': 1}\\n"}
+  - id: Left
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: left
+    code: |
+      def left(row):
+          return {"case_id": row[0], "text": row[0]}
+  - id: Right
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: right
+    code: |
+      def right(row):
+          return {"case_id": row[0], "n": 1}
 """
-    cases = (
-        ("left", "", False),
-        ("inner", "", True),
-        ("full", "", True),
-        ("left", "    cardinality: many_to_many\n", True),
-    )
-    for how, extra, whole_run in cases:
+    for how, whole_run in (("left", False), ("inner", True), ("full", True)):
         spec = parse_yaml_payload(
             yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
-            f" case_id\n    how: {how}\n{extra}"
+            f" case_id\n    how: {how}\n"
         )["j"]
         runtime = RuntimeGraphBuilder().build(
             Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
             node_prefix="g",
         )
-        assert (_join_of(runtime).node_id in runtime.own_row_count_nodes()) is whole_run
+        merged = _join_of(runtime)
+        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
+    many = _build(_merge("State, Route.diagnose", "    cardinality: many_to_many\n"))
+    assert _join_of(many).node_id in many.own_row_count_nodes()
 
 
 def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
