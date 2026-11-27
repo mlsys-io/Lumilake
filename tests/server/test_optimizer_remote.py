@@ -147,7 +147,8 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
             "w1": WorkerProfile(
                 gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)),
                 gpu_memory_fraction=0.5,
-            )
+            ),
+            "w2": WorkerProfile(),
         },
     )
 
@@ -162,6 +163,8 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
         "max_session_cpu_cores": None,
         "max_session_memory_bytes": None,
     }
+    assert captured_body["worker_profiles"]["w2"]["has_gpu"] is False
+    assert captured_body["worker_profiles"]["w2"]["gpu"] is None
 
 
 @respx.mock

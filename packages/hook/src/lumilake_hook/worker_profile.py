@@ -7,7 +7,9 @@ schedule protocol carries one per worker, so both the server and a remote
 optimizer share this model.
 """
 
-from pydantic import BaseModel, ConfigDict, computed_field, field_serializer
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, field_serializer, model_serializer
 
 
 class GpuDevice(BaseModel):
@@ -46,7 +48,6 @@ class WorkerProfile(BaseModel):
     max_session_cpu_cores: float | None = None
     max_session_memory_bytes: int | None = None
 
-    @computed_field
     @property
     def has_gpu(self) -> bool:
         """True when the worker reported at least one card."""
@@ -61,3 +62,10 @@ class WorkerProfile(BaseModel):
     def _sorted_task_types(self, task_types: frozenset[str]) -> list[str]:
         """Write the task types sorted, so the wire form is stable."""
         return sorted(task_types)
+
+    @model_serializer(mode="wrap")
+    def _with_has_gpu(self, handler: Any) -> dict[str, Any]:
+        """Add the derived ``has_gpu``, which a dict-reading client expects."""
+        dumped: dict[str, Any] = handler(self)
+        dumped["has_gpu"] = self.has_gpu
+        return dumped

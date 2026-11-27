@@ -159,12 +159,6 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# A pydantic computed field takes `@computed_field` above `@property`, which mypy
-# rejects as a decorator on top of a property.
-module = ["lumilake_hook.worker_profile"]
-disable_error_code = ["prop-decorator"]
-
-[[tool.mypy.overrides]]
 # Test helpers imported as top-level `support.*` from tests/support/.
 module = ["support.*"]
 ignore_missing_imports = true
