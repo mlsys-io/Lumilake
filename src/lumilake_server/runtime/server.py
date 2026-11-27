@@ -680,17 +680,8 @@ class LumilakeServer:
                 eta_values.append(batch_progress.eta_seconds)
 
         batch_progress = None
-        if (
-            any(
-                (
-                    batch_total,
-                    batch_completed,
-                    batch_running,
-                    batch_pending,
-                    batch_failed,
-                )
-            )
-            or batch_entries
+        if any((batch_total, batch_running, batch_pending, batch_failed)) or (
+            batch_entries
         ):
             batch_progress = BatchProgress(
                 total=batch_total,
