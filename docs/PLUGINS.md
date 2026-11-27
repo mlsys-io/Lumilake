@@ -21,6 +21,8 @@ The bearer that `IdentityProvider.resolve` accepts is forwarded to FlowMesh as t
 - A token an `IdentityProvider` plugin chooses to accept must also authenticate against the configured FlowMesh deployment, since the same string is what FlowMesh sees on the runtime side.
 - Local deployments with no `IdentityProvider` plugin installed dispatch to FlowMesh with no `Authorization` header, matching FlowMesh's local-mode behavior. Set `LUMILAKE_REQUIRE_IDENTITY_PROVIDER=1` in cloud deploys to refuse this fallback.
 
+A principal allowed to bind a submission to a lum.id/data job (`lumid_job`) must carry the `lumid-job:bind` scope; `*` passes.
+
 Workflows that share a `PrincipalContext.principal_id` may coalesce into one FlowMesh submission; workflows from different principals always dispatch separately so each carries the originating principal's bearer.
 
 `principal_id` is a **security boundary**. Two requests resolving to the same `principal_id` are treated as one ownership scope — their workflows can be merged into one FlowMesh submission with a single bearer, and FlowMesh attribution falls on that principal. An `IdentityProvider` plugin must therefore guarantee one `principal_id` per ownership scope. Collisions (two distinct users mapped to one id) enable cross-tenant data flow; collisions are the plugin's responsibility to prevent, not Lumilake's.
@@ -152,7 +154,7 @@ Tests can call `install()` directly and inspect the returned bindings, or feed t
 
 ## Schedule Protocol Contract
 
-`RemoteOptimizer` (`lumilake_server.runtime.optimizer.RemoteOptimizer`) implements `BaseOptimizer` by POSTing a `ScheduleRequest` to `{LUMILAKE_REMOTE_OPTIMIZER_URL}/api/v1/optimizer/schedule` and deserializing the `ScheduleResponse`. `ScheduleRequest` carries the serialized `RuntimeGraph` (under `graph`), `worker_names`, `worker_profiles`, `data_profile_results`, and an `optimizer_type` selector. `ScheduleResponse` carries `worker_assignment`. Both models are importable from `lumilake_server.runtime.optimizer.schemas` and are the canonical contract that any compatible schedule-protocol server must satisfy.
+`RemoteOptimizer` (`lumilake_server.runtime.optimizer.RemoteOptimizer`) implements `BaseOptimizer` by POSTing a `ScheduleRequest` to `{LUMILAKE_REMOTE_OPTIMIZER_URL}/api/v1/optimizer/schedule` and deserializing the `ScheduleResponse`. `ScheduleRequest` carries the serialized `RuntimeGraph` (under `graph`), `worker_names`, `worker_profiles`, `data_profile_results`, and an `optimizer_type` selector. `ScheduleResponse` carries `worker_assignment`. Both models are importable from `lumilake_server.runtime.optimizer.schemas` and are the canonical contract that any compatible schedule-protocol server must satisfy. Each entry of `worker_profiles` is a `lumilake_hook.WorkerProfile`, the same model both the server and a provider optimizer use: `supported_task_types`, `gpu` (the worker's cards under `gpu.devices`, `null` for a CPU worker), `gpu_memory_fraction`, `cpu_cores`, `memory_total_bytes`, `max_session_cpu_cores` and `max_session_memory_bytes`, plus `has_gpu`, which is derived from the cards.
 
 `RemoteOptimizer` requires an explicit `optimizer_type` kwarg at construction time (e.g. `RemoteOptimizer(optimizer_type="halo-greedy")`). The typical integration path is via an `OptimizerProvider` plugin (see below).
 

@@ -4,8 +4,10 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from support.worker_profiles import worker_profile
 
 from lumilake import envs
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import estimate_area
@@ -21,6 +23,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import SessionLane
 from tests.support.data_specs import runtime_op
 
 
@@ -421,6 +424,18 @@ class _LaneRecorder(CohortPackSchedulingPolicy):
         super().observe_free_lanes(free_lanes)
 
 
+def _profile_ok(
+    profile: WorkerProfile,
+    _hardware: Any,
+    /,
+    *,
+    session_lane: SessionLane = SessionLane(),
+) -> bool:
+    """A test stand-in for ``_worker_meets_hardware``: the helper marks a worker
+    below the requirement with ``cpu_cores=4``."""
+    return profile.cpu_cores is None or profile.cpu_cores >= 8
+
+
 async def _lanes_seen(
     *,
     requires_gpu: bool,
@@ -438,7 +453,7 @@ async def _lanes_seen(
         policy="cohort_pack",
         cpu_worker_group_size=cpu_group_size,
         gpu_worker_group_size=gpu_group_size,
-        worker_meets_hardware=lambda profile, _hardware: bool(profile["ok"]),
+        worker_meets_hardware=_profile_ok,
     )
     recorder = _LaneRecorder()
     manager._policy_impl = recorder
@@ -447,12 +462,15 @@ async def _lanes_seen(
     gpu = tuple(f"g{i}" for i in range(gpu_workers))
     profiles = (
         {
-            w: {
-                "ok": ok_workers is None or w in ok_workers,
-                "supported_task_types": (
-                    ["python"] if python_workers and w in python_workers else []
+            w: worker_profile(
+                devices=(GpuDevice(),) if w in gpu else (),
+                task_types=(
+                    {"python"}
+                    if python_workers and w in python_workers
+                    else frozenset()
                 ),
-            }
+                cpu_cores=None if ok_workers is None or w in ok_workers else 4,
+            )
             for w in (*cpu, *gpu)
         }
         if ok_workers is not None or python_workers is not None

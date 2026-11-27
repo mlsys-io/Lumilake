@@ -8,19 +8,20 @@ Covers:
 - The priority-queue partition key includes the hardware signature so jobs
   with different hardware tuples land in distinct dispatches; jobs with no
   override co-batch.
-- ``_any_graph_requires_gpu`` correctly classifies vLLM ops.
+- ``_any_graph_requires_gpu`` correctly classifies vLLM and image-generation ops.
 """
 
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
+    ImageGenerationOp,
     LLMChatOp,
     OpMessage,
     as_output,
@@ -33,10 +34,10 @@ from lumilake_server.runtime.job_manager.priority_queue import (
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
-    _resolve_cpu,
     _resolve_gpu_count,
     _resolve_gpu_memory,
-    _resolve_memory,
+    resolve_cpu,
+    resolve_memory,
 )
 
 # ---------------------------------------------------------------------------
@@ -145,7 +146,7 @@ def test_resolve_cpu_uses_override_when_set(monkeypatch: pytest.MonkeyPatch) -> 
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
-    assert _resolve_cpu(HardwareRequirements(cpu=16)) == 16
+    assert resolve_cpu(HardwareRequirements(cpu=16)) == 16
 
 
 def test_resolve_cpu_falls_back_to_env_when_unset(
@@ -155,8 +156,8 @@ def test_resolve_cpu_falls_back_to_env_when_unset(
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
-    assert _resolve_cpu(None) == 8
-    assert _resolve_cpu(HardwareRequirements(memory="32Gi")) == 8
+    assert resolve_cpu(None) == 8
+    assert resolve_cpu(HardwareRequirements(memory="32Gi")) == 8
 
 
 def test_resolve_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,8 +165,8 @@ def test_resolve_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "16Gi",
     )
-    assert _resolve_memory(HardwareRequirements(memory="64Gi")) == "64Gi"
-    assert _resolve_memory(None) == "16Gi"
+    assert resolve_memory(HardwareRequirements(memory="64Gi")) == "64Gi"
+    assert resolve_memory(None) == "16Gi"
 
 
 def test_resolve_gpu_count_uses_override_including_zero(
@@ -241,7 +242,7 @@ def test_hardware_signature_gpu_model_distinct_partitions_distinct() -> None:
 def _cpu_only_compiled() -> Any:
     """CompiledGraph whose only op is a CPU-only DataRetrievalOp."""
     symbol = input_placeholder("Symbol")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -266,6 +267,18 @@ def _gpu_compiled() -> Any:
     return Graph.from_ops([output]).compile(Prompt=["hello"])
 
 
+def _image_gen_compiled() -> Any:
+    """CompiledGraph containing an ImageGenerationOp — RuntimeGraphBuilder
+    assigns the ``omni`` backend, which ``_runtime_op_requires_gpu``
+    classifies as GPU."""
+    prompt = input_placeholder("Prompt")
+    image = ImageGenerationOp(
+        content=prompt, config=GenerationConfig(model="black-forest-labs/FLUX.1-dev")
+    )
+    output = as_output("result", image)
+    return Graph.from_ops([output]).compile(Prompt=["a red fox"])
+
+
 def _make_server_stub() -> Any:
     return type("_S", (), {"_runtime_builder": RuntimeGraphBuilder()})()
 
@@ -279,6 +292,20 @@ def test_any_graph_requires_gpu_detects_vllm_backend_in_real_compiled_graph(
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
 
     assert _any_graph_requires_gpu(_make_server_stub(), {"g": _gpu_compiled()}) is True
+
+
+def test_any_graph_requires_gpu_detects_omni_backend_in_real_compiled_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ImageGenerationOp graph must claim a GPU group through the ``omni``
+    backend its lowering sets."""
+    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
+    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
+
+    assert (
+        _any_graph_requires_gpu(_make_server_stub(), {"g": _image_gen_compiled()})
+        is True
+    )
 
 
 def test_any_graph_requires_gpu_false_for_cpu_only_real_compiled_graph(

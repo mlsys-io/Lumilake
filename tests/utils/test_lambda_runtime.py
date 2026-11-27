@@ -17,7 +17,6 @@ from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.lambda_task_helpers import decode
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
-from tests.support.data_specs import wire
 
 _SHOUT = "def shout(inputs):\n    (text,) = inputs\n    return text.upper()"
 
@@ -359,7 +358,12 @@ def test_yaml_limits_reach_the_op() -> None:
 
 def test_submitted_literal_lambda_is_not_folded_by_the_server() -> None:
     runtime = _build(_CHAIN)
-    rendered = json.dumps([wire(node) for node in runtime.nodes.values()])
+    rendered = json.dumps(
+        [
+            node.data_spec.model_dump(exclude_none=True)
+            for node in runtime.nodes.values()
+        ]
+    )
     assert "HELLO, WORLD!" not in rendered
     assert "def shout" in rendered
 
@@ -526,7 +530,7 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     graph = Graph.from_json(spec["graph"])
     runtime = RuntimeGraphBuilder().build(graph.compile(**spec["inputs"]))
     (node,) = [n for n in runtime.nodes.values() if n.task_type == "python"]
-    assert "import math" in wire(node)["code"]
+    assert "import math" in node.data_spec.model_dump(exclude_none=True)["code"]
 
 
 def _sdk_imports(inputs: tuple[float, ...]) -> str:
@@ -542,7 +546,9 @@ def _run_inlined(body: str, row: str) -> str:
     payload = payload.replace(shout + "          return greeting.upper()", body)
     nodes = _build(payload).nodes.values()
     reply = next(n for n in nodes if n.task_type == "inference")
-    steps = wire(reply)["template"]["options"]["format"]["steps"]
+    steps = reply.data_spec.model_dump(exclude_none=True)["template"]["options"][
+        "format"
+    ]["steps"]
     function = next(s["function"] for s in steps if s.get("function"))
     local: dict[str, Any] = {}
     safe = {n: getattr(builtins, n) for n in lambda_runtime._SAFE_BUILTIN_BASE_NAMES}
