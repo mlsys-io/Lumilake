@@ -360,6 +360,49 @@ def test_a_marked_join_row_keeps_its_key_and_every_other_row(
     assert got == expected
 
 
+def _pairs(
+    cases: list[dict[str, Any]], girls: list[dict[str, Any]], fields: str
+) -> Any:
+    """A join of two literal columns keyed by ``unit``, under ``fields``."""
+    return _join_node(
+        f"  - {{id: Cases, op: DataOp, data: {_quoted(cases)}}}\n"
+        f"  - {{id: Girls, op: DataOp, data: {_quoted(girls)}}}\n"
+        f"  - {{id: Merge, op: JoinOp, inputs: [Cases, Girls], by: unit, {fields}}}\n"
+    )
+
+
+_CASES = [{"unit": "u1", "q": "a"}, {"unit": "u1", "q": "b"}, {"unit": "u2", "q": "c"}]
+_GIRLS = [{"unit": "u1", "g": "x"}, {"unit": "u1", "g": "y"}, {"unit": "u2", "g": "z"}]
+
+
+def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
+    """Each row held for a key pairs with each further row of it, held side first."""
+    node = _pairs(_CASES, _GIRLS, "cardinality: many_to_many")
+    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
+    assert [(row["q"], row["g"]) for row in rows] == [
+        ("a", "x"),
+        ("a", "y"),
+        ("b", "x"),
+        ("b", "y"),
+        ("c", "z"),
+    ]
+
+
+def test_one_to_many_reads_one_further_row_per_key(tmp_path: Path) -> None:
+    """A declared one_to_many lines up with the default: one row per first row."""
+    node = _pairs(_CASES[:2], _GIRLS[:1], "cardinality: one_to_many")
+    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
+    assert [(row["q"], row["g"]) for row in rows] == [("a", "x"), ("b", "x")]
+
+
+def test_a_repeated_key_needs_many_to_many(tmp_path: Path) -> None:
+    """An undeclared repeat fails, and declaring it emits one row per repeat."""
+    with pytest.raises(ValueError, match="declare many_to_many"):
+        _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {}, name="plain")
+    node = _pairs(_CASES, _GIRLS, "cardinality: many_to_many")
+    assert len(_run(tmp_path, node, {}, name="declared")["items"]) == 5
+
+
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
     runtime = _build(
         _merge(
