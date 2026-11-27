@@ -2293,18 +2293,25 @@ def test_the_first_level_stops_before_the_next_model_op() -> None:
 
 @pytest.mark.asyncio
 async def test_a_level_dispatches_once_and_a_partly_served_chat_keeps_its_records(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
 ) -> None:
     """A level that partly serves a chat writes the chat's own records beside the
     ones it computes, through the merge step, so no later level or the batch
     runs that chat again for the covered rows."""
     rows = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
-    state: dict[str, Any] = {"items": {}, "chats": [], "graph": None, "job": 0}
+    state: dict[str, Any] = {
+        "items": {},
+        "chats": [],
+        "graph": None,
+        "job": 0,
+        "dispatches": {},
+    }
 
     async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
         state["items"] = {}
         for node in yaml.safe_load(task_yaml)["spec"]["graph"]["nodes"]:
             op = state["graph"].nodes[node["name"]]
+            state["dispatches"][op.node_id] = state["dispatches"].get(op.node_id, 0) + 1
             spec = op.data_spec
             if not isinstance(spec, PythonData):
                 source = state["items"][spec.columns[0].node]
@@ -2360,8 +2367,9 @@ async def test_a_level_dispatches_once_and_a_partly_served_chat_keeps_its_record
     monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
 
     async def once(chosen: list[dict[str, Any]]) -> list[str]:
-        state["chats"], state["job"] = [], state["job"] + 1
+        state["chats"], state["job"], state["dispatches"] = [], state["job"] + 1, {}
         state["graph"] = _runtime_graph(_prompt_chat(chosen))
+        state["ask"] = _node(state["graph"], "Ask")
         info = _reusing(state["graph"])
         info.request_id = f"req-{state['job']}"
         await FlowmeshRuntimeManager().process_request(
@@ -2371,8 +2379,10 @@ async def test_a_level_dispatches_once_and_a_partly_served_chat_keeps_its_record
 
     await once(rows)
     assert await once(rows) == []
+    state["dispatches"] = {}
     changed = await once([rows[0], {"id": "b", "t": "Y"}])
     assert changed == ["Y"], changed
+    assert state["dispatches"][state["ask"]] == 1, state["dispatches"]
 
 
 def _prompt_chat(rows: list[dict[str, Any]]) -> dict[str, Any]:

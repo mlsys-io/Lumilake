@@ -312,11 +312,13 @@ async def test_a_trimmed_phase_reads_the_rows_the_store_holds(
         _ROWS,
         "After",
     )
+    before = len(worker.submissions)
     outputs = await run(changed, "req-2")
     node = next(
         node for node in changed.nodes if changed.op_names.get(node) == "Rewrite"
     )
-    assert worker.submissions[2] == [node], worker.submissions
+    ran = [nodes for nodes in worker.submissions[before:] if node in nodes]
+    assert ran == [[node]], worker.submissions[before:]
     assert [item["output"] for item in worker.responses[f"task-{node}"]["items"]] == [
         '{"id": "a", "t": "X?"}',
         '{"id": "b", "t": "Y?"}',

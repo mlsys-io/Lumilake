@@ -2291,24 +2291,24 @@ class FlowmeshRuntimeManager:
         if not _batch_reuses_as_one(request_info):
             return None
         try:
-            written: dict[str, list[RecordEntry]] = {}
+            level_runs: dict[str, RecordDecision] = {}
             if _sub_run_structure(
                 request_info.runtime_graph
             ) and _has_partial_candidate(request_info.runtime_graph):
-                phase = await self._run_structure(request_info, schedule)
-                content_values, written = phase.content, phase.written
+                content_values, plan, planned_graph, level_runs = (
+                    await self._plan_levels(request_info, schedule, worker_ids)
+                )
             else:
                 content_values = await self._run_unversioned_reads(
                     request_info, schedule
                 )
-            plan, planned_graph = await asyncio.to_thread(
-                ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
-                runtime_graph=request_info.runtime_graph,
-                round_number=request_info.round_number,
-                job_id=request_info.request_id,
-                content_values=content_values,
-                written=written,
-            )
+                plan, planned_graph = await asyncio.to_thread(
+                    ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
+                    runtime_graph=request_info.runtime_graph,
+                    round_number=request_info.round_number,
+                    job_id=request_info.request_id,
+                    content_values=content_values,
+                )
         except (ArchiveError, ValueError) as exc:
             self.logger.warning(
                 "Record reuse plan failed for job %s (%s); running the full job",
@@ -2316,6 +2316,7 @@ class FlowmeshRuntimeManager:
                 exc,
             )
             return None
+        plan = _report_level_runs(plan, level_runs)
         request_info.runtime_graph = planned_graph
         _follow_generated_steps(request_info, plan)
         self._reuse_content_reads[request_info.request_id] = content_values
