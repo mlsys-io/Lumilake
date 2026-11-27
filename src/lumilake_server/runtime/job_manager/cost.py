@@ -85,15 +85,13 @@ def _classify(op: RuntimeOp) -> str:
 
 def _to_halo_node(op: RuntimeOp) -> Node:
     """Build the minimal ``Node`` view ``compute_gpu_exec_cost`` needs."""
-    raw = op.data_spec.model_dump(exclude_none=True)
-    if isinstance(op.inference_spec, dict) and op.inference_spec:
-        raw["_inference_spec"] = dict(op.inference_spec)
     return Node(
         id=op.node_id,
         type=op.task_type,
         engine="vllm",
         model=op.model,
-        raw=raw,
+        data_spec=op.data_spec,
+        inference_spec=op.inference_spec,
     )
 
 

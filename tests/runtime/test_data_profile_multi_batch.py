@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_hook import DataProfileCostEstimate
 from lumilake_server.graphs.graph import CompiledGraph, Graph
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.data_profile_utils import (
@@ -117,9 +117,7 @@ def test_later_batch_projects_the_submit_time_profile() -> None:
         request_id="req-mb", graphs=graphs, workflow_slices=slices
     )
     result = data_profile_offload.run_data_profile_task(task.payload)
-    data_profile_offload.data_profile_registry[task.task_key] = result.model_dump(
-        mode="json"
-    )
+    data_profile_offload.data_profile_registry[task.task_key] = result
 
     batch_2 = ("g0__slice_3", "g0__slice_4")
     merged = LumilakeServer._merge_group_compiled_graph(
@@ -156,6 +154,6 @@ def test_later_batch_projects_the_submit_time_profile() -> None:
     )
 
     ((key, (row,)),) = projected.items()
-    assert key == f"data_profile::{row['node_id']}::{row['query_name']}"
-    assert row["node_id"] in batch_graph.nodes
-    assert [c["estimated_rows"] for c in row["cost_estimates"]] == [7]
+    assert key == f"data_profile::{row.node_id}::{row.query_name}"
+    assert row.node_id in batch_graph.nodes
+    assert [estimate.estimated_rows for estimate in row.cost_estimates] == [7]

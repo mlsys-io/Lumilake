@@ -25,6 +25,7 @@ from lumilake_server.ops import (
     DataRetrievalOp,
     FormatOp,
     InputOp,
+    LambdaMode,
     LambdaOp,
     LLMOp,
     MessageOp,
@@ -1161,12 +1162,12 @@ class _LLMBuilder(_EmbeddingBuilder):
                         " through a node column (rowwise_columns / aggregate_table)"
                         " instead."
                     )
-                if op.mode != "row":
+                if op.mode is not LambdaMode.ROW:
                     raise ValueError(
-                        f"LLMOp '{llm_op_id}' consumes the {op.mode}-mode LambdaOp"
-                        f" '{op.id}' through its message chain; a list, aligned, expand"
-                        " or reduce Lambda must be read through a node column"
-                        " (rowwise_columns / aggregate_table)."
+                        f"LLMOp '{llm_op_id}' consumes the {op.mode.value}-mode"
+                        f" LambdaOp '{op.id}' through its message chain; a list,"
+                        " aligned, expand or reduce Lambda must be read through a"
+                        " node column (rowwise_columns / aggregate_table)."
                     )
                 message_labels = {
                     inp_op.id: _trace_ancestors(inp_op) for inp_op in op.inputs
