@@ -1642,15 +1642,10 @@ def _served_rows(plan: ReusePlan, source: RuntimeOp) -> list[Mapping[str, Any]] 
 
 
 def _emits_bare_value(source: RuntimeOp) -> bool:
-    """Whether the producer's step puts its value under ``output`` as it stands: an
-    aligned or list step emits the value itself, where a row or parse step emits
+    """Whether the producer's step puts its value under ``output`` as it stands: every
+    python step but a row or parse step emits the value itself, where those emit
     its JSON text."""
-    spec = source.data_spec
-    return (
-        source.task_type == PYTHON_TASK_TYPE
-        and isinstance(spec, PythonData)
-        and spec.mode in ("aligned", "list")
-    )
+    return source.task_type == PYTHON_TASK_TYPE and not typed_row_step(source)
 
 
 def _positions(
