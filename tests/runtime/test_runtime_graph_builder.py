@@ -1896,7 +1896,7 @@ def test_prefixed_row_step_below_a_list_lambda_is_a_fanout_node() -> None:
     explode_spec = runtime_graph.nodes[explode_id].data_spec
     assert isinstance(explode_spec, PythonData)
     assert explode_spec.mode is PythonMode.LIST
-    assert shout_id in runtime_graph.list_lambda_fanout_nodes()
+    assert shout_id in runtime_graph.own_row_count_nodes()
 
 
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
