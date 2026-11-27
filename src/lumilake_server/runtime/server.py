@@ -2695,7 +2695,7 @@ class LumilakeServer:
                     target[0] = values[0]
                     continue
                 if output_name in own_row_count_names:
-                    # The fan-out covers the whole run, so only one slice may
+                    # The output's own rows cover the whole run, so only one slice may
                     # carry it.
                     if output_name in buffers:
                         append_error(
@@ -3355,7 +3355,7 @@ class LumilakeServer:
             if node_id in own_row_count_nodes
         }
         whole_run_outputs = list_lambda_outputs | own_row_count_outputs
-        for outputs, fanout in (
+        for outputs, own_row_count in (
             (list_lambda_outputs, False),
             (own_row_count_outputs, True),
         ):
@@ -3366,7 +3366,7 @@ class LumilakeServer:
                 (single_workflow,) = group_slices
                 state = self._requests.get(single_workflow.request_id)
                 if state is not None:
-                    if fanout:
+                    if own_row_count:
                         registered = state.own_row_count_outputs
                     else:
                         registered = state.list_lambda_outputs
@@ -3389,11 +3389,11 @@ class LumilakeServer:
                 group_slices = grouped_workflows.get(group_key, [])
                 if len(group_slices) != 1:
                     raise ValueError(
-                        "Whole-run output cannot be split across slices: "
-                        f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda, and a row step "
-                        "whose row count it sets, each produce one value per "
-                        "run and cannot be partitioned per slice."
+                        f"Whole-run output cannot be split across slices: {output_name}"
+                        f" covers {len(group_slices)} slice(s) in group {group_key}. A"
+                        " list-mode Lambda, a step below one, and an inner or full join"
+                        " each produce one value per run and cannot be partitioned per"
+                        " slice."
                     )
                 (single_workflow,) = group_slices
                 direct_outputs.setdefault(single_workflow.workflow_id, {})[
@@ -3429,11 +3429,11 @@ class LumilakeServer:
                 group_slices = grouped_workflows.get(group_key, [])
                 if len(group_slices) != 1:
                     raise ValueError(
-                        "Whole-run history cannot be split across slices: "
-                        f"{output_name} covers {len(group_slices)} slice(s) in "
-                        f"group {group_key}. A list-mode Lambda, and a row step "
-                        "whose row count it sets, each produce one value per "
-                        "run and cannot be partitioned per slice."
+                        f"Whole-run history cannot be split across slices:"
+                        f" {output_name} covers {len(group_slices)} slice(s) in group"
+                        f" {group_key}. A list-mode Lambda, a step below one, and an"
+                        " inner or full join each produce one value per run and cannot"
+                        " be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_histories[single_workflow.workflow_id][output_name] = history
