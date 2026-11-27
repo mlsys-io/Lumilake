@@ -19,6 +19,7 @@ from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 from tests.runtime.runtime_manager.conftest import job_storage as job_storage
 from tests.runtime.test_record_reuse import (  # noqa: F401
+    _lambda,
     _run_step,
     _runtime_graph,
 )
@@ -329,6 +330,45 @@ async def test_a_trimmed_phase_reads_the_rows_the_store_holds(
     ]
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
+
+
+@pytest.mark.parametrize("kind", ["aligned", "expand"])
+@pytest.mark.asyncio
+async def test_a_changed_chat_reads_a_served_row_as_its_dict(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker, kind: str
+) -> None:
+    """An aligned or expand step emits its row under ``output`` as it stands, so
+    the pass-through that replays its stored rows to a chat whose config changed
+    hands them over as those dicts, not as their JSON text."""
+    ops = [*_reader_chain(kind), _chat_over()]
+    await run(_workflow(ops, _ROWS, "Ask"), "req-1")
+    changed = {**ops[-1], "config": {"model": "m", "temperature": 0.5}}
+    await run(_workflow([*ops[:-1], changed], _ROWS, "Ask"), "req-2")
+    (step,) = [n for n in worker.submissions[-1] if "/pass/" in n]
+    replay = worker.responses[f"task-{step}"]["items"]
+    assert [item["output"]["s"] for item in replay] == ["x*", "x*"], replay
+
+
+def _reader_chain(kind: str) -> list[dict[str, Any]]:
+    """A keyed aligned or expand producer whose rows carry ``s``."""
+    if kind == "expand":
+        code = "lambda row: [dict(row[0], s='x*')]"
+        return [_TAG, {**_lambda("Provider", ["Tag"], "provider", code), "mode": kind}]
+    code = "lambda c: [dict(r, s='x*') for r in c[0]]"
+    producer = _lambda("Provider", ["Rows"], "provider", code)
+    producer |= {"mode": kind, "key": {"node": "Rows", "path": "id"}}
+    return [producer]
+
+
+def _chat_over() -> dict[str, Any]:
+    """A keyed chat reading a field of ``Provider``'s row."""
+    field = {"label": "v", "node": "Provider", "path": "items.output.s"}
+    return {
+        **_CHAT,
+        "inputs": ["Provider"],
+        "rowwise_columns": [field],
+        "key": {"node": "Provider", "path": "id"},
+    }
 
 
 @pytest.mark.asyncio
