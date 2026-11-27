@@ -96,7 +96,7 @@ class JobStorage:
         statuses: set[str] | None,
         page: int,
         page_size: int,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[JobSummary], int]:
         raise NotImplementedError
 
     def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
@@ -264,7 +264,7 @@ class InMemoryJobStorage(JobStorage):
         statuses: set[str] | None,
         page: int,
         page_size: int,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[JobSummary], int]:
         items = list(self._summaries.values())
         filtered = _filter_summaries(
             items, org_id=org_id, user_id=user_id, job_ids=job_ids, statuses=statuses
@@ -273,8 +273,7 @@ class InMemoryJobStorage(JobStorage):
         total = len(sorted_items)
         start = (page - 1) * page_size
         end = start + page_size
-        page_items = [item.model_dump(mode="json") for item in sorted_items[start:end]]
-        return page_items, total
+        return sorted_items[start:end], total
 
     def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
         for summary in self._summaries.values():
@@ -456,7 +455,7 @@ class PersistentJobStorage(JobStorage):
         statuses: set[str] | None,
         page: int,
         page_size: int,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[JobSummary], int]:
         index = self._get_json_optional(self._jobs_index_name()) or {}
         items: list[JobSummary] = []
         for value in index.values():
@@ -472,8 +471,7 @@ class PersistentJobStorage(JobStorage):
         total = len(sorted_items)
         start = (page - 1) * page_size
         end = start + page_size
-        page_items = [item.model_dump(mode="json") for item in sorted_items[start:end]]
-        return page_items, total
+        return sorted_items[start:end], total
 
     def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
         index = self._get_json_optional(self._jobs_index_name()) or {}
@@ -698,7 +696,7 @@ class SqliteJobStorage(PersistentJobStorage):
         statuses: set[str] | None,
         page: int,
         page_size: int,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[JobSummary], int]:
         where, params = self._where(
             org_id=org_id, user_id=user_id, job_ids=job_ids, statuses=statuses
         )
@@ -711,7 +709,7 @@ class SqliteJobStorage(PersistentJobStorage):
                 "ORDER BY submitted_at_ts DESC, job_id DESC LIMIT ? OFFSET ?",
                 [*params, page_size, max(page - 1, 0) * page_size],
             ).fetchall()
-        return [self._row_to_summary(r).model_dump(mode="json") for r in rows], total
+        return [self._row_to_summary(r) for r in rows], total
 
     def iter_summaries(self, statuses: set[str] | None = None) -> Iterable[JobSummary]:
         sql = "SELECT * FROM job_summaries"

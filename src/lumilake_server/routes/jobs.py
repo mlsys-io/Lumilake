@@ -3861,7 +3861,7 @@ async def list_jobs(
     return {
         "ok": True,
         "data": {
-            "items": items,
+            "items": [item.model_dump(mode="json") for item in items],
             "page": page,
             "page_size": page_size,
             "total": total,

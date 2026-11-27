@@ -114,7 +114,7 @@ def test_save_is_idempotent_upsert(tmp_path, monkeypatch) -> None:
         page_size=10,
     )
     assert total == 1
-    assert rows[0]["status"] == "completed"
+    assert rows[0].status == "completed"
 
 
 @pytest.mark.parametrize(
@@ -256,7 +256,7 @@ def test_backfill_imports_legacy_indexes(tmp_path, monkeypatch) -> None:
         page=1,
         page_size=10,
     )
-    assert total == 1 and rows[0]["job_id"] == "old-1"  # invalid entry skipped
+    assert total == 1 and rows[0].job_id == "old-1"  # invalid entry skipped
     with pytest.raises(ValueError):  # output reservation came across too
         storage.reserve_output_location("loc-a", "someone-else")
 
@@ -354,7 +354,7 @@ def test_dynamic_children_hidden_from_listing_parity(tmp_path, monkeypatch) -> N
     # The total must agree too; a post-fetch filter would hide the child from
     # the page but leave the total wrong.
     assert got[1] == want[1] == 1
-    assert {row["job_id"] for row in got[0]} == {"parent"}
+    assert {row.job_id for row in got[0]} == {"parent"}
 
 
 def test_child_summary_round_trips(tmp_path, monkeypatch) -> None:
@@ -422,4 +422,4 @@ def test_parent_job_id_column_migration_is_idempotent(tmp_path, monkeypatch) -> 
         page=1,
         page_size=10,
     )
-    assert {row["job_id"] for row in rows} == {"legacy"}
+    assert {row.job_id for row in rows} == {"legacy"}

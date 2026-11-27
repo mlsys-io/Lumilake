@@ -35,7 +35,7 @@ def test_list_summaries_filters_by_status() -> None:
     )
 
     assert total == 2
-    assert [item["job_id"] for item in items] == ["job-2", "job-1"]
+    assert [item.job_id for item in items] == ["job-2", "job-1"]
 
 
 def test_list_summaries_paginates_descending_by_submission_time() -> None:
@@ -62,8 +62,8 @@ def test_list_summaries_paginates_descending_by_submission_time() -> None:
     )
 
     assert total == 3
-    assert [item["job_id"] for item in page_1] == ["job-3", "job-2"]
-    assert [item["job_id"] for item in page_2] == ["job-1"]
+    assert [item.job_id for item in page_1] == ["job-3", "job-2"]
+    assert [item.job_id for item in page_2] == ["job-1"]
 
 
 def test_record_rejects_invalid_status() -> None:
@@ -102,8 +102,8 @@ def test_list_summaries_filters_by_job_ids_before_pagination() -> None:
     )
 
     assert total == 2
-    assert [item["job_id"] for item in page_1] == ["job-3"]
-    assert [item["job_id"] for item in page_2] == ["job-1"]
+    assert [item.job_id for item in page_1] == ["job-3"]
+    assert [item.job_id for item in page_2] == ["job-1"]
 
 
 def test_iter_summaries_filters_by_status() -> None:
