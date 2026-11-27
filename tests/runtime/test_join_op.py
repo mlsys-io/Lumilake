@@ -503,6 +503,25 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
     assert rows[:2] == _JOINED[:2] and "key" in rows[2]["_fail"]["reason"]
 
 
+def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
+    """A row_key join reads how too: inner drops a stray key, full appends it."""
+    stray = {"unit": "u3", "size": 1}
+    sizes = _SIZES + [stray]
+    inner = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: inner")
+    assert inner == _JOINED
+    full = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: full")
+    assert full == _JOINED + [stray]
+
+
+def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
+    tmp_path: Path,
+) -> None:
+    """With require_match, a key one input carries and another lacks fails the job."""
+    fields = "row_key: [unit, rid], require_match: true"
+    with pytest.raises(ValueError, match=r'key "u3" is not in'):
+        _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
+
+
 def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
     """A marked further-input row marks each row of its key."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]

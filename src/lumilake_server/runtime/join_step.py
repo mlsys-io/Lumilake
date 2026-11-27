@@ -396,10 +396,30 @@ def _broadcast(inputs):
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
     first_keys = {{key for _, key, _ in keyed}}
+    appended = []
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
-        _required(first_keys, more, where)
+        _matched(first_keys, more, where)
+        if _HOW == "inner":
+            kept = []
+            for record, key, row in keyed:
+                if key in more:
+                    kept.append((record, key, row))
+                else:
+                    marked.pop(record, None)
+            keyed = kept
+        for key in more:
+            if key in first_keys or _HOW != "full":
+                continue
+            if key in more_marked:
+                marked[key] = more_marked[key]
+                continue
+            # A key only this input carries takes its first row as the output row, under
+            # its own record so every later input reaches it too.
+            record = _appended(key)
+            keyed.append((record, key, more[key][0]))
+            appended.append(record)
         for position, (record, key, row) in enumerate(keyed):
             if record in marked:
                 # A marked output row is its marker: no further input fills it.
@@ -418,6 +438,8 @@ def _broadcast(inputs):
                     "%s: key %s repeats in a further input; declare many_to_many"
                     % (_NODE, key)
                 )
+            if record in appended:
+                continue
             merged = row.copy()
             _merge(merged, more[key][0], where)
             # Copy, so a shared further row never writes onto a sibling's output.
@@ -459,8 +481,8 @@ def _attach_broadcast(
     hits = {{}}
     for value, source_row, key, position in pairs:
         if first_source:
-            # A value over the first input belongs to its own row, so a repeated by
-            # key here is two distinct rows.
+            # A value over the first input belongs to its own row, so a repeated by key
+            # here is two distinct rows.
             continue
         hits.setdefault(key, []).append(position)
     covered = set()
@@ -499,4 +521,9 @@ def _attach_broadcast(
 def _slot(position):
     """A marked row's private key inside the step, never in the output."""
     return "#marker:%d" % position
+
+
+def _appended(key):
+    """A full join's appended row key inside the step, never in the output."""
+    return "#full:%s" % key
 '''
