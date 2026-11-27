@@ -82,14 +82,14 @@ def test_parse_n8n_templates(template_path: Path, monkeypatch: pytest.MonkeyPatc
     from lumilake_server.ops import DataRetrievalOp as _DROp
 
     for op in graph.iter_ops(_DROp):
-        ds = op.data_spec
-        assert ds.get("type") == "lumid", f"op {op.id} has type {ds.get('type')!r}"
-        assert ds.get("mode") in {
+        retrieval = op.data_spec
+        assert retrieval.type == "lumid", f"op {op.id} has type {retrieval.type!r}"
+        assert retrieval.mode in {
             "sql",
             "s3",
             "agent",
-        }, f"op {op.id} has unknown mode {ds.get('mode')!r}"
-        assert "connection_string" not in ds
+        }, f"op {op.id} has unknown mode {retrieval.mode!r}"
+        assert "connection_string" not in (op.data_spec.model_extra or {})
 
 
 def test_rowwise_agent_reference_uses_table_path() -> None:
@@ -107,6 +107,67 @@ def test_rowwise_agent_reference_uses_table_path() -> None:
         col.get("node") == "op_agent" and col.get("path") == "items.table"
         for col in columns
     )
+
+
+def _rowwise_trigger_workflow() -> dict:
+    return {
+        "nodes": [
+            {
+                "parameters": {"options": {}},
+                "type": N8N_CHAT_TRIGGER,
+                "name": "Topic",
+                "id": "t1",
+                "typeVersion": 1.4,
+            },
+            {
+                "parameters": {"model": "Qwen/Qwen3-8B", "options": {}},
+                "type": "@n8n/n8n-nodes-langchain.lmOpenHuggingFaceInference",
+                "name": "Model",
+                "id": "m1",
+                "typeVersion": 1,
+            },
+            {
+                "parameters": {
+                    "text": "=Explain {{ $('Topic') }}.",
+                    "messages": {"messageValues": []},
+                },
+                "type": "@n8n/n8n-nodes-langchain.chainLlm",
+                "name": "Ask",
+                "id": "a1",
+                "typeVersion": 1.9,
+                "notes": json.dumps(
+                    {"op-type": "text-generation", "mode": "rowwise", "is-output": True}
+                ),
+            },
+        ],
+        "connections": {
+            "Topic": {"main": [[{"node": "Ask", "type": "main", "index": 0}]]},
+            "Model": {
+                "ai_languageModel": [
+                    [{"node": "Ask", "type": "ai_languageModel", "index": 0}]
+                ]
+            },
+        },
+    }
+
+
+def test_rowwise_trigger_column_keeps_its_input_ref_through_the_graph() -> None:
+    """A rowwise column projected from the trigger keeps ``input_ref`` with no path."""
+    payload = {
+        "graphs": [
+            {
+                "name": "trigger_column",
+                "workflow": _rowwise_trigger_workflow(),
+                "inputs": {"Topic": ["a database index"]},
+            }
+        ]
+    }
+    spec = parse_n8n_payload(payload)["trigger_column"]
+    graph = Graph.from_json(spec["graph"])
+    (llm_op,) = (op for op in graph.iter_ops() if hasattr(op, "rowwise_columns"))
+    (column,) = llm_op.rowwise_columns or []
+    assert column.label == "Topic"
+    assert column.input_ref == {"key": "Topic", "path": None}
 
 
 def test_aggregate_upstream_sql_reference_uses_table_path() -> None:
@@ -240,7 +301,7 @@ def _code_node_workflow(notes: str) -> dict:
 
 
 _SQL_UPSTREAM = {
-    "parameters": {"operation": "executeQuery", "query": "SELECT 1"},
+    "parameters": {"operation": "executeQuery", "query": "SELECT 1 ORDER BY 1"},
     "type": N8N_POSTGRES_NODE,
     "name": "SQL",
     "id": "sql-node",

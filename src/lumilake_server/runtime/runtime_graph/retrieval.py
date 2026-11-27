@@ -9,6 +9,7 @@ from sqlparse.tokens import Keyword
 from lumilake import envs
 from lumilake_server.data_specs import (
     DataSpecModel,
+    ListData,
     RetrievalData,
     RetrievalParam,
     S3ProfileData,
@@ -30,6 +31,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
+from lumilake_server.utils.retrieval_spec import ROWS_TABLE
 
 
 def _default_sql_sampler(query: str) -> list[Any]:
@@ -56,33 +58,27 @@ _RuntimeProfileSamplers = _RuntimeProfileSamplerRegistry()
 
 def _inline_single_value_list_params(
     template: str,
-    params: list[Any],
-) -> tuple[str, list[Any]]:
+    params: list[RetrievalParam],
+) -> tuple[str, list[RetrievalParam]]:
     """Render single-element list params directly into the SQL/S3 template."""
     rendered = template
-    remaining: list[Any] = []
+    remaining: list[RetrievalParam] = []
     for param in params:
-        if not isinstance(param, dict):
-            remaining.append(param)
-            continue
-        label = param.get("label")
-        data = param.get("data")
+        label = param.label
+        data = param.data
         if (
-            not isinstance(label, str)
-            or not isinstance(data, dict)
-            or data.get("type") != "list"
+            label is None
+            or data is None
+            or not isinstance(data.items, list)
+            or len(data.items) != 1
         ):
-            remaining.append(param)
-            continue
-        items = data.get("items")
-        if not isinstance(items, list) or len(items) != 1:
             remaining.append(param)
             continue
         placeholder = "{" + label + "}"
         if placeholder not in rendered:
             remaining.append(param)
             continue
-        value = str(items[0]).replace("'", "''")
+        value = str(data.items[0]).replace("'", "''")
         rendered = rendered.replace(placeholder, value)
     return rendered, remaining
 
@@ -112,15 +108,10 @@ class _RetrievalBuilder(_LLMBuilder):
         # runtime dependencies. Mark those upstream op ids as visited so strict
         # traversal validation does not flag legitimate input-only branches.
         ctx.visited.update(input_op.id for input_op in op.inputs)
-        spec = op.data_spec or {}
-        params = spec.get("params")
-        if isinstance(params, list):
-            for param in params:
-                if not isinstance(param, dict):
-                    continue
-                node = param.get("node")
-                if isinstance(node, str) and node in ctx.graph_dict:
-                    ctx.visited.add(node)
+        spec = op.data_spec
+        for param in spec.params:
+            if param.node is not None and param.node in ctx.graph_dict:
+                ctx.visited.add(param.node)
 
         if ctx.task_type_override == "data_profile":
             profile = self._data_profile_node(op, ctx)
@@ -129,17 +120,7 @@ class _RetrievalBuilder(_LLMBuilder):
         inputs_dict = ctx.inputs_dict
         input_ops_by_id = ctx.input_ops_by_id
         op_id = op.id
-        if spec.get("type") != "lumid":
-            raise ValueError(
-                f"DataRetrievalOp {op_id} requires type: lumid "
-                f"(got {spec.get('type')!r})"
-            )
-        mode = spec["mode"]
-        if mode not in {"sql", "s3", "agent"}:
-            raise ValueError(
-                f"DataRetrievalOp {op_id} mode must be 'sql', 's3', or 'agent' "
-                f"(got {mode!r})"
-            )
+        mode = spec.mode
         if not envs.LUMID_DATA_URL:
             raise ValueError(
                 f"DataRetrievalOp {op_id} requires LUMID_DATA_URL to be configured "
@@ -151,30 +132,21 @@ class _RetrievalBuilder(_LLMBuilder):
                 "(see .env.example)"
             )
 
-        params = spec.get("params") or []
-        if not isinstance(params, list):
-            raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
+        params = spec.params
 
         template: str | None = None
         if mode in {"sql", "s3"}:
-            template = spec.get("template")
-            if not isinstance(template, str):
+            template = spec.template
+            if template is None:
                 raise ValueError(
                     f"DataRetrievalOp {op_id} (mode={mode}) requires template"
                 )
         else:
-            description = spec.get("description")
-            schema_scope = spec.get("schema_scope")
-            if not isinstance(description, str):
+            template = spec.description
+            if template is None:
                 raise ValueError(
                     f"DataRetrievalOp {op_id} (mode=agent) requires description"
                 )
-            if schema_scope is not None and not isinstance(schema_scope, str):
-                raise ValueError(
-                    f"DataRetrievalOp {op_id} (mode=agent) "
-                    "schema_scope must be a string"
-                )
-            template = description
 
         dependencies: list[str] = []
         seen: set[str] = set()
@@ -193,47 +165,40 @@ class _RetrievalBuilder(_LLMBuilder):
         # before the spec reaches the worker. Non-InputOp node refs
         # (real SQL/retrieval upstreams) keep their node pointer and
         # become genuine task dependencies.
-        resolved_params: list[Any] = []
+        resolved_params: list[RetrievalParam] = []
         param_row_counts: dict[str, int] = {}
         for param in params:
-            if not isinstance(param, dict):
-                resolved_params.append(param)
-                continue
-            node = param.get("node")
-            if isinstance(node, str):
+            resolved = param
+            if param.node is not None:
                 upstream = self._resolve_param_upstream(
-                    node, graph_dict, input_ops_by_id
+                    param.node, graph_dict, input_ops_by_id
                 )
                 if isinstance(upstream, InputOp):
                     values = inputs_dict.get(upstream.name)
                     if values is None:
                         raise ValueError(
-                            f"DataRetrievalOp '{op_id}' template param "
-                            f"{param.get('label')!r} references InputOp "
-                            f"{upstream.name!r} but no values were supplied "
-                            "for that input."
+                            f"DataRetrievalOp '{op_id}' template param {param.label!r}"
+                            f" references InputOp {upstream.name!r} but no values were"
+                            " supplied for that input."
                         )
-                    path = param.get("path")
+                    path = param.path
                     # InputOps never materialize a runtime envelope, so a
                     # non-empty ``path`` (which would drill into the
                     # envelope) is meaningless here. The scalar value is
                     # inlined verbatim; ``path`` must be absent / empty.
                     if path not in (None, ""):
                         raise ValueError(
-                            f"DataRetrievalOp '{op_id}' template param "
-                            f"{param.get('label')!r} references InputOp "
-                            f"{upstream.name!r} with drill path {path!r}; "
-                            "InputOp-derived params cannot be drilled — "
-                            "wrap record-shaped inputs in an upstream op "
-                            "that exposes the target field, or drop the "
-                            "``path`` for scalar inputs."
+                            f"DataRetrievalOp '{op_id}' template param {param.label!r}"
+                            f" references InputOp {upstream.name!r} with drill path"
+                            f" {path!r}; InputOp-derived params cannot be drilled —"
+                            " wrap record-shaped inputs in an upstream op that exposes"
+                            " the target field, or drop the ``path`` for scalar inputs."
                         )
-                    literal_param: dict[str, Any] = {
-                        "label": param.get("label"),
-                        "data": {"type": "list", "items": list(values)},
-                    }
+                    literal_param = RetrievalParam(
+                        label=param.label, data=ListData(items=list(values))
+                    )
                     if len(values) > 1:
-                        param_row_counts[str(param.get("label"))] = len(values)
+                        param_row_counts[str(param.label)] = len(values)
                     resolved_params.append(literal_param)
                     continue
                 if isinstance(upstream, LLMOp):
@@ -242,30 +207,29 @@ class _RetrievalBuilder(_LLMBuilder):
                     if row_count is not None and row_count > 1:
                         if not output.one_item_per_row:
                             raise ValueError(
-                                f"DataRetrievalOp '{op_id}' template param "
-                                f"{param.get('label')!r} references '{node}', which"
-                                " produces multiple rows but not one output item"
-                                " per row; only a plain local LLMChatOp or an"
-                                " LLMCompletionOp binds row-wise to a retrieval"
-                                " param, so this would silently drop every row"
-                                " but the first."
+                                f"DataRetrievalOp '{op_id}' template param"
+                                f" {param.label!r} references '{param.node}', which"
+                                " produces multiple rows but not one output item per"
+                                " row; only a plain local LLMChatOp or an"
+                                " LLMCompletionOp binds row-wise to a retrieval param,"
+                                " so this would silently drop every row but the first."
                             )
-                        param_row_counts[str(param.get("label"))] = row_count
+                        param_row_counts[str(param.label)] = row_count
                 if isinstance(upstream, LambdaOp):
-                    param = {
-                        **param,
-                        "path": self._op_output(upstream).read(
-                            param.get("path", ""),
-                            (
-                                f"DataRetrievalOp '{op_id}' template param "
-                                f"{param.get('label')!r}"
-                            ),
-                        ),
-                    }
-                if node not in seen:
-                    seen.add(node)
-                    dependencies.append(node)
-            resolved_params.append(param)
+                    path = self._op_output(upstream).read(
+                        param.path or "",
+                        f"DataRetrievalOp '{op_id}' template param {param.label!r}",
+                    )
+                    resolved = param.model_copy(update={"path": path})
+                elif upstream is not None:
+                    self._op_output(upstream).refuse_position(
+                        param.path or "",
+                        f"DataRetrievalOp '{op_id}' template param {param.label!r}",
+                    )
+                if param.node not in seen:
+                    seen.add(param.node)
+                    dependencies.append(param.node)
+            resolved_params.append(resolved)
 
         if len(set(param_row_counts.values())) > 1:
             raise ValueError(
@@ -288,27 +252,29 @@ class _RetrievalBuilder(_LLMBuilder):
         agent_model = None
         if mode in {"sql", "s3"}:
             if mode == "sql":
-                raw_table = spec.get("table")
-                if isinstance(raw_table, str) and raw_table.strip():
+                raw_table = spec.table
+                if raw_table is not None and raw_table.strip():
                     table = raw_table.strip()
                 else:
                     try:
                         table = self._extract_table_from_sql_template(template)
                     except ValueError:
                         pass
-                output_format = spec.get("output_format", "jsonl")
+                output_format = spec.output_format or "jsonl"
             else:
-                encoding = spec.get("encoding", "utf-8")
+                encoding = spec.encoding or "utf-8"
         if mode == "agent":
             description = template
-            if spec.get("schema_scope"):
-                schema_scope = spec["schema_scope"]
-            output_format = spec.get("output_format")
-            max_steps = spec.get("max_steps")
-            agent_model = spec.get("model")
+            if spec.schema_scope:
+                schema_scope = spec.schema_scope
+            output_format = spec.output_format
+            max_steps = spec.max_steps
+            agent_model = spec.model
         data_spec = RetrievalData(
             type="lumid",
             mode=mode,
+            rows=spec.rows,
+            require_non_empty_rows=False if spec.rows == ROWS_TABLE else None,
             lumid_data_url=envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             lumid_data_token=envs.LUMID_DATA_TOKEN,
             params=resolved_params,
@@ -320,7 +286,7 @@ class _RetrievalBuilder(_LLMBuilder):
             schema_scope=schema_scope,
             max_steps=max_steps,
             model=agent_model,
-            verify=spec.get("verify"),
+            verify=spec.verify,
         )
 
         node = self._create_runtime_op(
@@ -339,19 +305,17 @@ class _RetrievalBuilder(_LLMBuilder):
     def _resolve_profile_param(
         self,
         owner_node_id: str,
-        param: Any,
+        param: RetrievalParam,
         graph_dict: dict[str, Op],
         inputs_dict: dict[str, list[str]],
         input_ops_by_id: dict[str, InputOp],
         visited: set[str],
-    ) -> dict[str, Any] | None:
-        if not isinstance(param, dict):
-            return None
-        if "data" in param and isinstance(param.get("data"), dict):
+    ) -> RetrievalParam | None:
+        if param.data is not None:
             return param
-        label = param.get("label")
-        node_id = param.get("node")
-        if not isinstance(label, str) or not isinstance(node_id, str):
+        label = param.label
+        node_id = param.node
+        if label is None or node_id is None:
             return None
         upstream = self._resolve_param_upstream(node_id, graph_dict, input_ops_by_id)
         if upstream is None:
@@ -360,28 +324,26 @@ class _RetrievalBuilder(_LLMBuilder):
             values = inputs_dict.get(upstream.name) or []
             if not values:
                 return None
-            return {
-                "label": label,
-                "data": {"type": "list", "items": list(values)},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=list(values))
+            )
         if isinstance(upstream, LLMChatOp):
             sample = self._sample_value_from_structural_outputs(
                 owner_node_id=owner_node_id,
                 label=label,
-                path=param.get("path"),
+                path=param.path,
                 upstream_id=node_id,
                 upstream_op_kind=type(upstream).__name__,
                 structural_outputs=upstream.structural_outputs,
             )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         if isinstance(upstream, DataRetrievalOp):
             sample = self._sample_value_from_upstream_retrieval(
                 owner_node_id=owner_node_id,
                 label=label,
-                path=param.get("path"),
+                path=param.path,
                 upstream_id=node_id,
                 upstream=upstream,
                 graph_dict=graph_dict,
@@ -389,10 +351,9 @@ class _RetrievalBuilder(_LLMBuilder):
                 input_ops_by_id=input_ops_by_id,
                 visited=visited,
             )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         if isinstance(upstream, LambdaOp):
             sample_value = upstream.sample_value
             if sample_value is None:
@@ -405,11 +366,10 @@ class _RetrievalBuilder(_LLMBuilder):
                     "representative value, or set "
                     "LUMILAKE_DISABLE_DATA_PROFILE=1."
                 )
-            sample = self._project_sample_value(sample_value, param.get("path"))
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            sample = self._project_sample_value(sample_value, param.path)
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         raise ValueError(
             "Data profile preflight does not support upstream op kind "
             f"'{type(upstream).__name__}' for placeholder '{label}' at "
@@ -428,16 +388,14 @@ class _RetrievalBuilder(_LLMBuilder):
         inputs_dict = ctx.inputs_dict
         input_ops_by_id = ctx.input_ops_by_id
         visited: set[str] | None = None
-        spec = op.data_spec or {}
-        mode = spec["mode"]
+        spec = op.data_spec
+        mode = spec.mode
         if not op.profilable:
             return None
-        template = spec.get("template")
-        params = spec.get("params") or []
-        if not isinstance(template, str):
+        template = spec.template
+        params = spec.params
+        if template is None:
             raise ValueError(f"DataRetrievalOp {op_id} missing template")
-        if not isinstance(params, list):
-            raise ValueError(f"DataRetrievalOp {op_id} params must be a list")
         resolver_visited: set[str] = set(visited) if visited is not None else set()
         resolver_visited.add(op_id)
         if mode == "sql":
@@ -458,15 +416,13 @@ class _RetrievalBuilder(_LLMBuilder):
             ]
             constraints = self._build_data_profile_constraints(params, graph_dict)
 
-            table = spec.get("table")
-            if not isinstance(table, str):
+            table = spec.table
+            if table is None:
                 table = self._extract_table_from_sql_template(template)
             data_spec: DataSpecModel = SqlProfileData(
                 type="sql",
                 template=template,
-                params=[
-                    RetrievalParam.model_validate(param) for param in resolved_params
-                ],
+                params=resolved_params,
                 constraints=constraints,
                 num_test_queries=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
                 table=table,
@@ -490,10 +446,8 @@ class _RetrievalBuilder(_LLMBuilder):
             data_spec = S3ProfileData(
                 type="s3",
                 template=template,
-                params=[
-                    RetrievalParam.model_validate(param) for param in resolved_params
-                ],
-                encoding=spec.get("encoding", "utf-8"),
+                params=resolved_params,
+                encoding=spec.encoding or "utf-8",
             )
         return self._create_runtime_op(
             name=op_id,
@@ -602,8 +556,8 @@ class _RetrievalBuilder(_LLMBuilder):
                 f"placeholder '{label}' at node '{owner_node_id}': upstream "
                 f"'{upstream_id}' was already in the resolution stack."
             )
-        upstream_spec = upstream.data_spec or {}
-        sample_value = upstream_spec.get("sample_value")
+        upstream_spec = upstream.data_spec
+        sample_value = upstream_spec.sample_value
         if sample_value is not None:
             return self._project_sample_value(sample_value, path)
 
@@ -630,7 +584,7 @@ class _RetrievalBuilder(_LLMBuilder):
             input_ops_by_id=input_ops_by_id,
             visited=next_visited,
         )
-        upstream_mode = upstream_spec.get("mode")
+        upstream_mode = upstream_spec.mode
         if upstream_mode == "sql":
             return self._fetch_sql_sample_value(
                 owner_node_id=owner_node_id,
@@ -646,7 +600,7 @@ class _RetrievalBuilder(_LLMBuilder):
                 upstream_id=upstream_id,
                 prefix=rendered_query,
                 column=column,
-                encoding=upstream_spec.get("encoding", "utf-8"),
+                encoding=upstream_spec.encoding or "utf-8",
             )
         raise ValueError(
             "Data profile preflight cannot sample upstream "
@@ -686,17 +640,13 @@ class _RetrievalBuilder(_LLMBuilder):
         input_ops_by_id: dict[str, InputOp],
         visited: set[str],
     ) -> str:
-        upstream_spec = upstream.data_spec or {}
-        template = upstream_spec.get("template")
-        if not isinstance(template, str):
+        upstream_spec = upstream.data_spec
+        template = upstream_spec.template
+        if template is None:
             raise ValueError(
                 f"Upstream DataRetrievalOp '{upstream_id}' has no template"
             )
-        params = upstream_spec.get("params") or []
-        if not isinstance(params, list):
-            raise ValueError(
-                f"Upstream DataRetrievalOp '{upstream_id}' params must be a list"
-            )
+        params = upstream_spec.params
         resolved_params = [
             resolved
             for param in params
@@ -715,7 +665,7 @@ class _RetrievalBuilder(_LLMBuilder):
         constraints = self._build_data_profile_constraints(params, graph_dict)
         queries = _build_sample_data_profile_queries(
             template=template,
-            params=[RetrievalParam.model_validate(param) for param in resolved_params],
+            params=resolved_params,
             constraints=constraints,
             num_samples=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
             node_id=upstream_id,
@@ -724,7 +674,7 @@ class _RetrievalBuilder(_LLMBuilder):
             raise ValueError(
                 f"Upstream DataRetrievalOp '{upstream_id}' produced no sample query"
             )
-        upstream_mode = upstream_spec.get("mode")
+        upstream_mode = upstream_spec.mode
         if upstream_mode == "sql":
             return self._apply_limit_to_sample_sql(
                 queries[0],
@@ -881,18 +831,18 @@ class _RetrievalBuilder(_LLMBuilder):
 
     def _build_data_profile_constraints(
         self,
-        params: list[dict[str, Any]],
+        params: list[RetrievalParam],
         graph_dict: dict[str, Op],
     ) -> list[dict[str, Any]]:
         constraints: list[dict[str, Any]] = []
         seen: set[str] = set()
         for param in params:
-            label = param.get("label")
-            node_id = param.get("node")
-            path = param.get("path")
-            if not isinstance(label, str) or not isinstance(node_id, str):
+            label = param.label
+            node_id = param.node
+            path = param.path
+            if label is None or node_id is None:
                 continue
-            if not isinstance(path, str) or not path.startswith("items.output"):
+            if path is None or not path.startswith("items.output"):
                 continue
             if label in seen:
                 continue

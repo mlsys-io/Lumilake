@@ -13,6 +13,7 @@ from flowmesh.models.result.catalog import PythonResult
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     LambdaOp,
@@ -345,9 +346,10 @@ def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, st
     if rowwise:
         kwargs = {
             "rowwise_template": "Summarize {Stock}.",
-            "rowwise_columns": [
-                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}
-            ],
+            "rowwise_columns": build_column_table(
+                [{"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}],
+                "rowwise_columns",
+            ),
         }
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -788,7 +790,10 @@ def _build_rowwise_lambda_output_request() -> tuple[RequestInfo, str, str]:
         [OpMessage(role="user", content="Result: {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Result: {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("reply", llm)

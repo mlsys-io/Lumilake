@@ -15,6 +15,9 @@ with ``data_spec.type in {'sql','s3'}`` for retrieval, chained dependencies,
 and a mixed GPU/CPU worker pool.
 """
 
+from support.worker_profiles import worker_profile
+
+from lumilake_hook import GpuDevice
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from tests.support.data_specs import runtime_op
@@ -118,8 +121,8 @@ def test_halo_dp_schedules_cpu_leaf_after_gpu_node() -> None:
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
         worker_profiles={
-            "gpu-0": {"has_gpu": True},
-            "cpu-0": {"has_gpu": False},
+            "gpu-0": worker_profile(devices=(GpuDevice(),)),
+            "cpu-0": worker_profile(),
         },
     )
 

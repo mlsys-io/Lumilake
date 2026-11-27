@@ -4,13 +4,14 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake.envs import _positive_float
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import RetrievalParam
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     FormatOp,
     LambdaOp,
     LLMChatOp,
@@ -24,7 +25,6 @@ from lumilake_server.utils.data_profile_offload import (
     _build_sample_data_profile_queries,
     _collect_data_profile_param_candidates,
 )
-from tests.support.data_specs import wire
 
 
 def _build_profile_node(compiled: Any, op_id: str) -> Any:
@@ -41,7 +41,7 @@ class TestStructuralOutputTypeDefault:
             config=GenerationConfig(model="x"),
             structural_outputs=[{"name": "code", "type": "string"}],
         )
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -81,7 +81,7 @@ class TestStructuralOutputTypeDefault:
             config=GenerationConfig(model="x"),
             structural_outputs=[{"name": "n", "type": "int"}],
         )
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -124,7 +124,7 @@ class TestStructuralOutputTypeDefault:
                 }
             ],
         )
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -145,14 +145,16 @@ class TestStructuralOutputTypeDefault:
         )
         compiled = Graph.from_ops([as_output("r", report)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, retrieval.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "BUY"
 
 
 class TestSampleValueShortCircuit:
     def test_upstream_data_retrieval_sample_value_is_used_directly(self) -> None:
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -162,7 +164,7 @@ class TestSampleValueShortCircuit:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -183,12 +185,14 @@ class TestSampleValueShortCircuit:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "K-123"
 
     def test_sample_value_projects_by_path_when_record_shaped(self) -> None:
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -198,7 +202,7 @@ class TestSampleValueShortCircuit:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -219,7 +223,9 @@ class TestSampleValueShortCircuit:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "K-7"
 
 
@@ -240,7 +246,7 @@ class TestLiveSqlSampler:
         monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", fake_sampler)
 
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -249,7 +255,7 @@ class TestLiveSqlSampler:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -270,7 +276,9 @@ class TestLiveSqlSampler:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "fetched-key"
         assert len(calls) == 1
         assert "LIMIT" in calls[0].upper()
@@ -289,7 +297,7 @@ class TestLiveSqlSampler:
         )
 
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -298,7 +306,7 @@ class TestLiveSqlSampler:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -326,7 +334,7 @@ class TestDefaultDenyLiveSampling:
     def _make_upstream_downstream(self) -> tuple[Any, Any, Any]:
         """Return (stock, upstream, downstream) chain with no sample_value."""
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -335,7 +343,7 @@ class TestDefaultDenyLiveSampling:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -391,7 +399,9 @@ class TestDefaultDenyLiveSampling:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "live-key"
         assert len(sample_calls) == 1
         assert "LIMIT" in sample_calls[0].upper()
@@ -402,7 +412,7 @@ class TestDefaultDenyLiveSampling:
         monkeypatch.setattr(envs, "LUMILAKE_DATA_PROFILE_ENABLE_LIVE_SAMPLING", False)
 
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -412,7 +422,7 @@ class TestDefaultDenyLiveSampling:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -436,14 +446,16 @@ class TestDefaultDenyLiveSampling:
             node = _build_profile_node(compiled, downstream.id)
             mock_post.assert_not_called()
 
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "static-key"
 
 
 class TestRecursiveResolverAndCycleGuard:
     def test_two_hop_recursion_resolves_via_chained_sample_values(self) -> None:
         stock = input_placeholder("Stock")
-        hop1 = DataRetrievalOp(
+        hop1 = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -453,7 +465,7 @@ class TestRecursiveResolverAndCycleGuard:
             },
             inputs=[stock],
         )
-        hop2 = DataRetrievalOp(
+        hop2 = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -463,7 +475,7 @@ class TestRecursiveResolverAndCycleGuard:
             },
             inputs=[hop1],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -478,7 +490,9 @@ class TestRecursiveResolverAndCycleGuard:
         )
         compiled = Graph.from_ops([as_output("r", llm)]).compile(Stock=["NVDA"])
         node = _build_profile_node(compiled, downstream.id)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "hop2-b"
 
     def test_cycle_in_upstream_chain_is_rejected(
@@ -490,7 +504,7 @@ class TestRecursiveResolverAndCycleGuard:
         # because constructing a cyclic DAG through the public Op API
         # is intentionally blocked at graph compile time.
         stock = input_placeholder("Stock")
-        op_a = DataRetrievalOp(
+        op_a = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -499,7 +513,7 @@ class TestRecursiveResolverAndCycleGuard:
             },
             inputs=[stock],
         )
-        op_b = DataRetrievalOp(
+        op_b = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -517,11 +531,7 @@ class TestRecursiveResolverAndCycleGuard:
         with pytest.raises(ValueError, match="cycle"):
             builder._resolve_profile_param(
                 owner_node_id=op_a.id,
-                param={
-                    "label": "k",
-                    "node": "OP_B",
-                    "path": "items.table.x",
-                },
+                param=RetrievalParam(label="k", node="OP_B", path="items.table.x"),
                 graph_dict=graph_dict,
                 inputs_dict={stock.name: ["NVDA"]},
                 input_ops_by_id={},
@@ -535,7 +545,7 @@ class TestUnsupportedUpstreamRejection:
     ) -> None:
         stock = input_placeholder("Stock")
         fmt = FormatOp("prefix-{s}", s=stock)
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -559,7 +569,7 @@ class TestUnsupportedUpstreamRejection:
 
 class TestLambdaOpUpstreamSampleValue:
     def _build(self, lambda_op: LambdaOp, path: str | None = None) -> Any:
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -599,7 +609,9 @@ class TestLambdaOpUpstreamSampleValue:
             sample_value="K-123",
         )
         node = self._build(terms)
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "K-123"
 
     def test_lambda_upstream_sample_value_projects_by_path(self) -> None:
@@ -610,7 +622,9 @@ class TestLambdaOpUpstreamSampleValue:
             sample_value={"key": "K-7", "label": "alpha"},
         )
         node = self._build(terms, path="items.output.key")
-        sample = wire(node)["params"][0]["data"]["items"][0]
+        sample = node.data_spec.model_dump(exclude_none=True)["params"][0]["data"][
+            "items"
+        ][0]
         assert sample == "K-7"
 
 
@@ -739,7 +753,7 @@ class TestStructuralOutputsMissingOrFieldAbsent:
             [OpMessage(role="user", content=stock)],
             config=GenerationConfig(model="x"),
         )
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -775,7 +789,7 @@ class TestStructuralOutputsMissingOrFieldAbsent:
             config=GenerationConfig(model="x"),
             structural_outputs=[{"name": "foo", "type": "string"}],
         )
-        retrieval = DataRetrievalOp(
+        retrieval = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -835,7 +849,7 @@ class TestSqlSamplerTimeouts:
         monkeypatch.setattr(rg._RuntimeProfileSamplers, "sql", failing_sampler)
 
         stock = input_placeholder("Stock")
-        upstream = DataRetrievalOp(
+        upstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
@@ -844,7 +858,7 @@ class TestSqlSamplerTimeouts:
             },
             inputs=[stock],
         )
-        downstream = DataRetrievalOp(
+        downstream = retrieval_op(
             data_spec={
                 "type": "lumid",
                 "mode": "sql",
