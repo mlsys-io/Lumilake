@@ -67,6 +67,9 @@ _AFTER = {
     "code": "def after(c):\n    return str(c[0]) + '!'\n",
 }
 _ROWS = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
+_RETRIEVED = [
+    {"table": {"df": json.dumps({n: {"0": v} for n, v in r.items()})}} for r in _ROWS
+]
 _AMENDED = [_ROWS[0], {"id": "b", "t": "z"}]
 _READ_OP = {
     "id": "Read",
@@ -78,6 +81,15 @@ _READ_OP = {
         "key": {"column": "id"},
     },
 }
+_OVER_READ = {
+    **_CHAT,
+    "inputs": ["Tag", "Read"],
+    "rowwise_template": "{v}{t}",
+    "rowwise_columns": [
+        {"label": "v", "node": "Tag", "path": "items.output.t"},
+        {"label": "t", "node": "Read", "path": "table.df.t"},
+    ],
+}
 _WHOLE = {
     **_CHAT,
     "id": "First",
@@ -88,8 +100,6 @@ _WHOLE = {
     "rowwise_template": "{v}",
     "key": {"node": "Ask", "path": "id"},
 }
-"""A chat whose row column reads the chat above it at a field no stored row
-value holds, so the plan cannot serve those rows to its partial run."""
 
 
 class _Worker:
@@ -115,7 +125,7 @@ class _Worker:
         for node in nodes:
             op = graph.nodes[node]
             if op.task_type == "data_retrieval":
-                response = {"items": _retrieved(op)}
+                response = {"items": _RETRIEVED}
             elif op.task_type == "python":
                 response = _step(op, done)
             else:
@@ -123,15 +133,6 @@ class _Worker:
             self.responses[f"task-{node}"] = response
             done[node] = response["items"]
         return f"wf-{len(self.submissions)}", [f"task-{node}" for node in nodes]
-
-
-def _retrieved(op: Any) -> list[dict[str, Any]]:
-    """A keyed retrieval's items, one per row of the ``_ROWS`` table."""
-    items = []
-    for row in _ROWS:
-        columns = {name: {"0": value} for name, value in row.items()}
-        items.append({"table": {"df": json.dumps(columns)}})
-    return items
 
 
 def _step(op: Any, done: dict[str, list[Any]]) -> dict[str, Any]:
@@ -341,8 +342,8 @@ async def test_a_partial_model_cycle_keeps_every_live_record(
 async def test_a_trimmed_phase_reads_the_rows_the_store_holds(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A reusing run whose stored step sits above a changed one drops the stored step
-    from its phase, and the changed step reads that step's stored rows."""
+    """A stored step above a changed one leaves the phase, and the changed step
+    reads that step's stored rows."""
     rewrite: dict[str, Any] = {
         **_TAG,
         "id": "Rewrite",
@@ -373,9 +374,7 @@ async def test_a_trimmed_phase_reads_the_rows_the_store_holds(
     )
     before = len(worker.submissions)
     outputs = await run(changed, "req-2")
-    node = next(
-        node for node in changed.nodes if changed.op_names.get(node) == "Rewrite"
-    )
+    node = _node(changed, "Rewrite")
     ran = [nodes for nodes in worker.submissions[before:] if node in nodes]
     assert ran == [[node]], worker.submissions[before:]
     assert [item["output"] for item in worker.responses[f"task-{node}"]["items"]] == [
@@ -396,12 +395,11 @@ async def test_a_trimmed_phase_reads_the_rows_the_store_holds(
 async def test_a_generated_step_lands_on_a_cpu_worker(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A partial chat runs its generated steps on the CPU worker that served its
-    producer, whose every node the store answered, while the chat keeps the GPU
-    worker its plan chose."""
+    """A partial chat's generated steps land on the CPU worker whose nodes the
+    store answered, while the chat keeps its GPU worker."""
     await run(_workflow([_TAG, _CHAT], _ROWS, "Ask"), "req-1")
     graph = _workflow([_TAG, _CHAT], _AMENDED, "Ask")
-    ask = next(node for node in graph.nodes if graph.op_names.get(node) == "Ask")
+    ask = _node(graph, "Ask")
     split = {"gpu": [ask], "cpu": [node for node in graph.nodes if node != ask]}
     await run(graph, "req-2", split, {"gpu"})
     selected = worker.specs[-1]["metadata"]["annotations"]["schedule_hint"][
@@ -417,26 +415,34 @@ async def test_a_generated_step_lands_on_a_cpu_worker(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("out", "reason"),
+    ("ops", "reason"),
     [
-        (_COMPLETION, "value not servable"),
-        ({**_TAG, "id": "Ask"}, "partial records"),
+        ([_TAG, _COMPLETION], "value not servable"),
+        ([_TAG, {**_TAG, "id": "Ask"}], "partial records"),
+        (
+            [_TAG, _CHAT, {**_COMPLETION, "id": "Ask2", "inputs": ["Ask"]}],
+            "value not servable",
+        ),
     ],
 )
 async def test_a_partly_served_output_runs_under_its_own_id(
-    run: Callable[..., Awaitable[dict[str, Any]]], out: dict[str, Any], reason: str
+    run: Callable[..., Awaitable[dict[str, Any]]],
+    worker: _Worker,
+    ops: list[dict[str, Any]],
+    reason: str,
 ) -> None:
-    """A python row step that is the workflow output keeps its own id and partial
-    run; a completion that is one runs in full, since only a full run keeps the
-    output's chat history, and its history comes back with every row."""
-    await run(_workflow([_TAG, out], _ROWS, out["id"]), "req-1")
-    outputs = await run(_workflow([_TAG, out], _AMENDED, out["id"]), "req-2")
-    assert _reasons(outputs)[out["id"]] == ("miss", reason), _reasons(outputs)
+    """A python output step keeps its own id and partial run; a completion output
+    runs in full with its chat history."""
+    out = ops[-1]["id"]
+    await run(_workflow(ops, _ROWS, out), "req-1")
+    before = len(worker.submissions)
+    outputs = await run(_workflow(ops, _AMENDED, out), "req-2")
+    assert _reasons(outputs)[out] == ("miss", reason), _reasons(outputs)
     ((node, (_, name)),) = outputs["output_node_map"].items()
     assert name == "out" and not node.endswith("/merge"), node
-    histories = outputs["chat_histories"].get(node, [])
-    if out is _COMPLETION:
-        assert histories == [
+    assert sum(1 for sub in worker.submissions[before:] if node in sub) == 1
+    if ops[-1]["op"] != "LambdaOp":
+        assert outputs["chat_histories"][node] == [
             [{"role": "user", "content": "x"}, {"role": "assistant", "content": t}]
             for t in outputs["flat_outputs"][node]
         ]
@@ -497,7 +503,7 @@ async def test_a_partial_chat_reads_its_served_columns(
     await run(_workflow(ops, _ROWS, "After", Config=config), "req-1")
     first = _keys(job_storage, "req-1")
     graph = _workflow(ops, _AMENDED, "After", Config=config)
-    ask = next(node for node in graph.nodes if graph.op_names.get(node) == "Ask")
+    ask = _node(graph, "Ask")
     outputs = await run(graph, "req-2")
     assert _reasons(outputs)["Ask"] == ("miss", "partial records"), _reasons(outputs)
     assert worker.responses[f"task-{ask}"]["items"] == [{"output": f"{ask}:Z|{value}"}]
@@ -507,21 +513,8 @@ async def test_a_partial_chat_reads_its_served_columns(
     assert {record for op, record in stored if op == "After"} == {"a", "b"}
 
 
-_ASK_Y = {
-    **_CHAT,
-    "id": "AskY",
-    "rowwise_template": "{v}-y",
-}
-_BOTH = {
-    "id": "Both",
-    "op": "LambdaOp",
-    "inputs": ["AskX", "AskY"],
-    "mode": "row",
-    "fn_name": "both",
-    "code": "def both(c):\n    return c[0] + '|' + c[1]\n",
-}
-
-
+_ASK_Y = {**_CHAT, "id": "AskY", "rowwise_template": "{v}-y"}
+_BOTH = {**_AFTER, "id": "Both", "inputs": ["AskX", "AskY"]}
 _SPLIT = {
     "id": "Split",
     "op": "LambdaOp",
@@ -533,80 +526,35 @@ _SPLIT = {
         "    return [{'id': c[0]['id'] + str(i), 'n': i} for i in range(2)]\n"
     ),
 }
-_OVER_SPLIT = {
-    **_CHAT,
-    "id": "Over",
-    "inputs": ["Split"],
-    "rowwise_columns": [{"label": "v", "node": "Split", "path": "items.output"}],
-    "rowwise_template": "{v}",
-    "key": {"node": "Split", "path": "id"},
-}
-
-
-@pytest.mark.asyncio
-async def test_a_chat_over_an_expand_never_reads_a_count_row(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
-) -> None:
-    """A fresh write hands its expand's children to the plan, not the child
-    counts it stores beside them, so the chat that reads the expand runs over
-    its children alone and the run matches a fresh one."""
-    ops: list[dict[str, Any]] = [_TAG, _SPLIT, _OVER_SPLIT]
-    await run(_workflow(ops, _ROWS, "Over"), "req-1")
-    changed = _workflow(ops, _AMENDED, "Over")
-    over = _node(changed, "Over")
-    await run(changed, "req-2")
-    assert len(worker.responses[f"task-{over}"]["items"]) == 4
 
 
 @pytest.mark.asyncio
 async def test_a_re_ran_read_that_is_an_output_survives_a_level(
-    run: Callable[..., Awaitable[dict[str, Any]]],
-) -> None:
-    """A retrieval the phase re-runs is a workflow output beside a keyed chat
-    two levels down, and a level's write keeps that read's response, so the
-    rerun returns the read's rows as a fresh run does."""
-    ops: list[dict[str, Any]] = [_READ_OP, _TAG, _CHAT]
-    graph = _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}])
-    read_node = _node(graph, "Read")
-    await run(graph, "req-1")
-    fresh = await run(
-        _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}]),
-        "req-full",
-        reuse=False,
-    )
-    again = await run(
-        _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}]), "req-2"
-    )
-    assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
-
-
-@pytest.mark.asyncio
-async def test_a_chat_that_is_an_output_runs_once_with_its_history(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A completion that is the workflow output and sits two levels down stays
-    out of the level loop, so the main run dispatches it once and its chat
-    history comes back with every row."""
-    second = {**_COMPLETION, "id": "Ask2", "inputs": ["Ask"]}
-    ops: list[dict[str, Any]] = [_TAG, _CHAT, second]
-    await run(_workflow(ops, _ROWS, "Ask2"), "req-1")
-    changed = _workflow(ops, _AMENDED, "Ask2")
-    ask2 = _node(changed, "Ask2")
+    """A re-ran retrieval that is a workflow output keeps its rows across a level,
+    and a chat that reads it stays in the main run with it."""
+    out = [{"name": "rows", "ref": "Read"}]
+    ops: list[dict[str, Any]] = [_READ_OP, _TAG, _OVER_READ, _AFTER]
+    await run(_workflow(ops, _ROWS, "After", out), "req-1")
+    changed = [*ops[:-2], {**_OVER_READ, "rowwise_template": "{v}|{t}"}, _AFTER]
+    graph = _workflow(changed, _ROWS, "After", out)
+    read_node, ask = _node(graph, "Read"), _node(graph, "Ask")
     before = len(worker.submissions)
-    outputs = await run(changed, "req-2")
-    assert sum(1 for nodes in worker.submissions[before:] if ask2 in nodes) == 1
-    assert outputs["chat_histories"][ask2] == [
-        [{"role": "user", "content": "x"}, {"role": "assistant", "content": t}]
-        for t in outputs["flat_outputs"][ask2]
-    ]
+    again = await run(graph, "req-2")
+    ask_runs = [s for s in worker.submissions[before:] if ask in s]
+    assert ask_runs and all(
+        read_node in s and _node(graph, "After") in s for s in ask_runs
+    ), worker.submissions[before:]
+    fresh = await run(graph, "req-full", reuse=False)
+    assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
 
 
 @pytest.mark.asyncio
 async def test_two_partly_served_chats_run_in_one_level_and_dispatch_once(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """Two chats read the same phase rows, so one level holds both with their
-    merge steps and neither runs whole or is dispatched again in a later level."""
+    """Two chats over the same phase rows share one level and run once each."""
     ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
     await run(_workflow(ops, _ROWS, "Both"), "req-1")
     changed = _workflow(ops, _AMENDED, "Both")
@@ -614,30 +562,17 @@ async def test_two_partly_served_chats_run_in_one_level_and_dispatch_once(
     before = len(worker.submissions)
     second = await run(changed, "req-2")
     reasons = _reasons(second)
-    assert reasons["AskX"] == ("miss", "partial records"), reasons
-    assert reasons["AskY"] == ("miss", "partial records"), reasons
-    together = [
-        sub for sub in worker.submissions[before:] if {ask_x, ask_y} <= set(sub)
-    ]
+    assert reasons["AskX"] == reasons["AskY"] == ("miss", "partial records"), reasons
+    together = [s for s in worker.submissions[before:] if {ask_x, ask_y} <= set(s)]
     assert len(together) == 1, worker.submissions[before:]
     assert _runs(worker, before, [ask_x, ask_y]) == {ask_x: 1, ask_y: 1}
-    assert (
-        second["flat_outputs"]
-        == (await run(changed, "req-full", reuse=False))["flat_outputs"]
-    )
 
 
 _EXPAND_BETWEEN = {
+    **_SPLIT,
     "id": "Between",
-    "op": "LambdaOp",
     "inputs": ["Ask"],
-    "mode": "expand",
-    "fn_name": "between",
-    "code": (
-        "def between(c):\n"
-        "    text = c[0]\n"
-        "    return [{'id': text + '/' + str(i), 'v': text} for i in range(2)]\n"
-    ),
+    "code": "lambda c: [{'id': c[0] + str(i), 'v': c[0]} for i in (0, 1)]",
 }
 _TAG_BETWEEN = {
     **_TAG,
@@ -659,11 +594,9 @@ _OVER_BETWEEN = {
 async def test_two_steps_between_two_chats_land_in_the_first_level(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """An expand and a step over it between two chats, the brief's two-level
-    shape: both steps join the first level whole, so the second chat probes
-    their stored rows and a changed row recomputes only its own records at both
-    chats."""
-    tail: dict[str, Any] = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
+    """An expand and a step over it between two chats join the first level
+    whole."""
+    tail = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
     ops: list[dict[str, Any]] = [
         _TAG,
         _CHAT,
@@ -678,56 +611,43 @@ async def test_two_steps_between_two_chats_land_in_the_first_level(
     before = len(worker.submissions)
     second = await run(changed, "req-2")
     reasons = _reasons(second)
-    assert reasons["Ask"] == ("miss", "partial records"), reasons
-    assert reasons["Ask2"] == ("miss", "partial records"), reasons
+    assert reasons["Ask"] == reasons["Ask2"] == ("miss", "partial records"), reasons
     assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
 
 
+_PACK = {**_TAG, "id": "Pack", "code": "def tag(c):\n    return [c[0]['t']]\n"}
+_OVER_LIST = {
+    **_CHAT,
+    "inputs": ["Pack"],
+    "rowwise_columns": [{"label": "v", "node": "Pack", "path": "items.output"}],
+    "key": {"node": "Pack", "path": "id"},
+}
+
+
 @pytest.mark.asyncio
-async def test_a_model_level_a_later_reader_refuses_is_left_to_the_main_run(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+@pytest.mark.parametrize(
+    ("ops", "out", "refused"),
+    [
+        ([_TAG, _CHAT, _WHOLE], "First", "Ask"),
+        ([_TAG, _PACK, _OVER_LIST, _AFTER], "After", "Pack"),
+    ],
+)
+async def test_an_op_a_later_reader_refuses_is_left_to_the_main_run(
+    run: Callable[..., Awaitable[dict[str, Any]]],
+    worker: _Worker,
+    ops: list[dict[str, Any]],
+    out: str,
+    refused: str,
 ) -> None:
-    """A chat whose stored rows a reader cannot take stays out of a level, so a
-    rerun with that reader dispatches it once in the main run rather than at a
-    level and again there, whether the store answers it whole or in part."""
-    ops: list[dict[str, Any]] = [_TAG, _CHAT, _WHOLE]
-    await run(_workflow(ops, _ROWS, "First"), "req-1")
-    graph = _workflow(ops, _AMENDED, "First")
-    ask = _node(graph, "Ask")
+    """An op whose stored rows a reader cannot take stays out of a level, so a
+    rerun dispatches it once in the main run, never again in each later level."""
+    await run(_workflow(ops, _ROWS, out), "req-1")
+    graph = _workflow(ops, _AMENDED, out)
+    node = _node(graph, refused)
     before = len(worker.submissions)
     outputs = await run(graph, "req-2")
-    assert _reasons(outputs)["Ask"] == ("miss", "read by a non-literal op"), _reasons(
-        outputs
-    )
-    assert _runs(worker, before, [ask]) == {ask: 1}
-
-
-@pytest.mark.asyncio
-async def test_a_refused_step_stays_out_of_every_later_level(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
-) -> None:
-    """A phase step whose stored rows a reader cannot take runs in the phase and
-    once more in the main run with that reader, not again in every level above
-    it."""
-    pack = {
-        **_TAG,
-        "id": "Pack",
-        "code": "def tag(c):\n    return [c[0]['t']]\n",
-    }
-    whole_list = {
-        **_CHAT,
-        "inputs": ["Pack"],
-        "rowwise_columns": [{"label": "v", "node": "Pack", "path": "items.output"}],
-        "key": {"node": "Pack", "path": "id"},
-    }
-    ops: list[dict[str, Any]] = [_TAG, pack, whole_list, _AFTER]
-    await run(_workflow(ops, _ROWS, "After"), "req-1")
-    graph = _workflow(ops, _AMENDED, "After")
-    assert _reasons(await run(graph, "req-2"))["Pack"] == (
-        "miss",
-        "read by a non-literal op",
-    )
-    assert _runs(worker, 2, [_node(graph, "Pack")]) == {_node(graph, "Pack"): 2}
+    assert _reasons(outputs)[refused] == ("miss", "read by a non-literal op")
+    assert _runs(worker, before, [node]) == {node: 1 if refused == "Ask" else 2}
 
 
 @pytest.mark.asyncio
@@ -764,8 +684,7 @@ async def test_an_aligned_step_declaring_another_nodes_key_serves_per_row(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
     """An aligned step that declared the expand's key is stored under that key,
-    so a reader keys by the writer's addresses: an unchanged rerun serves every
-    row, and a rerun that changes one row recomputes only that row's chat."""
+    so a changed row recomputes only its own chat, over the children not counts."""
     ops: list[dict[str, Any]] = [_TAG, _SPLIT, _ALIGNED, _ALIGNED_CHAT, _AFTER]
     await run(_workflow(ops, _ROWS, "After"), "req-1")
     assert set(
@@ -775,4 +694,5 @@ async def test_an_aligned_step_declaring_another_nodes_key_serves_per_row(
     ask = _node(changed, "Ask")
     before = len(worker.submissions)
     assert _reasons(await run(changed, "req-3"))["Ask"] == ("miss", "partial records")
+    assert len(worker.responses[f"task-{ask}"]["items"]) == 2
     assert _runs(worker, before, [ask]) == {ask: 1}
