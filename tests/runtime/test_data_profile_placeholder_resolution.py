@@ -539,6 +539,23 @@ class TestRecursiveResolverAndCycleGuard:
             )
 
 
+class TestResolvedParamIsTyped:
+    def test_resolved_param_is_a_retrieval_param(self) -> None:
+        """The resolver hands back the model itself, not its dump."""
+        stock = input_placeholder("Stock")
+        builder = rg.RuntimeGraphBuilder()
+        resolved = builder._resolve_profile_param(
+            owner_node_id="owner",
+            param=RetrievalParam(label="k", node=stock.id),
+            graph_dict={stock.id: stock},
+            inputs_dict={stock.name: ["NVDA"]},
+            input_ops_by_id={stock.id: stock},
+            visited=set(),
+        )
+        assert isinstance(resolved, RetrievalParam)
+        assert resolved.data is not None and resolved.data.items == ["NVDA"]
+
+
 class TestUnsupportedUpstreamRejection:
     def test_format_op_upstream_is_rejected_with_actionable_message(
         self,
