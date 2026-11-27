@@ -7,10 +7,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictStr,
     field_validator,
 )
 
+from lumilake_server.data_specs import JoinHow
 from lumilake_server.ops.ops import Op
 from lumilake_server.ops.spec_validation import validate_fields
 
@@ -26,6 +28,8 @@ class JoinSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     by: list[StrictStr]
+    how: JoinHow = JoinHow.LEFT
+    require_match: StrictBool = False
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
@@ -96,6 +100,14 @@ class JoinOp(Op):
         return self.spec.by
 
     @property
+    def how(self) -> JoinHow:
+        return self.spec.how
+
+    @property
+    def require_match(self) -> bool:
+        return self.spec.require_match
+
+    @property
     def on_missing(self) -> Literal["null_fill", "fail_row"]:
         return self.spec.on_missing
 
@@ -128,6 +140,8 @@ class JoinOp(Op):
                 field: self.inputs[index].id
                 for field, index in self.attach_indices.items()
             },
+            "how": self.how,
+            "require_match": self.require_match,
             "on_missing": self.on_missing,
         }
 

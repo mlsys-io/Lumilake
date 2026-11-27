@@ -3,12 +3,11 @@
 Field names are the canonical wire contract; remote implementations must match exactly.
 """
 
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict
 
-from lumilake_hook import WorkerProfile
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.runtime.runtime_graph import RuntimeGraphSchema
 
 
@@ -18,7 +17,7 @@ class ScheduleRequest(BaseModel):
     graph: RuntimeGraphSchema
     worker_names: list[str]
     worker_profiles: Mapping[str, WorkerProfile]
-    data_profile_results: dict[str, list[Any]] | None = None
+    data_profile_results: Mapping[str, Sequence[DataProfileResultRow]] | None = None
     optimizer_type: str = "halo"
 
 

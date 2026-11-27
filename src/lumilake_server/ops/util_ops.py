@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable, Sequence
-from typing import Any, Literal, Self
+from enum import StrEnum
+from typing import Any, Self
 
 import dill
 from pydantic import (
@@ -28,7 +29,17 @@ MAX_IMAGE_TIMEOUT_S = 3600.0
 MIN_MEMORY_MB = 128
 MAX_MEMORY_MB = 8192
 
-LambdaMode = Literal["row", "list", "aligned", "expand", "reduce"]
+
+class LambdaMode(StrEnum):
+    """The modes a LambdaOp accepts: the row and whole-result python modes."""
+
+    ROW = "row"
+    LIST = "list"
+    ALIGNED = "aligned"
+    EXPAND = "expand"
+    REDUCE = "reduce"
+
+
 RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
@@ -44,7 +55,7 @@ class LambdaSpec(BaseModel):
 
     fn_name: StrictStr
     code: StrictStr = Field(alias="_code")
-    mode: LambdaMode = "row"
+    mode: LambdaMode = LambdaMode.ROW
     by: StrictStr | None = None
     timeout_s: StrictFloat | None = Field(default=None, gt=0)
     memory_mb: StrictInt | None = Field(
@@ -67,10 +78,10 @@ class LambdaSpec(BaseModel):
 
     @model_validator(mode="after")
     def _by_needs_reduce(self) -> Self:
-        if self.mode != "reduce":
+        if self.mode is not LambdaMode.REDUCE:
             if self.by is not None:
                 raise ValueError(
-                    f"'by' is only valid in reduce mode (got mode {self.mode!r})"
+                    f"'by' is only valid in reduce mode (got mode {self.mode.value!r})"
                 )
             return self
         parts = self.by.split(".") if self.by is not None else []
@@ -250,7 +261,7 @@ class LambdaOp(Op):
         inputs: Sequence[list[str] | Op],
         fn: Callable[..., Any],
         code: str | None = None,
-        mode: LambdaMode = "row",
+        mode: LambdaMode = LambdaMode.ROW,
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
@@ -340,7 +351,7 @@ class LambdaOp(Op):
     @property
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
-        return self.mode in ("list", "aligned")
+        return self.mode in (LambdaMode.LIST, LambdaMode.ALIGNED)
 
     def _serialize(self) -> dict[str, Any]:
         data = self.spec.model_dump(by_alias=True, exclude_none=True)

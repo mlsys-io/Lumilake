@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import PythonData, PythonMode
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -562,7 +562,7 @@ def test_forward_grouped_list_aggregate_column_materializes():
     assert materializer["id"] == materializer_id
     assert materializer["op"] == "LambdaOp"
     assert materializer["inputs"] == [input_id]
-    assert materializer["mode"] == "aligned"
+    assert materializer["mode"] == PythonMode.ALIGNED
     assert "return columns[0]" in materializer["code"]
 
 
@@ -823,7 +823,7 @@ def test_forward_serialized_dataframe_columns_materialize():
         assert column["path"] == "items.output"
         materializer = next(o for o in ops if o["id"] == materializer_id)
         assert materializer["op"] == "LambdaOp"
-        assert materializer["mode"] == "aligned"
+        assert materializer["mode"] == PythonMode.ALIGNED
         assert materializer["inputs"] == [input_id]
 
 

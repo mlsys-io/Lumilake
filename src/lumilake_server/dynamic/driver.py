@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict
 
 from lumilake_server import ops as ops_pkg
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.data_specs import PythonMode
 from lumilake_server.dynamic.blocks import (
     INPUT_NODE_ID,
     OBSERVATION_NODE_ID,
@@ -475,7 +476,7 @@ def forward_refs(
                     "inputs": [input_id],
                     "fn_name": "decode_rows",
                     "code": "def decode_rows(columns):\n    return columns[0]\n",
-                    "mode": "aligned",
+                    "mode": PythonMode.ALIGNED,
                 }
             )
             materialized.add(input_id)

@@ -35,6 +35,7 @@ from flowmesh.exceptions import (
     FlowMeshConnectionError,
     NotFoundError,
 )
+from flowmesh.models.common import LogEvent
 from flowmesh.models.result import (
     AnyExecutorResult,
     APIResult,
@@ -62,7 +63,7 @@ from pydantic import (
 
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
+from lumilake_hook import DataProfileResultRow, ResourceAction, ResourceKind, UsageRow
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     STOP,
@@ -2911,7 +2912,7 @@ async def _run_job(
             )
             for task in data_profile_tasks:
                 result = await asyncio.to_thread(run_data_profile_task, task.payload)
-                data_profile_registry[task.task_key] = result.model_dump(mode="json")
+                data_profile_registry[task.task_key] = result
             if data_profile_tasks:
                 logger.info(
                     "Ran %d data profile task(s) inline for job %s",
@@ -3414,9 +3415,7 @@ async def preview_job(
                     result = await asyncio.to_thread(
                         run_data_profile_task, task.payload
                     )
-                    data_profile_registry[task.task_key] = result.model_dump(
-                        mode="json"
-                    )
+                    data_profile_registry[task.task_key] = result
                     preview_task_keys.append(task.task_key)
                     preview_data_profile_sources.setdefault(
                         task.payload.public_graph_name, []
@@ -3435,7 +3434,7 @@ async def preview_job(
                     detail=f"data profile preflight failed: {exc}",
                 ) from exc
 
-        preview_data_profile_results: dict[str, list[dict[str, Any]]] | None = (
+        preview_data_profile_results: dict[str, list[DataProfileResultRow]] | None = (
             {} if envs.LUMILAKE_DISABLE_DATA_PROFILE else None
         )
         try:
@@ -4372,17 +4371,8 @@ class JobWorkflowsResponse(BaseModel):
     data: JobWorkflowsPayload = Field(description="Job workflows payload.")
 
 
-class LogEventPayload(BaseModel):
-    ts: str | None = None
-    workflow_id: str | None = None
-    task_id: str | None = None
-    worker_id: str | None = None
-    node_id: str | None = None
-    level: str | None = None
-    stream: str | None = None
-    source: str | None = None
-    message: str | None = None
-    fields: dict[str, Any] | None = None
+class LogEventPayload(LogEvent):
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LogEntryPayload(BaseModel):
@@ -4844,7 +4834,7 @@ async def get_job_workflow_logs(
     entries = [
         LogEntryPayload(
             cursor=entry.cursor,
-            event=LogEventPayload.model_validate(entry.event.model_dump()),
+            event=LogEventPayload.model_validate(entry.event),
         )
         for entry in response.entries
     ]
@@ -4905,7 +4895,7 @@ async def stream_job_workflow_logs(
                 data = json.dumps(
                     LogEntryPayload(
                         cursor=entry.cursor,
-                        event=LogEventPayload.model_validate(entry.event.model_dump()),
+                        event=LogEventPayload.model_validate(entry.event),
                     ).model_dump()
                 )
                 yield f"data: {data}\n\n"

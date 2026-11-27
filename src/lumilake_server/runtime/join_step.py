@@ -45,6 +45,8 @@ _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
 _BY = _JOIN["by"]
+_HOW = _JOIN["how"]
+_REQUIRE_MATCH = _JOIN["require_match"]
 _ON_MISSING = _JOIN["on_missing"]
 
 
@@ -105,6 +107,18 @@ def _key_of(row, where):
     return _encoded(value, where)
 
 
+def _required(output, keys, where):
+    """With require_match, fail on a key one input carries and another lacks."""
+    if not _REQUIRE_MATCH:
+        return
+    for key in output:
+        if key not in keys:
+            raise ValueError("%s: key %s is missing from %r" % (_NODE, key, where))
+    for key in keys:
+        if key not in output:
+            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
+
+
 def _merged(merged, field, value, where):
     if field in merged and merged[field] != value:
         raise ValueError(
@@ -119,17 +133,11 @@ def _merge(row, more, where):
         _merged(row, name, value, where)
 
 
-def _required(keyed, keys, where):
-    """Fail the job on a further-input key the first input does not carry."""
-    for key in keys:
-        if key not in keyed:
-            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
-
-
 def _keyed(rows, where):
     """One further input's rows by key; a row whose key cannot be read fails the job."""
     keyed = {{}}
     marked = {{}}
+    appended = []
     for row in rows:
         key = _key_of(row, where)
         if key is None:
@@ -174,13 +182,14 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             % (_NODE, len(values), len(rows), _named(_PLAN[source_index]))
         )
     paired = dict.fromkeys(key for _, key in pairs)
-    _required(keyed, paired, where)
     for value, key in pairs:
         if key in marked:
             continue
         carried = failure_of(value)
         if carried is not None:
             marked[key] = carried
+            continue
+        if key not in keyed:
             continue
         _merged(keyed[key], name, value, where)
     return paired
@@ -193,6 +202,7 @@ def main(inputs):
     rows = _rows(columns[0], first)
     keyed = {{}}
     marked = {{}}
+    appended = []
     for row in rows:
         carried = carried_marker((row,))
         # The first input still emits one row per its row: a marked row whose key cannot
@@ -210,6 +220,10 @@ def main(inputs):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
         _required(keyed, more, where)
+        if _HOW == "inner":
+            for key in [key for key in keyed if key not in more]:
+                del keyed[key]
+                marked.pop(key, None)
         missing = [key for key in keyed if key not in more]
         if missing and _ON_MISSING == "fail_row":
             # Only the row whose key a further input lacks becomes a marker; the other
@@ -222,6 +236,11 @@ def main(inputs):
                 # A marked row's output is its marker: its other fields and every
                 # further input for that key are skipped.
                 continue
+            if key not in keyed:
+                if _HOW != "full":
+                    continue
+                keyed[key] = more[key].copy()
+                appended.append(key)
             if key in more_marked:
                 marked[key] = more_marked[key]
                 continue
@@ -234,6 +253,7 @@ def main(inputs):
         ]
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         paired = _attach(keyed, marked, name, source_index, values, more, where)
+        _required(dict.fromkeys(paired), keyed, where)
         if _ON_MISSING == "fail_row":
             # Only a row the attach source lacks a key for becomes a marker; under
             # null_fill its field is simply left out.
@@ -243,7 +263,11 @@ def main(inputs):
     items = []
     for row in rows:
         key = _key_of(row, first)
-        output = carried_marker((row,)) if key is None else marked.get(key, keyed[key])
-        items.append({{"output": output}})
+        if key is None:
+            items.append({{"output": carried_marker((row,))}})
+        elif key in keyed:
+            items.append({{"output": marked.get(key, keyed[key])}})
+    for key in appended:
+        items.append({{"output": marked.get(key, keyed[key])}})
     return {{"items": items}}
 '''

@@ -10,14 +10,14 @@ import logging
 import queue
 import sys
 import types
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from typing import Any
 
 import lumid_hooks
 import pytest
 
 from lumilake import envs
-from lumilake_hook import BaseBindings, WorkerProfile
+from lumilake_hook import BaseBindings, DataProfileResultRow, WorkerProfile
 from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
@@ -39,7 +39,9 @@ class _FakeOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         assignment: dict[str, list[str]] = {w: [] for w in worker_names}
         for node_id in graph.node_order:
