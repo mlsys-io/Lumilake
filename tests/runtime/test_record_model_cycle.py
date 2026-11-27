@@ -446,3 +446,38 @@ async def test_a_partial_chat_reads_its_served_columns(
     assert stored["Ask", "a"] == first["Ask", "a"]
     assert stored["Ask", "b"] != first["Ask", "b"]
     assert {record for op, record in stored if op == "After"} == {"a", "b"}
+
+
+_SECOND_CHAT = {
+    **_CHAT,
+    "id": "Ask2",
+    "inputs": ["Ask"],
+    "rowwise_columns": [{"label": "v", "node": "Ask", "path": "items.output"}],
+    "key": {"node": "Ask", "path": "id"},
+}
+
+
+@pytest.mark.asyncio
+async def test_a_second_model_level_decides_per_record(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A second chat reads the first, so a changed row recomputes only its own
+    records at both levels and an unchanged rerun serves both."""
+    tail: dict[str, Any] = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
+    ops: list[dict[str, Any]] = [_TAG, _CHAT, _SECOND_CHAT, tail]
+    await run(_workflow(ops, _ROWS, "Tail"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Tail")
+    names = {node: changed.op_names.get(node) for node in changed.nodes}
+    ask, ask2 = (node for node, name in names.items() if name in ("Ask", "Ask2"))
+    before = len(worker.submissions)
+    second = await run(changed, "req-2")
+    reasons = _reasons(second)
+    assert reasons["Ask"] == ("miss", "partial records"), reasons
+    assert reasons["Ask2"] == ("miss", "partial records"), reasons
+    ran = {
+        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
+        for node in (ask, ask2)
+    }
+    assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
+    again = await run(changed, "req-3")
+    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
