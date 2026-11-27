@@ -286,7 +286,6 @@ def main(inputs):
             for key in dropped:
                 del keyed[key]
                 marked.pop(key, None)
-        added = set()
         for key, additions in more.items():
             if key in marked:
                 # A marked row's output is its marker: its other fields and every
@@ -298,15 +297,11 @@ def main(inputs):
                 # A key only this input carries is emitted as this input's own rows.
                 keyed[key] = additions
                 appended.append(key)
-                added.add(key)
                 if key in more_marked:
                     marked[key] = more_marked[key]
                 continue
             if key in more_marked:
                 marked[key] = more_marked[key]
-                continue
-            if key in added:
-                # A key this input just appended already carries its fields.
                 continue
             keyed[key] = _join_rows(keyed[key], additions, where)
     for name, value_index, source_index, _ in _JOIN["attach"]:
@@ -384,7 +379,6 @@ def _broadcast(inputs):
     # A row whose key cannot be read has no key to be matched by.
     first_keys = {{key for _, key, _ in keyed if key is not None}}
     dropped = set()
-    appended = []
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
@@ -409,7 +403,6 @@ def _broadcast(inputs):
             if key in more_marked:
                 # A stray key the input marks is emitted as that marker.
                 marked[record] = more_marked[key]
-            appended.append(record)
             first_keys.add(key)
             added.add(record)
         for position, (record, key, row) in enumerate(keyed):
