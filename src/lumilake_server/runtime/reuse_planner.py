@@ -750,7 +750,8 @@ def _expand_parent_keys(
 def _content_parent_keys(plan: RecordPlan, decision: ReusePlan) -> list[str] | None:
     """A live parent key per row an expand reads, from an unversioned read the
     plan re-ran and its rows read keyed; ``None`` when that read is not its one
-    keyed input."""
+    keyed input, or hands one item for several records, so its records and the
+    items an expand expands no longer line up."""
     keyed = [
         node
         for node in input_nodes(plan)
@@ -758,7 +759,10 @@ def _content_parent_keys(plan: RecordPlan, decision: ReusePlan) -> list[str] | N
     ]
     if len(keyed) != 1:
         return None
-    keys = decision.content[keyed[0]].keys
+    content = decision.content[keyed[0]]
+    if len(content.items) != len(content.values):
+        return None
+    keys = content.keys
     if not keys or any(key is None for key in keys):
         return None
     return [str(key) for key in keys]

@@ -1625,27 +1625,33 @@ def _read_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{"table": {"df": json.dumps(columns)}}]
 
 
+def _read_items(rows: list[dict[str, Any]], per_row: bool) -> list[dict[str, Any]]:
+    """A retrieval's task items: one per record, or one holding the whole table."""
+    return [_read_item([row])[0] for row in rows] if per_row else _read_item(rows)
+
+
+@pytest.mark.parametrize("per_row", [False, True])
 @pytest.mark.asyncio
 async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
-    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
+    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage, per_row: bool
 ) -> None:
-    """An unversioned read a reusing job re-runs hands its expand the one item a
-    full run gives it, its whole table, so the expand's children probe at their
-    parent-and-index keys: a run with nothing changed serves them, and a run
-    whose first retrieval row changed recomputes that parent's children alone."""
+    """An unversioned read a reusing job re-runs hands its expand the items a full
+    run gives it. Its children are served only when it hands one item per record:
+    then an unchanged run serves them and a changed row re-expands that parent.
+    One item holding every record leaves the children unserved, so a run that
+    changes any row re-expands the whole table instead of serving a stale one,
+    and each recomputed child reaches the row step as its new value."""
     graph = _runtime_graph(_read_cycle_workflow([]))
-    read, split = _node(graph, "Read"), _node(graph, "Split")
-    state: dict[str, Any] = {"rows": [], "column": None, "done": {}}
-    submitted: list[list[str]] = []
+    read, split, tag = (_node(graph, name) for name in ("Read", "Split", "Tag"))
+    state: dict[str, Any] = {"rows": [], "column": None, "done": {}, "graph": graph}
 
     async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
         spec = yaml.safe_load(task_yaml)
         nodes = [node["name"] for node in spec["spec"]["graph"]["nodes"]]
-        submitted.append(nodes)
         for node in nodes:
-            op = graph.nodes[node]
+            op = state["graph"].nodes[node]
             if node == read:
-                response = {"items": _read_item(state["rows"])}
+                response = {"items": _read_items(state["rows"], per_row)}
             else:
                 stages = [
                     entry.node
@@ -1657,7 +1663,7 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
                 }
             state["done"][node] = response["items"]
             state[f"task-{node}"] = response
-        return f"wf-{len(submitted)}", [f"task-{node}" for node in nodes]
+        return f"wf-{len(nodes)}", [f"task-{node}" for node in nodes]
 
     async def _retrieve(task_id: str) -> Any:
         return state[task_id]
@@ -1682,6 +1688,7 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     async def _build(self: Any, info: Any, planned: Any, schedule: Any = None):
         if split in planned.nodes:
             state["column"] = planned.nodes[split].data_spec.plan[0].values
+            state["graph"] = planned
         return await build(self, info, planned, schedule)
 
     for name, value in (
@@ -1695,7 +1702,7 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
 
     async def once(rows: list[dict[str, Any]], job: str, reuse: bool):
-        state["rows"], state["done"] = rows, {}
+        state["rows"], state["done"], state["graph"] = rows, {}, graph
         info = _reusing(graph)
         info.request_id, info.member_reuse = job, {job: reuse}
         info.reuse_records = reuse
@@ -1707,19 +1714,28 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     def decisions(out: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
         return {d.op: (d.decision, d.reason) for d in out["reuse_decisions"]}
 
+    def computed(op: str) -> list[dict[str, Any]]:
+        return [item for item in state[f"task-{op}"]["items"] if not item.get("served")]
+
     rows = [{"id": "a1", "t": "x"}, {"id": "a2", "t": "x"}]
     await once(rows, "req-1", False)
-    assert [item["child"] for item in state[f"task-{split}"]["items"]] == [0, 1]
-    submitted.clear()
+    parents = {item["parent"] for item in state[f"task-{split}"]["items"]}
+    assert parents == ({0, 1} if per_row else {0}), parents
     plan = await once(rows, "req-2", True)
-    assert decisions(plan)["Split"] == ("hit", None), decisions(plan)
-    assert submitted == [[read]], submitted
-    changed = [{"id": "a1", "t": "z"}, rows[1]]
+    assert decisions(plan)["Split"] == (
+        ("hit", None) if per_row else ("miss", "no entry")
+    )
+    changed = [rows[0], {"id": "a2", "t": "z"}]
     plan = await once(changed, "req-3", True)
-    assert state["column"] == _read_item(changed), state["column"]
-    assert decisions(plan)["Split"] == ("miss", "partial children"), decisions(plan)
-    computed = [
-        item for item in state[f"task-{split}"]["items"] if not item.get("served")
-    ]
-    assert {item["parent"] for item in computed} == {0}, computed
-    assert [item["output"]["t"] for item in computed] == ["z", "x"], computed
+    assert state["column"] == _read_items(changed, per_row), state["column"]
+    assert decisions(plan)["Split"] == (
+        ("miss", "partial children") if per_row else ("miss", "no entry")
+    ), decisions(plan)
+    assert {item["parent"] for item in computed(split)} == ({1} if per_row else {0})
+    assert [item["output"]["t"] for item in computed(split)] == (
+        ["z"] if per_row else ["x", "z"]
+    )
+    assert sorted(item["output"] for item in state[f"task-{tag}"]["items"]) == [
+        "X",
+        "Z",
+    ], state[f"task-{tag}"]["items"]
