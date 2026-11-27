@@ -8,6 +8,7 @@ from lumilake_server.ops import (
     DataRetrievalOp,
     FormatOp,
     InputOp,
+    LambdaMode,
     LambdaOp,
     LLMOp,
     MessageOp,
@@ -162,7 +163,11 @@ def op_output(
         rowwise = isinstance(op, LLMChatOp) and op.rowwise_template is not None
         kind = OutputKind.API_ROW if rowwise else OutputKind.API_ITEM
     elif isinstance(op, LambdaOp):
-        kind = OutputKind.LIST_LAMBDA if op.mode != "row" else OutputKind.ROW_LAMBDA
+        kind = (
+            OutputKind.LIST_LAMBDA
+            if op.mode is not LambdaMode.ROW
+            else OutputKind.ROW_LAMBDA
+        )
     else:
         kind = OutputKind.DECLARED
     default_path: str | None
@@ -207,7 +212,7 @@ def output_row_count(
     if row_source is not None:
         return output_row_count(row_source, inputs_dict, graph_dict)
     if isinstance(op, FormatOp) or (
-        isinstance(op, LambdaOp) and op.mode in ("row", "aligned")
+        isinstance(op, LambdaOp) and op.mode in (LambdaMode.ROW, LambdaMode.ALIGNED)
     ):
         return _max_known(
             [output_row_count(inp, inputs_dict, graph_dict) for inp in op.inputs]

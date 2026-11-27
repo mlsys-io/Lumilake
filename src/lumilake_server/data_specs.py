@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -31,17 +32,19 @@ ALL_TASK_TYPES = MODEL_TASK_TYPES | {
     PROFILE_TASK_TYPE,
 }
 
-PythonMode = Literal[
-    "row",
-    "list",
-    "aligned",
-    "flatten",
-    "regroup",
-    "pairs",
-    "flatten_step",
-    "expand",
-    "reduce",
-]
+
+class PythonMode(StrEnum):
+    """The mode a python step runs in; each member's value is its YAML word."""
+
+    ROW = "row"
+    LIST = "list"
+    ALIGNED = "aligned"
+    FLATTEN = "flatten"
+    REGROUP = "regroup"
+    PAIRS = "pairs"
+    FLATTEN_STEP = "flatten_step"
+    EXPAND = "expand"
+    REDUCE = "reduce"
 
 
 class _StrictModel(BaseModel):

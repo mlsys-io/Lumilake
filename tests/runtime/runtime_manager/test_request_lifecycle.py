@@ -16,6 +16,7 @@ from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     OpMessage,
@@ -475,9 +476,9 @@ def _split_fn(row: tuple[Any, ...]) -> list[dict[str, str]]:
 def _build_list_lambda_output_request(mode: str) -> tuple[RequestInfo, str]:
     stock = input_placeholder("Stock")
     explode = (
-        LambdaOp([stock], _explode_fn, mode="list")
+        LambdaOp([stock], _explode_fn, mode=LambdaMode.LIST)
         if mode == "list"
-        else LambdaOp([stock], _split_fn, mode="expand")
+        else LambdaOp([stock], _split_fn, mode=LambdaMode.EXPAND)
     )
     output = as_output("observations", explode)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])

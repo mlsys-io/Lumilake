@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from lumilake_server.ops.util_ops import build_lambda_spec
+from lumilake_server.ops.util_ops import LambdaMode, build_lambda_spec
 
 from ..common import make_id as _make_id
 from . import references, shared
@@ -38,7 +38,7 @@ def make_code(
         {
             "fn_name": fn_name,
             "code": fn_code,
-            "mode": notes.get("mode", "row"),
+            "mode": notes.get("mode", LambdaMode.ROW),
             "by": notes.get("by"),
             "image": notes.get("image"),
             "timeout_s": notes.get("timeout-s"),

@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from lumilake_server.data_specs import GpuRequest
-from lumilake_server.ops.util_ops import build_lambda_spec
+from lumilake_server.ops.util_ops import LambdaMode, build_lambda_spec
 
 from .common import EmitContext
 
@@ -22,7 +22,7 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         {
             "fn_name": entry.fields.get("fn_name"),
             "code": entry.fields.get("code") or entry.fields.get("_code"),
-            "mode": entry.fields.get("mode", "row"),
+            "mode": entry.fields.get("mode", LambdaMode.ROW),
             "by": entry.fields.get("by"),
             "timeout_s": entry.fields.get("timeout_s"),
             "memory_mb": entry.fields.get("memory_mb"),
