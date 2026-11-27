@@ -120,7 +120,9 @@ def _model_serves_rows(plan: RecordPlan) -> bool:
         return True
     if not isinstance(spec, ListData):
         return False
-    return isinstance(spec.items, list) or spec.node is not None
+    return isinstance(spec.items, list) or (
+        spec.node is not None and spec.items is None
+    )
 
 
 @dataclass(frozen=True)
