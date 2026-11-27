@@ -76,7 +76,7 @@ from lumilake_server.utils.job_storage import ArchiveError, get_job_storage
 from lumilake_server.utils.retrieval_key import retrieval_key_column
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
-_STATUS_POLL_FIELDS: Final = ["status", "error", "last_error", "assigned_worker"]
+_STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
 @dataclass
@@ -542,9 +542,6 @@ class FlowmeshRuntimeManager:
         self._execution_task_errors: dict[str, str] = (
             {}
         )  # task ID -> recorded FlowMesh error for a failed task
-        self._task_workers: dict[str, dict[str, str | None]] = (
-            {}
-        )  # FlowMesh workflow id -> task_id -> the worker that ran it
         self._execution_output_tasks: dict[tuple[str, str], set[str]] = (
             {}
         )  # (request_id, batch_id) -> set of output task IDs
@@ -960,10 +957,6 @@ class FlowmeshRuntimeManager:
                 if row.task_id not in pending_task_ids or row.status is None:
                     continue
                 task_status[row.task_id] = row.status
-                if row.assigned_worker is not None:
-                    self._task_workers.setdefault(workflow_id, {})[
-                        row.task_id
-                    ] = row.assigned_worker
                 if row.status == "FAILED":
                     self._record_task_error(row.task_id, row)
             cursor = page.next_cursor
@@ -2102,7 +2095,6 @@ class FlowmeshRuntimeManager:
                 request_info,
                 runtime_graph=request_info.runtime_graph,
                 node_task_map=node_task_map,
-                workflow_id=workflow_id,
                 results=stored_responses,
                 served=(
                     None
@@ -2145,7 +2137,6 @@ class FlowmeshRuntimeManager:
                 request_info,
                 runtime_graph=request_info.runtime_graph,
                 node_task_map={},
-                workflow_id="",
                 results={},
                 served=writer_records(
                     plan, self._reuse_content_reads.get(request_info.request_id, {})
@@ -2291,7 +2282,6 @@ class FlowmeshRuntimeManager:
         try:
             await self._await_tasks(status, workflow_id, request_info.request_id)
         finally:
-            self._task_workers.pop(workflow_id, None)
             self._workflow_status_cursors.pop(workflow_id, None)
         results: dict[str, Any] = {}
         for task_id in task_ids:
@@ -2383,7 +2373,6 @@ class FlowmeshRuntimeManager:
             request_info,
             runtime_graph=graph,
             node_task_map=node_task_map,
-            workflow_id="",
             results=results,
             served=stored,
         )
@@ -2452,7 +2441,6 @@ class FlowmeshRuntimeManager:
         *,
         runtime_graph: RuntimeGraph,
         node_task_map: Mapping[str, str],
-        workflow_id: str,
         results: Mapping[str, Any],
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
@@ -2464,7 +2452,6 @@ class FlowmeshRuntimeManager:
             enabled=request_info.store_records,
             logger=self.logger,
         )
-        workers: dict[str, str | None] = self._task_workers.get(workflow_id, {}).copy()
         job_ids = sorted(request_info.member_request_ids) or [request_info.request_id]
         try:
             await writer.write(
@@ -2473,7 +2460,6 @@ class FlowmeshRuntimeManager:
                 round_number=request_info.round_number,
                 runtime_graph=runtime_graph,
                 node_task_map=node_task_map,
-                task_worker=workers,
                 results=results,
                 member_store=request_info.member_store,
                 member_rounds=request_info.member_rounds,
@@ -2488,8 +2474,6 @@ class FlowmeshRuntimeManager:
                 job_ids[0],
                 exc,
             )
-        finally:
-            self._task_workers.pop(workflow_id, None)
 
     async def _build_task_spec(
         self,
@@ -3859,9 +3843,7 @@ class FlowmeshRuntimeManager:
         """
         for key in self._batch_workflow_id.copy():
             if key[0] in execution_ids:
-                workflow_id = self._batch_workflow_id.pop(key, None)
-                if workflow_id is not None:
-                    self._task_workers.pop(workflow_id, None)
+                self._batch_workflow_id.pop(key, None)
 
     def release_request_task_ids(self, request_id: str) -> None:
         """Drop the member request's owned task ids; other members of a shared

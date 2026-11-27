@@ -20,9 +20,6 @@ class JobLineageEntry(BaseModel):
     )
     job_id: str = Field(description="Job that produced the record.")
     task_id: str = Field(description="Physical FlowMesh task that computed it.")
-    worker: str | None = Field(
-        default=None, description="Worker the task ran on, when known."
-    )
     input_digests: list[str] = Field(
         default_factory=list, description="Signature digests the record read."
     )
@@ -90,7 +87,6 @@ def build_lineage_payload(
                 status=entry.status,
                 job_id=entry.source.job,
                 task_id=entry.source.task_id,
-                worker=entry.source.worker,
                 input_digests=entry.input_digests,
             )
             for entry in entries
