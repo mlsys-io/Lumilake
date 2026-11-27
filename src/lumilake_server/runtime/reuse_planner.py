@@ -522,19 +522,40 @@ class ReusePlanner:
             if outcome.partial is not None:
                 merge_step = _merge_step(plan.op.task_type, outcome.partial)
                 carries = not merge_step or node_id not in runtime_graph.output_node_map
+                unserved = None
                 if carries:
+                    unserved = _unserved_reader_reason(
+                        runtime_graph, decision, plan.op, outcome.entries or []
+                    )
+                if unserved is not None:
+                    decision.refused.add(node_id)
+                elif carries:
                     decision.partial[node_id] = outcome.partial
                 decision.decisions.append(
                     RecordDecision(
                         op=plan.op_name,
                         node=node_id,
                         decision="miss",
-                        reason="partial records" if carries else "value not servable",
+                        reason=(
+                            unserved
+                            or ("partial records" if carries else "value not servable")
+                        ),
                         records=len(outcome.partial.missed),
-                        outcomes=outcomes,
+                        outcomes=(
+                            outcomes
+                            if unserved is None
+                            else [
+                                RecordOutcome(
+                                    record=outcome.record,
+                                    decision="miss",
+                                    reason=unserved,
+                                )
+                                for outcome in outcomes
+                            ]
+                        ),
                     )
                 )
-                missing[node_id] = reason or "no entry"
+                missing[node_id] = unserved or reason or "no entry"
                 continue
             decision.decisions.append(
                 RecordDecision(
@@ -1012,6 +1033,7 @@ class ReusePlanner:
             # No record of this op survives, so it re-runs whole.
             return _Decision(first_reason, outcomes=outcomes)
         return _Decision(
+            entries=entries,
             partial=PartialRecords(keys=list(records), served=slots, missed=missed),
             outcomes=outcomes,
         )

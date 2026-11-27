@@ -687,12 +687,12 @@ async def test_two_steps_between_two_chats_land_in_the_first_level(
 async def test_a_model_level_a_later_reader_refuses_is_left_to_the_main_run(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A chat whose stored rows a reader cannot take stays out of a level, so an
-    unchanged rerun with that reader dispatches it once in the main run rather
-    than at a level and again there."""
+    """A chat whose stored rows a reader cannot take stays out of a level, so a
+    rerun with that reader dispatches it once in the main run rather than at a
+    level and again there, whether the store answers it whole or in part."""
     ops: list[dict[str, Any]] = [_TAG, _CHAT, _WHOLE]
     await run(_workflow(ops, _ROWS, "First"), "req-1")
-    graph = _workflow(ops, _ROWS, "First")
+    graph = _workflow(ops, _AMENDED, "First")
     ask = _node(graph, "Ask")
     before = len(worker.submissions)
     outputs = await run(graph, "req-2")
