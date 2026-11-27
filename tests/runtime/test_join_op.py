@@ -428,6 +428,16 @@ def test_many_to_many_reads_no_row_key() -> None:
         _pairs(_CASES, _GIRLS, "cardinality: many_to_many, row_key: [unit, q]")
 
 
+def test_many_to_many_reads_no_attach() -> None:
+    """A key's product rows have no one row for an attach value to belong to."""
+    with pytest.raises(ValueError, match="many_to_many reads no attach"):
+        _pairs(
+            _CASES,
+            _GIRLS,
+            "cardinality: many_to_many, attach: {g: Girls}",
+        )
+
+
 def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None:
     """An undeclared repeat fails the job, naming the cardinality that reads it."""
     with pytest.raises(ValueError, match="declare one_to_many or many_to_many"):

@@ -96,6 +96,11 @@ class JoinSpec(BaseModel):
                 "cardinality many_to_many reads no row_key, since each pair of a key's"
                 " rows is already one output row"
             )
+        if self.cardinality is JoinCardinality.MANY_TO_MANY and self.attach:
+            raise ValueError(
+                "cardinality many_to_many reads no attach, since a key's product rows"
+                " have no one row for an attach value to belong to"
+            )
         return self
 
 
