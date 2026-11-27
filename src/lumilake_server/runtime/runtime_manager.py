@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -47,6 +47,8 @@ from lumilake_server.runtime.flowmesh_client import (
 )
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import HardwareRequirements, RequestCancelledError
+from lumilake_server.runtime.record_keys import is_child_count_key
+from lumilake_server.runtime.record_store import RecordEntry
 from lumilake_server.runtime.record_writer import (
     NodeRecords,
     RecordWriter,
@@ -86,6 +88,41 @@ class DispatchCredentials:
 
     runtime_token: str | None = None
     api_credential: str | None = None
+
+
+@dataclass(frozen=True)
+class _PhaseRecords:
+    """What a structural phase hands the plan: the re-ran reads' content values,
+    and the entries this run wrote for each phase step, by node id."""
+
+    content: dict[str, NodeRecords] = field(default_factory=dict)
+    written: dict[str, list[RecordEntry]] = field(default_factory=dict)
+
+
+def _keyed_entries(
+    planned: RuntimeGraph, stored: Mapping[str, NodeRecords]
+) -> dict[str, list[RecordEntry]]:
+    """A phase's served steps' own records, by node id: the entries a plan
+    serves answer per record, so a step the store holds whole stays a probe.
+
+    A child count entry is not a record of its step, so it leaves the step
+    keyed by the children it does hold."""
+    return {
+        node_id: keyed
+        for node_id, node_records in stored.items()
+        if node_id in planned.nodes
+        and node_records.keyed
+        and (keyed := _own_records(node_records))
+    }
+
+
+def _own_records(node_records: NodeRecords) -> list[RecordEntry]:
+    """The entries that name a step's own records, without an expand's counts."""
+    return [
+        entry
+        for entry in node_records.entries
+        if not is_child_count_key(entry.address.record)
+    ]
 
 
 def _batch_reuses_as_one(request_info: RequestInfo) -> bool:
@@ -2162,10 +2199,12 @@ class FlowmeshRuntimeManager:
         if not _batch_reuses_as_one(request_info):
             return None
         try:
+            written: dict[str, list[RecordEntry]] = {}
             if _sub_run_structure(
                 request_info.runtime_graph
             ) and _has_partial_candidate(request_info.runtime_graph):
-                content_values = await self._run_structure(request_info, schedule)
+                phase = await self._run_structure(request_info, schedule)
+                content_values, written = phase.content, phase.written
             else:
                 content_values = await self._run_unversioned_reads(
                     request_info, schedule
@@ -2176,6 +2215,7 @@ class FlowmeshRuntimeManager:
                 round_number=request_info.round_number,
                 job_id=request_info.request_id,
                 content_values=content_values,
+                written=written,
             )
         except (ArchiveError, ValueError) as exc:
             self.logger.warning(
@@ -2339,16 +2379,20 @@ class FlowmeshRuntimeManager:
 
     async def _run_structure(
         self, request_info: RequestInfo, schedule: Schedule
-    ) -> dict[str, NodeRecords]:
+    ) -> _PhaseRecords:
         """Run and store the structural steps above this batch's model ops, so the
         plan that follows probes each model op on the rows they emit.
 
         The steps and the unversioned reads they read run in one sub-run: a step
         reading a read takes that read's rows the way 3b already inlines them.
-        Returns the read records, which the plan needs as its content values."""
+        Returns the read records the plan needs as its content values, and the
+        entries this run wrote for each phase step, so a reader keys by the
+        writer's own addresses instead of probing them again."""
         structure = _sub_run_structure(request_info.runtime_graph)
         if not request_info.store_records:
-            return await self._run_unversioned_reads(request_info, schedule)
+            return _PhaseRecords(
+                await self._run_unversioned_reads(request_info, schedule)
+            )
         phase = [
             node_id
             for node_id in request_info.runtime_graph.node_order
@@ -2359,17 +2403,18 @@ class FlowmeshRuntimeManager:
         phase = [node_id for node_id in phase if node_id not in stored]
         if not phase:
             # Every structural step the store already answers: no task is worth it.
-            return self._read_records(
+            answered = self._read_records(
                 request_info,
                 _sub_graph(request_info.runtime_graph, list(stored)),
                 stored,
             )
+            return _PhaseRecords(answered, _keyed_entries(planned, stored))
         graph = _sub_graph(planned, phase)
         results, node_task_map = await self._submit_sub_run(
             request_info, schedule, phase, "structural step", planned
         )
         self._record_reads(request_info, graph, results, node_task_map)
-        await self._write_records(
+        written = await self._write_records(
             request_info,
             runtime_graph=graph,
             node_task_map=node_task_map,
@@ -2383,11 +2428,12 @@ class FlowmeshRuntimeManager:
             ", ".join(phase),
         )
         records = read_back_records(graph, node_task_map, results)
-        return {
+        content = {
             node_id: rec
             for node_id, rec in records.items()
             if node_id in node_task_map and content_addressed(graph.nodes[node_id])
         }
+        return _PhaseRecords(content, {**_keyed_entries(planned, stored), **written})
 
     async def _aggregate_read_outputs(
         self, request_info: RequestInfo
@@ -2445,8 +2491,9 @@ class FlowmeshRuntimeManager:
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
         alias: Mapping[str, str] | None = None,
-    ) -> None:
-        """Write this batch's records once; a write error never fails the job."""
+    ) -> dict[str, list[RecordEntry]]:
+        """Write this batch's records once; a write error never fails the job.
+        Returns the entries written for each producing node, by node id."""
         writer = RecordWriter(
             storage=get_job_storage(),
             enabled=request_info.store_records,
@@ -2454,7 +2501,7 @@ class FlowmeshRuntimeManager:
         )
         job_ids = sorted(request_info.member_request_ids) or [request_info.request_id]
         try:
-            await writer.write(
+            return await writer.write(
                 job_id=job_ids[0],
                 member_job_ids=job_ids,
                 round_number=request_info.round_number,
@@ -2474,6 +2521,7 @@ class FlowmeshRuntimeManager:
                 job_ids[0],
                 exc,
             )
+            return {}
 
     async def _build_task_spec(
         self,

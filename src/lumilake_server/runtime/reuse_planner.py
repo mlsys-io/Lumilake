@@ -120,9 +120,7 @@ def _model_serves_rows(plan: RecordPlan) -> bool:
         return True
     if not isinstance(spec, ListData):
         return False
-    return isinstance(spec.items, list) or (
-        spec.node is not None and spec.items is None
-    )
+    return isinstance(spec.items, list) or spec.node is not None
 
 
 @dataclass(frozen=True)
@@ -336,13 +334,22 @@ class ReusePlanner:
         round_number: int,
         job_id: str,
         content_values: Mapping[str, NodeRecords] | None = None,
+        written: Mapping[str, Sequence[RecordEntry]] | None = None,
     ) -> tuple[ReusePlan, RuntimeGraph]:
-        """Decide every op in topological order and return the graph to dispatch."""
+        """Decide every op in topological order and return the graph to dispatch.
+
+        ``written`` holds the entries this run stored for a structural phase's
+        own steps, so the plan keys every reader by the writer's addresses
+        rather than probing them again, and a step that declared another node's
+        key agrees with the writer by construction."""
         decision = ReusePlan(outputs=runtime_graph.output_node_map.copy())
         missing: dict[str, str] = {}
         """Each missed node's own first reason, so what it feeds names that."""
         order = runtime_graph.topological_order()
-        stored: dict[str, list[RecordEntry]] = {}
+        seeded_written = {} if written is None else written
+        stored: dict[str, list[RecordEntry]] = {
+            node_id: list(entries) for node_id, entries in seeded_written.items()
+        }
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
@@ -352,6 +359,11 @@ class ReusePlanner:
                 decision.key_paths[node_id] = plan.key_path
             if node_id in content_keys:
                 self._serve_content(decision, plan, content[node_id], runtime_graph)
+                continue
+            if node_id in stored:
+                self._serve_written(
+                    decision, plan, stored[node_id], runtime_graph, missing
+                )
                 continue
             inputs = _planner_inputs(plan, decision, plans, content)
             expanded = self._expand_outcome(
@@ -645,6 +657,54 @@ class ReusePlanner:
         )
         if _content_servable(runtime_graph, decision, plan.op.node_id):
             decision.content_served.add(plan.op.node_id)
+
+    def _serve_written(
+        self,
+        decision: ReusePlan,
+        plan: RecordPlan,
+        entries: Sequence[RecordEntry],
+        runtime_graph: RuntimeGraph,
+        missing: dict[str, str],
+    ) -> None:
+        """Record one structural step whose entries this run already wrote, so
+        its readers take the writer's own addresses instead of a re-probe.
+
+        The step is a hit whose every record answers; a step that wrote no
+        entry or a failed one stays a miss, so its readers name it as an
+        upstream miss rather than reading a record this run never stored."""
+        keys = [entry.address.record for entry in entries]
+        missed = next(
+            (entry for entry in entries if _entry_miss_reason(entry) is not None), None
+        )
+        if not entries or missed is not None:
+            reason = _entry_miss_reason(missed) or "no entry"
+            decision.decisions.append(
+                RecordDecision(
+                    op=plan.op_name,
+                    node=plan.op.node_id,
+                    decision="miss",
+                    reason=reason,
+                    records=len(keys),
+                    outcomes=[
+                        RecordOutcome(record=key, decision="miss", reason=reason)
+                        for key in keys
+                    ],
+                )
+            )
+            missing[plan.op.node_id] = reason
+            return
+        decision.decisions.append(
+            RecordDecision(
+                op=plan.op_name,
+                node=plan.op.node_id,
+                decision="hit",
+                records=len(entries),
+            )
+        )
+        if self._accept_hit(decision, plan, plan.op.node_id, entries, runtime_graph):
+            decision.hits[plan.op.node_id] = list(entries)
+        else:
+            missing[plan.op.node_id] = decision.decisions[-1].reason or "no entry"
 
     def _decide_children(
         self,

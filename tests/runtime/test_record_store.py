@@ -134,7 +134,7 @@ async def _write(
         for n, vs in results.items()
     }
     task_results |= {f"task-{n}": v for n, v in (raw or {}).items()}
-    return storage, await writer.write(
+    written = await writer.write(
         job_id=job_id,
         member_job_ids=[job_id],
         round_number=round_number,
@@ -142,6 +142,7 @@ async def _write(
         results=task_results,
         node_task_map={_node_id(graph, n): f"task-{n}" for n in results},
     )
+    return storage, sum(len(entries) for entries in written.values())
 
 
 def _entries(storage: InMemoryJobStorage, job_id: str = "req-1") -> list[RecordEntry]:

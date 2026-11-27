@@ -311,15 +311,16 @@ class RecordWriter:
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
         alias: Mapping[str, str] | None = None,
-    ) -> int:
-        """Write the records of every node this batch produced and return how many.
+    ) -> dict[str, list[RecordEntry]]:
+        """Write the records of every node this batch produced and return the
+        entries written for each producing node, by node id.
 
         ``served`` holds the records a reuse plan answered without a task; they
         enter each storing member's index too. ``alias`` maps every generated step a
         partial run inserted to what it stands for: a merge step to its partially
         served op, a pass-through to its producer."""
         if not self._enabled:
-            return 0
+            return {}
         aliases = {} if alias is None else alias
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order, served)
@@ -333,6 +334,7 @@ class RecordWriter:
         owners_of = {} if node_owners is None else node_owners
         unversioned: set[str] = set()
         written: list[tuple[RecordEntry, list[tuple[str, int]]]] = []
+        per_node: dict[str, list[RecordEntry]] = {}
         written_ops = set()
         for node_id in order:
             target = aliases.get(node_id, node_id)
@@ -371,20 +373,22 @@ class RecordWriter:
                     task_id=task_id,
                     member_jobs=list(member_job_ids),
                 )
+                node_written = self._node_entries(
+                    plan=plan,
+                    node_records=node_records,
+                    records=records,
+                    inputs=record_inputs(
+                        plan, records, member_round, plans, content_nodes, aliases
+                    ),
+                    items=items_of.get(node_id, []),
+                    versions=versions,
+                    source=source,
+                    round_number=member_round,
+                )
+                per_node.setdefault(target, []).extend(node_written)
                 written.extend(
                     (entry, [(member, member_round) for member in members])
-                    for entry in self._node_entries(
-                        plan=plan,
-                        node_records=node_records,
-                        records=records,
-                        inputs=record_inputs(
-                            plan, records, member_round, plans, content_nodes, aliases
-                        ),
-                        items=items_of.get(node_id, []),
-                        versions=versions,
-                        source=source,
-                        round_number=member_round,
-                    )
+                    for entry in node_written
                 )
         entries = [entry for entry, _ in written]
         if entries:
@@ -416,7 +420,7 @@ class RecordWriter:
             rounds=rounds_of,
             owners=owners_of,
         )
-        return len(entries)
+        return per_node
 
     async def _write_addresses(self, entries: Sequence[RecordEntry]) -> None:
         """Point each written record's address at its newest entry, concurrently."""

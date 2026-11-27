@@ -54,3 +54,13 @@ def child_count_key(parent_key: str) -> str:
     """An expand parent's record key, holding how many children it has, so a
     parent that expands to nothing still has a record to serve."""
     return f"{parent_key}{CHILD_KEY_SEPARATOR}count"
+
+
+def is_child_count_key(record: str | None) -> bool:
+    """Whether a record key is an expand parent's child count rather than one
+    of its children."""
+    return (
+        record is not None
+        and CHILD_KEY_SEPARATOR in record
+        and record.rsplit(CHILD_KEY_SEPARATOR, 1)[-1] == "count"
+    )
