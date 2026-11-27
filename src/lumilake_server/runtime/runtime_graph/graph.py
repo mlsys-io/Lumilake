@@ -1,6 +1,6 @@
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self
@@ -201,32 +201,60 @@ class RuntimeGraph:
     def own_row_count_nodes(self) -> set[str]:
         """Node ids whose rows their own data sets, not the job's input rows: a
         list-mode Lambda, its fan-out, and an ``inner`` or ``full`` join."""
-        seeds = {
+        return self._own_row_count_below(
             node_id
             for node_id, node in self.nodes.items()
-            if node.task_type == PYTHON_TASK_TYPE
+            if self._list_lambda_seed(node) or self._join_seed(node)
+        )
+
+    def join_row_count_nodes(self) -> set[str]:
+        """Node ids whose rows an ``inner`` or ``full`` join sets, at or below it."""
+        return self._own_row_count_below(
+            node_id for node_id, node in self.nodes.items() if self._join_seed(node)
+        )
+
+    @staticmethod
+    def _list_lambda_seed(node: RuntimeOp) -> bool:
+        return (
+            node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
-            and (
-                node.data_spec.mode is PythonMode.LIST
-                or (
-                    node.data_spec.join is not None
-                    and node.data_spec.join.how is not JoinHow.LEFT
-                )
-            )
-        }
+            and node.data_spec.mode is PythonMode.LIST
+        )
+
+    @staticmethod
+    def _join_seed(node: RuntimeOp) -> bool:
+        return (
+            node.task_type == PYTHON_TASK_TYPE
+            and isinstance(node.data_spec, PythonData)
+            and node.data_spec.join is not None
+            and node.data_spec.join.how is not JoinHow.LEFT
+        )
+
+    def _own_row_count_below(self, seeds: Iterable[str]) -> set[str]:
+        """The seeds and every node below them whose row count they alone set."""
+        seeded = set(seeds)
         reached: set[str] = set()
         for node_id in self.node_order:
             node = self.nodes[node_id]
-            if node_id in seeds:
+            if node_id in seeded:
                 reached.add(node_id)
                 continue
-            reads = self._non_literal_reads(node)
+            reads = self._row_count_reads(node)
             if reads and all(read in reached for read in reads):
                 reached.add(node_id)
         return reached - self.list_lambda_cardinality_nodes()
 
+    def _row_count_reads(self, node: RuntimeOp) -> set[str] | None:
+        """The node ids a node's row count follows, or ``None`` when it also
+        reads literal values. A join's row count follows its first input alone."""
+        data_spec = node.data_spec
+        if isinstance(data_spec, PythonData) and data_spec.join is not None:
+            entry = data_spec.plan[data_spec.join.inputs[0]]
+            return {entry.node} if entry.kind == "stage" and entry.node else None
+        return self._fanout_graph_reads(node)
+
     @staticmethod
-    def _non_literal_reads(node: RuntimeOp) -> set[str] | None:
+    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
         """The node ids a node reads, or ``None`` when it also reads a literal
         value such as the job's input rows."""
         data_spec = node.data_spec
