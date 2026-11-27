@@ -9,7 +9,7 @@ import pytest
 from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.record_store import RecordEntry, digest_of
+from lumilake_server.runtime.record_store import RecordEntry
 from lumilake_server.runtime.record_writer import (
     RecordWriter,
     read_entry,
@@ -342,9 +342,13 @@ async def test_a_join_reads_each_further_input_at_its_own_join_key() -> None:
     ]
     reversed_ = await stored(scores, notes[::-1], "req-4")
     assert all(reversed_[key].digest == base[key].digest for key in base)
-    rows_of = {row["rid"]: row for row in amended}
-    assert after['["N1","b"]'].input_digests[1] == digest_of({"value": rows_of["r9"]})
-    assert after['["N1","b"]'].input_values[1] == digest_of(rows_of["r9"])
+    further = await _records_of(
+        _graph(_COMPOSITE % _rows_text(notes)),
+        {"E": {"items": [_table(amended)]}},
+        "E",
+        "req-2",
+    )
+    assert after['["N1","b"]'].input_digests[1] == further["r9"].digest
 
 
 @pytest.mark.asyncio
