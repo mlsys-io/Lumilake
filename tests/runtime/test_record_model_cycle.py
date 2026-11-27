@@ -457,6 +457,51 @@ _SECOND_CHAT = {
 }
 
 
+_ASK_Y = {
+    **_CHAT,
+    "id": "AskY",
+    "rowwise_template": "{v}-y",
+}
+_BOTH = {
+    "id": "Both",
+    "op": "LambdaOp",
+    "inputs": ["AskX", "AskY"],
+    "mode": "row",
+    "fn_name": "both",
+    "code": "def both(c):\n    return c[0] + '|' + c[1]\n",
+}
+
+
+@pytest.mark.asyncio
+async def test_two_partly_served_chats_each_dispatch_once(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """Two chats read the same phase rows, so one level holds both with their
+    merge steps; neither chat's step is dispatched again in a later level."""
+    ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
+    await run(_workflow(ops, _ROWS, "Both"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Both")
+    ask_x, ask_y = (
+        node for node, name in changed.op_names.items() if name in ("AskX", "AskY")
+    )
+    before = len(worker.submissions)
+    second = await run(changed, "req-2")
+    reasons = _reasons(second)
+    assert reasons["AskX"] == ("miss", "partial records"), reasons
+    assert reasons["AskY"] == ("miss", "partial records"), reasons
+    ran = {
+        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
+        for node in (ask_x, ask_y)
+    }
+    assert ran == {ask_x: 1, ask_y: 1}, worker.submissions[before:]
+    assert (
+        second["flat_outputs"]
+        == (await run(changed, "req-full", reuse=False))["flat_outputs"]
+    )
+    again = await run(changed, "req-3")
+    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
+
+
 @pytest.mark.asyncio
 async def test_a_second_model_level_decides_per_record(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker

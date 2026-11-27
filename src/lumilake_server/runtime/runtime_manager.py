@@ -452,14 +452,24 @@ def _with_generated(
     planned: RuntimeGraph, plan: ReusePlan, wave: Sequence[str]
 ) -> list[str]:
     """A level's nodes with the generated steps its dispatch reads: the
-    pass-through that carries a served producer's rows into it and the merge
-    step that rebuilds a partly served op."""
+    pass-throughs that carry a served producer's rows into the wave and the
+    merge step that rebuilds a wave op. A generated step another op reads stays
+    in the main run with that op."""
     level = set(wave)
-    return [
-        node_id
-        for node_id in planned.node_order
-        if node_id in level or node_id in plan.pass_throughs or node_id in plan.aliases
-    ]
+    kept = set(level)
+    read = {
+        dep
+        for reader in level
+        for dep in planned.nodes[reader].dependencies
+        if reader in planned.nodes
+    }
+    for node_id in planned.node_order:
+        if node_id in plan.aliases:
+            if plan.aliases[node_id] in level:
+                kept.add(node_id)
+        elif node_id in plan.pass_throughs and node_id in read:
+            kept.add(node_id)
+    return [node_id for node_id in planned.node_order if node_id in kept]
 
 
 def _report_level_runs(
