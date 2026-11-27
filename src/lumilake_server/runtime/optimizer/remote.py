@@ -69,11 +69,7 @@ class RemoteOptimizer(BaseOptimizer):
             graph=graph_schema,
             worker_names=worker_names,
             worker_profiles=worker_profiles,
-            data_profile_results=(
-                None
-                if data_profile_results is None
-                else {key: list(rows) for key, rows in data_profile_results.items()}
-            ),
+            data_profile_results=data_profile_results,
             optimizer_type=self._optimizer_type,
         )
 

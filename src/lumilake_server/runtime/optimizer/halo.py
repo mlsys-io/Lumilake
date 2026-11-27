@@ -874,16 +874,17 @@ class HaloOptimizer(BaseOptimizer):
         return max(1, int(resolved))
 
     def _collect_input_lengths(self, spec: DataSpecModel) -> list[int]:
-        """The literal row counts a data spec carries anywhere inside it."""
+        """The literal row counts a data spec carries anywhere inside it.
+
+        Only a typed ``ListData`` counts: a list written under a key no model
+        declares is data, not an input read, so it adds no rows."""
         if isinstance(spec, ListData):
             if isinstance(spec.items, list):
                 return [len(spec.items)]
             return []
         lengths: list[int] = []
-        for field_name in type(spec).model_fields:
-            lengths.extend(
-                self._collect_nested_input_lengths(getattr(spec, field_name))
-            )
+        for _, value in spec:
+            lengths.extend(self._collect_nested_input_lengths(value))
         return lengths
 
     def _collect_nested_input_lengths(self, value: object) -> list[int]:
@@ -892,11 +893,6 @@ class HaloOptimizer(BaseOptimizer):
         if isinstance(value, list | tuple):
             lengths: list[int] = []
             for item in value:
-                lengths.extend(self._collect_nested_input_lengths(item))
-            return lengths
-        if isinstance(value, dict):
-            lengths = []
-            for item in value.values():
                 lengths.extend(self._collect_nested_input_lengths(item))
             return lengths
         return []
