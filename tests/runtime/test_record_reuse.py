@@ -15,6 +15,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
+from flowmesh.models.tasks import TaskStatusPage
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
@@ -1597,3 +1599,127 @@ def _expand_workflow(
     workflow = _pipeline("expand-reuse", [const, fill, split], "Split", rows)
     workflow["inputs"]["Fixed"] = ["1", "2"]
     return workflow
+
+
+def _read_cycle_workflow(rows: list[str]) -> Any:
+    """A keyed unversioned read whose one item holds a whole column table,
+    feeding an expand of the table's rows, then a row step."""
+    read = {
+        "id": "Read",
+        "op": "DataRetrievalOp",
+        "data_spec": {**_SQL, "key": {"column": "id"}},
+    }
+    split = _op(
+        "Split", ["Read"], "split", "def split(value):\n    return value[0]\n", "expand"
+    )
+    tag = _op("Tag", ["Split"], "tag", "lambda c: c[0]['t'].upper()", "row")
+    return _pipeline("read-cycle", [read, split, tag], "Tag", rows)
+
+
+def _read_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A retrieval's one task item: a whole column table, as a query row returns."""
+    columns: dict[str, dict[str, str]] = {}
+    for position, row in enumerate(rows):
+        for name, value in row.items():
+            columns.setdefault(name, {})[str(position)] = value
+    return [{"table": {"df": json.dumps(columns)}}]
+
+
+@pytest.mark.asyncio
+async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
+    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage
+) -> None:
+    """An unversioned read a reusing job re-runs hands its expand the one item a
+    full run gives it, its whole table, so the expand's children probe at their
+    parent-and-index keys: a run with nothing changed serves them, and a run
+    whose first retrieval row changed recomputes that parent's children alone."""
+    graph = _runtime_graph(_read_cycle_workflow([]))
+    read, split = _node(graph, "Read"), _node(graph, "Split")
+    state: dict[str, Any] = {"rows": [], "column": None, "done": {}}
+    submitted: list[list[str]] = []
+
+    async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
+        spec = yaml.safe_load(task_yaml)
+        nodes = [node["name"] for node in spec["spec"]["graph"]["nodes"]]
+        submitted.append(nodes)
+        for node in nodes:
+            op = graph.nodes[node]
+            if node == read:
+                response = {"items": _read_item(state["rows"])}
+            else:
+                stages = [
+                    entry.node
+                    for entry in op.data_spec.plan
+                    if entry.kind == "stage" and entry.values is None
+                ]
+                response = {
+                    "items": _run_step(op, {n: state["done"][n] for n in stages})
+                }
+            state["done"][node] = response["items"]
+            state[f"task-{node}"] = response
+        return f"wf-{len(submitted)}", [f"task-{node}" for node in nodes]
+
+    async def _retrieve(task_id: str) -> Any:
+        return state[task_id]
+
+    async def _done(_self: Any, status: dict[str, str], _id: str) -> bool:
+        status.update(dict.fromkeys(status, "DONE"))
+        return True
+
+    async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
+        return TaskStatusPage(
+            rows=[
+                {"task_id": task, "status": "DONE", "graph_node_name": task[5:]}
+                for task in state
+                if task.startswith("task-")
+            ],
+            next_cursor="0",
+        )
+
+    fm = SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
+    build = FlowmeshRuntimeManager._build_task_spec
+
+    async def _build(self: Any, info: Any, planned: Any, schedule: Any = None):
+        if split in planned.nodes:
+            state["column"] = planned.nodes[split].data_spec.plan[0].values
+        return await build(self, info, planned, schedule)
+
+    for name, value in (
+        ("_build_task_spec", _build),
+        ("_submit_workflow", _submit),
+        ("update_task_status", _done),
+        ("fetch_workflow_task_statuses", _statuses),
+        ("fm", property(lambda _self: fm)),
+    ):
+        monkeypatch.setattr(FlowmeshRuntimeManager, name, value)
+    monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
+
+    async def once(rows: list[dict[str, Any]], job: str, reuse: bool):
+        state["rows"], state["done"] = rows, {}
+        info = _reusing(graph)
+        info.request_id, info.member_reuse = job, {job: reuse}
+        info.reuse_records = reuse
+        info.runtime_graph = graph
+        return await FlowmeshRuntimeManager().process_request(
+            info, Schedule({"w": list(graph.nodes)}), ["w"]
+        )
+
+    def decisions(out: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
+        return {d.op: (d.decision, d.reason) for d in out["reuse_decisions"]}
+
+    rows = [{"id": "a1", "t": "x"}, {"id": "a2", "t": "x"}]
+    await once(rows, "req-1", False)
+    assert [item["child"] for item in state[f"task-{split}"]["items"]] == [0, 1]
+    submitted.clear()
+    plan = await once(rows, "req-2", True)
+    assert decisions(plan)["Split"] == ("hit", None), decisions(plan)
+    assert submitted == [[read]], submitted
+    changed = [{"id": "a1", "t": "z"}, rows[1]]
+    plan = await once(changed, "req-3", True)
+    assert state["column"] == _read_item(changed), state["column"]
+    assert decisions(plan)["Split"] == ("miss", "partial children"), decisions(plan)
+    computed = [
+        item for item in state[f"task-{split}"]["items"] if not item.get("served")
+    ]
+    assert {item["parent"] for item in computed} == {0}, computed
+    assert [item["output"]["t"] for item in computed] == ["z", "x"], computed
