@@ -237,17 +237,6 @@ def _walk_output_path(
     return value
 
 
-def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
-    """A result's ``items`` as JSON, or ``None`` when its type has no items.
-
-    Every item-bearing result the SDK builds carries a list, so an empty one is
-    an empty output.
-    """
-    if not isinstance(result, _ITEM_RESULTS):
-        return None
-    return [item.model_dump(mode="json") for item in result.items]
-
-
 _ITEM_RESULTS: Final = (
     InferenceResult,
     ClassificationResult,
@@ -261,6 +250,17 @@ _ITEM_RESULTS: Final = (
     OmniText2GeneralResult,
     OmniText2VideoResult,
 )
+
+
+def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
+    """A result's ``items`` as JSON, or ``None`` when its type has no items.
+
+    Every item-bearing result the SDK builds carries a list, so an empty one is
+    an empty output.
+    """
+    if not isinstance(result, _ITEM_RESULTS):
+        return None
+    return [item.model_dump(mode="json") for item in result.items]
 
 
 class _SubmitAnnotation(BaseModel):
@@ -1313,9 +1313,12 @@ class FlowmeshRuntimeManager:
             if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
-        if isinstance(result, EmbeddingResult) and result.embedding_file is not None:
-            if result.embedding_file.path:
-                return [result.model_dump(mode="json")]
+        if (
+            isinstance(result, EmbeddingResult)
+            and result.embedding_file is not None
+            and result.embedding_file.path
+        ):
+            return [result.model_dump(mode="json")]
         raise RuntimeError(f"output {output_op_id} produced no items")
 
     def _embedding_row_count(

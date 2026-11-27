@@ -30,8 +30,8 @@ from lumilake_server.runtime.runtime_manager import (
     _sanitize_flowmesh_api_error,
 )
 from tests.runtime.runtime_manager.conftest import (
-    _RESULT_ADAPTER,
     API_URL,
+    RESULT_ADAPTER,
     api_result,
     serve,
 )
@@ -446,7 +446,7 @@ async def test_archive_task_response_archives_grouped_api_result(
             }
         ],
     }
-    validated = _RESULT_ADAPTER.validate_python(grouped_payload)
+    validated = RESULT_ADAPTER.validate_python(grouped_payload)
 
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.flowmesh_for_context",

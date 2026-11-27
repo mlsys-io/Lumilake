@@ -12,12 +12,12 @@ from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 API_URL = "https://api.example.com/v1/chat"
 
-_RESULT_ADAPTER: TypeAdapter[AnyExecutorResult] = TypeAdapter(AnyExecutorResult)
+RESULT_ADAPTER: TypeAdapter[AnyExecutorResult] = TypeAdapter(AnyExecutorResult)
 
 
 def api_result(**payload: Any) -> AnyExecutorResult:
     """An SDK API result as a task wrote it; ``payload`` carries its fields."""
-    return _RESULT_ADAPTER.validate_python(
+    return RESULT_ADAPTER.validate_python(
         {
             "task_type": "api",
             "executor": "api",
@@ -31,7 +31,7 @@ def api_result(**payload: Any) -> AnyExecutorResult:
 
 def python_result(value: Any) -> AnyExecutorResult:
     """An SDK python result carrying ``value`` as a step's return value."""
-    return _RESULT_ADAPTER.validate_python(
+    return RESULT_ADAPTER.validate_python(
         {"task_type": "python", "exit_code": 0, "value": value}
     )
 
