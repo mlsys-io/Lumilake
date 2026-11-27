@@ -407,7 +407,7 @@ def test_a_cardinality_and_a_row_key_declare_each_other(tmp_path: Path) -> None:
         (one, "one_to_many also needs row_key"),
         ("row_key: [unit, q]", "row_key needs cardinality one_to_many"),
         (many + ", attach: {g: Girls}", "reads no attach"),
-        ("", "declare one_to_many or many_to_many"),
+        ("", "declare one_to_many with a row_key"),
     ]
     for fields, match in cases:
         with pytest.raises(ValueError, match=match):

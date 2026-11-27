@@ -239,10 +239,10 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
         if carried is not None:
             marked[key] = carried
             continue
-        if len(hits) > 1 and _CARDINALITY == "one_to_one":
+        if len(hits) > 1:
             raise ValueError(
-                "%s: duplicate key %s; declare many_to_many to read every value of it"
-                % (where, key)
+                "%s: duplicate key %s in an attach source, which pairs one value per"
+                " key" % (where, key)
             )
         for held_row in keyed.get(key, []):
             for hit in hits:
@@ -271,8 +271,8 @@ def main(inputs):
         held = keyed.setdefault(key, [])
         if held and _CARDINALITY != "many_to_many":
             raise ValueError(
-                "%s: duplicate key %s in the first input; declare one_to_many or"
-                " many_to_many" % (first, key)
+                "%s: duplicate key %s in the first input; declare one_to_many with"
+                " a row_key, or many_to_many" % (first, key)
             )
         held.append(row)
         if carried is not None:
