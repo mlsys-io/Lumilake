@@ -4,6 +4,7 @@ ever assigned to CPU workers, same as "db"/data_retrieval). Otherwise an
 API-only or mixed preview can select a GPU-only worker (or no CPU worker at
 all), and HALO then rejects the node the preview approved."""
 
+from collections.abc import Collection
 from typing import Any, cast
 
 import pytest
@@ -15,11 +16,11 @@ from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 
-def _profile(gpu_count: int, task_types: list[str] | None = None) -> WorkerProfile:
-    devices = tuple(GpuDevice() for _ in range(gpu_count))
+def _profile(gpu_count: int, task_types: Collection[str] = ()) -> WorkerProfile:
+    devices = (GpuDevice(),) * gpu_count
     return worker_profile(
         has_gpu=bool(devices),
-        task_types=frozenset(task_types or ()),
+        task_types=task_types,
         cpu_cores=16,
         memory_total_bytes=64 * (1024**3),
         gpu_devices=devices,

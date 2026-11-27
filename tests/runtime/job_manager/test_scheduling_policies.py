@@ -464,7 +464,7 @@ async def _lanes_seen(
             w: worker_profile(
                 has_gpu=w in gpu,
                 task_types=(
-                    frozenset({"python"})
+                    {"python"}
                     if python_workers and w in python_workers
                     else frozenset()
                 ),

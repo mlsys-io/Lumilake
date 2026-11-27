@@ -1144,12 +1144,12 @@ async def test_try_claim_workers_waits_for_a_busy_python_worker(
     server = server_factory()
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
-    plain = worker_profile(task_types=frozenset({"echo"}))
+    plain = worker_profile(task_types={"echo"})
     _cluster(
         server,
         {
             "cpu-plain": plain,
-            "cpu-python": worker_profile(task_types=frozenset({"python"})),
+            "cpu-python": worker_profile(task_types={"python"}),
         },
     )
     free = FreeCapacity(
@@ -1166,8 +1166,8 @@ async def test_try_claim_workers_claims_the_idle_python_worker(server_factory) -
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
     profiles = {
-        "cpu-plain": worker_profile(task_types=frozenset({"echo"})),
-        "cpu-python": worker_profile(task_types=frozenset({"python"})),
+        "cpu-plain": worker_profile(task_types={"echo"}),
+        "cpu-python": worker_profile(task_types={"python"}),
     }
     free = FreeCapacity(
         cpu_worker_ids=("cpu-plain", "cpu-python"), gpu_worker_ids=(), profiles=profiles
@@ -1185,7 +1185,7 @@ async def test_try_claim_workers_lets_the_optimizer_fail_when_no_worker_can_run_
     server = server_factory()
     server.config.gpu_worker_group_size = 0
     server.config.cpu_worker_group_size = 1
-    plain = worker_profile(task_types=frozenset({"echo"}))
+    plain = worker_profile(task_types={"echo"})
     _cluster(server, {"cpu-plain": plain})
     free = FreeCapacity(
         cpu_worker_ids=("cpu-plain",), gpu_worker_ids=(), profiles={"cpu-plain": plain}

@@ -1,12 +1,14 @@
 """Worker placement facts for tests."""
 
+from collections.abc import Collection
+
 from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 
 
 def worker_profile(
     *,
     has_gpu: bool = False,
-    task_types: frozenset[str] = frozenset(),
+    task_types: Collection[str] = (),
     gpu_memory_fraction: float | None = None,
     cpu_cores: int | None = None,
     memory_total_bytes: int | None = None,
@@ -17,7 +19,7 @@ def worker_profile(
     """A worker profile with the facts a test cares about and defaults elsewhere."""
     return WorkerProfile(
         has_gpu=has_gpu,
-        supported_task_types=task_types,
+        supported_task_types=frozenset(task_types),
         gpu_memory_fraction=gpu_memory_fraction,
         cpu_cores=cpu_cores,
         memory_total_bytes=memory_total_bytes,

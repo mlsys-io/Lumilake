@@ -201,8 +201,8 @@ def test_halo_optimizer_places_python_node_on_a_python_worker() -> None:
         graph=_python_graph(),
         worker_names=["cpu-plain", "cpu-python"],
         worker_profiles={
-            "cpu-plain": worker_profile(task_types=frozenset({"echo"})),
-            "cpu-python": worker_profile(task_types=frozenset({"echo", "python"})),
+            "cpu-plain": worker_profile(task_types={"echo"}),
+            "cpu-python": worker_profile(task_types={"echo", "python"}),
         },
     )
     assert schedule.worker_assignment["cpu-python"] == ["p1"]
@@ -214,10 +214,8 @@ def test_halo_optimizer_prefers_a_cpu_python_worker_over_a_gpu_one() -> None:
         graph=_python_graph(),
         worker_names=["gpu-python", "cpu-python"],
         worker_profiles={
-            "gpu-python": worker_profile(
-                has_gpu=True, task_types=frozenset({"python"})
-            ),
-            "cpu-python": worker_profile(task_types=frozenset({"python"})),
+            "gpu-python": worker_profile(has_gpu=True, task_types={"python"}),
+            "cpu-python": worker_profile(task_types={"python"}),
         },
     )
     assert schedule.worker_assignment["cpu-python"] == ["p1"]
@@ -229,9 +227,7 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
             graph=_python_graph(),
             worker_names=["gpu-python", "cpu-plain"],
             worker_profiles={
-                "gpu-python": worker_profile(
-                    has_gpu=True, task_types=frozenset({"python"})
-                ),
+                "gpu-python": worker_profile(has_gpu=True, task_types={"python"}),
                 "cpu-plain": worker_profile(),
             },
         )
@@ -240,7 +236,7 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
 @pytest.mark.parametrize(
     "profile",
     [
-        worker_profile(task_types=frozenset({"echo", "ssh"})),
+        worker_profile(task_types={"echo", "ssh"}),
         worker_profile(),
     ],
 )
@@ -357,8 +353,8 @@ def test_halo_dp_places_generated_python_steps_on_the_advertising_worker() -> No
         worker_names=["cpu-a", "cpu-b", "cpu-python"],
         worker_profiles={
             "cpu-a": worker_profile(),
-            "cpu-b": worker_profile(task_types=frozenset({"echo"})),
-            "cpu-python": worker_profile(task_types=frozenset({"python"})),
+            "cpu-b": worker_profile(task_types={"echo"}),
+            "cpu-python": worker_profile(task_types={"python"}),
         },
     )
 
@@ -836,13 +832,13 @@ def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, WorkerProfile]:
     profiles = {
         f"gpu-{index}": worker_profile(
             has_gpu=True,
-            task_types=frozenset({"python"}),
+            task_types={"python"},
             gpu_devices=tuple(GpuDevice(name=name) for name in names),
         )
         for index, names in enumerate(cards)
     }
     profiles["gpu-plain"] = worker_profile(has_gpu=True)
-    profiles["cpu-python"] = worker_profile(task_types=frozenset({"python"}))
+    profiles["cpu-python"] = worker_profile(task_types={"python"})
     return profiles
 
 

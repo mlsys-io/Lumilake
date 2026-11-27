@@ -58,15 +58,11 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
 
 
 def test_from_worker_keeps_every_placement_fact() -> None:
+    card = GpuInfo(index=0, name="H100", memory_total_bytes=80 * 1024**3)
     hardware = WorkerHardware(
         cpu=CPUInfo(logical_cores=32),
         memory=MemoryInfo(total_bytes=29 * 1024**3),
-        gpu=GpuPlatformInfo(
-            devices=[
-                GpuInfo(index=0, name="H100", memory_total_bytes=80 * 1024**3),
-                GpuInfo(index=1, name="H100", memory_total_bytes=80 * 1024**3),
-            ]
-        ),
+        gpu=GpuPlatformInfo(devices=[card, card]),
     )
     profile = WorkerProfile.from_worker(
         _worker(
@@ -80,13 +76,9 @@ def test_from_worker_keeps_every_placement_fact() -> None:
     assert profile == WorkerProfile(
         has_gpu=True,
         supported_task_types=frozenset({"python"}),
-        gpu_memory_fraction=None,
         cpu_cores=32,
         memory_total_bytes=29 * 1024**3,
-        gpu_devices=(
-            GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),
-            GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),
-        ),
+        gpu_devices=(GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),) * 2,
         max_session_cpu_cores=8.0,
         max_session_memory_bytes=12 * 1024**3,
     )
