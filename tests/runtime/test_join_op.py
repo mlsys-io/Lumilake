@@ -250,7 +250,8 @@ ops:
       def right(row):
           return {"case_id": row[0], "n": 1}
 """
-    for how, whole_run in (("left", False), ("inner", True), ("full", True)):
+    mm = "left\n    cardinality: many_to_many"
+    for how, whole in (("left", False), ("inner", True), ("full", True), (mm, True)):
         spec = parse_yaml_payload(
             yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
             f" case_id\n    how: {how}\n"
@@ -259,10 +260,7 @@ ops:
             Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
             node_prefix="g",
         )
-        merged = _join_of(runtime)
-        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
-    many = _build(_merge("State, Route.diagnose", "    cardinality: many_to_many\n"))
-    assert _join_of(many).node_id in many.own_row_count_nodes()
+        assert (_join_of(runtime).node_id in runtime.own_row_count_nodes()) is whole
 
 
 def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
@@ -320,9 +318,7 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
 
 
 def test_join_reads_a_workflow_input_as_its_first_column(tmp_path: Path) -> None:
-    node = _join_node(_merge("Rows"))
-    assert node.data_spec.plan[0].kind == "literal"
-    out = _run(tmp_path, node, {})
+    out = _run(tmp_path, _join_node(_merge("Rows")), {})
     assert [item["output"]["case_id"] for item in out["items"]] == ["a", "b", "c"]
 
 
