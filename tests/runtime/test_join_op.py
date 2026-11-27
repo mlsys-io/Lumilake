@@ -226,10 +226,10 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
         )
 
 
-def test_an_inner_or_full_join_output_sets_its_own_row_count() -> None:
+def test_a_join_that_joins_its_own_rows_sets_their_count() -> None:
     """A join over the job's own rows drops or appends rows under ``inner`` and
-    ``full``, so its output reads as a whole-run value there; a ``left`` join
-    keeps one row per first-input row and splits like a row step."""
+    ``full`` and emits a key's pairs under ``many_to_many``, so its output reads as
+    a whole-run value there; any other join keeps one row per input row."""
     yaml = """
 name: j
 inputs:
@@ -252,10 +252,16 @@ ops:
       def right(row):
           return {"case_id": row[0], "n": 1}
 """
-    for how, whole_run in (("left", False), ("inner", True), ("full", True)):
+    cases = (
+        ("left", "", False),
+        ("inner", "", True),
+        ("full", "", True),
+        ("left", "    cardinality: many_to_many\n", True),
+    )
+    for how, extra, whole_run in cases:
         spec = parse_yaml_payload(
             yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
-            f" case_id\n    how: {how}\n"
+            f" case_id\n    how: {how}\n{extra}"
         )["j"]
         runtime = RuntimeGraphBuilder().build(
             Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
