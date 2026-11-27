@@ -1,12 +1,15 @@
 """Optimizer plugin contract: OptimizerProvider, OptimizerHandle, Schedule,
 and a generic RemoteOptimizer for HTTP-routed providers."""
 
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
+
+from .worker_profile import WorkerProfile
 
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
@@ -46,7 +49,7 @@ class OptimizerHandle(Protocol):
         self,
         graph: Any,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule: ...
 
@@ -89,7 +92,7 @@ class RemoteOptimizer:
         self,
         graph: Any,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         serialize = getattr(graph, "serialize", None)
@@ -100,7 +103,10 @@ class RemoteOptimizer:
         request_body = {
             "graph": serialize(),
             "worker_names": worker_names,
-            "worker_profiles": worker_profiles,
+            "worker_profiles": {
+                worker: profile.model_dump(mode="json")
+                for worker, profile in worker_profiles.items()
+            },
             "data_profile_results": data_profile_results,
             "optimizer_type": self._optimizer_type,
         }

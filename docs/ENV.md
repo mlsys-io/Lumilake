@@ -37,6 +37,8 @@ All data access routes through lumid-data-app. All `DataRetrievalOp`s — `sql`,
 | `LUMID_DATA_WORKER_URL` | Optional worker-facing base URL for lumid-data-app blobs. Falls back to `LUMID_DATA_URL`; set it when workers reach lumid-data-app at a different address from the server. |
 | `LUMID_DATA_TOKEN` | Bearer token sent to lumid-data-app. Optional — falls back to `LUMILAKE_RUNTIME_TOKEN` when unset; the effective bearer (this key OR the fallback) is required for all `DataRetrievalOp` modes and for data profiling. |
 | `LUMID_DATA_TIMEOUT_SECONDS` | HTTP timeout for lumid-data-app calls. Defaults to `30`. |
+| `LUMID_JOBS_URL` | Base URL of the lum.id/data jobs API, used for submissions that carry `lumid_job`. Defaults to `LUMID_DATA_URL`. |
+| `LUMID_JOBS_RUNTIME_KEY` | This server's runtime service key on the lum.id/data hub (a local key labelled `runtime:lumilake`). Required to accept `lumid_job` submissions: the server uses it to fetch each job's job-scoped data token. |
 | `S3_DATA_PREFIX` | Logical blob-key prefix in lumid-data-app's store for compute data (workflow inputs/outputs). Used as the base key prefix for S3-input resolution and output writes. |
 | `S3_ARCHIVE_PREFIX` | Logical blob-key prefix in lumid-data-app's store for job records and runtime artifacts (the archive layer). Required. |
 
@@ -132,6 +134,8 @@ Used by FlowMesh worker placement as the fallback when a job does not pass an ex
 | `HARDWARE_MEMORY_REQUIREMENT` | Memory per worker. Defaults to `16Gi`. |
 | `HARDWARE_GPU_REQUIREMENT` | GPUs per worker. Defaults to `1`. |
 | `HARDWARE_GPU_MEMORY_REQUIREMENT` | GPU memory per worker. Defaults to `8Gi`. |
+
+FlowMesh runs a python step (`LambdaOp`) in a session container capped by the worker's `ssh_limits`, so a batch with python steps is placed only where those limits hold its CPU and the largest memory its python steps ask for: a step's own `memory_mb`, else the job's `memory`, else `HARDWARE_MEMORY_REQUIREMENT`. A step without a GPU request runs on a CPU worker, so only the batch's CPU group is held to the limits its steps need; a step that asks for GPUs runs on a GPU worker, and that group is held to its limits. A job no worker can place this way fails with an error naming the per-task CPU and memory the check used; lower `hardware.cpu`, and `hardware.memory` or the step's `memory_mb`, to fit. Other task types are held to the worker's hardware alone.
 
 Jobs with different per-job override tuples (the raw ``hardware`` payload — ``None`` is its own partition, ``{"cpu": 8}`` is another, ``{"cpu": 8, "memory": "16Gi"}`` is another) land in distinct FlowMesh dispatches because a single FlowMesh task spec carries one hardware tuple. The partition is keyed on the raw override, not the env-resolved value, so two jobs that happen to resolve to the same effective spec via env defaults still split.
 

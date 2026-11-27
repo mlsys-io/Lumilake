@@ -18,7 +18,6 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from tests.support.data_specs import wire
 
 
 @pytest.fixture(autouse=True)
@@ -74,7 +73,7 @@ def test_classification_yaml_lowers_to_a_classification_node(
     ]
     model_spec = node.to_flowmesh_node()["spec"]["model"]
 
-    assert wire(node) == {
+    assert node.data_spec.model_dump(exclude_none=True) == {
         "type": "list",
         "items": [{"text": "first question", "text_pair": "first question"}],
     }
@@ -135,7 +134,7 @@ def test_mixed_derived_chain_builds_in_dependency_order() -> None:
     pairs_id = f"{classification.id}__pairs"
     pairs = runtime_graph.nodes[pairs_id]
     # The pairs step reads its upstream at the item-relative stage path.
-    candidate_stage = wire(pairs)["plan"][1]
+    candidate_stage = pairs.data_spec.model_dump(exclude_none=True)["plan"][1]
     assert candidate_stage["kind"] == "stage" and candidate_stage["path"] == "output"
     assert runtime_graph.nodes[classification.id].dependencies == (pairs_id,)
     for node in runtime_graph.nodes.values():
