@@ -16,7 +16,6 @@ from flowmesh.models.workers import (
 
 from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
-from lumilake_server.runtime.worker_capability import worker_profile
 
 
 def _worker(
@@ -58,44 +57,35 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     )
 
 
-def test_from_worker_keeps_every_placement_fact() -> None:
-    card = GpuInfo(index=0, name="H100", memory_total_bytes=80 * 1024**3)
+@pytest.mark.asyncio
+async def test_get_worker_profile_returns_the_served_workers_facts(
+    flowmesh_manager: FlowmeshRuntimeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    card = GpuInfo(
+        index=0, name="H100", memory_fraction=0.3, memory_total_bytes=1 << 30
+    )
     hardware = WorkerHardware(
         cpu=CPUInfo(logical_cores=32),
         memory=MemoryInfo(total_bytes=29 * 1024**3),
         gpu=GpuPlatformInfo(devices=[card, card]),
     )
-    profile = worker_profile(
-        _worker(
-            "w",
-            frozenset({TaskType.PYTHON}),
-            hardware,
-            SSHLimits(max_cpu_cores=8.0, max_memory_bytes=12 * 1024**3),
-        )
+    served = _worker(
+        "w",
+        frozenset({TaskType.PYTHON}),
+        hardware,
+        SSHLimits(max_cpu_cores=8.0, max_memory_bytes=12 * 1024**3),
     )
+    _serve(monkeypatch, served)
 
-    assert profile == WorkerProfile(
+    assert await flowmesh_manager.get_worker_profile("w") == WorkerProfile(
         supported_task_types=frozenset({"python"}),
         gpu=WorkerGpu(
-            devices=(GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),) * 2
+            devices=(GpuDevice(name="H100", memory_total_bytes=1 << 30),) * 2
         ),
+        gpu_memory_fraction=0.3,
         cpu_cores=32,
         memory_total_bytes=29 * 1024**3,
         max_session_cpu_cores=8.0,
         max_session_memory_bytes=12 * 1024**3,
     )
-
-
-@pytest.mark.asyncio
-async def test_get_worker_profile_converts_the_served_worker(
-    flowmesh_manager: FlowmeshRuntimeManager,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    hardware = WorkerHardware(
-        memory=MemoryInfo(total_bytes=1024),
-        gpu=GpuPlatformInfo(devices=[GpuInfo(index=0, memory_fraction=0.3)]),
-    )
-    served = _worker("w", frozenset({TaskType.PYTHON}), hardware)
-    _serve(monkeypatch, served)
-
-    assert await flowmesh_manager.get_worker_profile("w") == worker_profile(served)

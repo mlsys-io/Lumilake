@@ -1,6 +1,5 @@
 """Capability-gated task types in the shared helpers and the capacity claim."""
 
-from collections.abc import Collection
 from typing import Any
 
 from support.worker_profiles import worker_profile
@@ -115,15 +114,8 @@ _H100 = GpuDevice(name="H100", memory_total_bytes=24 * 1024**3)
 _A100 = GpuDevice(name="A100", memory_total_bytes=40 * 1024**3)
 
 
-def _gpu_profile(
-    devices: tuple[GpuDevice, ...], task_types: Collection[str]
-) -> WorkerProfile:
-    """A GPU worker profile in the shape the server's snapshot stores."""
-    return worker_profile(devices=devices, task_types=task_types)
-
-
-_GPU_VLLM = _gpu_profile((_A100,), frozenset({"echo"}))
-_GPU_PYTHON = _gpu_profile((_A100,), frozenset({"python"}))
+_GPU_VLLM = worker_profile(devices=(_A100,), task_types={"echo"})
+_GPU_PYTHON = worker_profile(devices=(_A100,), task_types={"python"})
 
 
 def _gpu_free(profiles: dict[str, WorkerProfile]) -> FreeCapacity:
@@ -157,16 +149,20 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(plain, required_gpu_requests=one) is None
 
     cards = {
-        "gpu-rtx": _gpu_profile((GpuDevice(name="RTX 4090"),), {"python"}),
-        "gpu-big": _gpu_profile((_H100, _H100), {"python"}),
+        "gpu-rtx": worker_profile(
+            devices=(GpuDevice(name="RTX 4090"),), task_types={"python"}
+        ),
+        "gpu-big": worker_profile(devices=(_H100, _H100), task_types={"python"}),
     }
     passes = GpuRequest(count=2, type="H100")
     assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
-    small = _gpu_free({"gpu-rtx": _gpu_profile((_H100,), frozenset({"python"}))})
+    small = _gpu_free(
+        {"gpu-rtx": worker_profile(devices=(_H100,), task_types={"python"})}
+    )
     assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
     split = _gpu_free(
         {
-            "gpu-h100": _gpu_profile((_H100,), ()),
+            "gpu-h100": worker_profile(devices=(_H100,)),
             "gpu-rtx": cards["gpu-rtx"],
         }
     )
@@ -175,8 +171,9 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
 
 
 def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
-    l4 = _gpu_profile(
-        (GpuDevice(name="L4", memory_total_bytes=16 << 30),), frozenset({"python"})
+    l4 = worker_profile(
+        devices=(GpuDevice(name="L4", memory_total_bytes=16 << 30),),
+        task_types={"python"},
     )
     for wildcard in ("any", "auto", "*", "ANY"):
         assert profile_fits_gpu_request(l4, GpuRequest(type=wildcard))
@@ -188,8 +185,8 @@ def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
 def test_two_slot_group_serves_one_request_per_worker() -> None:
     """An H100 step and an A100 step share a group of two, one worker each."""
     profiles = {
-        "gpu-h100": _gpu_profile((_H100,), {"python"}),
-        "gpu-a100": _gpu_profile((_A100,), {"python"}),
+        "gpu-h100": worker_profile(devices=(_H100,), task_types={"python"}),
+        "gpu-a100": worker_profile(devices=(_A100,), task_types={"python"}),
     }
     h100 = GpuRequest(count=1, type="H100")
     a100 = GpuRequest(count=1, type="A100")
@@ -200,7 +197,9 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
     ]
     assert _gpu_claim(free, 1, required_gpu_requests=(h100, a100)) is None
     # One slot is enough when the same worker carries both requests.
-    both = _gpu_free({"gpu-two": _gpu_profile((_H100, _A100), frozenset({"python"}))})
+    both = _gpu_free(
+        {"gpu-two": worker_profile(devices=(_H100, _A100), task_types={"python"})}
+    )
     assert _gpu_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]
     # Two A100s ahead of the H100: the swap keeps one A100 and takes the H100.
     order = _gpu_free(

@@ -308,40 +308,17 @@ def test_hook_remote_optimizer_posts_the_profiles_as_json() -> None:
     respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
         side_effect=_capture
     )
+    profile = WorkerProfile(
+        gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)), gpu_memory_fraction=0.5
+    )
     schedule = HookRemoteOptimizer(
         base_url="http://127.0.0.1:9000", optimizer_type="halo-greedy"
     ).generate_schedule(
-        _make_graph(),
-        worker_names=["w1", "w2"],
-        worker_profiles={
-            "w1": WorkerProfile(
-                gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)),
-                gpu_memory_fraction=0.5,
-            ),
-            "w2": WorkerProfile(),
-        },
+        _make_graph(), worker_names=["w1"], worker_profiles={"w1": profile}
     )
 
     assert schedule.worker_assignment == {"w1": ["n1"]}
-    assert captured_body["worker_profiles"] == {
-        "w1": {
-            "supported_task_types": [],
-            "gpu": {"devices": [{"name": "H100", "memory_total_bytes": None}]},
-            "has_gpu": True,
-            "gpu_memory_fraction": 0.5,
-            "cpu_cores": None,
-            "memory_total_bytes": None,
-            "max_session_cpu_cores": None,
-            "max_session_memory_bytes": None,
-        },
-        "w2": {
-            "supported_task_types": [],
-            "gpu": None,
-            "has_gpu": False,
-            "gpu_memory_fraction": None,
-            "cpu_cores": None,
-            "memory_total_bytes": None,
-            "max_session_cpu_cores": None,
-            "max_session_memory_bytes": None,
-        },
+    assert captured_body["worker_profiles"] == {"w1": profile.model_dump(mode="json")}
+    assert captured_body["worker_profiles"]["w1"]["gpu"] == {
+        "devices": [{"name": "H100", "memory_total_bytes": None}]
     }
