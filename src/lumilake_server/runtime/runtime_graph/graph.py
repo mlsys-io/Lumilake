@@ -12,7 +12,7 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
-    parse_data_spec,
+    remap_data_spec,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
@@ -299,10 +299,7 @@ class RuntimeGraph:
                 task_type=op.task_type,
                 backend=op.backend,
                 model=op.model,
-                data_spec=parse_data_spec(
-                    op.task_type,
-                    remap(op.data_spec.model_dump(exclude_none=True), rewritable),
-                ),
+                data_spec=remap_data_spec(op.data_spec, rewritable),
                 model_spec=remap(op.model_spec, rewritable),
                 inference_spec=remap(op.inference_spec, rewritable),
                 api_spec=remap(op.api_spec, rewritable),

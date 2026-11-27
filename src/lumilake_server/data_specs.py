@@ -1,5 +1,7 @@
 """Typed ``data_spec`` for every runtime task type."""
 
+import re
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -345,6 +347,57 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
         return _MODEL_DATA.validate_python(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
+
+
+_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
+
+
+def _remap_placeholder(text: str, mapping: Mapping[str, str]) -> str:
+    """Rewrite ``${node.path}`` placeholders of mapped nodes."""
+    return _PLACEHOLDER_RE.sub(
+        lambda match: (
+            f"${{{mapping[match.group(1)]}.{match.group(2)}}}"
+            if match.group(1) in mapping
+            else match.group(0)
+        ),
+        text,
+    )
+
+
+def remap_data_spec(spec: DataSpecModel, mapping: Mapping[str, str]) -> DataSpecModel:
+    """Copy ``spec`` with the node references and placeholders of mapped nodes
+    renamed, walking the model's fields instead of a dump."""
+    return _remap_spec_value(spec, mapping)
+
+
+def _remap_spec_value(value: Any, mapping: Mapping[str, str]) -> Any:
+    if isinstance(value, BaseModel):
+        # ``__dict__`` carries declared fields plus the extras a model allows.
+        return value.model_copy(
+            update={
+                name: (
+                    mapping[item]
+                    if name == "node" and isinstance(item, str) and item in mapping
+                    else _remap_spec_value(item, mapping)
+                )
+                for name, item in value.__dict__.items()
+            }
+        )
+    if isinstance(value, dict):
+        return {
+            key: (
+                mapping[item]
+                if key == "node" and isinstance(item, str) and item in mapping
+                else _remap_spec_value(item, mapping)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        items = [_remap_spec_value(item, mapping) for item in value]
+        return tuple(items) if isinstance(value, tuple) else items
+    if isinstance(value, str):
+        return _remap_placeholder(value, mapping)
+    return value
 
 
 Column.model_rebuild()
