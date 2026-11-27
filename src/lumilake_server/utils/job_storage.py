@@ -204,14 +204,12 @@ class InMemoryJobStorage(JobStorage):
 
     def _save_locked(self, record: JobRecord) -> None:
         data = _record_payload(record)
-        data.pop("inputs")
-        data.pop("progress")
-        data.pop("result")
+        self._inputs[record.job_id] = data.pop("inputs")
+        self._progress[record.job_id] = data.pop("progress")
+        result = data.pop("result")
+        if result is not None:
+            self._result[record.job_id] = result
         self._storage[record.job_id] = data
-        self._inputs[record.job_id] = _normalize_payload(record.inputs)
-        self._progress[record.job_id] = record.progress.model_dump(by_alias=True)
-        if record.result is not None:
-            self._result[record.job_id] = record.result.model_dump()
         self._summaries[record.job_id] = summary_of(record)
         self.logger.info("Saved job %s to in-memory storage", record.job_id)
 
@@ -335,26 +333,20 @@ class PersistentJobStorage(JobStorage):
         ``jobs_index.json`` is (see :class:`SqliteJobStorage`).
         """
         record_data = _record_payload(record)
-        record_data.pop("inputs")
-        record_data.pop("progress")
-        record_data.pop("result")
+        inputs = record_data.pop("inputs")
+        progress = record_data.pop("progress")
+        result = record_data.pop("result")
         record_body = json.dumps(record_data, ensure_ascii=False).encode("utf-8")
         obj_name = self._object_name(record.job_id)
         self._put_json(obj_name, record_body)
-        inputs_body = json.dumps(
-            _normalize_payload(record.inputs), ensure_ascii=False
-        ).encode("utf-8")
-        progress_body = json.dumps(
-            record.progress.model_dump(by_alias=True), ensure_ascii=False
-        ).encode("utf-8")
+        inputs_body = json.dumps(inputs, ensure_ascii=False).encode("utf-8")
+        progress_body = json.dumps(progress, ensure_ascii=False).encode("utf-8")
         self._put_json(self._job_object_name(record.job_id, "inputs.json"), inputs_body)
         self._put_json(
             self._job_object_name(record.job_id, "progress.json"), progress_body
         )
-        if record.result is not None:
-            result_body = json.dumps(
-                record.result.model_dump(), ensure_ascii=False
-            ).encode("utf-8")
+        if result is not None:
+            result_body = json.dumps(result, ensure_ascii=False).encode("utf-8")
             self._put_json(
                 self._job_object_name(record.job_id, "result.json"), result_body
             )
