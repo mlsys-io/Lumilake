@@ -13,15 +13,7 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     user_id_to_internal = ctx.user_id_to_internal
     if not entry.inputs:
         raise ValueError(f"JoinOp '{entry.id}' requires at least one input")
-    spec = build_join_spec(
-        {
-            "by": entry.fields.get("by"),
-            "how": entry.fields.get("how") or "left",
-            "require_match": entry.fields.get("require_match", False),
-            "attach": entry.fields.get("attach") or {},
-        },
-        f"JoinOp '{entry.id}'",
-    )
+    spec = build_join_spec(entry.fields, f"JoinOp '{entry.id}'")
     resolved: dict[str, str] = {}
     for field, target in spec.attach.items():
         if target not in user_id_to_internal:

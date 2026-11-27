@@ -124,7 +124,7 @@ def main(inputs):
                 for name, value in row.items():
                     _merged(output[key], name, value, where)
             elif _HOW == "full":
-                output[key] = row.copy()
+                output[key] = row
     for name, value_index, source_index in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
