@@ -1124,8 +1124,8 @@ def test_a_stage_entry_inline_values_above_the_cutoff_are_mounted(
 ) -> None:
     """A served column reaches its step as a stage entry carrying inline values;
     one above the inline cutoff travels in a mounted blob, so the dispatched
-    code stays small and the task reads the same values."""
-    rows = [{"id": f"row-{i}", "text": "x" * 200} for i in range(20)]
+    code does not grow with the values and the task reads the same rows."""
+    rows = [{"id": f"row-{i}", "text": "x" * 200} for i in range(100)]
     plan = [ColumnPlanEntry(kind="stage", node="rows", values=rows)]
     published = _published_blobs(plan)
     spec = python_step.flowmesh_spec(
@@ -1143,7 +1143,18 @@ def test_a_stage_entry_inline_values_above_the_cutoff_are_mounted(
     ]
     assert mounted["sha256"] in {blob.sha256 for blob in published.values()}
     assert "x" * 200 not in spec["code"]
-    assert len(spec["code"]) < python_step.LITERAL_INLINE_MAX_BYTES
+    doubled = [ColumnPlanEntry(kind="stage", node="rows", values=rows + rows)]
+    assert len(
+        python_step.flowmesh_spec(
+            "step",
+            PythonData(
+                code="def pick(i):\n    return i[0]['id']\n",
+                fn_name="pick",
+                plan=doubled,
+            ),
+            _published_blobs(doubled),
+        )["code"]
+    ) == len(spec["code"])
 
     main = _materialize(spec, published, tmp_path / "blobs")
     assert main({}) == {
