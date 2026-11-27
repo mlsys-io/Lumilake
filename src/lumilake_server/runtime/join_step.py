@@ -171,18 +171,14 @@ def _keyed(rows, where):
     return keyed, marked
 
 
-def _join_rows(held, additions, key, where):
-    """Merge each further-input row for ``key`` onto each row the first input holds.
+def _join_rows(held, additions, where):
+    """Merge each further-input row for a key onto each row the first input holds.
 
-    A repeat of the key must be declared many_to_many, and each pair is one output
-    row, held side first.
+    A key's rows pair with every further row of it, and each pair is one output row,
+    held side first.
     """
-    if len(additions) > 1 and _CARDINALITY != "many_to_many":
-        raise ValueError(
-            "%s: key %s repeats in a further input; declare many_to_many" % (_NODE, key)
-        )
-    # Every row pairs with every further row of its key, each pair read off the row the
-    # first input holds, so no pair sees another pair's fields.
+    # Each pair is read off the row the first input holds, so no pair sees another
+    # pair's fields.
     return [_merge(row.copy(), more, where) for row in held for more in additions]
 
 
@@ -273,7 +269,7 @@ def main(inputs):
         if key is None:
             continue
         held = keyed.setdefault(key, [])
-        if held and not _emits_a_product():
+        if held and _CARDINALITY != "many_to_many":
             raise ValueError(
                 "%s: duplicate key %s in the first input; declare one_to_many or"
                 " many_to_many" % (first, key)
@@ -310,7 +306,7 @@ def main(inputs):
             if key in appended:
                 # A key this input just appended already carries its fields.
                 continue
-            keyed[key] = _join_rows(keyed[key], additions, key, where)
+            keyed[key] = _join_rows(keyed[key], additions, where)
     for name, value_index, source_index, _ in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
@@ -342,11 +338,6 @@ def main(inputs):
         for held_row in keyed[key]:
             items.append({{"output": marked.get(key, held_row)}})
     return {{"items": items}}
-
-
-def _emits_a_product():
-    """True when one key may hold several first-input rows, each its own output."""
-    return _CARDINALITY != "one_to_one"
 
 
 def _row_keys(rows, where):
