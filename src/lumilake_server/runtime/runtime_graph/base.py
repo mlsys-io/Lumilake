@@ -39,7 +39,7 @@ def _default_output_destination() -> dict[str, Any]:
     return {"type": "local"}
 
 
-def _iter_literal_item_refs(items: object) -> Iterator[str]:
+def _iter_literal_item_refs(items: list[Any] | str | None) -> Iterator[str]:
     """Yield the node reads FlowMesh performs inside literal list items: an
     item mapping whose ``node`` comes with ``path``. A ``node`` alone, or with
     ``expr``, is ordinary data."""
