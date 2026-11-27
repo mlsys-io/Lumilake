@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
+from support.worker_profiles import worker_profile
 
 from lumilake import envs
 from lumilake_server.data_specs import PythonData
@@ -1123,12 +1124,11 @@ async def test_permanently_unsatisfiable_holds_python_steps_to_session_limits(
     capacity = _free_capacity(
         cpu=("cpu-0",),
         profiles={
-            "cpu-0": {
-                "cpu": {"logical_cores": 32},
-                "memory": {"total_bytes": 29 * 1024**3},
-                "gpu": {"devices": []},
-                "ssh_limits": {"max_memory_bytes": 12 * 1024**3},
-            }
+            "cpu-0": worker_profile(
+                cpu_cores=32,
+                memory_total_bytes=29 * 1024**3,
+                max_session_memory_bytes=12 * 1024**3,
+            )
         },
     )
 
@@ -1162,12 +1162,11 @@ async def test_reserve_batch_skips_python_steps_no_worker_can_place(
     capacity = _free_capacity(
         cpu=("cpu-0",),
         profiles={
-            "cpu-0": {
-                "cpu": {"logical_cores": 32},
-                "memory": {"total_bytes": 29 * 1024**3},
-                "gpu": {"devices": []},
-                "ssh_limits": {"max_memory_bytes": 12 * 1024**3},
-            }
+            "cpu-0": worker_profile(
+                cpu_cores=32,
+                memory_total_bytes=29 * 1024**3,
+                max_session_memory_bytes=12 * 1024**3,
+            )
         },
     )
 

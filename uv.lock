@@ -1045,12 +1045,14 @@ source = { editable = "packages/hook" }
 dependencies = [
     { name = "httpx" },
     { name = "lumid-hooks" },
+    { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1" },
     { name = "lumid-hooks", specifier = ">=0.2.0" },
+    { name = "pydantic", specifier = ">=2.12.3,<3" },
 ]
 
 [[package]]

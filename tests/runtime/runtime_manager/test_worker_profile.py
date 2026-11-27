@@ -1,19 +1,20 @@
-"""``get_worker_profile`` carries the task types a worker's executors advertise,
-so the scheduler can place a node only on a worker that can run it."""
-
-from typing import Any
+"""``get_worker_profile`` carries the placement facts of a FlowMesh worker, so the
+scheduler can place a node only on a worker that can run it."""
 
 import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import (
+    CPUInfo,
     GpuInfo,
     GpuPlatformInfo,
     MemoryInfo,
+    SSHLimits,
     WorkerCapabilities,
     WorkerHardware,
     WorkerInfo,
 )
 
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 
 
@@ -21,6 +22,7 @@ def _worker(
     worker_id: str,
     task_types: frozenset[TaskType],
     hardware: WorkerHardware | None = None,
+    ssh_limits: SSHLimits | None = None,
 ) -> WorkerInfo:
     return WorkerInfo(
         id=worker_id,
@@ -31,6 +33,7 @@ def _worker(
         status="IDLE",
         hardware=hardware,
         capabilities=WorkerCapabilities(supported_task_types=task_types),
+        ssh_limits=ssh_limits,
     )
 
 
@@ -55,29 +58,34 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_lists_the_advertised_task_types_sorted(
+async def test_get_worker_profile_returns_the_served_workers_facts(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _serve(monkeypatch, _worker("w", frozenset({TaskType.PYTHON})))
-
-    profile = await flowmesh_manager.get_worker_profile("w")
-
-    assert profile["supported_task_types"] == ["python"]
-
-
-@pytest.mark.asyncio
-async def test_profile_keeps_the_hardware_sections(
-    flowmesh_manager: FlowmeshRuntimeManager,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    devices = [GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
-    hardware = WorkerHardware(
-        memory=MemoryInfo(total_bytes=1024), gpu=GpuPlatformInfo(devices=devices)
+    card = GpuInfo(
+        index=0, name="H100", memory_fraction=0.3, memory_total_bytes=1 << 30
     )
-    _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    hardware = WorkerHardware(
+        cpu=CPUInfo(logical_cores=32),
+        memory=MemoryInfo(total_bytes=29 * 1024**3),
+        gpu=GpuPlatformInfo(devices=[card, card]),
+    )
+    served = _worker(
+        "w",
+        frozenset({TaskType.PYTHON}),
+        hardware,
+        SSHLimits(max_cpu_cores=8.0, max_memory_bytes=12 * 1024**3),
+    )
+    _serve(monkeypatch, served)
 
-    profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
-
-    assert profile["memory"]["total_bytes"] == 1024
-    assert profile["gpu_memory_fraction"] == 0.3
+    assert await flowmesh_manager.get_worker_profile("w") == WorkerProfile(
+        supported_task_types=frozenset({"python"}),
+        gpu=WorkerGpu(
+            devices=(GpuDevice(name="H100", memory_total_bytes=1 << 30),) * 2
+        ),
+        gpu_memory_fraction=0.3,
+        cpu_cores=32,
+        memory_total_bytes=29 * 1024**3,
+        max_session_cpu_cores=8.0,
+        max_session_memory_bytes=12 * 1024**3,
+    )
