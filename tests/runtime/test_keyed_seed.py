@@ -13,8 +13,8 @@ from lumilake_server.parser import parse_yaml_payload, yaml_parser
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
-from tests.support.data_specs import wire
 from tests.support.seeds import documented_seed
 
 _ROWS = [
@@ -29,11 +29,14 @@ _ANSWER: dict[str, Any] = {
     "config": {"model": "m"},
     "messages": [{"role": "user", "content": "placeholder"}],
     "rowwise_template": "{question}",
-    "rowwise_columns": [
-        {"label": "question", "node": "Cases", "path": "items.output.question"}
-    ],
+    "rowwise_columns": [{"label": "question", "node": "Cases"}],
     "rowwise_seed": {"key": _KEY, "pairing": "shared"},
 }
+
+
+def _wire(node: RuntimeOp) -> dict[str, Any]:
+    """The data spec as the dict a worker receives."""
+    return node.data_spec.model_dump(exclude_none=True)
 
 
 def _payload() -> dict[str, Any]:
@@ -50,11 +53,11 @@ def _graph(payload: dict[str, Any]) -> Any:
 
 def _seed_node(payload: dict[str, Any]) -> Any:
     nodes = _graph(payload).nodes.values()
-    return next(n for n in nodes if wire(n).get("fn_name") == SEED_FN_NAME)
+    return next(n for n in nodes if _wire(n).get("fn_name") == SEED_FN_NAME)
 
 
 def _generated(payload: dict[str, Any]) -> Any:
-    return lambda_runtime.materialize(wire(_seed_node(payload))["code"], SEED_FN_NAME)
+    return lambda_runtime.materialize(_wire(_seed_node(payload))["code"], SEED_FN_NAME)
 
 
 def _round_build(
@@ -87,13 +90,13 @@ def test_the_parsed_step_draws_the_documented_seed_by_key() -> None:
     """The generated row function draws the documented seed per key."""
     graph = _graph(_payload())
     seed_node = _seed_node(_payload())
-    fn = lambda_runtime.materialize(wire(seed_node)["code"], SEED_FN_NAME)
+    fn = lambda_runtime.materialize(_wire(seed_node)["code"], SEED_FN_NAME)
     keys = [row["case_id"] for row in _ROWS]
     assert [fn((row,)) for row in _COLUMN] == documented_seed(keys)
     assert [fn((row,)) for row in reversed(_COLUMN)] == documented_seed(keys[::-1])
     assert graph.list_lambda_cardinality_nodes() == set()
     chat = next(n for n in graph.nodes.values() if n.task_type == "inference")
-    assert wire(chat)["seeds"] == {
+    assert _wire(chat)["seeds"] == {
         "node": seed_node.node_id,
         "path": "value.items.value",
     }
@@ -196,7 +199,7 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
         with pytest.raises(ValueError, match="exactly 2 parameters"):
             _graph({"ops": [cases, {**draw, "code": code}]})
     node = _graph(payload).nodes[draw_id]
-    assert [e.get("role") for e in wire(node)["plan"]] == [None, "seed"]
+    assert [e.get("role") for e in _wire(node)["plan"]] == [None, "seed"]
     # No op type emits the ``seed`` prefix, so a user op named like it builds on.
     named = {"id": "Answer__seed", "op": "LambdaOp", "inputs": []}
     named.update({"fn_name": "p", "code": "def p(row):\n    return row\n"})

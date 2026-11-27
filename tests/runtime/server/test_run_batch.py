@@ -28,6 +28,7 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.server import RuntimeExecutionError
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.lumid_data_client import data_token_var
 from tests.support.data_specs import runtime_op
 
 
@@ -129,6 +130,35 @@ async def test_run_batch_dispatch_token_none_when_all_unset(
     await server._run_batch(["worker-1"], batch)
 
     assert seen_tokens == [None]
+
+
+@pytest.mark.asyncio
+async def test_run_batch_reads_with_the_batch_job_token(
+    server_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = server_factory()
+    server.runtime_manager = cast(Any, RecordingRuntimeManager())
+    workflow = dataclasses.replace(
+        make_workflow(
+            workflow_id="wf-a",
+            request_id="req-a",
+            graph_name="ga",
+            public_graph_name="shared",
+        ),
+        data_token="job-token",
+    )
+    attach_request_states(server, [workflow])
+    seen: list[str | None] = []
+
+    async def _fake_process_batch(*args: Any, **kwargs: Any) -> tuple[dict, dict]:
+        seen.append(data_token_var.get())
+        return {}, {}
+
+    monkeypatch.setattr(server, "_process_batch", _fake_process_batch)
+    await server._run_batch(["worker-1"], make_batch([workflow]))
+
+    assert seen == ["job-token"]
 
 
 @pytest.mark.asyncio

@@ -3,13 +3,14 @@ import textwrap
 from typing import Any, Literal
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
-    DataRetrievalOp,
     EmbeddingOp,
     FormatOp,
     ImageGenerationOp,
@@ -29,7 +30,7 @@ from lumilake_server.ops.join_ops import JoinOp, JoinSpec
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from tests.support.data_specs import wire
+from tests.support.data_specs import runtime_op
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -65,7 +66,7 @@ def _s3_spec(template: str, params: list) -> dict:
 
 def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
@@ -85,7 +86,7 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
     assert retrieval.id in runtime_graph.nodes
     assert llm.id in runtime_graph.nodes
     # Verify lumid wire format
-    ds = wire(runtime_graph.nodes[retrieval.id])
+    ds = runtime_graph.nodes[retrieval.id].data_spec.model_dump(exclude_none=True)
     assert ds["type"] == "lumid"
     assert ds["mode"] == "sql"
     assert ds["lumid_data_url"] == _LUMID_URL
@@ -95,7 +96,7 @@ def test_runtime_graph_builder_accepts_input_used_only_by_retrieval() -> None:
 
 def test_agent_retrieval_structural_column_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "agent",
@@ -113,7 +114,7 @@ def test_agent_retrieval_structural_column_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     llm_node = runtime_graph.nodes[llm.id]
-    columns = wire(llm_node)["template"]["columns"]
+    columns = llm_node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     retrieval_columns = [col for col in columns if col.get("node") == retrieval.id]
     assert retrieval_columns
     assert all(col.get("path") == "items.table" for col in retrieval_columns)
@@ -125,7 +126,7 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE query = :query",
             [{"label": "query", "node": planner.id, "path": "items.output"}],
@@ -149,7 +150,7 @@ def test_runtime_graph_builder_emits_topological_runtime_node_order() -> None:
 
 def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -171,21 +172,21 @@ def test_runtime_graph_builder_supports_s3_retrieval_as_vlm_image_source() -> No
     assert embedding_id in runtime_graph.nodes
     embedding = runtime_graph.nodes[embedding_id]
     assert embedding.task_type == "embedding"
-    assert wire(embedding)["node"] == retrieval.id
-    assert wire(embedding)["path"] == "items.content"
+    assert embedding.data_spec.model_dump(exclude_none=True)["node"] == retrieval.id
+    assert embedding.data_spec.model_dump(exclude_none=True)["path"] == "items.content"
     assert embedding.dependencies == (retrieval.id,)
 
 
 def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -198,14 +199,17 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -223,9 +227,12 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
     ]
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
     assert flatten.task_type == "python"
-    assert wire(flatten)["mode"] == "flatten"
-    assert wire(flatten)["template"] == "Summarize {Stock} with title {title}."
-    plan = wire(flatten)["plan"]
+    assert flatten.data_spec.model_dump(exclude_none=True)["mode"] == "flatten"
+    assert (
+        flatten.data_spec.model_dump(exclude_none=True)["template"]
+        == "Summarize {Stock} with title {title}."
+    )
+    plan = flatten.data_spec.model_dump(exclude_none=True)["plan"]
     assert {
         "kind": "literal",
         "values": ["NVDA"],
@@ -242,7 +249,7 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 
     infer = runtime_graph.nodes[f"{vision.id}_infer"]
     assert infer.task_type == "inference"
-    infer_columns = wire(infer)["template"]["columns"]
+    infer_columns = infer.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     assert infer_columns == [
         {
             "label": "prompt",
@@ -255,7 +262,7 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
             "path": "value.items.output",
         },
     ]
-    assert wire(infer)["image_embedding"] == {
+    assert infer.data_spec.model_dump(exclude_none=True)["image_embedding"] == {
         "node": f"{vision.id}_embedding",
         "path": "embedding_file",
     }
@@ -264,19 +271,19 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 
     regroup = runtime_graph.nodes[vision.id]
     assert regroup.task_type == "python"
-    assert wire(regroup)["mode"] == "regroup"
-    assert wire(regroup)["plan"][0] == {
+    assert regroup.data_spec.model_dump(exclude_none=True)["mode"] == "regroup"
+    assert regroup.data_spec.model_dump(exclude_none=True)["plan"][0] == {
         "kind": "stage",
         "node": f"{vision.id}_infer",
         "label": "outputs",
     }
-    assert wire(regroup)["plan"][1] == {
+    assert regroup.data_spec.model_dump(exclude_none=True)["plan"][1] == {
         "kind": "stage",
         "node": f"{vision.id}_flatten",
         "path": "row",
         "label": "rows",
     }
-    assert wire(regroup)["plan"][2] == {
+    assert regroup.data_spec.model_dump(exclude_none=True)["plan"][2] == {
         "kind": "stage",
         "node": news_s3.id,
         "path": "content",
@@ -291,14 +298,14 @@ def test_runtime_graph_builder_supports_rowwise_vlm_template() -> None:
 def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
     """A rowwise column with no path on an InputOp ref is bound as a literal."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -311,14 +318,17 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -327,7 +337,7 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
-    plan = wire(flatten)["plan"]
+    plan = flatten.data_spec.model_dump(exclude_none=True)["plan"]
     # The InputOp ref without a path binds as a literal column in the flatten
     # plan (one value per symbol).
     assert {
@@ -348,14 +358,14 @@ def test_rowwise_vlm_inputop_ref_without_path_is_bound() -> None:
 def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
     """A rowwise column node not reachable from the output is an error."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -368,14 +378,17 @@ def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-            {
-                "label": "title",
-                "node": news_sql.id,
-                "path": "items.table.title",
-            },
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+                {
+                    "label": "title",
+                    "node": news_sql.id,
+                    "path": "items.table.title",
+                },
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -388,7 +401,7 @@ def test_rowwise_vlm_column_node_outside_graph_raises() -> None:
 def test_rowwise_vlm_image_source_is_group_boundary() -> None:
     """A flattened VLM whose only rowwise column is an InputOp still builds."""
     stock = input_placeholder("Stock")
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -401,9 +414,12 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -418,7 +434,7 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
         vision.id,
     ]
     flatten = runtime_graph.nodes[f"{vision.id}_flatten"]
-    plan = wire(flatten)["plan"]
+    plan = flatten.data_spec.model_dump(exclude_none=True)["plan"]
     # The image source is the group boundary and is the first plan entry.
     assert plan[0] == {
         "kind": "stage",
@@ -435,7 +451,7 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
     } in plan
 
     regroup = runtime_graph.nodes[vision.id]
-    assert wire(regroup)["plan"][2] == {
+    assert regroup.data_spec.model_dump(exclude_none=True)["plan"][2] == {
         "kind": "stage",
         "node": news_s3.id,
         "path": "content",
@@ -448,14 +464,14 @@ def test_rowwise_vlm_image_source_is_group_boundary() -> None:
 def test_rowwise_column_without_data_or_node_path_raises() -> None:
     """A rowwise column with neither data nor node+path is an error."""
     stock = input_placeholder("Stock")
-    news_sql = DataRetrievalOp(
+    news_sql = retrieval_op(
         data_spec=_sql_spec(
             "SELECT title FROM news WHERE symbol = :symbol",
             [{"name": "symbol", "node": stock.id}],
         ),
         inputs=[stock],
     )
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec=_s3_spec(
             "example-data/news/images/{symbol}.png",
             [{"name": "symbol", "node": stock.id}],
@@ -468,9 +484,12 @@ def test_rowwise_column_without_data_or_node_path_raises() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock} with title {title}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": news_sql.id},
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "node": news_sql.id},
+            ],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", vision)
@@ -489,9 +508,10 @@ def test_local_rowwise_op_emits_condition() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}],
+            "rowwise_columns",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -512,16 +532,21 @@ def test_local_rowwise_inputop_ref_without_path_is_bound() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "node": stock.id},
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "node": stock.id},
+            ],
+            "rowwise_columns",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
-    columns = wire(runtime_graph.nodes[row_id])["columns"]
+    columns = runtime_graph.nodes[row_id].data_spec.model_dump(exclude_none=True)[
+        "columns"
+    ]
     assert {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}} in (
         columns
     )
@@ -538,9 +563,10 @@ def test_local_aggregate_op_emits_condition() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -577,7 +603,9 @@ def test_row_lambda_message_step_keeps_multi_message_arguments() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     (consumer_id,) = runtime_graph.dsl_to_runtime[consumer.id]
-    template = wire(runtime_graph.nodes[consumer_id])["template"]
+    template = runtime_graph.nodes[consumer_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]
     (function_step,) = template["options"]["format"]["steps"]
     (argument,) = function_step["arguments"]
     assert [message["role"] for message in argument] == ["user", "assistant"]
@@ -655,7 +683,9 @@ def test_runtime_graph_builder_omits_unused_upstream_context_column() -> None:
 
     upstream_id = next(nid for nid in runtime_graph.nodes if "Upstream" in nid)
     downstream_id = next(nid for nid in runtime_graph.nodes if "Downstream" in nid)
-    columns = wire(runtime_graph.nodes[downstream_id])["template"]["columns"]
+    columns = runtime_graph.nodes[downstream_id].data_spec.model_dump(
+        exclude_none=True
+    )["template"]["columns"]
     upstream_columns = [col for col in columns if col.get("node") == upstream_id]
     assert any(col.get("path") == "items.output" for col in upstream_columns)
     assert all(col.get("path") != "items.metadata.prompt" for col in upstream_columns)
@@ -732,7 +762,9 @@ def test_plain_prompt_field_ref_binds_column_with_path() -> None:
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
     assert runtime_graph.nodes[code_id].task_type == "python"
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     assert any(
         col.get("node") == code_id and col.get("path") == "value.items.value.question"
         for col in columns
@@ -811,9 +843,9 @@ def test_plain_prompt_field_ref_emits_no_inline_function_step() -> None:
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     code_id = next(nid for nid in runtime_graph.nodes if "Protocol" in nid)
-    steps = wire(runtime_graph.nodes[chain_id])["template"]["options"]["format"][
-        "steps"
-    ]
+    steps = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["options"]["format"]["steps"]
     assert not any(step.get("function") and code_id in step["label"] for step in steps)
 
 
@@ -876,7 +908,9 @@ def test_plain_prompt_field_ref_from_input_projects_literal() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
 
 
@@ -939,7 +973,9 @@ def test_plain_prompt_field_ref_to_input_field_named_output() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     assert any(col.get("data", {}).get("items") == ["A paper"] for col in columns)
 
 
@@ -1026,7 +1062,9 @@ def test_plain_prompt_field_ref_from_llm_structured_output_binds_column() -> Non
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     assert any(
         col.get("node") == parser_id and col.get("path", "").endswith(".population")
         for col in columns
@@ -1116,7 +1154,9 @@ def test_plain_prompt_item_output_field_ref_binds_single_output_segment() -> Non
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     assert any(
         col.get("node") == parser_id and col.get("path") == "items.output.population"
         for col in columns
@@ -1210,7 +1250,9 @@ def test_plain_prompt_mixed_field_and_whole_item_ref_same_node() -> None:
 
     chain_id = next(nid for nid in runtime_graph.nodes if "Chain" in nid)
     parser_id = next(nid for nid in runtime_graph.nodes if "Criteria" in nid)
-    columns = wire(runtime_graph.nodes[chain_id])["template"]["columns"]
+    columns = runtime_graph.nodes[chain_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     # The field ref binds a column; the whole-item ref keeps the op traced.
     assert any(
         col.get("node") == parser_id and col.get("path") == "items.output.population"
@@ -1235,7 +1277,7 @@ def test_attach_lumid_cfg_injected_for_s3_image_inputs() -> None:
 
     embedding_id = f"{vision.id}_embedding"
     embedding = runtime_graph.nodes[embedding_id]
-    ds = wire(embedding)
+    ds = embedding.data_spec.model_dump(exclude_none=True)
     assert ds["type"] == "list"
     assert ds["lumid_cfg"] == {
         "lumid_data_url": _LUMID_URL,
@@ -1256,7 +1298,7 @@ def test_attach_lumid_cfg_not_injected_for_non_s3_list_inputs() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     llm_node = runtime_graph.nodes[llm.id]
-    ds = wire(llm_node)
+    ds = llm_node.data_spec.model_dump(exclude_none=True)
     assert "lumid_cfg" not in ds
     assert "s3_cfg" not in ds
 
@@ -1516,7 +1558,7 @@ def test_image_gen_user_extras_override_defaults() -> None:
 
 def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "agent",
@@ -1531,13 +1573,13 @@ def test_embedding_op_consuming_agent_retrieval_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     node = runtime_graph.nodes[emb.id]
-    assert wire(node)["node"] == retrieval.id
-    assert wire(node)["path"] == "items.table"
+    assert node.data_spec.model_dump(exclude_none=True)["node"] == retrieval.id
+    assert node.data_spec.model_dump(exclude_none=True)["path"] == "items.table"
 
 
 def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "agent",
@@ -1554,8 +1596,8 @@ def test_image_gen_op_consuming_agent_retrieval_uses_table_path() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     node = runtime_graph.nodes[img.id]
-    assert wire(node)["node"] == retrieval.id
-    assert wire(node)["path"] == "items.table"
+    assert node.data_spec.model_dump(exclude_none=True)["node"] == retrieval.id
+    assert node.data_spec.model_dump(exclude_none=True)["path"] == "items.table"
 
 
 def _emit_column(items: tuple[list[Any], ...]) -> list[str]:
@@ -1577,10 +1619,12 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
 
     node = RuntimeGraphBuilder().build(compiled).nodes[emb.id]
 
-    assert wire(node)["node"] == explode.id
-    assert wire(node)["path"] == "value.items.output"
+    assert node.data_spec.model_dump(exclude_none=True)["node"] == explode.id
+    assert node.data_spec.model_dump(exclude_none=True)["path"] == "value.items.output"
     result = {"value": {"items": [{"output": "NVDA"}, {"output": "AAPL"}]}}
-    assert _walk(result, wire(node)["path"].split(".")) == [
+    assert _walk(
+        result, node.data_spec.model_dump(exclude_none=True)["path"].split(".")
+    ) == [
         "NVDA",
         "AAPL",
     ]
@@ -1588,7 +1632,7 @@ def test_embedding_op_consuming_list_lambda_uses_value_items_output(
 
 def test_agent_retrieval_as_final_output_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "agent",
@@ -1606,7 +1650,7 @@ def test_agent_retrieval_as_final_output_uses_table_path() -> None:
 
 def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "agent",
@@ -1627,8 +1671,8 @@ def test_agent_retrieval_as_vlm_image_source_uses_table_path() -> None:
 
     embedding_id = f"{vision.id}_embedding"
     embedding = runtime_graph.nodes[embedding_id]
-    assert wire(embedding)["node"] == retrieval.id
-    assert wire(embedding)["path"] == "items.table"
+    assert embedding.data_spec.model_dump(exclude_none=True)["node"] == retrieval.id
+    assert embedding.data_spec.model_dump(exclude_none=True)["path"] == "items.table"
 
 
 def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
@@ -1686,7 +1730,7 @@ def test_aggregate_prompt_bound_only_by_df_needs_no_format_kwargs() -> None:
     )
     (llm_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_id]
-    template = wire(node)["template"]
+    template = node.data_spec.model_dump(exclude_none=True)["template"]
     columns = template["columns"]
     df_col = next(col for col in columns if col.get("label") == "df")
     assert df_col["data"]["type"] == "dataframe"
@@ -1705,7 +1749,9 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "ticker", "node": stock.id, "path": ""}],
+        aggregate_table=build_column_table(
+            [{"label": "ticker", "node": stock.id, "path": ""}], "aggregate_table"
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
@@ -1713,7 +1759,7 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
 
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[row_id]
-    template = wire(node)["template"]
+    template = node.data_spec.model_dump(exclude_none=True)["template"]
     df_col = next(col for col in template["columns"] if col.get("label") == "df")
     table_columns = df_col["data"]["columns"]
     assert table_columns == [
@@ -1725,13 +1771,85 @@ def test_aggregate_column_referencing_input_binds_literal_list() -> None:
     assert stock.id not in (node.dependencies or [])
 
 
+_DATAOP_COLUMN_WORKFLOW = """
+name: dataop_column
+inputs: {Topic: []}
+ops:
+  - {id: Const, op: DataOp, data: ["a database index", "a lunar eclipse"]}
+  - id: Ask
+    op: LLMChatOp
+    inputs: [Const]
+    messages: [{role: user, content: ""}]
+COLUMN    config: {model: dummy-model}
+outputs: [{name: answer, ref: Ask}]
+"""
+
+_DATAOP_COLUMN_FORMS = {
+    "rowwise_columns": '    rowwise_template: "Explain {topic}."\n    rowwise_columns: '
+    "[{label: topic, node: Const}]\n",
+    "aggregate_table": '    prompt: {template: "Explain {df}."}\n    aggregate_table: '
+    "[{label: topic, node: Const}]\n",
+}
+
+_DATAOP_COLUMN_PATH_FORMS = {
+    "rowwise_columns": '    rowwise_template: "Explain {topic}."\n    rowwise_columns: '
+    "[{label: topic, node: Const, path: items.output}]\n",
+    "aggregate_table": '    prompt: {template: "Explain {df}."}\n    aggregate_table: '
+    "[{label: topic, node: Const, path: items.output}]\n",
+}
+
+
+@pytest.mark.parametrize("form", sorted(_DATAOP_COLUMN_FORMS))
+def test_chat_column_referencing_dataop_binds_literal_list(form: str) -> None:
+    """A chat column that reads a DataOp carries its values, like an InputOp column."""
+    yaml_text = _DATAOP_COLUMN_WORKFLOW.replace("COLUMN", _DATAOP_COLUMN_FORMS[form])
+    spec = next(iter(parse_yaml_payload(yaml_text).values()))
+    runtime_graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+
+    (node,) = runtime_graph.nodes.values()
+    data_spec = node.data_spec.model_dump(exclude_none=True)
+    columns = (
+        data_spec["template"]["columns"]
+        if form == "aggregate_table"
+        else data_spec["columns"]
+    )
+    (column,) = columns[0]["data"]["columns"] if form == "aggregate_table" else columns
+    assert column == {
+        "label": "topic",
+        "data": {"type": "list", "items": ["a database index", "a lunar eclipse"]},
+    }
+    assert not node.dependencies
+
+
+@pytest.mark.parametrize("form", sorted(_DATAOP_COLUMN_PATH_FORMS))
+def test_chat_column_referencing_dataop_rejects_drill_path(form: str) -> None:
+    """A ``path`` on a DataOp column is refused, naming the op and the column."""
+    yaml_text = _DATAOP_COLUMN_WORKFLOW.replace(
+        "COLUMN", _DATAOP_COLUMN_PATH_FORMS[form]
+    )
+    spec = next(iter(parse_yaml_payload(yaml_text).values()))
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    with pytest.raises(
+        ValueError,
+        match=r"Column 'topic' of consumer .* references DataOp .* with drill path"
+        " 'items.output'; a DataOp-derived column carries the op's values whole, so it"
+        " takes no path.",
+    ):
+        RuntimeGraphBuilder().build(compiled)
+
+
 def test_aggregate_column_referencing_input_rejects_drill_path() -> None:
     """A non-empty ``path`` on an InputOp aggregate column is rejected."""
     stock = input_placeholder("Stock")
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "ticker", "node": stock.id, "path": "items.output"}],
+        aggregate_table=build_column_table(
+            [{"label": "ticker", "node": stock.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA", "AAPL"])
@@ -1769,7 +1887,10 @@ def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1779,9 +1900,11 @@ def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
 
     shout_node = runtime_graph.nodes[shout.id]
     assert shout_node.task_type == "python"
-    assert wire(shout_node).get("mode", "row") == "row"
+    assert (
+        shout_node.data_spec.model_dump(exclude_none=True).get("mode", "row") == "row"
+    )
     llm_node = runtime_graph.nodes[llm.id]
-    columns = wire(llm_node)["columns"]
+    columns = llm_node.data_spec.model_dump(exclude_none=True)["columns"]
     assert {
         "label": "r",
         "node": shout.id,
@@ -1798,7 +1921,10 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize {df}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        aggregate_table=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1809,7 +1935,7 @@ def test_aggregate_llm_reads_standalone_row_lambda_via_value_path() -> None:
     shout_node = runtime_graph.nodes[shout.id]
     assert shout_node.task_type == "python"
     llm_node = runtime_graph.nodes[llm.id]
-    template = wire(llm_node)["template"]
+    template = llm_node.data_spec.model_dump(exclude_none=True)["template"]
     df_col = next(col for col in template["columns"] if col.get("label") == "df")
     table_columns = df_col["data"]["columns"]
     assert {
@@ -1830,7 +1956,10 @@ def test_inlined_row_lambda_referenced_by_column_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1852,7 +1981,10 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
         [OpMessage(role="user", content=inner)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": inner.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": inner.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(inner)
     outer = LambdaOp([inner], fn=_row_lambda_fn)
@@ -1895,7 +2027,10 @@ def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
         condition={"node": shout.id, "expr": "gate == 'on'"},
     )
     llm.inputs.append(shout)
@@ -1918,15 +2053,18 @@ def test_inlined_row_lambda_literal_items_not_treated_as_ref() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "kind": "literal"}],
-                },
-            }
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "kind": "literal"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1947,15 +2085,18 @@ def test_inlined_row_lambda_literal_item_with_expr_not_treated_as_ref() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "expr": "literal"}],
-                },
-            }
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "expr": "literal"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -1975,15 +2116,18 @@ def test_inlined_row_lambda_literal_item_with_path_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[
-            {
-                "label": "r",
-                "data": {
-                    "type": "list",
-                    "items": [{"node": shout.id, "path": "items.output"}],
-                },
-            }
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {
+                    "label": "r",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": shout.id, "path": "items.output"}],
+                    },
+                }
+            ],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     output = as_output("result", llm)
@@ -2005,7 +2149,10 @@ def test_inlined_row_lambda_as_embedding_content_materializes() -> None:
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "data": {"type": "list", "items": ["NVDA"]}}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     emb = EmbeddingOp(content=shout, config=GenerationConfig(model="bge-small"))
@@ -2037,7 +2184,7 @@ def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None
     _node_ref_column applies to a row LambdaOp."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=_row_lambda_fn)
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE q = :q",
             [{"label": "q", "node": terms.id, "path": "items.output"}],
@@ -2058,7 +2205,9 @@ def test_retrieval_param_reading_row_lambda_whole_output_maps_to_value() -> None
 
     assert terms.id in runtime_graph.nodes
     assert runtime_graph.nodes[terms.id].task_type == "python"
-    params = wire(runtime_graph.nodes[retrieval.id])["params"]
+    params = runtime_graph.nodes[retrieval.id].data_spec.model_dump(exclude_none=True)[
+        "params"
+    ]
     (param,) = [p for p in params if p.get("label") == "q"]
     assert param["node"] == terms.id
     assert param["path"] == "value.items.output"
@@ -2071,7 +2220,7 @@ def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
     must resolve against a PythonResult-shaped result."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=_row_lambda_fn)
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec=_sql_spec(
             "SELECT * FROM t WHERE q = :q",
             [{"label": "q", "node": terms.id, "path": "items.output.field"}],
@@ -2090,7 +2239,9 @@ def test_retrieval_param_reading_row_lambda_field_maps_to_value() -> None:
 
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
-    params = wire(runtime_graph.nodes[retrieval.id])["params"]
+    params = runtime_graph.nodes[retrieval.id].data_spec.model_dump(exclude_none=True)[
+        "params"
+    ]
     (param,) = [p for p in params if p.get("label") == "q"]
     assert param["node"] == terms.id
     assert param["path"] == "value.items.value.field"
@@ -2201,7 +2352,9 @@ def test_rowwise_input_field_ref_groups_one_value_per_input_row() -> None:
         for nid, node in runtime_graph.nodes.items()
         if node.task_type == "inference"
     ]
-    columns = wire(runtime_graph.nodes[llm_id])["columns"]
+    columns = runtime_graph.nodes[llm_id].data_spec.model_dump(exclude_none=True)[
+        "columns"
+    ]
     title_col = next(col for col in columns if col["label"] == "title")
     # A multi-row input ref must be a grouped list with one projected value per
     # input row, in the same order as the other columns' groups, so each row's
@@ -2278,7 +2431,9 @@ def _rowwise_chat_columns(prompt_text: str, inputs: dict[str, list[str]]) -> lis
         for nid, node in runtime_graph.nodes.items()
         if node.task_type == "inference"
     ]
-    return wire(runtime_graph.nodes[llm_id])["columns"]
+    return runtime_graph.nodes[llm_id].data_spec.model_dump(exclude_none=True)[
+        "columns"
+    ]
 
 
 def test_rowwise_input_field_ref_single_row_projects_field() -> None:
@@ -2397,7 +2552,9 @@ def _aggregate_chat(upstream: Op) -> LLMChatOp:
     return LLMChatOp(
         [OpMessage(role="user", content=upstream)],
         config=_READ_RULES_MODEL,
-        aggregate_table=[{"label": "df", "node": upstream.id, "path": "items.output"}],
+        aggregate_table=build_column_table(
+            [{"label": "df", "node": upstream.id}], "aggregate_table"
+        ),
     )
 
 
@@ -2409,9 +2566,9 @@ def _rowwise_vlm(upstream: Op, image_source: Op) -> LLMVisionOp:
         image_source=image_source.id,
         image_source_op=image_source,
         rowwise_template="Describe {label}.",
-        rowwise_columns=[
-            {"label": "label", "node": upstream.id, "path": "items.output"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "label", "node": upstream.id}], "rowwise_columns"
+        ),
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
     )
 
@@ -2494,12 +2651,17 @@ def test_output_read_rules_match_the_old_predicates(case: str) -> None:
     if case == "aggregate_as_completion_prompt":
         # Accepted means the completion reads the aggregate chat's output, not
         # that it joins a python plan.
-        assert wire(runtime_graph.nodes[consumer.id])["node"] == upstream.id
+        assert (
+            runtime_graph.nodes[consumer.id].data_spec.model_dump(exclude_none=True)[
+                "node"
+            ]
+            == upstream.id
+        )
         return
     entries = [
         entry
         for node in runtime_graph.nodes.values()
-        for entry in wire(node).get("plan", ())
+        for entry in node.data_spec.model_dump(exclude_none=True).get("plan", ())
         if entry.get("node") == upstream.id
     ]
     assert entries
@@ -2523,7 +2685,7 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     ).compile(rows=["x"])
     graph = RuntimeGraphBuilder().build(compiled)
     (turn_id,) = graph.dsl_to_runtime[turn.id]
-    assert wire(graph.nodes[turn_id]) == {
+    assert graph.nodes[turn_id].data_spec.model_dump(exclude_none=True) == {
         "type": "list",
         "node": prompts.id,
         "path": "value.items.output",
@@ -2547,7 +2709,9 @@ def test_messages_column_lowers_to_a_list_fed_task() -> None:
     )
     bound = Graph.from_ops([as_output("result", literal)]).compile(rows=[conversation])
     node = RuntimeGraphBuilder().build(bound).nodes[literal.id]
-    assert wire(node)["items"] == [json.loads(conversation)]
+    assert node.data_spec.model_dump(exclude_none=True)["items"] == [
+        json.loads(conversation)
+    ]
     assert not node.dependencies
 
 
@@ -2580,3 +2744,52 @@ def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
     with pytest.raises(ValueError, match="list-mode LambdaOp"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_runtime_refs_come_from_typed_reads_not_literal_payload_keys() -> None:
+    """The ref scan reads a spec's own fields: a ``node`` key nested in a
+    python literal payload is data, while a plan stage, a retrieval
+    parameter's ``node`` + ``path`` item and a condition node are reads."""
+    node = runtime_op(
+        node_id="n",
+        task_type="python",
+        backend="python",
+        model="python",
+        data_spec={
+            "plan": [
+                {"kind": "stage", "node": "upstream"},
+                {"kind": "literal", "values": [{"node": "in-values", "path": "x"}]},
+            ]
+        },
+        model_spec={},
+        inference_spec={},
+        condition={"node": "guarded", "when": "always"},
+    )
+    retrieval = runtime_op(
+        node_id="r",
+        task_type="data_retrieval",
+        backend="data_retrieval",
+        model="data_retrieval",
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT {p}",
+            "params": [
+                {
+                    "label": "p",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": "sampled", "path": "items.output"}],
+                    },
+                }
+            ],
+        },
+        model_spec={},
+        inference_spec={},
+    )
+
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(node)) == [
+        "upstream",
+        "guarded",
+    ]
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(retrieval)) == ["sampled"]

@@ -2,12 +2,13 @@ import textwrap
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
+from lumilake_server.data_specs import build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     LambdaOp,
     LLMChatOp,
     LLMVisionOp,
@@ -18,7 +19,6 @@ from lumilake_server.ops import (
 )
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
-from tests.support.data_specs import wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -75,18 +75,19 @@ def test_list_lambda_explodes_input_feeds_rowwise_llm() -> None:
     explode_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert wire(explode_node)["mode"] == "list"
-    assert wire(explode_node)["plan"] == [
+    assert explode_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
+    assert explode_node.data_spec.model_dump(exclude_none=True)["plan"] == [
         {"kind": "literal", "values": ["NVDA", "AAPL"]}
     ]
 
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in wire(n)
+        if n.task_type == "inference"
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
     )
     assert explode_node.node_id in summarize_node.dependencies
-    columns = wire(summarize_node)["columns"]
+    columns = summarize_node.data_spec.model_dump(exclude_none=True)["columns"]
     assert {
         "label": "value",
         "node": explode_node.node_id,
@@ -136,15 +137,17 @@ def test_list_lambda_groups_then_collapses() -> None:
     group_node = next(
         n
         for n in python_nodes
-        if wire(n)["plan"] == [{"kind": "literal", "values": ["NVDA", "AAPL"]}]
+        if n.data_spec.model_dump(exclude_none=True)["plan"]
+        == [{"kind": "literal", "values": ["NVDA", "AAPL"]}]
     )
     collapse_node = next(n for n in python_nodes if n is not group_node)
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in wire(n)
+        if n.task_type == "inference"
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
     )
-    (collapse_plan,) = wire(collapse_node)["plan"]
+    (collapse_plan,) = collapse_node.data_spec.model_dump(exclude_none=True)["plan"]
     assert collapse_plan == {
         "kind": "stage",
         "node": summarize_node.node_id,
@@ -176,7 +179,7 @@ def test_list_lambda_as_workflow_output() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert wire(explode_node)["mode"] == "list"
+    assert explode_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
     assert explode_node.node_id in runtime_graph.output_node_map
     assert runtime_graph.output_paths[explode_node.node_id] == "items.output"
 
@@ -239,7 +242,7 @@ def test_per_row_lambda_behaviour_unchanged() -> None:
     summarize_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "inference"
     )
-    template = wire(summarize_node)["template"]
+    template = summarize_node.data_spec.model_dump(exclude_none=True)["template"]
     steps = template["options"]["format"]["steps"]
     assert any(step.get("function") is not None for step in steps)
 
@@ -283,23 +286,25 @@ def test_list_lambda_over_llm_output_feeds_rowwise_llm() -> None:
     explode_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert wire(explode_node)["mode"] == "list"
+    assert explode_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
     extract_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" not in wire(n)
+        if n.task_type == "inference"
+        and "columns" not in n.data_spec.model_dump(exclude_none=True)
     )
-    (extract_plan,) = wire(explode_node)["plan"]
+    (extract_plan,) = explode_node.data_spec.model_dump(exclude_none=True)["plan"]
     assert extract_plan == {"kind": "stage", "node": extract_node.node_id}
     assert extract_node.node_id in explode_node.dependencies
 
     summarize_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in wire(n)
+        if n.task_type == "inference"
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
     )
     assert explode_node.node_id in summarize_node.dependencies
-    columns = wire(summarize_node)["columns"]
+    columns = summarize_node.data_spec.model_dump(exclude_none=True)["columns"]
     assert {
         "label": "value",
         "node": explode_node.node_id,
@@ -321,7 +326,10 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     reply.inputs.append(shout)
     tally = LambdaOp(
@@ -336,13 +344,14 @@ def test_list_lambda_over_rowwise_llm_flattens_grouped_item() -> None:
     tally_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert wire(tally_node)["mode"] == "list"
+    assert tally_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
     reply_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in wire(n)
+        if n.task_type == "inference"
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
     )
-    (reply_plan,) = wire(tally_node)["plan"]
+    (reply_plan,) = tally_node.data_spec.model_dump(exclude_none=True)["plan"]
     assert reply_plan == {
         "kind": "stage",
         "node": reply_node.node_id,
@@ -356,7 +365,7 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     ``flatten``: the VLM's regroup step already emits one output list per source
     symbol, and flattening would expand image-level values into per-image rows."""
     stock = input_placeholder("Stock")
-    news_s3 = DataRetrievalOp(
+    news_s3 = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "s3",
@@ -371,9 +380,12 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
         image_source_op=news_s3,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}},
+            ],
+            "rowwise_columns",
+        ),
     )
     tally = LambdaOp(
         [vision],
@@ -385,8 +397,8 @@ def test_list_lambda_over_rowwise_vlm_does_not_flatten() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
 
     tally_node = runtime_graph.nodes[tally.id]
-    assert wire(tally_node)["mode"] == "list"
-    (vision_plan,) = wire(tally_node)["plan"]
+    assert tally_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
+    (vision_plan,) = tally_node.data_spec.model_dump(exclude_none=True)["plan"]
     assert vision_plan == {"kind": "stage", "node": vision.id}
 
 
@@ -401,7 +413,7 @@ def test_list_lambda_data_op_input_compiles() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert wire(explode_node)["plan"] == [
+    assert explode_node.data_spec.model_dump(exclude_none=True)["plan"] == [
         {"kind": "literal", "values": ["NVDA", "AAPL"]}
     ]
 
@@ -411,7 +423,7 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     LLM must compile, with a stage entry for the retrieval (one element per
     retrieval item) alongside the LLM entry, matching the standalone path."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -424,7 +436,10 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         [OpMessage(role="user", content="Judge {r}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Judge {r}",
-        rowwise_columns=[{"label": "r", "node": retrieval.id, "path": "items.table"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": retrieval.id, "path": "items.table"}],
+            "rowwise_columns",
+        ),
     )
     judge.inputs.append(retrieval)
     combine = LambdaOp(
@@ -436,7 +451,10 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         [OpMessage(role="user", content="Summarize {c}")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {c}",
-        rowwise_columns=[{"label": "c", "node": combine.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "c", "node": combine.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(combine)
     output = as_output("result", llm)
@@ -446,13 +464,14 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
     combine_node = next(
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     )
-    assert wire(combine_node)["mode"] == "list"
+    assert combine_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
     judge_node = next(
         n
         for n in runtime_graph.nodes.values()
-        if n.task_type == "inference" and "columns" in wire(n)
+        if n.task_type == "inference"
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
     )
-    assert wire(combine_node)["plan"] == [
+    assert combine_node.data_spec.model_dump(exclude_none=True)["plan"] == [
         {"kind": "stage", "node": judge_node.node_id, "flatten": True},
         {"kind": "stage", "node": retrieval.id},
     ]
@@ -463,7 +482,7 @@ def test_list_lambda_accepts_retrieval_input_feeding_llm() -> None:
         n
         for n in runtime_graph.nodes.values()
         if n.task_type == "inference"
-        and "columns" in wire(n)
+        and "columns" in n.data_spec.model_dump(exclude_none=True)
         and combine_node.node_id in n.dependencies
     )
     assert combine_node.node_id in llm_node.dependencies
@@ -486,9 +505,10 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {value}.",
-        rowwise_columns=[
-            {"label": "value", "node": explode.id, "path": "items.output.value"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "value", "node": explode.id, "path": "items.output.value"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(explode)
     output = as_output("result", llm)
@@ -498,10 +518,10 @@ def test_api_op_reads_list_lambda_at_value_items_output() -> None:
     (explode_node,) = [
         n for n in runtime_graph.nodes.values() if n.task_type == "python"
     ]
-    assert wire(explode_node)["mode"] == "list"
+    assert explode_node.data_spec.model_dump(exclude_none=True)["mode"] == "list"
     (llm_node,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_node]
-    assert wire(node)["columns"][0] == {
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0] == {
         "label": "value",
         "node": explode_node.node_id,
         "path": "value.items.output.value",

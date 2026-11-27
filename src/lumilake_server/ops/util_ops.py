@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from lumilake_server.data_specs import ExpandOnEmpty, ReduceOnFail
+from lumilake_server.data_specs import ExpandOnEmpty, GpuRequest, ReduceOnFail
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.ops.seed_spec import ColumnSeed
@@ -55,6 +55,7 @@ class LambdaSpec(BaseModel):
         default=None, ge=MIN_MEMORY_MB, le=MAX_MEMORY_MB
     )
     image: StrictStr | None = None
+    gpu: GpuRequest | None = None
     expected_runtime_s: StrictFloat | None = Field(default=None, gt=0)
     cache: StrictBool | None = None
     on_fail: ReduceOnFail | None = None
@@ -275,6 +276,7 @@ class LambdaOp(Op):
         timeout_s: float | None = None,
         memory_mb: int | None = None,
         image: str | None = None,
+        gpu: GpuRequest | None = None,
         expected_runtime_s: float | None = None,
         cache: bool | None = None,
         sample_value: Any | None = None,
@@ -300,6 +302,7 @@ class LambdaOp(Op):
                 "timeout_s": timeout_s,
                 "memory_mb": memory_mb,
                 "image": image,
+                "gpu": gpu,
                 "expected_runtime_s": expected_runtime_s,
                 "cache": cache,
                 "on_fail": on_fail,
@@ -329,6 +332,10 @@ class LambdaOp(Op):
     @property
     def image(self) -> str | None:
         return self.spec.image
+
+    @property
+    def gpu(self) -> GpuRequest | None:
+        return self.spec.gpu
 
     @property
     def expected_runtime_s(self) -> float | None:
@@ -391,6 +398,7 @@ class LambdaOp(Op):
             timeout_s=spec.timeout_s,
             memory_mb=spec.memory_mb,
             image=spec.image,
+            gpu=spec.gpu,
             expected_runtime_s=spec.expected_runtime_s,
             cache=spec.cache,
             sample_value=data.get("sample_value"),

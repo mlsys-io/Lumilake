@@ -70,7 +70,7 @@
       ],
       "id": "19778ee1-7ab5-4909-aa3c-08caf0b0379f",
       "name": "Fundamentals Query",
-      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false,\n  \"rows\": \"one\"\n}"
     },
     {
       "parameters": {
@@ -86,7 +86,7 @@
       ],
       "id": "a66e29b8-6adc-44c0-b70b-9de07a5579da",
       "name": "Market Query",
-      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false,\n  \"rows\": \"one\"\n}"
     },
     {
       "parameters": {
@@ -102,7 +102,7 @@
       ],
       "id": "fba657c0-6a21-4add-a129-0a79799dc6b3",
       "name": "News Query",
-      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false\n}"
+      "notes": "{\n  \"op-type\": \"data-retrieval\",\n  \"is-output\": false,\n  \"rows\": \"one\"\n}"
     },
     {
       "parameters": {

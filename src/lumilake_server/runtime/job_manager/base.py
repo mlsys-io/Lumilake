@@ -11,6 +11,7 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 class AbortReason(StrEnum):
@@ -38,8 +39,13 @@ class WorkflowItem:
     whole_set: bool = False
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
+    data_credential_digest: str | None = None
+    data_token: str | None = field(default=None, repr=False)
     miss_count: int = 0
     requires_gpu: bool = False
+    python_step_session_lane: SessionLane = field(default_factory=SessionLane)
+    """The session limits each of the workflow's worker groups is held to, set
+    once at enqueue time from ``runtime_graph``."""
 
 
 def format_workflow_item(item: WorkflowItem) -> str:
@@ -92,6 +98,8 @@ class Job:
     config: LumilakeRequestConfig
     dispatch_token: str | None = None
     api_credential_digest: str | None = None
+    data_credential_digest: str | None = None
+    data_token: str | None = field(default=None, repr=False)
     requires_gpu: dict[str, bool] = field(default_factory=dict)
 
 

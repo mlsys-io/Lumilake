@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from lumid_hooks import PrincipalContext, ResourceRef
 
 from lumilake import envs
+from lumilake_hook import WorkerProfile
 from lumilake_server import hooks
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -124,7 +125,7 @@ def _schedule_body() -> dict[str, Any]:
     return {
         "graph": graph.serialize(),
         "worker_names": ["w1"],
-        "worker_profiles": {"w1": {}},
+        "worker_profiles": {"w1": WorkerProfile().model_dump(mode="json")},
         "optimizer_type": "halo",
     }
 
