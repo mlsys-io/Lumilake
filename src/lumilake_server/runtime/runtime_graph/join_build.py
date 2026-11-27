@@ -142,6 +142,7 @@ def build_join_step(
                 attach=attach,
                 how=op.how,
                 require_match=op.require_match,
+                cardinality=op.cardinality,
                 on_missing=op.on_missing,
             ),
             timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
