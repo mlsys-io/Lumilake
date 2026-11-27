@@ -1107,6 +1107,61 @@ async def test_python_steps_mount_one_shared_runtime_and_literal_blob(
         )
 
 
+def _materialize(spec: dict[str, Any], published: dict[str, Any], root: Path) -> Any:
+    """Run a generated step with its blobs written under ``root``."""
+    for blob in spec["blobs"]:
+        body = next(b for b in published.values() if b.sha256 == blob["sha256"])
+        target = root / blob["mountPath"].removeprefix("/mnt/blobs/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body.body)
+    namespace: dict[str, Any] = {}
+    exec(spec["code"].replace("/mnt/blobs", str(root)), namespace)
+    return namespace["main"]
+
+
+def test_a_stage_entry_inline_values_above_the_cutoff_are_mounted(
+    tmp_path: Path,
+) -> None:
+    """A served column reaches its step as a stage entry carrying inline values;
+    one above the inline cutoff travels in a mounted blob, so the dispatched
+    code does not grow with the values and the task reads the same rows."""
+    rows = [{"id": f"row-{i}", "text": "x" * 200} for i in range(100)]
+    plan = [ColumnPlanEntry(kind="stage", node="rows", values=rows)]
+    published = _published_blobs(plan)
+    spec = python_step.flowmesh_spec(
+        "step",
+        PythonData(
+            code="def pick(i):\n    return i[0]['id']\n", fn_name="pick", plan=plan
+        ),
+        published,
+    )
+
+    (mounted,) = [
+        blob
+        for blob in spec["blobs"]
+        if blob["mountPath"].startswith(python_step.LITERAL_MOUNT_ROOT)
+    ]
+    assert mounted["sha256"] in {blob.sha256 for blob in published.values()}
+    assert "x" * 200 not in spec["code"]
+    doubled = [ColumnPlanEntry(kind="stage", node="rows", values=rows + rows)]
+    assert len(
+        python_step.flowmesh_spec(
+            "step",
+            PythonData(
+                code="def pick(i):\n    return i[0]['id']\n",
+                fn_name="pick",
+                plan=doubled,
+            ),
+            _published_blobs(doubled),
+        )["code"]
+    ) == len(spec["code"])
+
+    main = _materialize(spec, published, tmp_path / "blobs")
+    assert main({}) == {
+        "items": [{"output": row["id"], "value": row["id"]} for row in rows]
+    }
+
+
 @pytest.mark.parametrize("bad", [1, "yes", 0.0])
 def test_lambda_op_rejects_a_non_bool_cache(bad: Any) -> None:
     with pytest.raises(ValueError, match="cache"):
