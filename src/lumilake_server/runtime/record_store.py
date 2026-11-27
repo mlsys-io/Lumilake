@@ -380,7 +380,6 @@ class RecordSource(BaseModel):
     job: str
     round: int = 0
     task_id: str
-    worker: str | None = None
     member_jobs: list[str] = Field(default_factory=list)
     """Every job id that shared the physical task; a record answered for each
     of them reads back from this entry."""
