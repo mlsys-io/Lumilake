@@ -891,19 +891,24 @@ def _keyed_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _keyed_content(
-    read: str, rows: list[dict[str, Any]], *, per_row: bool = True
+    read: str,
+    rows: list[dict[str, Any]],
+    *,
+    per_row: bool = True,
+    key: str = "case_id",
 ) -> dict[str, Any]:
     """A keyed read re-run, handing one item per record or one holding every one."""
     return {
         read: NodeRecords(
             keyed=True,
             values=rows,
-            keys=[r["case_id"] for r in rows],
+            keys=[r[key] for r in rows],
             items=(
                 [_keyed_table([row])["items"][0] for row in rows]
                 if per_row
                 else _keyed_table(rows)["items"]
             ),
+            content=True,
         )
     }
 
@@ -1009,6 +1014,82 @@ async def test_a_consumer_a_reusing_job_writes_reuses() -> None:
     )
     again, _ = _planned(storage, graph, "req-3", content_values=content)
     assert _decisions(again)["Join"] == ("hit", None)
+
+
+_TWO_READS: dict[str, Any] = {
+    "name": "two-reads",
+    "ops": [
+        {
+            **_READ,
+            "data_spec": {
+                **_SQL,
+                "template": "SELECT tid, patient, nctid FROM trials",
+                "key": {"column": "tid"},
+            },
+        },
+        {
+            "id": "Scores",
+            "op": "DataRetrievalOp",
+            "data_spec": {
+                **_SQL,
+                "template": "SELECT sid, patient, nctid, score FROM scores",
+                "key": {"column": "sid"},
+            },
+        },
+        {
+            "id": "Merge",
+            "op": "JoinOp",
+            "inputs": ["Read", "Scores"],
+            "by": ["patient", "nctid"],
+        },
+    ],
+    "outputs": [{"name": "merged", "ref": "Merge"}],
+}
+
+
+def _rows_of(plan: ReusePlan, op: str) -> list[tuple[str | None, str, str | None]]:
+    """Each record's key, decision and reason for one op's decision."""
+    (decision,) = [d for d in plan.decisions if d.op == op]
+    return [(row.record, row.decision, row.reason) for row in decision.outcomes]
+
+
+@pytest.mark.asyncio
+async def test_a_join_over_two_re_ran_reads_keys_its_rows_by_their_by_values() -> None:
+    """Both inputs are re-read in this run and hold their rows in different
+    orders, so each join row is keyed by its own ``by`` values rather than by a
+    first-input row's key, and an unchanged rerun hits every one of them."""
+    graph = _runtime_graph(_TWO_READS)
+    read, scores = (_node(graph, name) for name in ("Read", "Scores"))
+    trials = [
+        {"tid": "t1", "patient": "p1", "nctid": "N1"},
+        {"tid": "t2", "patient": "p1", "nctid": "N2"},
+    ]
+    scored = [
+        {"sid": "s2", "patient": "p1", "nctid": "N2", "score": 2},
+        {"sid": "s1", "patient": "p1", "nctid": "N1", "score": 1},
+    ]
+    content = {
+        **_keyed_content(read, trials, key="tid", per_row=False),
+        **_keyed_content(scores, scored, key="sid", per_row=False),
+    }
+    storage = InMemoryJobStorage()
+    plan, dispatched = _planned(storage, graph, content_values=content)
+    assert _decisions(plan)["Merge"] == ("miss", "no entry")
+    merged = [{**row, "score": s["score"]} for row, s in zip(trials, scored[::-1])]
+    await _run(
+        storage,
+        _TWO_READS,
+        {"Merge": merged},
+        "req-2",
+        graph=dispatched,
+        served=writer_records(plan, content),
+        content_nodes=frozenset(content),
+    )
+    again, _ = _planned(storage, graph, "req-3", content_values=content)
+    assert _rows_of(again, "Merge") == [
+        ('["p1","N1"]', "hit", None),
+        ('["p1","N2"]', "hit", None),
+    ]
 
 
 @pytest.mark.asyncio
