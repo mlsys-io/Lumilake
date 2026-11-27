@@ -15,6 +15,8 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import yaml
+from flowmesh.models.tasks import TaskStatusPage
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
@@ -888,17 +890,30 @@ def _keyed_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"items": [{"table": {"df": json.dumps(columns)}}]}
 
 
-def _keyed_content(read: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """A keyed read re-run, as the plan reads one reread row per key."""
+def _keyed_content(
+    read: str, rows: list[dict[str, Any]], *, per_row: bool = True
+) -> dict[str, Any]:
+    """A keyed read re-run, handing one item per record or one holding every one."""
     return {
-        read: NodeRecords(keyed=True, values=rows, keys=[r["case_id"] for r in rows])
+        read: NodeRecords(
+            keyed=True,
+            values=rows,
+            keys=[r["case_id"] for r in rows],
+            items=(
+                [_keyed_table([row])["items"][0] for row in rows]
+                if per_row
+                else _keyed_table(rows)["items"]
+            ),
+        )
     }
 
 
 @pytest.mark.asyncio
 async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
     """A keyed retrieval is versioned per row, so a changed row's consumer
-    misses on that key alone while every other key's record still hits."""
+    misses on that key alone while every other key's record still hits. A read
+    that hands one item holding every record keys none of them, so its reader is
+    computed whole rather than served from one row's identity."""
     rows = [{"case_id": "c1", "t": "x"}, {"case_id": "c2", "t": "y"}]
     changed = [rows[0], {"case_id": "c2", "t": "y!"}]
     graph = _runtime_graph(_KEYED_TAG)
@@ -915,6 +930,9 @@ async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
     assert _decisions(plan)["Tag"] == ("hit", None), _decisions(plan)
     plan, _ = _planned(storage, graph, content_values=_keyed_content(read, changed))
     assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
+    whole = _keyed_content(read, changed, per_row=False)
+    plan, _ = _planned(storage, graph, content_values=whole)
+    assert _decisions(plan)["Tag"] == ("miss", "unkeyed row"), _decisions(plan)
 
 
 @pytest.mark.asyncio
@@ -1619,3 +1637,132 @@ def _expand_workflow(
     workflow = _pipeline("expand-reuse", [const, fill, split], "Split", rows)
     workflow["inputs"]["Fixed"] = ["1", "2"]
     return workflow
+
+
+def _read_cycle_workflow(rows: list[str]) -> Any:
+    """A keyed unversioned read whose one item holds a whole column table,
+    feeding an expand of the table's rows, then a row step."""
+    read = {
+        "id": "Read",
+        "op": "DataRetrievalOp",
+        "data_spec": {**_SQL, "key": {"column": "id"}},
+    }
+    split = _op(
+        "Split", ["Read"], "split", "def split(value):\n    return value[0]\n", "expand"
+    )
+    tag = _op("Tag", ["Split"], "tag", "lambda c: c[0]['t'].upper()", "row")
+    return _pipeline("read-cycle", [read, split, tag], "Tag", rows)
+
+
+def _read_items(rows: list[dict[str, Any]], per_row: bool) -> list[dict[str, Any]]:
+    """A retrieval's task items: one per record, or one holding the whole table."""
+    if not per_row:
+        return _keyed_table(rows)["items"]
+    return [_keyed_table([row])["items"][0] for row in rows]
+
+
+@pytest.mark.parametrize("per_row", [False, True])
+@pytest.mark.asyncio
+async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
+    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage, per_row: bool
+) -> None:
+    """An unversioned read a reusing job re-runs hands its expand the items a full
+    run gives it. Its children are served only when it hands one item per record:
+    then an unchanged run serves them and a changed row re-expands that parent.
+    One item holding every record leaves the children unserved, so a run that
+    changes any row re-expands the whole table instead of serving a stale one,
+    and each recomputed child reaches the row step as its new value."""
+    graph = _runtime_graph(_read_cycle_workflow([]))
+    read, split, tag = (_node(graph, name) for name in ("Read", "Split", "Tag"))
+    state: dict[str, Any] = {"rows": [], "column": None, "done": {}, "graph": graph}
+
+    async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
+        nodes = [n["name"] for n in yaml.safe_load(task_yaml)["spec"]["graph"]["nodes"]]
+        for node in nodes:
+            op = state["graph"].nodes[node]
+            steps = getattr(op.data_spec, "plan", [])
+            stages = [e.node for e in steps if e.kind == "stage" and not e.values]
+            items = (
+                _read_items(state["rows"], per_row)
+                if node == read
+                else _run_step(op, {n: state["done"][n] for n in stages})
+            )
+            state["done"][node] = items
+            state[f"task-{node}"] = {"items": items}
+        return f"wf-{len(nodes)}", [f"task-{n}" for n in nodes]
+
+    async def _retrieve(task_id: str) -> Any:
+        return state[task_id]
+
+    async def _done(_self: Any, status: dict[str, str], _id: str) -> bool:
+        status.update(dict.fromkeys(status, "DONE"))
+        return True
+
+    async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
+        rows = [
+            {"task_id": t, "status": "DONE", "graph_node_name": t[5:]}
+            for t in state
+            if t.startswith("task-")
+        ]
+        return TaskStatusPage(rows=rows, next_cursor="0")
+
+    fm = SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
+    build = FlowmeshRuntimeManager._build_task_spec
+
+    async def _build(self: Any, info: Any, planned: Any, schedule: Any = None):
+        if split in planned.nodes:
+            state["column"] = planned.nodes[split].data_spec.plan[0].values
+            state["graph"] = planned
+        return await build(self, info, planned, schedule)
+
+    for name, value in (
+        ("_build_task_spec", _build),
+        ("_submit_workflow", _submit),
+        ("update_task_status", _done),
+        ("fetch_workflow_task_statuses", _statuses),
+        ("fm", property(lambda _self: fm)),
+    ):
+        monkeypatch.setattr(FlowmeshRuntimeManager, name, value)
+    monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
+
+    async def once(rows: list[dict[str, Any]], job: str, reuse: bool):
+        state["rows"], state["done"], state["graph"] = rows, {}, graph
+        info = _reusing(graph)
+        info.request_id, info.member_reuse = job, {job: reuse}
+        info.reuse_records = reuse
+        info.runtime_graph = graph
+        out = await FlowmeshRuntimeManager().process_request(
+            info, Schedule({"w": list(graph.nodes)}), ["w"]
+        )
+        return {d.op: (d.decision, d.reason) for d in out["reuse_decisions"]}
+
+    def computed(op: str) -> list[Any]:
+        return [
+            i["output"]["t"]
+            for i in state[f"task-{op}"]["items"]
+            if not i.get("served")
+        ]
+
+    rows = [{"id": "a1", "t": "x"}, {"id": "a2", "t": "x"}]
+    await once(rows, "req-1", False)
+    assert {i["parent"] for i in state[f"task-{split}"]["items"]} == (
+        {0, 1} if per_row else {0}
+    )
+    index = read_index(job_storage, "req-1")
+    assert index is not None
+    stored = {e.record for e in index.entries if e.op == "Split"}
+    if per_row:
+        assert stored == {"a1\x1f0", "a1\x1fcount", "a2\x1f0", "a2\x1fcount"}
+    else:
+        assert stored == set()
+    assert (await once(rows, "req-2", True))["Split"] == (
+        ("hit", None) if per_row else ("miss", "unkeyed row")
+    )
+    changed = [rows[0], {"id": "a2", "t": "z"}]
+    plan = await once(changed, "req-3", True)
+    assert state["column"] == _read_items(changed, per_row)
+    assert plan["Split"] == (
+        ("miss", "partial children") if per_row else ("miss", "unkeyed row")
+    )
+    assert computed(split) == (["z"] if per_row else ["x", "z"])
+    assert sorted(i["output"] for i in state[f"task-{tag}"]["items"]) == ["X", "Z"]

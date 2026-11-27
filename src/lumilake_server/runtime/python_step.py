@@ -724,7 +724,9 @@ def runtime_blob() -> PublishedBlob:
 
 
 def literal_blob(entry: ColumnPlanEntry) -> PublishedBlob | None:
-    """The mounted blob for one literal entry, or None when it stays inline."""
+    """The mounted blob for one entry's values, or None when they stay inline."""
+    if entry.values is None:
+        return None
     encoded = json.dumps(entry.values, ensure_ascii=False).encode("utf-8")
     if len(encoded) <= LITERAL_INLINE_MAX_BYTES:
         return None
@@ -741,11 +743,9 @@ def literal_blob(entry: ColumnPlanEntry) -> PublishedBlob | None:
 
 
 def literal_blobs(plan: ColumnPlan) -> dict[str, PublishedBlob]:
-    """Content-addressed JSON blobs for literal payloads above the inline cutoff."""
+    """Content-addressed JSON blobs for plan values above the inline cutoff."""
     blobs: dict[str, PublishedBlob] = {}
     for entry in plan:
-        if entry.kind != "literal":
-            continue
         blob = literal_blob(entry)
         if blob is not None:
             blobs[blob.key] = blob
@@ -763,7 +763,7 @@ def resolve_plan(
     plan: ColumnPlan,
     published: Mapping[str, PublishedBlob],
 ) -> tuple[ColumnPlan, list[PublishedBlob]]:
-    """Return a final plan with large literals mounted, plus its blobs.
+    """Return a final plan with large values mounted, plus its blobs.
 
     Every entry that resolves to the same digest points at one shared mount,
     because FlowMesh rejects a task spec that mounts a path twice.
@@ -771,8 +771,6 @@ def resolve_plan(
     task_plan = [entry.model_copy() for entry in plan]
     mounts: dict[str, PublishedBlob] = {}
     for entry in task_plan:
-        if entry.kind != "literal":
-            continue
         blob = literal_blob(entry)
         if blob is None:
             continue
@@ -966,7 +964,7 @@ def flowmesh_spec(
         dict.fromkeys(
             entry.node
             for entry in plan
-            if entry.kind == "stage" and entry.values is None
+            if entry.kind == "stage" and entry.values is None and entry.file is None
         )
     )
     if stages:
