@@ -3625,7 +3625,6 @@ async def submit_job(
     job_id = f"req-{unique_id()}"
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
-    slice_public_names: dict[str, str] = {}
     resolved_inputs: dict[str, dict[str, list[str]]] = {}
     output_locations: dict[str, IOLocation] = {}
     seen_public_names: set[str] = set()
@@ -3727,7 +3726,6 @@ async def submit_job(
                     template_hash=template_hash,
                     varying_input_keys=varying_input_keys,
                 )
-                slice_public_names[graph_name] = name
                 logger.debug(
                     "Resolved inputs for %s: %s",
                     graph_name,
@@ -3780,7 +3778,7 @@ async def submit_job(
                 name: [
                     meta
                     for slice_name, meta in workflow_slices.items()
-                    if meta.public_graph_name == slice_public_names[name]
+                    if meta.public_graph_name == workflow_slices[name].public_graph_name
                 ]
                 for name in graphs
             },

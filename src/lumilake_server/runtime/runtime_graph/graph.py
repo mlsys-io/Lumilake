@@ -251,10 +251,10 @@ class RuntimeGraph:
         if isinstance(data_spec, PythonData) and data_spec.join is not None:
             entry = data_spec.plan[data_spec.join.inputs[0]]
             return {entry.node} if entry.kind == "stage" and entry.node else None
-        return self._non_literal_reads(node)
+        return self._fanout_graph_reads(node)
 
     @staticmethod
-    def _non_literal_reads(node: RuntimeOp) -> set[str] | None:
+    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
         """The node ids a node reads, or ``None`` when it also reads a literal
         value such as the job's input rows."""
         data_spec = node.data_spec
