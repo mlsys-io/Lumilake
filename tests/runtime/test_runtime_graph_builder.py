@@ -7,7 +7,7 @@ from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
-from lumilake_server.data_specs import build_column_table
+from lumilake_server.data_specs import PythonData, PythonMode, build_column_table
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -1876,6 +1876,26 @@ def test_two_output_ops_on_one_list_lambda_rejected() -> None:
 
 def _row_lambda_fn(row: tuple) -> str:
     return str(row[0]).upper()
+
+
+def test_prefixed_row_step_below_a_list_lambda_is_a_fanout_node() -> None:
+    """The node prefix must keep the list mode a ``PythonMode`` member, so a
+    row step reading only that Lambda stays in its fan-out."""
+    stock = input_placeholder("Stock")
+    explode = LambdaOp([stock], _explode_fn, mode=LambdaMode.LIST)
+    shout = LambdaOp([explode], fn=_row_lambda_fn)
+    compiled = Graph.from_ops([as_output("shouted", shout)]).compile(
+        Stock=["NVDA", "AAPL"]
+    )
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled, node_prefix="g")
+
+    (explode_id,) = runtime_graph.dsl_to_runtime[explode.id]
+    (shout_id,) = runtime_graph.dsl_to_runtime[shout.id]
+    explode_spec = runtime_graph.nodes[explode_id].data_spec
+    assert isinstance(explode_spec, PythonData)
+    assert explode_spec.mode is PythonMode.LIST
+    assert shout_id in runtime_graph.list_lambda_fanout_nodes()
 
 
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
