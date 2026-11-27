@@ -239,7 +239,7 @@ def main(inputs):
             if key not in keyed:
                 if _HOW != "full":
                     continue
-                keyed[key] = more[key].copy()
+                keyed[key] = more[key]
                 appended.append(key)
             if key in more_marked:
                 marked[key] = more_marked[key]
