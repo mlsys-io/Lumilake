@@ -198,3 +198,21 @@ async def test_get_request_status_keeps_completed_batches_with_running_batch(
     assert status.batch_progress.running == 1
     batch_ids = [batch.batch_id for batch in status.batch_progress.batches]
     assert batch_ids == ["batch-new", "batch-old"]
+
+
+def test_apply_status_keeps_a_step_the_status_omits() -> None:
+    progress = JobProgress.model_validate(
+        {
+            "data probing": {"completed": True},
+            "execution": {"completed": True},
+            "outputs": {"completed": True},
+            "batch_progress": {"total": 1, "completed": 1},
+        }
+    )
+
+    progress.apply_status(RuntimeStatus(execution=ProgressStep(completed=False)))
+
+    assert progress.data_probing.completed is True
+    assert progress.execution.completed is False
+    assert progress.outputs.completed is True
+    assert progress.batch_progress.total == 1
