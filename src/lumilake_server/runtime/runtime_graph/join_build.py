@@ -9,6 +9,7 @@ from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ColumnPlanEntry,
     JoinDescription,
+    NodeColumn,
     PythonData,
 )
 from lumilake_server.ops import DataOp, InputOp, LambdaOp, Op
@@ -44,9 +45,9 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
             return op.inputs[1:2]
         if op.rowwise_columns:
             nodes = {
-                column["node"]
+                column.node
                 for column in op.rowwise_columns
-                if isinstance(column.get("node"), str)
+                if isinstance(column, NodeColumn)
             }
             if len(nodes) > 1:
                 names = ", ".join(f"'{node}'" for node in sorted(nodes))

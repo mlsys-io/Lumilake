@@ -1,5 +1,7 @@
+from collections.abc import Mapping
 from typing import Any
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -10,7 +12,7 @@ class SimpleRoundRobinOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         if not worker_names:

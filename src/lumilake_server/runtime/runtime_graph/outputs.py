@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from lumilake_server.common import retrieval_items_path
+from lumilake_server.data_specs import ListData, LiteralColumn, NodeColumn
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
@@ -21,6 +22,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.ops import RowShape
+from lumilake_server.utils.retrieval_spec import ROWS_TABLE
 
 
 def item_relative_path(path: str) -> str:
@@ -36,6 +38,15 @@ _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
+
+
+def _drills_index(declared: str, root: str) -> bool:
+    """Whether a declared path reads a numeric position below the whole-result field."""
+    field = root.rsplit(".", 1)[-1]
+    segments = declared.replace("[", ".").replace("]", ".").split(".")
+    if field not in segments:
+        return False
+    return any(part.isdigit() for part in segments[segments.index(field) + 1 :])
 
 
 class OutputKind(Enum):
@@ -69,9 +80,21 @@ class OpOutput:
     kind: OutputKind
     one_item_per_row: bool
     needs_flatten: bool
+    whole_result: bool = False
+
+    def refuse_position(self, declared: str, consumer: str) -> None:
+        """Refuse a read of one position inside a whole-result value."""
+        if not self.whole_result or not _drills_index(declared, self.path):
+            return
+        raise ValueError(
+            f"{consumer} reads '{declared}' from op '{self.node}', which declares its"
+            " whole result as one value; read the whole value or one of its columns"
+            " instead."
+        )
 
     def read(self, declared: str, consumer: str) -> str:
         """Map a declared ``items.output``-rooted read onto this output."""
+        self.refuse_position(declared, consumer)
         if self.kind is OutputKind.DECLARED:
             return declared
         if declared == _WHOLE:
@@ -155,7 +178,7 @@ def op_output(
         kind = OutputKind.DECLARED
     default_path: str | None
     if isinstance(op, DataRetrievalOp):
-        path = default_path = retrieval_items_path(op.data_spec["mode"])
+        path = default_path = retrieval_items_path(op.data_spec.mode)
     elif op.result_path is not None:
         path = default_path = op.result_path
     elif kind is OutputKind.API_ROW:
@@ -175,6 +198,9 @@ def op_output(
         kind=kind,
         one_item_per_row=emits_one_item_per_row(op),
         needs_flatten=needs_flatten(op),
+        whole_result=(
+            isinstance(op, DataRetrievalOp) and op.data_spec.rows == ROWS_TABLE
+        ),
     )
 
 
@@ -216,18 +242,17 @@ def _llm_row_count(
     row count of the ops its message chain binds."""
     if op.rowwise_columns:
         counts: list[int | None] = []
-        for col in op.rowwise_columns:
-            data = col.get("data")
-            if isinstance(data, dict):
-                items = data.get("items")
+        for column in op.rowwise_columns:
+            if isinstance(column, LiteralColumn):
+                data = column.data
+                items = data.items if isinstance(data, ListData) else None
                 if isinstance(items, list):
                     counts.append(len(items))
-                    continue
-            node_ref = col.get("node")
-            if isinstance(node_ref, str):
-                upstream = graph_dict.get(node_ref)
-                if upstream is not None:
-                    counts.append(output_row_count(upstream, inputs_dict, graph_dict))
+                continue
+            assert isinstance(column, NodeColumn)
+            upstream = graph_dict.get(column.node)
+            if upstream is not None:
+                counts.append(output_row_count(upstream, inputs_dict, graph_dict))
         return _max_known(counts)
     messages = op.messages.messages if isinstance(op.messages, MessageOp) else []
     return _max_known(

@@ -165,6 +165,10 @@ class RuntimeGraphBuilder(_JoinBuilder, _MessagesBuilder):
         ((output_name, path_override),) = outputs
         node_id = runtime_ids[-1]
         output_node_map[node_id] = output_name
+        if path_override:
+            self._op_output(op).refuse_position(
+                path_override, f"OutputOp '{output_name}'"
+            )
         path = path_override or self._op_output(op).default_output_path
         if path is not None:
             output_paths[node_id] = path

@@ -14,7 +14,9 @@ from lumilake_server.data_specs import (
     GraphTemplate,
     GraphTemplateData,
     ListData,
+    LiteralColumn,
     Message,
+    NodeColumn,
     NodeRead,
     TemplateOptions,
 )
@@ -96,7 +98,6 @@ def _literal_seed(value: Any, llm_op_id: str) -> int | None:
 
 
 class _LLMBuilder(_EmbeddingBuilder):
-
     def _row_condition(
         self,
         condition: dict[str, str] | None,
@@ -384,9 +385,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             seen_deps: set[str] = set()
             for dep in [
                 *upstream_llm_ids,
-                *self._collect_graph_template_dependencies(
-                    template_spec.model_dump(exclude_none=True)
-                ),
+                *self._collect_graph_template_dependencies(template_spec),
             ]:
                 if dep in seen_deps:
                     continue
@@ -480,9 +479,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         seen_deps: set[str] = set()
         for dep in [
             *upstream_llm_ids,
-            *self._collect_graph_template_dependencies(
-                template_spec.model_dump(exclude_none=True)
-            ),
+            *self._collect_graph_template_dependencies(template_spec),
         ]:
             if dep in seen_deps:
                 continue
@@ -603,43 +600,30 @@ class _LLMBuilder(_EmbeddingBuilder):
             raise ValueError(f"LLMChatOp {llm_op_id} has no rowwise_template")
         columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
-        for col in llm_op.rowwise_columns or []:
-            label = col.get("label")
-            data = col.get("data")
-            node_ref = col.get("node")
-            path = col.get("path")
-            if isinstance(label, str) and isinstance(data, dict):
-                columns.append(Column.model_validate({"label": label, "data": data}))
+        for column in llm_op.rowwise_columns or []:
+            if isinstance(column, LiteralColumn):
+                columns.append(Column(label=column.label, data=column.data))
                 continue
-            if isinstance(label, str) and isinstance(node_ref, str):
-                if path is None and not isinstance(graph_dict.get(node_ref), InputOp):
-                    raise ValueError(
-                        f"Column '{label}' of consumer '{llm_op_id}'"
-                        f" references node '{node_ref}' without a path;"
-                        " only InputOp refs may omit it."
-                    )
-                columns.append(
-                    self._node_ref_column(
-                        consumer_id=llm_op_id,
-                        label=label,
-                        node_ref=node_ref,
-                        path=path if isinstance(path, str) else "",
-                        upstream=graph_dict.get(node_ref),
-                        inputs_dict=inputs_dict,
-                    )
+            upstream = graph_dict.get(column.node)
+            if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                raise ValueError(
+                    f"Column '{column.label}' of consumer '{llm_op_id}' references node"
+                    f" '{column.node}' without a path; only InputOp and DataOp refs may"
+                    " omit it."
                 )
-                # An InputOp ref is bound as a literal column (no runtime node),
-                # so it must not become a dependency on a node that does not
-                # exist.
-                if node_ref not in dependencies and not isinstance(
-                    graph_dict.get(node_ref), InputOp
-                ):
-                    dependencies.append(node_ref)
-                continue
-            raise ValueError(
-                f"Column '{label}' of consumer '{llm_op_id}' has neither"
-                " data nor node+path"
+            columns.append(
+                self._node_ref_column(
+                    consumer_id=llm_op_id,
+                    column=column,
+                    upstream=upstream,
+                    inputs_dict=inputs_dict,
+                )
             )
+            # A literal-backed column has no runtime node to depend on.
+            if column.node not in dependencies and not isinstance(
+                upstream, (InputOp, DataOp)
+            ):
+                dependencies.append(column.node)
         if not columns:
             raise ValueError(f"LLMChatOp {llm_op_id} has empty rowwise_columns")
         messages = [
@@ -746,35 +730,30 @@ class _LLMBuilder(_EmbeddingBuilder):
         base_steps = template_spec.options.format.steps or []
         table_columns: list[Column] = []
         dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
-        for col in llm_op.aggregate_table or []:
-            label = col.get("label")
-            node_ref = col.get("node")
-            path = col.get("path")
-            if not (
-                isinstance(label, str)
-                and isinstance(node_ref, str)
-                and isinstance(path, str)
-            ):
+        for column in llm_op.aggregate_table or []:
+            if not isinstance(column, NodeColumn):
                 continue
+            upstream = graph_dict.get(column.node)
+            if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                raise ValueError(
+                    f"Column '{column.label}' of consumer '{llm_op_id}' references node"
+                    f" '{column.node}' without a path; only InputOp and DataOp refs may"
+                    " omit it."
+                )
             table_columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,
-                    label=label,
-                    node_ref=node_ref,
-                    path=path,
-                    upstream=graph_dict.get(node_ref),
+                    column=column,
+                    upstream=upstream,
                     inputs_dict=inputs_dict,
                 )
             )
-            # An InputOp ref is bound as a literal column (no runtime node), so
-            # it must not become a dependency on a node that does not exist.
-            if node_ref not in dependencies and not isinstance(
-                graph_dict.get(node_ref), InputOp
+            # A literal-backed column has no runtime node to depend on.
+            if column.node not in dependencies and not isinstance(
+                upstream, (InputOp, DataOp)
             ):
-                dependencies.append(node_ref)
-        for dep in self._collect_graph_template_dependencies(
-            template_spec.model_dump(exclude_none=True)
-        ):
+                dependencies.append(column.node)
+        for dep in self._collect_graph_template_dependencies(template_spec):
             if dep not in dependencies:
                 dependencies.append(dep)
 
@@ -905,6 +884,9 @@ class _LLMBuilder(_EmbeddingBuilder):
     def _lower_llm(self, op: LLMOp, ctx: LoweringContext) -> LoweringResult | None:
         """Lower an LLM op, through the API task when it targets an external
         endpoint and through the local inference task otherwise."""
+        if isinstance(op, LLMChatOp):
+            self._mark_literal_column_producers_visited(op.rowwise_columns, ctx.visited)
+            self._mark_literal_column_producers_visited(op.aggregate_table, ctx.visited)
         if op.config.api is not None:
             upstream_llm_ids, template_spec = self._infer_structural_messages(
                 op.id,
@@ -1134,9 +1116,9 @@ class _LLMBuilder(_EmbeddingBuilder):
                             label = f"ref_{op.id}_{k}"
                             columns[label] = self._node_ref_column(
                                 consumer_id=llm_op_id,
-                                label=label,
-                                node_ref=v.id,
-                                path=field_path,
+                                column=NodeColumn(
+                                    label=label, node=v.id, path=field_path
+                                ),
                                 upstream=upstream,
                                 inputs_dict=inputs_dict,
                             )
@@ -1150,13 +1132,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                 ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, LambdaOp):
-                if op.image is not None:
+                if op.image is not None or op.gpu is not None:
                     raise ValueError(
-                        f"LLMOp '{llm_op_id}' consumes image-bearing LambdaOp"
-                        f" '{op.id}' through its message chain; a LambdaOp with"
-                        " an image always runs as its own FlowMesh python task,"
-                        " so read it through a node column (rowwise_columns /"
-                        " aggregate_table) instead."
+                        f"LLMOp '{llm_op_id}' consumes LambdaOp '{op.id}' that asks for"
+                        " an image or GPUs through its message chain; such a LambdaOp"
+                        " always runs as its own FlowMesh python task, so read it"
+                        " through a node column (rowwise_columns / aggregate_table)"
+                        " instead."
                     )
                 if op.mode != "row":
                     raise ValueError(

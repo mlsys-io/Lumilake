@@ -10,9 +10,10 @@ import queue
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, ClassVar, Self
 
 import lumid_hooks
@@ -27,8 +28,16 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
+from lumilake_hook import WorkerProfile
 from lumilake_server.common import InputRef, project_input_values
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    DataSpecModel,
+    ListData,
+    LiteralColumn,
+    PythonData,
+    RetrievalParam,
+)
 from lumilake_server.graphs import CompiledGraph, Graph
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.ops import DataRetrievalOp, LLMChatOp
@@ -70,28 +79,39 @@ from lumilake_server.runtime.runtime_graph import (
     make_chunk_group_key,
 )
 from lumilake_server.runtime.runtime_manager import (
+    DataCredential,
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
+    resolve_cpu,
+    resolve_memory,
 )
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
-    advertised_task_types,
-    gpu_memory_fraction,
+    SessionLane,
+    cpu_required_task_types,
+    format_memory_bytes,
+    gpu_worker_can_run,
     holds_gpu_utilizations,
-    required_task_types,
+    python_step_session_lane,
+    python_steps_gpu_requests,
     requires_cpu_worker,
+    session_limits_admit,
+    session_memory_bytes,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
+from lumilake_server.utils.lumid_data_client import data_token_var
 from lumilake_server.utils.utils import (
     async_runner,
     parse_memory_to_bytes,
     stop_async_runner,
     unique_id,
 )
+
+_ListSpecWriter = Callable[[list[Any], bool], None]
 
 
 def _empty_runtime_graph() -> RuntimeGraph:
@@ -102,6 +122,30 @@ def _empty_runtime_graph() -> RuntimeGraph:
     profiling is skipped entirely.
     """
     return RuntimeGraph(nodes={}, node_order=[], output_node_map={})
+
+
+def _param_list_writer(param: RetrievalParam, data: ListData) -> _ListSpecWriter:
+    """Write a rewritten list back into a retrieval param's typed spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        update: dict[str, Any] = {"items": items}
+        if grouped:
+            update["grouped"] = True
+        param.data = data.model_copy(update=update)
+
+    return write
+
+
+def _column_list_writer(column: LiteralColumn, data: ListData) -> _ListSpecWriter:
+    """Write a rewritten list back into a rowwise column's typed spec."""
+
+    def write(items: list[Any], grouped: bool) -> None:
+        update: dict[str, Any] = {"items": items}
+        if grouped:
+            update["grouped"] = True
+        column.data = data.model_copy(update=update)
+
+    return write
 
 
 @dataclass(slots=True)
@@ -155,7 +199,7 @@ class ExecutionBatchContext:
 class SchedulePreview:
     request_id: str
     selected_workers: list[str]
-    worker_profiles: dict[str, dict[str, Any]]
+    worker_profiles: dict[str, WorkerProfile]
     runtime_graph_node_counts: dict[str, int]
     merged_runtime_node_count: int
     schedule: Schedule
@@ -229,7 +273,7 @@ def _optimizer_subprocess_entry(
     optimizer_type: str,
     runtime_graph: Any,
     selected_workers: list[str],
-    worker_profiles: dict[str, dict[str, Any]],
+    worker_profiles: dict[str, WorkerProfile],
     data_profile_results: dict[str, list[dict[str, Any]]],
     result_queue: Any,
     bearer_token: str | None = None,
@@ -762,6 +806,14 @@ class LumilakeServer:
             return None
         return hashlib.sha256(credential.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _data_credential_digest(credential: DataCredential | None) -> str | None:
+        """Hex digest of a lum.id/data job credential, never the token."""
+        if credential is None:
+            return None
+        material = f"{credential.url}\n{credential.token}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
     @log_on_exception_async()
     async def handle_request(self, request: RequestHandler, _) -> None:
         """
@@ -819,6 +871,7 @@ class LumilakeServer:
         )
         self._requests[request.request_id] = state
 
+        data_credential = self.runtime_manager.get_data_credential(request.request_id)
         job = Job(
             request_id=request.request_id,
             runtime_graphs=request.query,
@@ -830,6 +883,8 @@ class LumilakeServer:
             api_credential_digest=self._api_credential_digest(
                 self.runtime_manager.get_api_credential(request.request_id)
             ),
+            data_credential_digest=self._data_credential_digest(data_credential),
+            data_token=data_credential.token if data_credential is not None else None,
             requires_gpu={
                 graph_name: any(
                     self._requires_gpu(op) for op in runtime_graph.nodes.values()
@@ -965,7 +1020,7 @@ class LumilakeServer:
         available.sort(key=depth.__getitem__)
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
-        profiles: dict[str, dict[str, Any]] = {}
+        profiles: dict[str, WorkerProfile] = {}
         for candidate in available:
             try:
                 profile = await self.runtime_manager.get_worker_profile(candidate)
@@ -977,7 +1032,7 @@ class LumilakeServer:
                 )
                 continue
             profiles[candidate] = profile
-            if self._has_gpu(profile):
+            if profile.has_gpu:
                 gpu_worker_ids.append(candidate)
             else:
                 cpu_worker_ids.append(candidate)
@@ -997,7 +1052,7 @@ class LumilakeServer:
         workers = await self.runtime_manager.get_all_workers()
         cpu_worker_ids: list[str] = []
         gpu_worker_ids: list[str] = []
-        profiles: dict[str, dict[str, Any]] = {}
+        profiles: dict[str, WorkerProfile] = {}
         for candidate in workers:
             try:
                 profile = await self.runtime_manager.get_worker_profile(candidate)
@@ -1009,7 +1064,7 @@ class LumilakeServer:
                 )
                 continue
             profiles[candidate] = profile
-            if self._has_gpu(profile):
+            if profile.has_gpu:
                 gpu_worker_ids.append(candidate)
             else:
                 cpu_worker_ids.append(candidate)
@@ -1039,11 +1094,7 @@ class LumilakeServer:
                     "placement_failed": workflow.workflow_id,
                     "graph": workflow.public_graph_name,
                     "slice_index": workflow.slice_index,
-                    "error": (
-                        "no worker in the cluster can satisfy this request "
-                        f"(required_cpu={self.config.cpu_worker_group_size} "
-                        f"required_gpu={self.config.gpu_worker_group_size})"
-                    ),
+                    "error": self._unplaceable_error(workflow),
                 }
             )
             state.pending_workflows.discard(workflow.workflow_id)
@@ -1059,6 +1110,38 @@ class LumilakeServer:
             await state.handler.put_result(response)
         await self.job_manager.remove_workflows(workflow_ids)
 
+    def _unplaceable_error(self, workflow: WorkflowItem) -> str:
+        """Why no worker can take ``workflow``, naming what each task asks for."""
+        hardware = workflow.config.hardware_requirements
+        cpu = resolve_cpu(hardware)
+        memory = resolve_memory(hardware)
+        lane = workflow.python_step_session_lane
+        prefix = (
+            "no worker in the cluster can satisfy this request "
+            f"(cpu={cpu} memory={memory} per task, "
+            f"required_cpu={self.config.cpu_worker_group_size} "
+            f"required_gpu={self.config.gpu_worker_group_size})"
+        )
+        if lane.is_empty():
+            return prefix
+        job_memory = self._parse_memory_to_bytes(memory)
+        session_memory = session_memory_bytes(
+            lane.cpu_memory_mb | lane.gpu_memory_mb, job_memory
+        )
+        python_clause = (
+            "; python steps must also fit each worker's session limits (ssh_limits)"
+        )
+        if session_memory is not None and session_memory != job_memory:
+            python_clause += (
+                f" at memory={format_memory_bytes(session_memory)} per task"
+            )
+        return (
+            prefix
+            + python_clause
+            + ": lower hardware.cpu, and hardware.memory or the step's memory_mb, "
+            "to fit them"
+        )
+
     async def _try_claim_workers(
         self, batch: BatchSelection, free: FreeCapacity
     ) -> list[str] | None:
@@ -1073,41 +1156,47 @@ class LumilakeServer:
         gpu_group_size = (
             self.config.gpu_worker_group_size if self._batch_requires_gpu(batch) else 0
         )
+        nodes = self._batch_gated_nodes(batch)
         cpu_group_size = self.config.cpu_worker_group_size
-        if self._batch_requires_cpu(batch) and cpu_group_size <= 0:
+        if requires_cpu_worker(nodes) and cpu_group_size <= 0:
             cpu_group_size = 1
         hardware = batch.config.hardware_requirements
-        required = self._batch_required_task_types(batch)
+        required_cpu = cpu_required_task_types(nodes)
+        required_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
-        selected = free.eligible_workers(
-            cpu_group_size=cpu_group_size,
-            gpu_group_size=gpu_group_size,
-            worker_meets_hardware=self._worker_meets_hardware,
-            hardware=hardware,
-            required_task_types=required,
-            required_gpu_utilizations=required_gpu_utilizations,
+        meets_hardware = partial(
+            self._worker_meets_hardware,
+            session_lane=python_step_session_lane(nodes),
         )
+
+        def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
+            return capacity.eligible_workers(
+                cpu_group_size=cpu_group_size,
+                gpu_group_size=gpu_group_size,
+                worker_meets_hardware=meets_hardware,
+                hardware=hardware,
+                required_task_types=required_cpu,
+                required_gpu_requests=required_gpu_requests,
+                required_gpu_utilizations=required_gpu_utilizations,
+            )
+
+        selected = claim(free)
         enough_by_count = (
             free.gpu_count >= gpu_group_size and free.cpu_count >= cpu_group_size
         )
         if (
             selected is None
             and enough_by_count
-            and (required or required_gpu_utilizations)
+            and (required_cpu or required_gpu_requests or required_gpu_utilizations)
         ):
             # Only a refusal from a gate can be permanent; too few idle workers
             # is capacity, so the batch just waits without a cluster read.
             total = await self._snapshot_total_capacity()
-            if not (
-                (not required or total.has_cpu_worker_advertising(required))
-                and (
-                    not required_gpu_utilizations
-                    or total.has_gpu_worker_holding(required_gpu_utilizations)
-                )
-            ):
+            if claim(total) is None:
                 # No worker in the cluster can ever run this batch: claim as if
-                # unconstrained so the optimizer fails it with a clear error
-                # instead of leaving it waiting for capacity that never appears.
+                # unconstrained (no task-type, GPU or session-limit gate) so the
+                # optimizer fails it with a clear error instead of leaving it
+                # waiting for capacity that never appears.
                 selected = free.eligible_workers(
                     cpu_group_size=cpu_group_size,
                     gpu_group_size=gpu_group_size,
@@ -1188,7 +1277,7 @@ class LumilakeServer:
         self,
         runtime_graph: RuntimeGraph,
         hardware: HardwareRequirements | None = None,
-    ) -> tuple[list[str], dict[str, dict[str, Any]]]:
+    ) -> tuple[list[str], dict[str, WorkerProfile]]:
         workers = await self.runtime_manager.get_workers()
         if not workers:
             raise RuntimeError("No workers available for schedule preview")
@@ -1196,26 +1285,23 @@ class LumilakeServer:
         requires_gpu = any(
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
-        requires_cpu = requires_cpu_worker(
-            op.task_type for op in runtime_graph.nodes.values()
-        )
-        needed_task_types = required_task_types(
-            op.task_type for op in runtime_graph.nodes.values()
-        )
+        nodes = [(op.task_type, op.data_spec) for op in runtime_graph.nodes.values()]
+        session_lane = python_step_session_lane(nodes)
+        requires_cpu = requires_cpu_worker(nodes)
+        needed_cpu_task_types = cpu_required_task_types(nodes)
+        needed_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
 
         gpu_workers: list[str] = []
         cpu_workers: list[str] = []
-        normalized_profiles: dict[str, dict[str, Any]] = {}
+        worker_profile_map: dict[str, WorkerProfile] = {}
         for worker in workers:
-            raw_profile = await self.runtime_manager.get_worker_profile(worker)
-            is_gpu = self._has_gpu(raw_profile)
+            profile = await self.runtime_manager.get_worker_profile(worker)
             if not self._worker_meets_hardware(
-                raw_profile, hardware, worker_has_gpu=is_gpu
+                profile, hardware, session_lane=session_lane
             ):
                 continue
-            profile = self._normalize_worker_profile(raw_profile)
-            normalized_profiles[worker] = profile
-            if profile["has_gpu"]:
+            worker_profile_map[worker] = profile
+            if profile.has_gpu:
                 gpu_workers.append(worker)
             else:
                 cpu_workers.append(worker)
@@ -1235,7 +1321,7 @@ class LumilakeServer:
             holding = [
                 worker
                 for worker in gpu_workers
-                if holds_gpu_utilizations(normalized_profiles[worker], gpu_utilizations)
+                if holds_gpu_utilizations(worker_profile_map[worker], gpu_utilizations)
             ]
             if not holding:
                 raise RuntimeError(
@@ -1243,6 +1329,19 @@ class LumilakeServer:
                     f"{max(gpu_utilizations):g} gpu_memory_utilization the graph "
                     "requests for schedule preview"
                 )
+            if needed_gpu_requests:
+                holding = [
+                    worker
+                    for worker in holding
+                    if gpu_worker_can_run(
+                        worker_profile_map[worker], needed_gpu_requests
+                    )
+                ]
+                if not holding:
+                    raise RuntimeError(
+                        "No GPU worker that runs python carries the GPUs a standalone"
+                        " python step requests for schedule preview"
+                    )
             selected_workers.append(holding[0])
         if requires_cpu:
             if not cpu_workers:
@@ -1250,30 +1349,30 @@ class LumilakeServer:
                     "No CPU worker meets the requested hardware for schedule "
                     "preview, but graph contains data-retrieval nodes"
                 )
-            if needed_task_types:
+            if needed_cpu_task_types:
                 cpu_workers = [
                     worker
                     for worker in cpu_workers
-                    if needed_task_types
-                    <= advertised_task_types(normalized_profiles[worker])
+                    if needed_cpu_task_types
+                    <= worker_profile_map[worker].supported_task_types
                 ]
                 if not cpu_workers:
                     raise RuntimeError(
                         "No CPU worker that advertises the "
-                        f"{' and '.join(sorted(needed_task_types))} task type "
+                        f"{' and '.join(sorted(needed_cpu_task_types))} task type "
                         "meets the requested hardware for schedule preview, but "
                         "graph contains nodes of that type"
                     )
             selected_workers.append(cpu_workers[0])
         if not selected_workers:
-            if not normalized_profiles:
+            if not worker_profile_map:
                 raise RuntimeError(
                     "No worker meets the requested hardware for schedule preview"
                 )
-            selected_workers.append(next(iter(normalized_profiles)))
+            selected_workers.append(next(iter(worker_profile_map)))
 
         selected_profiles = {
-            worker_id: normalized_profiles[worker_id] for worker_id in selected_workers
+            worker_id: worker_profile_map[worker_id] for worker_id in selected_workers
         }
         return selected_workers, selected_profiles
 
@@ -1297,14 +1396,6 @@ class LumilakeServer:
         return names
 
     @staticmethod
-    def _has_gpu(worker_profile: dict[str, Any]) -> bool:
-        try:
-            devices = worker_profile["gpu"]["devices"]
-        except (KeyError, TypeError):
-            return False
-        return isinstance(devices, list) and len(devices) > 0
-
-    @staticmethod
     def _parse_memory_to_bytes(value: str) -> int | None:
         """Parse Kubernetes-style memory strings (matches the
         ``HardwareRequirements`` regex). Returns ``None`` on malformed input
@@ -1314,12 +1405,12 @@ class LumilakeServer:
     @classmethod
     def _worker_meets_hardware(
         cls,
-        worker_profile: dict[str, Any],
+        worker_profile: WorkerProfile,
         hardware: HardwareRequirements | None,
         *,
-        worker_has_gpu: bool | None = None,
+        session_lane: SessionLane = SessionLane(),
     ) -> bool:
-        """Compare a raw FlowMesh worker profile to a per-job requirement.
+        """Compare a worker's placement facts to a per-job requirement.
 
         GPU-specific constraints (``hardware.gpu``, ``hardware.gpu_memory``,
         ``hardware.gpu_model``) only apply to GPU-capable workers; CPU workers
@@ -1327,59 +1418,65 @@ class LumilakeServer:
         ``hardware.gpu=1`` would reject every CPU worker and stall any mixed
         CPU/GPU graph.
 
-        Pass ``worker_has_gpu`` to skip an internal ``_has_gpu`` call when
-        the caller has already classified the worker; default delegates to
-        ``_has_gpu(worker_profile)``.
+        ``session_lane`` holds what each group's python steps ask for in MiB
+        (``None`` for a step on the job's memory). FlowMesh caps a python step at
+        the worker's ``ssh_limits``, so a CPU worker must hold the CPU group's
+        steps and a GPU worker its own; the job's CPU and the largest of those
+        memories (the job's values, else the env defaults) must fit under the
+        limits as well as under the hardware.
 
-        Missing worker fields (e.g. ``cpu.logical_cores`` is ``None``) are
-        treated as unknown and pass — Lumilake's contract is "filter the
+        A fact the profile does not report (e.g. ``cpu_cores`` is ``None``) is
+        treated as unknown and passes — Lumilake's contract is "filter the
         obvious no-go workers"; FlowMesh remains the authority on dispatch.
         """
+        session_memory_mb = (
+            session_lane.gpu_memory_mb
+            if worker_profile.has_gpu
+            else session_lane.cpu_memory_mb
+        )
+        if session_memory_mb and not session_limits_admit(
+            worker_profile,
+            resolve_cpu(hardware),
+            session_memory_bytes(
+                session_memory_mb, cls._parse_memory_to_bytes(resolve_memory(hardware))
+            ),
+        ):
+            return False
         if hardware is None:
             return True
-        if hardware.cpu is not None:
-            cores = (worker_profile.get("cpu") or {}).get("logical_cores")
-            if isinstance(cores, int) and cores < hardware.cpu:
-                return False
+        if (
+            hardware.cpu is not None
+            and worker_profile.cpu_cores is not None
+            and worker_profile.cpu_cores < hardware.cpu
+        ):
+            return False
         if hardware.memory is not None:
             required = cls._parse_memory_to_bytes(hardware.memory)
-            total = (worker_profile.get("memory") or {}).get("total_bytes")
-            if required is not None and isinstance(total, int) and total < required:
+            if (
+                required is not None
+                and worker_profile.memory_total_bytes is not None
+                and worker_profile.memory_total_bytes < required
+            ):
                 return False
-        is_gpu_worker = (
-            worker_has_gpu
-            if worker_has_gpu is not None
-            else cls._has_gpu(worker_profile)
-        )
-        if not is_gpu_worker:
+        if not worker_profile.has_gpu:
             return True
-        gpu_section = worker_profile.get("gpu") or {}
-        devices = gpu_section.get("devices")
-        gpu_devices = devices if isinstance(devices, list) else []
-        if hardware.gpu is not None and len(gpu_devices) < hardware.gpu:
+        if hardware.gpu is not None and len(worker_profile.gpu_devices) < hardware.gpu:
             return False
-        if hardware.gpu_memory is not None and gpu_devices:
+        if hardware.gpu_memory is not None:
             required_vram = cls._parse_memory_to_bytes(hardware.gpu_memory)
             if required_vram is not None:
-                for device in gpu_devices:
-                    if not isinstance(device, dict):
-                        continue
-                    vram = device.get("memory_total_bytes")
-                    if isinstance(vram, int) and vram < required_vram:
+                for device in worker_profile.gpu_devices:
+                    if (
+                        device.memory_total_bytes is not None
+                        and device.memory_total_bytes < required_vram
+                    ):
                         return False
-        if hardware.gpu_model is not None and gpu_devices:
+        if hardware.gpu_model is not None:
             wanted = hardware.gpu_model.lower()
-            saw_name = False
-            for device in gpu_devices:
-                if not isinstance(device, dict):
-                    continue
-                name = device.get("name")
-                if not isinstance(name, str):
-                    continue
-                saw_name = True
-                if wanted in name.lower():
-                    return True
-            if saw_name:
+            named = [d.name for d in worker_profile.gpu_devices if d.name is not None]
+            if any(wanted in name.lower() for name in named):
+                return True
+            if named:
                 return False
         return True
 
@@ -1398,13 +1495,16 @@ class LumilakeServer:
                     return True
         return False
 
-    @staticmethod
-    def _batch_required_task_types(batch: BatchSelection) -> frozenset[str]:
-        return required_task_types(
-            op.task_type
+    @classmethod
+    def _batch_gated_nodes(
+        cls, batch: BatchSelection
+    ) -> list[tuple[str, DataSpecModel]]:
+        """The batch's ``(task_type, data_spec)`` pairs, one per runtime node."""
+        return [
+            (op.task_type, op.data_spec)
             for runtime_graph in batch.runtime_graphs.values()
             for op in runtime_graph.nodes.values()
-        )
+        ]
 
     @classmethod
     def _batch_gpu_utilizations(cls, batch: BatchSelection) -> frozenset[float]:
@@ -1415,32 +1515,6 @@ class LumilakeServer:
             for op in runtime_graph.nodes.values()
             if cls._requires_gpu(op) and op.gpu_memory_utilization is not None
         )
-
-    @staticmethod
-    def _batch_requires_cpu(batch: BatchSelection) -> bool:
-        """A configured CPU group size of 0 is only valid alongside a nonzero
-        GPU group; a batch with a data_retrieval or api op still needs one CPU
-        worker (matching _select_preview_workers_and_profiles)."""
-        return requires_cpu_worker(
-            op.task_type
-            for runtime_graph in batch.runtime_graphs.values()
-            for op in runtime_graph.nodes.values()
-        )
-
-    @classmethod
-    def _normalize_worker_profile(
-        cls, worker_profile: dict[str, Any]
-    ) -> dict[str, Any]:
-        has_gpu = worker_profile.get("has_gpu")
-        if not isinstance(has_gpu, bool):
-            has_gpu = cls._has_gpu(worker_profile)
-        return {
-            "has_gpu": has_gpu,
-            "supported_task_types": list(
-                worker_profile.get("supported_task_types", ())
-            ),
-            "gpu_memory_fraction": gpu_memory_fraction(worker_profile),
-        }
 
     @staticmethod
     def _request_workflow_parent_id(workflow: Any) -> str:
@@ -1729,39 +1803,38 @@ class LumilakeServer:
     @staticmethod
     def _iter_input_bound_list_specs(
         graph: Graph,
-    ) -> Generator[tuple[str, dict[str, Any], dict[str, Any]], None, None]:
+    ) -> Generator[tuple[str, list[Any], InputRef | None, _ListSpecWriter], None, None]:
+        """Yield each input-bound literal list: label, items and an items writer."""
         for op in graph.as_dict().values():
             if isinstance(op, DataRetrievalOp):
-                params = op.data_spec.get("params")
-                if isinstance(params, list):
-                    for param in params:
-                        if not isinstance(param, dict):
-                            continue
-                        label = param.get("label")
-                        data = param.get("data")
-                        if not isinstance(label, str) or not isinstance(data, dict):
-                            continue
-                        data_type = data.get("type")
-                        items = data.get("items")
-                        if data_type != "list" or not isinstance(items, list):
-                            continue
-                        yield label, data, param
+                for param in op.data_spec.params:
+                    label = param.label
+                    data = param.data
+                    if label is None or data is None:
+                        continue
+                    if not isinstance(data.items, list):
+                        continue
+                    yield (
+                        label,
+                        data.items,
+                        param.input_ref,
+                        _param_list_writer(param, data),
+                    )
             if isinstance(op, LLMChatOp):
-                columns = op.rowwise_columns
-                if not isinstance(columns, list):
-                    continue
-                for column in columns:
-                    if not isinstance(column, dict):
+                for column in op.rowwise_columns or []:
+                    if not isinstance(column, LiteralColumn):
                         continue
-                    label = column.get("label")
-                    data = column.get("data")
-                    if not isinstance(label, str) or not isinstance(data, dict):
+                    column_data = column.data
+                    if not isinstance(column_data, ListData) or not isinstance(
+                        column_data.items, list
+                    ):
                         continue
-                    data_type = data.get("type")
-                    items = data.get("items")
-                    if data_type != "list" or not isinstance(items, list):
-                        continue
-                    yield label, data, column
+                    yield (
+                        column.label,
+                        column_data.items,
+                        column.input_ref,
+                        _column_list_writer(column, column_data),
+                    )
 
     @classmethod
     def _validate_merged_varying_inputs(
@@ -1840,14 +1913,9 @@ class LumilakeServer:
         rewrite_hits: dict[str, int] = {key: 0 for key in varying_input_keys}
         inferred_aliases: dict[str, str] = {}
 
-        def _rewrite_target_key(label: str, owner: dict[str, Any]) -> str | None:
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
-                key = input_ref.get("key")
-                if not isinstance(key, str):
-                    raise ValueError(
-                        f"Invalid input_ref key for '{label}' in {group_context}"
-                    )
+        def _rewrite_target_key(label: str, input_ref: InputRef | None) -> str | None:
+            if input_ref is not None:
+                key = input_ref["key"]
                 # An explicit input_ref pins the column to that input; a
                 # non-varying key must not fall through to label matching.
                 return key if key in varying_input_keys else None
@@ -1855,13 +1923,8 @@ class LumilakeServer:
                 return label
             return inferred_aliases.get(label)
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            if label in varying_input_keys:
-                continue
-            if isinstance(owner.get("input_ref"), dict):
-                continue
-            items = data["items"]
-            if not isinstance(items, list):
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
+            if label in varying_input_keys or input_ref is not None:
                 continue
             matched_keys = [
                 key for key, values in first_slice_inputs.items() if items == values
@@ -1875,32 +1938,20 @@ class LumilakeServer:
             if len(matched_keys) == 1:
                 inferred_aliases[label] = matched_keys[0]
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            rewrite_target_key = _rewrite_target_key(label, owner)
+        for label, _items, input_ref, write in cls._iter_input_bound_list_specs(graph):
+            rewrite_target_key = _rewrite_target_key(label, input_ref)
             if rewrite_target_key is None:
                 continue
             replacement = merged_inputs[rewrite_target_key]
-            input_ref = owner.get("input_ref")
-            if isinstance(input_ref, dict):
-                ref_key = input_ref.get("key")
-                ref_path = input_ref.get("path")
-                if not isinstance(ref_key, str) or not isinstance(
-                    ref_path, (str, type(None))
-                ):
-                    raise ValueError(
-                        f"Invalid input_ref for '{label}' in {group_context}"
-                    )
-                ref: InputRef = {"key": ref_key, "path": ref_path}
-                projected = project_input_values(
+            if input_ref is not None:
+                data = project_input_values(
                     replacement,
-                    ref["path"],
-                    ref["key"],
+                    input_ref["path"],
+                    input_ref["key"],
                 )
-                data["items"] = list(projected)
-                if len(replacement) > 1:
-                    data["grouped"] = True
             else:
-                data["items"] = list(replacement)
+                data = replacement.copy()
+            write(data, len(replacement) > 1)
             rewrite_hits[rewrite_target_key] += 1
 
         for key, hit_count in rewrite_hits.items():
@@ -1916,16 +1967,10 @@ class LumilakeServer:
                     "Expected at least one input-bound list field keyed by this label."
                 )
 
-        for label, data, owner in cls._iter_input_bound_list_specs(graph):
-            validation_target_key = _rewrite_target_key(label, owner)
+        for label, items, input_ref, _write in cls._iter_input_bound_list_specs(graph):
+            validation_target_key = _rewrite_target_key(label, input_ref)
             if validation_target_key is None:
                 continue
-            items = data["items"]
-            if not isinstance(items, list):
-                raise ValueError(
-                    "Rewritten field is no longer a list for "
-                    f"key='{label}' in {group_context}"
-                )
             expected_len = len(merged_inputs[validation_target_key])
             actual_len = len(items)
             if actual_len != expected_len:
@@ -2051,6 +2096,11 @@ class LumilakeServer:
         )
         request_ids = tuple(
             sorted({workflow.request_id for workflow in batch.workflows})
+        )
+        # Queue partitions share one data credential per batch, so the batch's graph
+        # build and data profile read with that job's token.
+        data_token_var.set(
+            next((w.data_token for w in batch.workflows if w.data_token), None)
         )
         self._execution_contexts[execution_request_id] = ExecutionBatchContext(
             execution_request_id=execution_request_id,
@@ -2204,12 +2254,10 @@ class LumilakeServer:
                     "optimized": 0,
                 }
 
-            worker_profiles: dict[str, dict[str, Any]] = {}
+            worker_profiles: dict[str, WorkerProfile] = {}
             if active_workflows:
                 worker_profiles = {
-                    worker: self._normalize_worker_profile(
-                        await self.runtime_manager.get_worker_profile(worker)
-                    )
+                    worker: await self.runtime_manager.get_worker_profile(worker)
                     for worker in workers
                 }
 
@@ -2841,7 +2889,7 @@ class LumilakeServer:
         batch: BatchSelection,
         batch_id: str,
         selected_workers: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: dict[str, WorkerProfile],
         *,
         execution_request_id: str,
         member_request_ids: set[str],
@@ -2857,8 +2905,8 @@ class LumilakeServer:
             Identifier for this batch
         selected_workers : list[str]
             Workers selected to execute this batch.
-        worker_profiles : dict[str, dict[str, Any]]
-            Worker hardware profiles for optimizer scheduling.
+        worker_profiles : dict[str, WorkerProfile]
+            Worker placement facts for optimizer scheduling.
 
         Returns
         -------
@@ -3074,9 +3122,7 @@ class LumilakeServer:
             member_request_ids=set(member_request_ids),
             task_owner_members=task_owner_members,
             gpu_worker_ids={
-                worker
-                for worker in selected_workers
-                if worker_profiles[worker]["has_gpu"]
+                worker for worker in selected_workers if worker_profiles[worker].has_gpu
             },
         )
         batch_request_info.batch_id = batch_id
@@ -3530,7 +3576,7 @@ class LumilakeServer:
         optimizer_type: str,
         runtime_graph: Any,
         selected_workers: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: dict[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,

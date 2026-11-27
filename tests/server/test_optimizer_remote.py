@@ -5,8 +5,11 @@ import json
 import httpx
 import pytest
 import respx
+from support.worker_profiles import worker_profile
 
 from lumilake import envs as envs_mod
+from lumilake_hook import GpuDevice, WorkerProfile
+from lumilake_hook.optimizer import RemoteOptimizer as HookRemoteOptimizer
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
@@ -71,12 +74,48 @@ def test_remote_optimizer_posts_schedule_and_maps_response(
     schedule = optimizer.generate_schedule(
         graph,
         worker_names=["w1"],
-        worker_profiles={"w1": {"gpu": 1}},
+        worker_profiles={"w1": worker_profile(devices=(GpuDevice(),))},
     )
 
     assert isinstance(schedule, Schedule)
     assert schedule.worker_assignment == {"w1": ["n1"]}
     assert route.called
+
+
+@respx.mock
+def test_remote_optimizer_refuses_a_gpu_python_step_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        envs_mod, "LUMILAKE_REMOTE_OPTIMIZER_URL", "http://127.0.0.1:9000"
+    )
+    route = respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
+        return_value=httpx.Response(200, json={"worker_assignment": {"w1": []}})
+    )
+    graph = RuntimeGraph(
+        nodes={
+            "n1": runtime_op(
+                node_id="n1",
+                task_type="python",
+                backend="python",
+                model="",
+                data_spec={"code": "x", "gpu": {"count": 1}},
+                model_spec={},
+                inference_spec={},
+            )
+        },
+        node_order=["n1"],
+        output_node_map={},
+        dsl_to_runtime={},
+    )
+
+    with pytest.raises(ValueError, match=r"GPU python step node\(s\) \['n1'\]"):
+        RemoteOptimizer(optimizer_type="halo-greedy").generate_schedule(
+            graph,
+            worker_names=["w1"],
+            worker_profiles={"w1": worker_profile(devices=(GpuDevice(),))},
+        )
+    assert not route.called
 
 
 @respx.mock
@@ -103,10 +142,27 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
     optimizer.generate_schedule(
         _make_graph(),
         worker_names=["w1"],
-        worker_profiles={"w1": {}},
+        worker_profiles={
+            "w1": worker_profile(
+                devices=(GpuDevice(name="H100"),), gpu_memory_fraction=0.5
+            ),
+            "w2": WorkerProfile(),
+        },
     )
 
     assert captured_body.get("optimizer_type") == "halo-greedy"
+    assert captured_body["worker_profiles"]["w1"] == {
+        "has_gpu": True,
+        "supported_task_types": [],
+        "gpu": {"devices": [{"name": "H100", "memory_total_bytes": None}]},
+        "gpu_memory_fraction": 0.5,
+        "cpu_cores": None,
+        "memory_total_bytes": None,
+        "max_session_cpu_cores": None,
+        "max_session_memory_bytes": None,
+    }
+    assert captured_body["worker_profiles"]["w2"]["has_gpu"] is False
+    assert captured_body["worker_profiles"]["w2"]["gpu"] is None
 
 
 @respx.mock
@@ -131,7 +187,7 @@ def test_remote_optimizer_forwards_bearer(monkeypatch: pytest.MonkeyPatch) -> No
         schedule = optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": {}},
+            worker_profiles={"w1": WorkerProfile()},
         )
     finally:
         runtime_token_var.reset(token)
@@ -189,7 +245,7 @@ def test_remote_optimizer_raises_on_http_error(
         optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": {}},
+            worker_profiles={"w1": WorkerProfile()},
         )
 
 
@@ -239,3 +295,29 @@ def test_remote_optimizer_accepts_valid_url(
         constructor_kwargs["base_url"] = kwargs["base_url"]
     # Must not raise ValueError — the URL guard accepts this URL.
     RemoteOptimizer(**constructor_kwargs)
+
+
+@respx.mock
+def test_hook_remote_optimizer_posts_the_profiles_as_json() -> None:
+    """The hook handle has no schedule model, so it posts the profiles itself."""
+    captured_body: dict = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(200, json={"worker_assignment": {"w1": ["n1"]}})
+
+    respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
+        side_effect=_capture
+    )
+    profile = worker_profile(devices=(GpuDevice(name="H100"),), gpu_memory_fraction=0.5)
+    schedule = HookRemoteOptimizer(
+        base_url="http://127.0.0.1:9000", optimizer_type="halo-greedy"
+    ).generate_schedule(
+        _make_graph(), worker_names=["w1"], worker_profiles={"w1": profile}
+    )
+
+    assert schedule.worker_assignment == {"w1": ["n1"]}
+    assert captured_body["worker_profiles"] == {"w1": profile.model_dump(mode="json")}
+    assert captured_body["worker_profiles"]["w1"]["gpu"] == {
+        "devices": [{"name": "H100", "memory_total_bytes": None}]
+    }

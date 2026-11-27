@@ -34,6 +34,7 @@ from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
 
@@ -182,6 +183,15 @@ def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
                 f"library entry {ref!r} has unsupported op type {op_type!r}; "
                 f"supported: {sorted(SUPPORTED_OPS)}"
             )
+        if op_type != "DataRetrievalOp":
+            continue
+        data_spec = template.get("data_spec")
+        if data_spec is None:
+            continue
+        try:
+            RetrievalSpec.load(data_spec, f"library entry {ref!r} data_spec")
+        except ValueError as exc:
+            raise DriverProtocolError(str(exc)) from None
 
 
 _LIBRARY_REF_OVERRIDES = frozenset({"id", "inputs", "op"})

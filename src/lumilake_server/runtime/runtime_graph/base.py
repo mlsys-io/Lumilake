@@ -1,5 +1,5 @@
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any
 
 from lumilake import envs
@@ -7,10 +7,21 @@ from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_server.common import project_input_keys
 from lumilake_server.data_specs import (
     Column,
+    ColumnTable,
+    DataFrame,
     DataSpecModel,
+    GraphTemplate,
+    GraphTemplateData,
     ListData,
+    NodeColumn,
+    NodeRead,
+    PythonData,
+    RetrievalData,
+    S3ProfileData,
+    SqlProfileData,
 )
 from lumilake_server.ops import (
+    DataOp,
     InputOp,
     LLMOp,
     Op,
@@ -26,6 +37,60 @@ def _default_output_destination() -> dict[str, Any]:
     if envs.FLOWMESH_OUTPUT_DESTINATION == "http":
         return {"type": "http", "timeoutSec": 3600}
     return {"type": "local"}
+
+
+def _iter_literal_item_refs(items: list[Any] | str | None) -> Iterator[str]:
+    """Yield the node reads FlowMesh performs inside literal list items: an
+    item mapping whose ``node`` comes with ``path``. A ``node`` alone, or with
+    ``expr``, is ordinary data."""
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and "path" in item:
+                node = item.get("node")
+                if isinstance(node, str):
+                    yield node
+
+
+def _iter_columns(columns: Sequence[Column]) -> Iterator[str]:
+    """Yield the node each column reads, recursing into its nested table."""
+    for column in columns:
+        if column.node is not None:
+            yield column.node
+        data = column.data
+        if isinstance(data, DataFrame):
+            yield from _iter_columns(data.columns)
+        elif isinstance(data, ListData):
+            yield from _iter_literal_item_refs(data.items)
+
+
+def _iter_data_spec_refs(spec: DataSpecModel) -> Iterator[str]:
+    """Yield every node a typed data_spec reads: column reads, a list source,
+    a graph template's columns, a retrieval parameter, or a plan stage."""
+    if isinstance(spec, ListData):
+        if spec.node is not None:
+            yield spec.node
+        yield from _iter_literal_item_refs(spec.items)
+    elif isinstance(spec, DataFrame):
+        yield from _iter_columns(spec.columns)
+        if isinstance(spec.seeds, NodeRead):
+            yield spec.seeds.node
+    elif isinstance(spec, GraphTemplateData):
+        yield from _iter_columns(spec.template.columns)
+        if spec.image_embedding is not None:
+            yield spec.image_embedding.node
+    elif isinstance(spec, (RetrievalData, SqlProfileData, S3ProfileData)):
+        for param in spec.params:
+            if param.node is not None:
+                yield param.node
+            data = param.data
+            if data is not None:
+                if data.node is not None:
+                    yield data.node
+                yield from _iter_literal_item_refs(data.items)
+    elif isinstance(spec, PythonData):
+        for entry in spec.plan:
+            if entry.kind == "stage" and entry.node is not None:
+                yield entry.node
 
 
 class _RuntimeGraphBuilderBase:
@@ -186,14 +251,14 @@ class _RuntimeGraphBuilderBase:
         self,
         *,
         consumer_id: str,
-        label: str,
-        node_ref: str,
-        path: str,
+        column: NodeColumn,
         upstream: Op | None,
         inputs_dict: dict[str, list[str]],
     ) -> Column:
-        """Bind a ``node:`` reference into a spec column, mapping the declared
-        path to the upstream's read path."""
+        """Bind a node column into a spec column at the upstream's read path."""
+        label = column.label
+        node_ref = column.node
+        path = column.path or ""
         if isinstance(upstream, InputOp):
             values = inputs_dict.get(upstream.name)
             if values is None:
@@ -206,20 +271,40 @@ class _RuntimeGraphBuilderBase:
             # ``path`` (which would drill into the envelope) is meaningless
             # here. The scalar value is inlined verbatim; ``path`` must be
             # absent / empty.
-            if path not in (None, ""):
+            if column.path:
                 raise ValueError(
-                    f"Column '{label}' of consumer '{consumer_id}' references"
-                    f" InputOp '{node_ref}' with drill path {path!r}; "
-                    "InputOp-derived columns cannot be drilled — wrap "
-                    "record-shaped inputs in an upstream op that exposes the "
-                    "target field, or drop the ``path`` for scalar inputs."
+                    f"Column '{label}' of consumer '{consumer_id}' references InputOp"
+                    f" '{node_ref}' with drill path {column.path!r}; InputOp-derived"
+                    " columns cannot be drilled — wrap record-shaped inputs in an"
+                    " upstream op that exposes the target field, or drop the ``path``"
+                    " for scalar inputs."
                 )
             return Column(label=label, data=ListData(items=list(values)))
+        if isinstance(upstream, DataOp):
+            # A DataOp has no runtime envelope, so its values bind whole and a path
+            # would read something the op never produces.
+            if column.path is not None:
+                raise ValueError(
+                    f"Column '{label}' of consumer '{consumer_id}' references DataOp"
+                    f" '{node_ref}' with drill path {column.path!r}; a DataOp-derived"
+                    " column carries the op's values whole, so it takes no path."
+                )
+            return Column(label=label, data=ListData(items=upstream.data.copy()))
         if upstream is not None:
             path = self._op_output(upstream).read(
                 path, f"Column '{label}' of consumer '{consumer_id}'"
             )
         return Column(label=label, node=node_ref, path=path)
+
+    def _mark_literal_column_producers_visited(
+        self, columns: ColumnTable | None, visited_node_ids: set[str]
+    ) -> None:
+        """Mark each literal column producer visited, so the orphan check counts it."""
+        for column in columns or []:
+            if isinstance(column, NodeColumn) and isinstance(
+                self._graph_dict.get(column.node), (InputOp, DataOp)
+            ):
+                visited_node_ids.add(column.node)
 
     def _project_input_field(
         self, values: list[str], path: str, input_name: str
@@ -241,81 +326,35 @@ class _RuntimeGraphBuilderBase:
         ]
 
     def _collect_graph_template_dependencies(
-        self, template_spec: dict[str, Any]
+        self, template_spec: GraphTemplate
     ) -> list[str]:
+        """The runtime node ids a rendered graph template reads, in template order."""
         deps: list[str] = []
         seen: set[str] = set()
 
-        def add_dep(node_id: Any) -> None:
-            if not isinstance(node_id, str) or node_id in seen:
-                return
-            seen.add(node_id)
-            deps.append(node_id)
-
-        def visit_column(column: Any) -> None:
-            if not isinstance(column, dict):
-                return
-            add_dep(column.get("node"))
-            data = column.get("data")
-            if not isinstance(data, dict):
-                return
-            if data.get("type") == "dataframe":
-                for nested in data.get("columns", []) or []:
+        def visit_column(column: Column) -> None:
+            node = column.node
+            if node is not None and node not in seen:
+                seen.add(node)
+                deps.append(node)
+            if isinstance(column.data, DataFrame):
+                for nested in column.data.columns:
                     visit_column(nested)
-            elif data.get("type") == "graph_template":
-                nested_template = data.get("template")
-                if isinstance(nested_template, dict):
-                    for nested in nested_template.get("columns", []) or []:
-                        visit_column(nested)
 
-        for column in template_spec.get("columns", []) or []:
+        for column in template_spec.columns:
             visit_column(column)
         return deps
 
     @staticmethod
     def _iter_runtime_refs(node: RuntimeOp) -> Iterator[str]:
-        """Yield every runtime node reference in a RuntimeOp: data_spec
-        column/data-source/list-item refs (a mapping with ``node`` plus
-        ``path``, or ``expr`` outside literal list items), python plan stage
-        entries, and the condition node. Literal payloads (``node`` without
-        ``path``/``expr``) are data, not references."""
-        yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-            node.data_spec.model_dump(exclude_none=True)
-        )
+        """Yield every runtime node reference a RuntimeOp carries: the reads of
+        its data_spec, the stage entries of its python plan, and its condition."""
+        yield from _iter_data_spec_refs(node.data_spec)
         condition = node.condition
         if condition is not None:
             cond_node = condition.get("node")
             if isinstance(cond_node, str):
                 yield cond_node
-
-    @staticmethod
-    def _iter_spec_refs(value: Any, allow_expr: bool = True) -> Iterator[str]:
-        """Yield node references from a data_spec, schema-aware: a mapping
-        with a string ``node`` and a ``path`` key is a reference; ``expr``
-        counts only outside literal list items. Recurse into nested mappings
-        and lists, disabling ``expr`` below a ``type: list`` payload."""
-        if isinstance(value, dict):
-            node = value.get("node")
-            if isinstance(node, str) and (
-                "path" in value or (allow_expr and "expr" in value)
-            ):
-                yield node
-                return
-            if value.get("type") == "list":
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(
-                    value.get("items"), allow_expr=False
-                )
-                return
-            if value.get("kind") == "stage":
-                stage_node = value.get("node")
-                if isinstance(stage_node, str):
-                    yield stage_node
-                    return
-            for v in value.values():
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
-        elif isinstance(value, list):
-            for v in value:
-                yield from _RuntimeGraphBuilderBase._iter_spec_refs(v, allow_expr)
 
     def _guard_single_row_node_ref(
         self,
