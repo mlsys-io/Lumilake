@@ -336,10 +336,11 @@ ops:
 
 ### JoinOp
 
-`JoinOp` merges row columns by `by`, a field path; the first input fixes the output rows and their order. An `attach` field adds a per-row node's values to each row (a rowwise LLM, embedding, fetch or classification op, a row or aligned `LambdaOp`, another `JoinOp`, or a chain of these), also in `inputs:`. `missing: error` fails on a key absent from the first input, else the fields are left out. A duplicate key or a misaligned attach fails the job.
+`JoinOp` merges row columns by `by`, a field path. `how: left` (the default) keeps the first input's rows and their order, `how: inner` keeps the keys every input carries, and `how: full` also appends a key only a later input carries, in first-seen order, with the fields that input lacks left out. `require_match: true` fails the job unless every input carries the same keys. An `attach` field adds a per-row node's values to each row (a rowwise LLM, embedding, fetch or classification op, a row or aligned `LambdaOp`, another `JoinOp`, or a chain of these), also in `inputs:`, under any `how`. A duplicate key or a misaligned attach fails the job.
 
 ```yaml
-- {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, attach: {reply: Reply}}
+- {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, how: inner,
+   require_match: true, attach: {reply: Reply}}
 ```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.
