@@ -7,20 +7,23 @@ all), and HALO then rejects the node the preview approved."""
 from typing import Any, cast
 
 import pytest
+from support.worker_profiles import worker_profile
 
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 
-def _profile(gpu_count: int, task_types: list[str] | None = None) -> dict[str, Any]:
-    devices = [{"memory_total_bytes": None} for _ in range(gpu_count)]
-    return {
-        "cpu": {"logical_cores": 16},
-        "memory": {"total_bytes": 64 * (1024**3)},
-        "gpu": {"devices": devices},
-        "supported_task_types": task_types or [],
-    }
+def _profile(gpu_count: int, task_types: list[str] | None = None) -> WorkerProfile:
+    devices = tuple(GpuDevice() for _ in range(gpu_count))
+    return worker_profile(
+        has_gpu=bool(devices),
+        task_types=frozenset(task_types or ()),
+        cpu_cores=16,
+        memory_total_bytes=64 * (1024**3),
+        gpu_devices=devices,
+    )
 
 
 def _python_op(node_id: str) -> RuntimeOp:
@@ -61,13 +64,13 @@ def _inference_op(node_id: str) -> RuntimeOp:
 
 
 class _MultiWorkerRuntimeManager:
-    def __init__(self, profiles: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, profiles: dict[str, WorkerProfile]) -> None:
         self._profiles = profiles
 
     async def get_workers(self) -> list[str]:
         return list(self._profiles)
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
         return self._profiles[worker_id]
 
 
@@ -91,7 +94,7 @@ async def test_api_only_preview_selects_a_cpu_worker(server_factory) -> None:
     )
 
     assert selected_workers == ["cpu-worker"]
-    assert profiles["cpu-worker"]["has_gpu"] is False
+    assert profiles["cpu-worker"].has_gpu is False
 
 
 @pytest.mark.asyncio
@@ -137,8 +140,8 @@ async def test_mixed_gpu_and_api_preview_selects_both_worker_kinds(
     )
 
     assert set(selected_workers) == {"gpu-worker", "cpu-worker"}
-    assert profiles["gpu-worker"]["has_gpu"] is True
-    assert profiles["cpu-worker"]["has_gpu"] is False
+    assert profiles["gpu-worker"].has_gpu is True
+    assert profiles["cpu-worker"].has_gpu is False
 
 
 @pytest.mark.asyncio
@@ -158,7 +161,7 @@ async def test_gpu_only_preview_does_not_require_a_cpu_worker(server_factory) ->
     )
 
     assert selected_workers == ["gpu-worker"]
-    assert profiles["gpu-worker"]["has_gpu"] is True
+    assert profiles["gpu-worker"].has_gpu is True
 
 
 @pytest.mark.asyncio
@@ -186,7 +189,7 @@ async def test_python_preview_selects_the_worker_that_advertises_python(
     )
 
     assert selected_workers == ["cpu-python"]
-    assert profiles["cpu-python"]["supported_task_types"] == ["python"]
+    assert profiles["cpu-python"].supported_task_types == {"python"}
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,7 @@ from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import WorkerProfile
 from tests.support.data_specs import runtime_op
 
 
@@ -71,7 +72,7 @@ def test_remote_optimizer_posts_schedule_and_maps_response(
     schedule = optimizer.generate_schedule(
         graph,
         worker_names=["w1"],
-        worker_profiles={"w1": {"gpu": 1}},
+        worker_profiles={"w1": WorkerProfile(has_gpu=True)},
     )
 
     assert isinstance(schedule, Schedule)
@@ -108,7 +109,9 @@ def test_remote_optimizer_refuses_a_gpu_python_step_before_dispatch(
 
     with pytest.raises(ValueError, match=r"GPU python step node\(s\) \['n1'\]"):
         RemoteOptimizer(optimizer_type="halo-greedy").generate_schedule(
-            graph, worker_names=["w1"], worker_profiles={"w1": {"has_gpu": True}}
+            graph,
+            worker_names=["w1"],
+            worker_profiles={"w1": WorkerProfile(has_gpu=True)},
         )
     assert not route.called
 
@@ -137,10 +140,19 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
     optimizer.generate_schedule(
         _make_graph(),
         worker_names=["w1"],
-        worker_profiles={"w1": {}},
+        worker_profiles={"w1": WorkerProfile(has_gpu=True, gpu_memory_fraction=0.5)},
     )
 
     assert captured_body.get("optimizer_type") == "halo-greedy"
+    assert captured_body["worker_profiles"]["w1"] == {
+        "has_gpu": True,
+        "supported_task_types": [],
+        "gpu_memory_fraction": 0.5,
+        "cpu_cores": None,
+        "memory_total_bytes": None,
+        "max_session_cpu_cores": None,
+        "max_session_memory_bytes": None,
+    }
 
 
 @respx.mock
@@ -165,7 +177,7 @@ def test_remote_optimizer_forwards_bearer(monkeypatch: pytest.MonkeyPatch) -> No
         schedule = optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": {}},
+            worker_profiles={"w1": WorkerProfile(has_gpu=False)},
         )
     finally:
         runtime_token_var.reset(token)
@@ -223,7 +235,7 @@ def test_remote_optimizer_raises_on_http_error(
         optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": {}},
+            worker_profiles={"w1": WorkerProfile(has_gpu=False)},
         )
 
 

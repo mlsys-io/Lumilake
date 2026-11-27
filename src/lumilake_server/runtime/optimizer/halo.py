@@ -29,10 +29,9 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
-    advertised_task_types,
+    WorkerProfile,
     cpu_required_task_types,
     fraction_holds_utilization,
-    gpu_memory_fraction,
     profile_fits_gpu_request,
 )
 
@@ -43,6 +42,7 @@ from .schedule.models import DBQuery, Edge, GraphSpec, Node, QueryPlanChoice, Wo
 
 _HF_SAFETENSORS_FILE = "model.safetensors"
 _HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
+_NO_PROFILE = WorkerProfile(has_gpu=False)
 
 
 def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:
@@ -155,7 +155,7 @@ class HaloOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: Sequence[str],
-        worker_profiles: Mapping[str, Mapping[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: (
             Mapping[str, Sequence[Mapping[str, Any] | DataProfileResultRow]] | None
         ) = None,
@@ -386,7 +386,7 @@ class HaloOptimizer(BaseOptimizer):
     def _build_workers(
         self,
         worker_names: Sequence[str],
-        worker_profiles: Mapping[str, Mapping[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         graph: GraphSpec,
     ) -> dict[str, Worker]:
         requires_gpu = any(
@@ -396,16 +396,15 @@ class HaloOptimizer(BaseOptimizer):
 
         workers: dict[str, Worker] = {}
         for worker_name in sorted(worker_names):
-            worker_profile = worker_profiles.get(worker_name, {})
-            has_gpu = bool(worker_profile.get("has_gpu"))
-            worker_kind = "gpu" if has_gpu else "cpu"
+            worker_profile = worker_profiles.get(worker_name, _NO_PROFILE)
+            worker_kind = "gpu" if worker_profile.has_gpu else "cpu"
             workers[worker_name] = Worker(
                 id=worker_name,
                 kind=worker_kind,
                 device="cuda:0" if worker_kind == "gpu" else "cpu",
                 capacity=1.0,
-                task_types=advertised_task_types(worker_profile),
-                gpu_memory_fraction=gpu_memory_fraction(worker_profile),
+                task_types=worker_profile.supported_task_types,
+                gpu_memory_fraction=worker_profile.gpu_memory_fraction,
             )
 
         if requires_gpu and not any(w.kind == "gpu" for w in workers.values()):
@@ -420,7 +419,7 @@ class HaloOptimizer(BaseOptimizer):
         self,
         graph: GraphSpec,
         workers: Mapping[str, Worker],
-        worker_profiles: Mapping[str, Mapping[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
     ) -> dict[str, tuple[str, ...]]:
         gpu_workers = tuple(
             worker_id for worker_id, worker in workers.items() if worker.kind == "gpu"
@@ -460,7 +459,7 @@ class HaloOptimizer(BaseOptimizer):
                         w
                         for w in tier
                         if profile_fits_gpu_request(
-                            worker_profiles.get(w, {}), node.gpu_request
+                            worker_profiles.get(w, _NO_PROFILE), node.gpu_request
                         )
                     )
                     for tier in tiers
@@ -1017,7 +1016,7 @@ class HaloOptimizer(BaseOptimizer):
     def _validate_task_type_workers(
         graph: RuntimeGraph,
         worker_names: Sequence[str],
-        worker_profiles: Mapping[str, Mapping[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
     ) -> None:
         """Fail before scheduling when a node's task type has no executor.
 
@@ -1038,11 +1037,13 @@ class HaloOptimizer(BaseOptimizer):
             names = [
                 name
                 for name in worker_names
-                if bool(worker_profiles.get(name, {}).get("has_gpu")) == on_gpu
+                if worker_profiles.get(name, _NO_PROFILE).has_gpu == on_gpu
             ]
             advertised: set[str] = set()
             for name in names:
-                advertised |= advertised_task_types(worker_profiles.get(name, {}))
+                advertised |= worker_profiles.get(
+                    name, _NO_PROFILE
+                ).supported_task_types
             for task_type in sorted(needed - advertised):
                 nodes = sorted(
                     node_id

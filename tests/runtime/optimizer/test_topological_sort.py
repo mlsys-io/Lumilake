@@ -1,3 +1,5 @@
+from support.worker_profiles import worker_profile
+
 from lumilake_server.runtime.optimizer.topological_sort import TopologicalSortOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -33,7 +35,10 @@ def test_topological_sort_assigns_omni_node_to_gpu_worker() -> None:
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
-        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+        worker_profiles={
+            "gpu-0": worker_profile(has_gpu=True),
+            "cpu-0": worker_profile(),
+        },
     )
 
     assert omni_id in schedule.worker_assignment["gpu-0"]
@@ -58,7 +63,10 @@ def test_topological_sort_assigns_vllm_and_diffusers_to_gpu() -> None:
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
-        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+        worker_profiles={
+            "gpu-0": worker_profile(has_gpu=True),
+            "cpu-0": worker_profile(),
+        },
     )
 
     gpu_assigned = set(schedule.worker_assignment["gpu-0"])

@@ -6,6 +6,7 @@ at plugin-load time. URL must use ``https://``; ``http://`` only for loopback
 (``localhost``, ``127.0.0.1``, ``::1``).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphSchema
+from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class RemoteOptimizer(BaseOptimizer):
@@ -47,7 +49,7 @@ class RemoteOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         gpu_python_nodes = sorted(
@@ -65,7 +67,7 @@ class RemoteOptimizer(BaseOptimizer):
         request = ScheduleRequest(
             graph=graph_schema,
             worker_names=worker_names,
-            worker_profiles=worker_profiles,
+            worker_profiles=dict(worker_profiles),
             data_profile_results=data_profile_results,
             optimizer_type=self._optimizer_type,
         )

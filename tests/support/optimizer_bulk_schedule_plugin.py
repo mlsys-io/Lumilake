@@ -4,10 +4,12 @@ Spawned optimizer subprocesses import plugins by module name, so this module
 lives on disk instead of being injected through ``sys.modules``.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from lumilake_hook import BaseBindings, OptimizerHandle, Schedule
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
+from lumilake_server.runtime.worker_capability import WorkerProfile
 
 OPTIMIZER_TYPE = "bulk-schedule"
 PAYLOAD_BYTES = 1_000_000
@@ -18,7 +20,7 @@ class _BulkScheduleOptimizer(BaseOptimizer):
         self,
         graph: Any,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         worker = worker_names[0] if worker_names else "worker-1"

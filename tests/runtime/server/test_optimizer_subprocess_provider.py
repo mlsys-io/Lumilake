@@ -10,7 +10,7 @@ import logging
 import queue
 import sys
 import types
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from typing import Any
 
 import lumid_hooks
@@ -26,6 +26,7 @@ from lumilake_server.runtime.server import (
     _install_plugins_sync,
     _optimizer_subprocess_entry,
 )
+from lumilake_server.runtime.worker_capability import WorkerProfile
 from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ class _FakeOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         assignment: dict[str, list[str]] = {w: [] for w in worker_names}
@@ -173,7 +174,7 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
         optimizer_type="fake-remote-x",
         runtime_graph=graph,
         selected_workers=["w1"],
-        worker_profiles={"w1": {}},
+        worker_profiles={"w1": WorkerProfile(has_gpu=False)},
         data_profile_results={},
         result_queue=result_q,
     )

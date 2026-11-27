@@ -1,5 +1,6 @@
 """Tests for create_optimizer fall-through to registered OptimizerProviders."""
 
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from lumilake_server.runtime.optimizer import (
 )
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class _StubOptimizer(BaseOptimizer):
@@ -18,7 +20,7 @@ class _StubOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         return Schedule(worker_assignment={})

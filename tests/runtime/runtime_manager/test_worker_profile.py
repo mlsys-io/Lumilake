@@ -1,26 +1,28 @@
-"""``get_worker_profile`` carries the task types a worker's executors advertise,
-so the scheduler can place a node only on a worker that can run it."""
-
-from typing import Any
+"""``get_worker_profile`` carries the placement facts of a FlowMesh worker, so the
+scheduler can place a node only on a worker that can run it."""
 
 import pytest
 from flowmesh.models.common import TaskType
 from flowmesh.models.workers import (
+    CPUInfo,
     GpuInfo,
     GpuPlatformInfo,
     MemoryInfo,
+    SSHLimits,
     WorkerCapabilities,
     WorkerHardware,
     WorkerInfo,
 )
 
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 
 
 def _worker(
     worker_id: str,
     task_types: frozenset[TaskType],
     hardware: WorkerHardware | None = None,
+    ssh_limits: SSHLimits | None = None,
 ) -> WorkerInfo:
     return WorkerInfo(
         id=worker_id,
@@ -31,6 +33,7 @@ def _worker(
         status="IDLE",
         hardware=hardware,
         capabilities=WorkerCapabilities(supported_task_types=task_types),
+        ssh_limits=ssh_limits,
     )
 
 
@@ -54,8 +57,43 @@ def _serve(monkeypatch: pytest.MonkeyPatch, worker: WorkerInfo) -> None:
     )
 
 
+def test_from_worker_keeps_every_placement_fact() -> None:
+    hardware = WorkerHardware(
+        cpu=CPUInfo(logical_cores=32),
+        memory=MemoryInfo(total_bytes=29 * 1024**3),
+        gpu=GpuPlatformInfo(
+            devices=[
+                GpuInfo(index=0, name="H100", memory_total_bytes=80 * 1024**3),
+                GpuInfo(index=1, name="H100", memory_total_bytes=80 * 1024**3),
+            ]
+        ),
+    )
+    profile = WorkerProfile.from_worker(
+        _worker(
+            "w",
+            frozenset({TaskType.PYTHON}),
+            hardware,
+            SSHLimits(max_cpu_cores=8.0, max_memory_bytes=12 * 1024**3),
+        )
+    )
+
+    assert profile == WorkerProfile(
+        has_gpu=True,
+        supported_task_types=frozenset({"python"}),
+        gpu_memory_fraction=None,
+        cpu_cores=32,
+        memory_total_bytes=29 * 1024**3,
+        gpu_devices=(
+            GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),
+            GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),
+        ),
+        max_session_cpu_cores=8.0,
+        max_session_memory_bytes=12 * 1024**3,
+    )
+
+
 @pytest.mark.asyncio
-async def test_profile_lists_the_advertised_task_types_sorted(
+async def test_profile_lists_the_advertised_task_types(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -63,11 +101,11 @@ async def test_profile_lists_the_advertised_task_types_sorted(
 
     profile = await flowmesh_manager.get_worker_profile("w")
 
-    assert profile["supported_task_types"] == ["python"]
+    assert profile.supported_task_types == frozenset({"python"})
 
 
 @pytest.mark.asyncio
-async def test_profile_keeps_the_hardware_sections(
+async def test_profile_keeps_the_hardware_facts(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -77,7 +115,8 @@ async def test_profile_keeps_the_hardware_sections(
     )
     _serve(monkeypatch, _worker("w", frozenset(), hardware))
 
-    profile: dict[str, Any] = await flowmesh_manager.get_worker_profile("w")
+    profile = await flowmesh_manager.get_worker_profile("w")
 
-    assert profile["memory"]["total_bytes"] == 1024
-    assert profile["gpu_memory_fraction"] == 0.3
+    assert profile.memory_total_bytes == 1024
+    assert profile.gpu_memory_fraction == 0.3
+    assert profile.has_gpu is True

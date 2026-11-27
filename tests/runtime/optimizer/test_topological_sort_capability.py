@@ -2,12 +2,14 @@
 advertises its task type; every other node is placed by engine alone."""
 
 import pytest
+from support.worker_profiles import worker_profile
 
 from lumilake_server.runtime.optimizer.topological_sort import (
     TopologicalSortOptimizer,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import GpuDevice
 from tests.support.data_specs import runtime_op
 
 
@@ -49,8 +51,8 @@ def test_python_node_goes_to_the_worker_that_advertises_python() -> None:
         graph=_graph(_op("p1", "python", "python")),
         worker_names=["cpu-plain", "cpu-python"],
         worker_profiles={
-            "cpu-plain": {"has_gpu": False, "supported_task_types": ["echo"]},
-            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+            "cpu-plain": worker_profile(task_types=frozenset({"echo"})),
+            "cpu-python": worker_profile(task_types=frozenset({"python"})),
         },
     )
     assert schedule.worker_assignment == {"cpu-plain": [], "cpu-python": ["p1"]}
@@ -62,8 +64,10 @@ def test_python_node_is_never_placed_on_a_gpu_worker() -> None:
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["gpu-python", "cpu-plain"],
             worker_profiles={
-                "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
-                "cpu-plain": {"has_gpu": False, "supported_task_types": []},
+                "gpu-python": worker_profile(
+                    has_gpu=True, task_types=frozenset({"python"})
+                ),
+                "cpu-plain": worker_profile(),
             },
         )
 
@@ -74,7 +78,9 @@ def test_python_node_on_a_gpu_only_pool_fails_rather_than_treating_it_as_cpu() -
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["gpu-python"],
             worker_profiles={
-                "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]}
+                "gpu-python": worker_profile(
+                    has_gpu=True, task_types=frozenset({"python"})
+                )
             },
         )
 
@@ -84,23 +90,23 @@ def test_python_node_without_an_advertising_worker_fails() -> None:
         TopologicalSortOptimizer().generate_schedule(
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["cpu-plain"],
-            worker_profiles={"cpu-plain": {"has_gpu": False}},
+            worker_profiles={"cpu-plain": worker_profile()},
         )
 
 
 def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
-    h100 = {"name": "H100", "memory_total_bytes": 80 * 1024**3}
+    h100 = GpuDevice(name="H100", memory_total_bytes=80 * 1024**3)
     profiles = {
-        "gpu-rtx": {
-            "has_gpu": True,
-            "supported_task_types": ["python"],
-            "gpu": {"devices": [{"name": "RTX 4090"}]},
-        },
-        "gpu-h100": {
-            "has_gpu": True,
-            "supported_task_types": ["python"],
-            "gpu": {"devices": [h100, h100]},
-        },
+        "gpu-rtx": worker_profile(
+            has_gpu=True,
+            task_types=frozenset({"python"}),
+            gpu_devices=(GpuDevice(name="RTX 4090"),),
+        ),
+        "gpu-h100": worker_profile(
+            has_gpu=True,
+            task_types=frozenset({"python"}),
+            gpu_devices=(h100, h100),
+        ),
     }
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=_graph(_gpu_python_op("p1", {"count": 2, "type": "H100"})),
@@ -110,7 +116,9 @@ def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
     assert schedule.worker_assignment == {"gpu-rtx": [], "gpu-h100": ["p1"]}
     without_carrier = {
         "gpu-rtx": profiles["gpu-rtx"],
-        "gpu-h100": {**profiles["gpu-h100"], "supported_task_types": []},
+        "gpu-h100": profiles["gpu-h100"].model_copy(
+            update={"supported_task_types": frozenset()}
+        ),
     }
     with pytest.raises(ValueError, match=r"carries the GPUs node 'p1' requests"):
         TopologicalSortOptimizer().generate_schedule(
@@ -124,10 +132,9 @@ def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
             worker_names=["gpu-rtx", "gpu-h100"],
             worker_profiles={
                 "gpu-rtx": profiles["gpu-rtx"],
-                "gpu-h100": {
-                    **profiles["gpu-h100"],
-                    "gpu": {"devices": [h100]},
-                },
+                "gpu-h100": profiles["gpu-h100"].model_copy(
+                    update={"gpu_devices": (h100,)}
+                ),
             },
         )
 
@@ -136,6 +143,6 @@ def test_other_nodes_ignore_advertised_task_types() -> None:
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=_graph(_op("a1", "api", "api")),
         worker_names=["cpu-plain"],
-        worker_profiles={"cpu-plain": {"has_gpu": False}},
+        worker_profiles={"cpu-plain": worker_profile()},
     )
     assert schedule.worker_assignment == {"cpu-plain": ["a1"]}

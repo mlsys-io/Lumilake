@@ -10,6 +10,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
+from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 def _tiny_preview_graphs() -> dict:
@@ -32,8 +33,8 @@ async def test_preview_schedule_surfaces_control_plane_timings(
 
     async def _stub_select_workers(
         _runtime_graph, _hardware=None
-    ) -> tuple[list[str], dict]:
-        return ["gpu-worker"], {"gpu-worker": {"has_gpu": True}}
+    ) -> tuple[list[str], dict[str, WorkerProfile]]:
+        return ["gpu-worker"], {"gpu-worker": WorkerProfile(has_gpu=True)}
 
     monkeypatch.setattr(
         server, "_select_preview_workers_and_profiles", _stub_select_workers

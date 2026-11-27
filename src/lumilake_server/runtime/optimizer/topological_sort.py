@@ -7,13 +7,14 @@ request: a CPU worker, or a GPU worker for a python step that requests GPUs. It
 uses no cost model.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
-    advertised_task_types,
+    WorkerProfile,
     profile_fits_gpu_request,
 )
 
@@ -25,18 +26,18 @@ class TopologicalSortOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         gpu_workers = [
             w
             for w in worker_names
-            if w in worker_profiles and worker_profiles[w]["has_gpu"]
+            if w in worker_profiles and worker_profiles[w].has_gpu
         ]
         cpu_workers = [
             w
             for w in worker_names
-            if w not in worker_profiles or not worker_profiles[w]["has_gpu"]
+            if w not in worker_profiles or not worker_profiles[w].has_gpu
         ]
         if not gpu_workers:
             gpu_workers = worker_names
@@ -50,13 +51,10 @@ class TopologicalSortOptimizer(BaseOptimizer):
                 candidates = [
                     w
                     for w in worker_names
-                    if bool(worker_profiles.get(w, {}).get("has_gpu"))
-                    == (gpu_request is not None)
-                    and op.task_type
-                    in advertised_task_types(worker_profiles.get(w, {}))
-                    and profile_fits_gpu_request(
-                        worker_profiles.get(w, {}), gpu_request
-                    )
+                    if w in worker_profiles
+                    and worker_profiles[w].has_gpu == (gpu_request is not None)
+                    and op.task_type in worker_profiles[w].supported_task_types
+                    and profile_fits_gpu_request(worker_profiles[w], gpu_request)
                 ]
                 if not candidates:
                     kind = "GPU" if gpu_request is not None else "CPU"

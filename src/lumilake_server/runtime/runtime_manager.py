@@ -56,6 +56,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
+from lumilake_server.runtime.worker_capability import WorkerProfile
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
 
@@ -1062,28 +1063,14 @@ class FlowmeshRuntimeManager:
         """Return the number of runtime nodes that will be submitted."""
         return sum(graph.node_count for graph in graphs.values())
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        """The worker's hardware sections, task types, per-device GPU fractions and the
-        ``ssh_limits`` that cap each python or SSH session it runs."""
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
+        """The worker's placement facts: its cards, task types and session limits."""
         worker = await _retry_transient_read(
             lambda: flowmesh_for_server().workers.retrieve(worker_id),
             f"worker {worker_id}",
         )
         assert worker.id == worker_id
-        profile = worker.hardware.model_dump() if worker.hardware else {}
-        profile["supported_task_types"] = sorted(
-            str(task_type) for task_type in worker.capabilities.supported_task_types
-        )
-        devices = (
-            worker.hardware.gpu.devices
-            if worker.hardware and worker.hardware.gpu
-            else []
-        )
-        profile["gpu_memory_fraction"] = devices[0].memory_fraction if devices else None
-        profile["ssh_limits"] = (
-            worker.ssh_limits.model_dump() if worker.ssh_limits else None
-        )
-        return profile
+        return WorkerProfile.from_worker(worker)
 
     async def get_request_status(
         self,

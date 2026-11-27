@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from support.runtime_server import make_runtime_op
+from support.worker_profiles import worker_profile
 
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -14,7 +15,9 @@ _FRACS = {"gpu-small": 0.1, "gpu-big": 0.8}
 
 
 def _free(*names: str) -> FreeCapacity:
-    profiles = {n: {"has_gpu": True, "gpu_memory_fraction": _FRACS[n]} for n in names}
+    profiles = {
+        n: worker_profile(has_gpu=True, gpu_memory_fraction=_FRACS[n]) for n in names
+    }
     return FreeCapacity(cpu_worker_ids=(), gpu_worker_ids=names, profiles=profiles)
 
 

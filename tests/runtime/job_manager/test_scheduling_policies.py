@@ -4,6 +4,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from support.worker_profiles import worker_profile
 
 from lumilake import envs
 from lumilake_server.runtime.capacity import FreeCapacity
@@ -21,7 +22,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.runtime.worker_capability import SessionLane
+from lumilake_server.runtime.worker_capability import SessionLane, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 
@@ -423,13 +424,15 @@ class _LaneRecorder(CohortPackSchedulingPolicy):
 
 
 def _profile_ok(
-    profile: Any,
+    profile: WorkerProfile,
     _hardware: Any,
     /,
     *,
     session_lane: SessionLane = SessionLane(),
 ) -> bool:
-    return bool(profile["ok"])
+    """A test stand-in for ``_worker_meets_hardware``: the helper marks a worker
+    below the requirement with ``cpu_cores=4``."""
+    return profile.cpu_cores is None or profile.cpu_cores >= 8
 
 
 async def _lanes_seen(
@@ -458,12 +461,15 @@ async def _lanes_seen(
     gpu = tuple(f"g{i}" for i in range(gpu_workers))
     profiles = (
         {
-            w: {
-                "ok": ok_workers is None or w in ok_workers,
-                "supported_task_types": (
-                    ["python"] if python_workers and w in python_workers else []
+            w: worker_profile(
+                has_gpu=w in gpu,
+                task_types=(
+                    frozenset({"python"})
+                    if python_workers and w in python_workers
+                    else frozenset()
                 ),
-            }
+                cpu_cores=None if ok_workers is None or w in ok_workers else 4,
+            )
             for w in (*cpu, *gpu)
         }
         if ok_workers is not None or python_workers is not None

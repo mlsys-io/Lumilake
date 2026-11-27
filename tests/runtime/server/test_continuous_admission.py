@@ -8,12 +8,14 @@ from support.runtime_server import (
     attach_request_states,
     make_workflow,
 )
+from support.worker_profiles import worker_profile
 
 from lumilake import envs
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.server import LumilakeServer, LumilakeServerConfig
+from lumilake_server.runtime.worker_capability import WorkerProfile
 
 
 class _PoolRuntimeManager(RecordingRuntimeManager):
@@ -25,7 +27,7 @@ class _PoolRuntimeManager(RecordingRuntimeManager):
     queued work; it follows the pool unless the test narrows it.
     """
 
-    def __init__(self, workers: list[str], profiles: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, workers: list[str], profiles: dict[str, WorkerProfile]) -> None:
         super().__init__()
         self.workers = workers
         self.profiles = profiles
@@ -41,11 +43,11 @@ class _PoolRuntimeManager(RecordingRuntimeManager):
     async def get_dispatchable_workers(self) -> list[str]:
         return list(self.dispatchable)
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
         return self.profiles[worker_id]
 
 
-_CPU_PROFILE: dict[str, Any] = {"gpu": {"count": 0}, "cpu": {"logical_cores": 8}}
+_CPU_PROFILE = worker_profile(cpu_cores=8)
 
 
 async def _enqueue_job(server: LumilakeServer, workflow: Any) -> Any:
@@ -118,7 +120,7 @@ class _BlockingBatches:
         selected_batch: Any,
         batch_id: str,
         selected_workers: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: dict[str, WorkerProfile],
         *,
         execution_request_id: str,
         member_request_ids: set[str],

@@ -6,7 +6,7 @@ from typing import Any
 
 from lumilake_server.data_specs import GpuRequest
 from lumilake_server.runtime.worker_capability import (
-    advertised_task_types,
+    WorkerProfile,
     gpu_worker_can_run,
     holds_gpu_utilizations,
 )
@@ -16,14 +16,14 @@ from lumilake_server.runtime.worker_capability import (
 class FreeCapacity:
     """Workers currently idle, split by class.
 
-    ``profiles`` maps each idle worker id to its raw FlowMesh profile so
+    ``profiles`` maps each idle worker id to its placement facts so
     capacity-aware selection can filter candidates by hardware requirements
     (``_worker_meets_hardware``) before claiming.
     """
 
     cpu_worker_ids: tuple[str, ...]
     gpu_worker_ids: tuple[str, ...]
-    profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    profiles: dict[str, WorkerProfile] = field(default_factory=dict)
 
     @property
     def cpu_count(self) -> int:
@@ -39,14 +39,14 @@ class FreeCapacity:
     def has_cpu_worker_advertising(self, task_types: frozenset[str]) -> bool:
         """True when some CPU worker in this snapshot advertises every task type."""
         return any(
-            task_types <= advertised_task_types(self.profiles.get(w, {}))
+            task_types <= self.profiles[w].supported_task_types
             for w in self.cpu_worker_ids
         )
 
     def has_gpu_worker_holding(self, utilizations: frozenset[float]) -> bool:
         """True when some GPU worker in this snapshot holds every utilization."""
         return any(
-            holds_gpu_utilizations(self.profiles.get(w, {}), utilizations)
+            holds_gpu_utilizations(self.profiles[w], utilizations)
             for w in self.gpu_worker_ids
         )
 
@@ -98,8 +98,7 @@ class FreeCapacity:
             capable_cpu = [
                 w
                 for w in eligible_cpu
-                if required_task_types
-                <= advertised_task_types(self.profiles.get(w, {}))
+                if required_task_types <= self.profiles[w].supported_task_types
             ]
             counts.append(len(capable_cpu))
         if required_gpu_requests:
@@ -120,9 +119,7 @@ class FreeCapacity:
         if not self.profiles:
             return list(worker_ids)
         return [
-            w
-            for w in worker_ids
-            if worker_meets_hardware(self.profiles.get(w, {}), hardware)
+            w for w in worker_ids if worker_meets_hardware(self.profiles[w], hardware)
         ]
 
     def can_satisfy_hardware(
@@ -197,8 +194,7 @@ class FreeCapacity:
             capable = [
                 w
                 for w in eligible_cpu
-                if required_task_types
-                <= advertised_task_types(self.profiles.get(w, {}))
+                if required_task_types <= self.profiles[w].supported_task_types
             ]
             if not capable:
                 return None
@@ -228,7 +224,7 @@ class FreeCapacity:
             capable = [
                 w
                 for w in eligible_gpu
-                if holds_gpu_utilizations(self.profiles.get(w, {}), {largest})
+                if holds_gpu_utilizations(self.profiles[w], {largest})
             ]
             if not capable:
                 return None
@@ -247,7 +243,7 @@ class FreeCapacity:
             frozenset(
                 worker
                 for worker in workers
-                if gpu_worker_can_run(self.profiles.get(worker, {}), (request,))
+                if gpu_worker_can_run(self.profiles[worker], (request,))
             )
             for request in required_requests
         ]

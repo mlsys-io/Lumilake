@@ -7,6 +7,7 @@ from typing import Any
 import httpx2
 import pytest
 from huggingface_hub.utils import NotASafetensorsRepoError
+from support.worker_profiles import worker_profile
 
 from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
@@ -17,6 +18,7 @@ from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.schedule.models import Node
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
+from lumilake_server.runtime.worker_capability import GpuDevice, WorkerProfile
 from tests.support.data_specs import runtime_op
 
 
@@ -64,7 +66,10 @@ def test_halo_optimizer_generates_schedule_covering_all_nodes() -> None:
     schedule = optimizer.generate_schedule(
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
-        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+        worker_profiles={
+            "gpu-0": worker_profile(has_gpu=True),
+            "cpu-0": worker_profile(),
+        },
     )
 
     scheduled = {
@@ -158,7 +163,10 @@ def test_halo_optimizer_places_api_node_on_cpu_worker() -> None:
     schedule = optimizer.generate_schedule(
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
-        worker_profiles={"gpu-0": {"has_gpu": True}, "cpu-0": {"has_gpu": False}},
+        worker_profiles={
+            "gpu-0": worker_profile(has_gpu=True),
+            "cpu-0": worker_profile(),
+        },
     )
     scheduled = {
         node_id
@@ -193,11 +201,8 @@ def test_halo_optimizer_places_python_node_on_a_python_worker() -> None:
         graph=_python_graph(),
         worker_names=["cpu-plain", "cpu-python"],
         worker_profiles={
-            "cpu-plain": {"has_gpu": False, "supported_task_types": ["echo"]},
-            "cpu-python": {
-                "has_gpu": False,
-                "supported_task_types": ["echo", "python"],
-            },
+            "cpu-plain": worker_profile(task_types=frozenset({"echo"})),
+            "cpu-python": worker_profile(task_types=frozenset({"echo", "python"})),
         },
     )
     assert schedule.worker_assignment["cpu-python"] == ["p1"]
@@ -209,8 +214,10 @@ def test_halo_optimizer_prefers_a_cpu_python_worker_over_a_gpu_one() -> None:
         graph=_python_graph(),
         worker_names=["gpu-python", "cpu-python"],
         worker_profiles={
-            "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
-            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+            "gpu-python": worker_profile(
+                has_gpu=True, task_types=frozenset({"python"})
+            ),
+            "cpu-python": worker_profile(task_types=frozenset({"python"})),
         },
     )
     assert schedule.worker_assignment["cpu-python"] == ["p1"]
@@ -222,8 +229,10 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
             graph=_python_graph(),
             worker_names=["gpu-python", "cpu-plain"],
             worker_profiles={
-                "gpu-python": {"has_gpu": True, "supported_task_types": ["python"]},
-                "cpu-plain": {"has_gpu": False, "supported_task_types": []},
+                "gpu-python": worker_profile(
+                    has_gpu=True, task_types=frozenset({"python"})
+                ),
+                "cpu-plain": worker_profile(),
             },
         )
 
@@ -231,12 +240,12 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
 @pytest.mark.parametrize(
     "profile",
     [
-        {"has_gpu": False, "supported_task_types": ["echo", "ssh"]},
-        {"has_gpu": False},
+        worker_profile(task_types=frozenset({"echo", "ssh"})),
+        worker_profile(),
     ],
 )
 def test_halo_optimizer_fails_before_scheduling_without_a_python_worker(
-    profile: dict[str, object],
+    profile: WorkerProfile,
 ) -> None:
     with pytest.raises(ValueError, match="advertises the 'python' task type"):
         HaloOptimizer().generate_schedule(
@@ -347,9 +356,9 @@ def test_halo_dp_places_generated_python_steps_on_the_advertising_worker() -> No
         graph=graph,
         worker_names=["cpu-a", "cpu-b", "cpu-python"],
         worker_profiles={
-            "cpu-a": {"has_gpu": False, "supported_task_types": []},
-            "cpu-b": {"has_gpu": False, "supported_task_types": ["echo"]},
-            "cpu-python": {"has_gpu": False, "supported_task_types": ["python"]},
+            "cpu-a": worker_profile(),
+            "cpu-b": worker_profile(task_types=frozenset({"echo"})),
+            "cpu-python": worker_profile(task_types=frozenset({"python"})),
         },
     )
 
@@ -362,7 +371,7 @@ def test_halo_optimizer_does_not_filter_other_task_types_by_capability() -> None
     schedule = HaloOptimizer().generate_schedule(
         graph=_api_graph(),
         worker_names=["cpu-plain"],
-        worker_profiles={"cpu-plain": {"has_gpu": False}},
+        worker_profiles={"cpu-plain": worker_profile()},
     )
     assert schedule.worker_assignment["cpu-plain"] == ["a1"]
 
@@ -795,7 +804,7 @@ def test_disable_data_profile_drops_supplied_results(
                 task_type="data_retrieval", backend="data_retrieval"
             ),
             worker_names=["cpu-0"],
-            worker_profiles={"cpu-0": {"has_gpu": False}},
+            worker_profiles={"cpu-0": worker_profile()},
             data_profile_results=supplied,
         )
 
@@ -821,19 +830,19 @@ def _gpu_python_graph(gpu: dict[str, Any] | None = None) -> RuntimeGraph:
     return graph
 
 
-def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, dict[str, Any]]:
+def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, WorkerProfile]:
     """Worker profiles for ``gpu-<i>``, each carrying the named cards, beside a
     plain GPU worker and a CPU python worker."""
     profiles = {
-        f"gpu-{index}": {
-            "has_gpu": True,
-            "supported_task_types": ["python"],
-            "gpu": {"devices": [{"name": name} for name in names]},
-        }
+        f"gpu-{index}": worker_profile(
+            has_gpu=True,
+            task_types=frozenset({"python"}),
+            gpu_devices=tuple(GpuDevice(name=name) for name in names),
+        )
         for index, names in enumerate(cards)
     }
-    profiles["gpu-plain"] = {"has_gpu": True, "supported_task_types": []}
-    profiles["cpu-python"] = {"has_gpu": False, "supported_task_types": ["python"]}
+    profiles["gpu-plain"] = worker_profile(has_gpu=True)
+    profiles["cpu-python"] = worker_profile(task_types=frozenset({"python"}))
     return profiles
 
 

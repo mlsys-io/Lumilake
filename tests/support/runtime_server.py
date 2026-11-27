@@ -17,6 +17,7 @@ from lumilake_server.runtime.server import (
     LumilakeServerConfig,
     RequestState,
 )
+from lumilake_server.runtime.worker_capability import WorkerProfile
 from lumilake_server.schemas.progress import JobProgress
 from lumilake_server.utils.job_storage import get_job_storage
 
@@ -56,8 +57,8 @@ class RecordingRuntimeManager:
     async def get_workers(self) -> list[str]:
         return ["worker-1"]
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        return {"gpu": {"count": 0}}
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
+        return WorkerProfile(has_gpu=False)
 
     def count_runtime_nodes(self, graphs: dict[str, Any]) -> int:
         return sum(graph.node_count for graph in graphs.values())

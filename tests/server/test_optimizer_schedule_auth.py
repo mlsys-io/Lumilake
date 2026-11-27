@@ -19,6 +19,7 @@ from lumilake_server import hooks
 from lumilake_server.routes import optimizer as optimizer_routes
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.worker_capability import WorkerProfile
 from tests.support.data_specs import runtime_op
 
 # ---------------------------------------------------------------------------
@@ -124,7 +125,7 @@ def _schedule_body() -> dict[str, Any]:
     return {
         "graph": graph.serialize(),
         "worker_names": ["w1"],
-        "worker_profiles": {"w1": {}},
+        "worker_profiles": {"w1": WorkerProfile(has_gpu=False).model_dump(mode="json")},
         "optimizer_type": "halo",
     }
 

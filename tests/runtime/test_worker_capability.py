@@ -6,8 +6,9 @@ from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
+    GpuDevice,
     SessionLane,
-    advertised_task_types,
+    WorkerProfile,
     profile_fits_gpu_request,
     python_step_session_lane,
     requires_cpu_worker,
@@ -27,21 +28,24 @@ def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
     assert not requires_cpu_worker([])
 
 
-def test_advertised_task_types_reads_the_profile() -> None:
-    assert advertised_task_types({"supported_task_types": ["echo", "python"]}) == {
-        "echo",
-        "python",
-    }
-    assert advertised_task_types({}) == frozenset()
+def _profile(
+    task_types: frozenset[str] = frozenset(),
+    devices: tuple[GpuDevice, ...] = (),
+) -> WorkerProfile:
+    return WorkerProfile(
+        has_gpu=bool(devices),
+        supported_task_types=task_types,
+        gpu_devices=devices,
+    )
 
 
-def _free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
+def _free(profiles: dict[str, WorkerProfile]) -> FreeCapacity:
     return FreeCapacity(
         cpu_worker_ids=tuple(profiles), gpu_worker_ids=(), profiles=profiles
     )
 
 
-def _meets_everything(profile: dict[str, Any], hardware: Any) -> bool:
+def _meets_everything(profile: WorkerProfile, hardware: Any) -> bool:
     return True
 
 
@@ -56,8 +60,8 @@ def _claim(free: FreeCapacity, required: frozenset[str]) -> list[str] | None:
     return None if selected is None else selected[0]
 
 
-_PLAIN = {"supported_task_types": ["echo"]}
-_PYTHON = {"supported_task_types": ["python"]}
+_PLAIN = _profile(frozenset({"echo"}))
+_PYTHON = _profile(frozenset({"python"}))
 
 
 def test_claim_takes_a_worker_that_advertises_the_required_type() -> None:
@@ -116,22 +120,22 @@ def test_cpu_worker_advertising_ignores_gpu_workers() -> None:
     assert free.has_cpu_worker_advertising(frozenset({"echo"}))
 
 
-_H100 = {"name": "H100", "memory_total_bytes": 24 * 1024**3}
-_A100 = {"name": "A100", "memory_total_bytes": 40 * 1024**3}
+_H100 = GpuDevice(name="H100", memory_total_bytes=24 * 1024**3)
+_A100 = GpuDevice(name="A100", memory_total_bytes=40 * 1024**3)
 
 
 def _gpu_profile(
-    devices: list[dict[str, Any]], task_types: list[str]
-) -> dict[str, Any]:
-    """A GPU worker profile in the raw shape the server's snapshot stores."""
-    return {"gpu": {"devices": devices}, "supported_task_types": task_types}
+    devices: tuple[GpuDevice, ...], task_types: frozenset[str]
+) -> WorkerProfile:
+    """A GPU worker profile in the shape the server's snapshot stores."""
+    return _profile(task_types, devices)
 
 
-_GPU_VLLM = _gpu_profile([_A100], ["echo"])
-_GPU_PYTHON = _gpu_profile([_A100], ["python"])
+_GPU_VLLM = _gpu_profile((_A100,), frozenset({"echo"}))
+_GPU_PYTHON = _gpu_profile((_A100,), frozenset({"python"}))
 
 
-def _gpu_free(profiles: dict[str, dict[str, Any]]) -> FreeCapacity:
+def _gpu_free(profiles: dict[str, WorkerProfile]) -> FreeCapacity:
     return FreeCapacity(
         cpu_worker_ids=("cpu-python",),
         gpu_worker_ids=tuple(profiles),
@@ -162,22 +166,27 @@ def test_gpu_group_claims_a_worker_that_advertises_python_and_carries_the_reques
     assert _gpu_claim(plain, required_gpu_requests=one) is None
 
     cards = {
-        "gpu-rtx": _gpu_profile([{"name": "RTX 4090"}], ["python"]),
-        "gpu-big": _gpu_profile([_H100, _H100], ["python"]),
+        "gpu-rtx": _gpu_profile((GpuDevice(name="RTX 4090"),), frozenset({"python"})),
+        "gpu-big": _gpu_profile((_H100, _H100), frozenset({"python"})),
     }
     passes = GpuRequest(count=2, type="H100")
     assert _gpu_claim(_gpu_free(cards), required_gpu_requests=(passes,)) == ["gpu-big"]
-    small = _gpu_free({"gpu-rtx": _gpu_profile([_H100], ["python"])})
+    small = _gpu_free({"gpu-rtx": _gpu_profile((_H100,), frozenset({"python"}))})
     assert _gpu_claim(small, required_gpu_requests=(passes,)) is None
     split = _gpu_free(
-        {"gpu-h100": _gpu_profile([_H100], []), "gpu-rtx": cards["gpu-rtx"]}
+        {
+            "gpu-h100": _gpu_profile((_H100,), frozenset()),
+            "gpu-rtx": cards["gpu-rtx"],
+        }
     )
     h100 = GpuRequest(type="H100")
     assert _gpu_claim(split, 2, required_gpu_requests=(h100,)) is None
 
 
 def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
-    l4 = _gpu_profile([{"name": "L4", "memory_total_bytes": 16 << 30}], ["python"])
+    l4 = _gpu_profile(
+        (GpuDevice(name="L4", memory_total_bytes=16 << 30),), frozenset({"python"})
+    )
     for wildcard in ("any", "auto", "*", "ANY"):
         assert profile_fits_gpu_request(l4, GpuRequest(type=wildcard))
     assert not profile_fits_gpu_request(l4, GpuRequest(type="H100"))
@@ -188,8 +197,8 @@ def test_the_fit_rule_reads_type_wildcards_and_binary_memory() -> None:
 def test_two_slot_group_serves_one_request_per_worker() -> None:
     """An H100 step and an A100 step share a group of two, one worker each."""
     profiles = {
-        "gpu-h100": _gpu_profile([_H100], ["python"]),
-        "gpu-a100": _gpu_profile([_A100], ["python"]),
+        "gpu-h100": _gpu_profile((_H100,), frozenset({"python"})),
+        "gpu-a100": _gpu_profile((_A100,), frozenset({"python"})),
     }
     h100 = GpuRequest(count=1, type="H100")
     a100 = GpuRequest(count=1, type="A100")
@@ -200,7 +209,7 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
     ]
     assert _gpu_claim(free, 1, required_gpu_requests=(h100, a100)) is None
     # One slot is enough when the same worker carries both requests.
-    both = _gpu_free({"gpu-two": _gpu_profile([_H100, _A100], ["python"])})
+    both = _gpu_free({"gpu-two": _gpu_profile((_H100, _A100), frozenset({"python"}))})
     assert _gpu_claim(both, 1, required_gpu_requests=(h100, a100)) == ["gpu-two"]
     # Two A100s ahead of the H100: the swap keeps one A100 and takes the H100.
     order = _gpu_free(
@@ -242,18 +251,22 @@ def test_python_step_session_lane_splits_the_cpu_and_gpu_groups() -> None:
     assert python_step_session_lane([("inference", EmptyData())]) == SessionLane()
 
 
-def _capped(limits: dict[str, Any] | None) -> dict[str, Any]:
-    return {
-        "cpu": {"logical_cores": 32},
-        "memory": {"total_bytes": 29 * GIB},
-        "ssh_limits": limits,
-    }
+def _capped(cpu_cap: float | None, memory_cap: int | None) -> WorkerProfile:
+    return WorkerProfile(
+        has_gpu=False,
+        cpu_cores=32,
+        memory_total_bytes=29 * GIB,
+        max_session_cpu_cores=cpu_cap,
+        max_session_memory_bytes=memory_cap,
+    )
 
 
 def test_session_limits_admit_refuses_a_cpu_cap_below_the_job() -> None:
-    assert not session_limits_admit(_capped(limits={"max_cpu_cores": 4.0}), 8, None)
+    assert not session_limits_admit(_capped(4.0, None), 8, None)
 
 
 def test_session_limits_admit_passes_what_the_profile_does_not_report() -> None:
-    assert session_limits_admit(_capped(limits=None), 8, 64 * GIB)
-    assert session_limits_admit({"ssh_limits": {"max_memory_bytes": GIB}}, 8, 2 * GIB)
+    assert session_limits_admit(_capped(None, None), 8, 64 * GIB)
+    assert session_limits_admit(
+        WorkerProfile(has_gpu=False, max_session_memory_bytes=GIB), 8, 2 * GIB
+    )
