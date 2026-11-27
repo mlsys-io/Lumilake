@@ -22,6 +22,7 @@ from pydantic import (
 )
 
 from lumilake_server.ops.spec_validation import validate_fields
+from lumilake_server.ops.util_ops import LambdaMode
 from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY
 
 ROUTER_OP = "RouterOp"
@@ -228,7 +229,7 @@ def expand_routers(
                     "id": f"{router.id}.{branch}",
                     "op": "LambdaOp",
                     "inputs": router.inputs.copy(),
-                    "mode": "list",
+                    "mode": LambdaMode.LIST,
                     "fn_name": f"route_{branch}",
                     "code": branch_lambda_code(router, branch),
                 }

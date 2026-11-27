@@ -8,7 +8,7 @@ from .common import EmitContext
 
 
 def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
-    """Fill in a join's key paths, attach targets and per-row policy."""
+    """Fill in a join's keys, how, match rule, attach targets and per-row policy."""
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
     if not entry.inputs:
@@ -17,6 +17,8 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         {
             "by": entry.fields.get("by"),
             "row_key": entry.fields.get("row_key"),
+            "how": entry.fields.get("how") or "left",
+            "require_match": entry.fields.get("require_match", False),
             "attach": entry.fields.get("attach") or {},
             # ``on_missing: null_fill`` spells the default in YAML.
             "on_missing": entry.fields.get("on_missing") or "null_fill",
@@ -38,6 +40,8 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             )
         resolved[field] = user_id_to_internal[target]
     op_dict["by"] = spec.by
+    op_dict["how"] = spec.how
+    op_dict["require_match"] = spec.require_match
     if spec.row_key is not None:
         op_dict["row_key"] = spec.row_key
     op_dict["attach"] = resolved

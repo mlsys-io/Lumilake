@@ -6,8 +6,9 @@ from lumilake_server.data_specs import (
     JoinDescription,
     NodeColumn,
     PythonData,
+    PythonMode,
 )
-from lumilake_server.ops import DataOp, InputOp, LambdaOp, Op
+from lumilake_server.ops import DataOp, InputOp, LambdaMode, LambdaOp, Op
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMChatOp, LLMCompletionOp, LLMVisionOp
@@ -27,7 +28,7 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
     """The inputs ``op`` emits one output row per, one candidate where one is named."""
     graph = ctx.graph_dict
     if isinstance(op, LambdaOp):
-        if op.mode not in ("row", "aligned"):
+        if op.mode not in (LambdaMode.ROW, LambdaMode.ALIGNED):
             # A whole-result mode may filter, reorder or expand rows.
             return []
         return _drop_broadcasts(_non_literal(op), ctx)
@@ -131,7 +132,7 @@ def build_join_step(
         name=op.id,
         task_type=PYTHON_TASK_TYPE,
         data_spec=PythonData(
-            mode="join",
+            mode=PythonMode.JOIN,
             plan=plan,
             join=JoinDescription(
                 node=op.id,
@@ -139,6 +140,8 @@ def build_join_step(
                 row_key=op.row_key,
                 inputs=columns,
                 attach=attach,
+                how=op.how,
+                require_match=op.require_match,
                 on_missing=op.on_missing,
             ),
             timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,

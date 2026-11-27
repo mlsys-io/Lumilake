@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from enum import Enum, StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -31,19 +32,30 @@ ALL_TASK_TYPES = MODEL_TASK_TYPES | {
     PROFILE_TASK_TYPE,
 }
 
-PythonMode = Literal[
-    "row",
-    "list",
-    "aligned",
-    "flatten",
-    "regroup",
-    "pairs",
-    "flatten_step",
-    "expand",
-    "reduce",
-    "join",
-    "parse",
-]
+
+class PythonMode(StrEnum):
+    """The mode a python step runs in; each member's value is its YAML word."""
+
+    ROW = "row"
+    LIST = "list"
+    ALIGNED = "aligned"
+    FLATTEN = "flatten"
+    REGROUP = "regroup"
+    PAIRS = "pairs"
+    FLATTEN_STEP = "flatten_step"
+    EXPAND = "expand"
+    REDUCE = "reduce"
+    JOIN = "join"
+    PARSE = "parse"
+
+
+class JoinHow(StrEnum):
+    """Which keys a lowered join keeps."""
+
+    INNER = "inner"
+    LEFT = "left"
+    FULL = "full"
+
 
 ReduceOnFail = Literal["drop_failed", "fail_group"]
 ExpandOnEmpty = Literal["drop", "fail"]
@@ -257,6 +269,8 @@ class JoinDescription(DataSpecModel):
     row_key: list[str] | None = None
     inputs: list[int]
     attach: list[tuple[str, int, int, bool]]
+    how: JoinHow
+    require_match: bool
     on_missing: Literal["null_fill", "fail_row"]
 
 
@@ -400,6 +414,8 @@ def _remap_entry(key: str, item: Any, mapping: Mapping[str, str]) -> Any:
 
 
 def _remap_value(value: Any, mapping: Mapping[str, str]) -> Any:
+    if isinstance(value, Enum):
+        return value
     if isinstance(value, BaseModel):
         return remap_model(value, mapping)
     if isinstance(value, dict):

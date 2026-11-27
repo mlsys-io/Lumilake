@@ -1,5 +1,13 @@
 import pytest
 
+from lumilake_server.data_specs import (
+    FormatConfig,
+    GraphTemplate,
+    GraphTemplateData,
+    Message,
+    NodeRead,
+    TemplateOptions,
+)
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.optimizer.multimodal_cost import (
     MultimodalCostCoefficients,
@@ -10,19 +18,32 @@ from lumilake_server.runtime.optimizer.multimodal_cost import (
 from lumilake_server.runtime.optimizer.schedule.models import Node
 
 
-def test_multimodal_node_type_classification() -> None:
-    text_node = Node(id="t", type="inference", engine="vllm", model="foo-7B", raw={})
-    embed_node = Node(
-        id="e", type="embedding", engine="vllm", model="foo-7B", raw={"type": "list"}
+def _template_data(image_embedding: NodeRead | None = None) -> GraphTemplateData:
+    return GraphTemplateData(
+        type="graph_template",
+        template=GraphTemplate(
+            name="format",
+            options=TemplateOptions(
+                format=FormatConfig(messages=[Message(content="{ref0}")])
+            ),
+        ),
+        image_embedding=image_embedding,
     )
+
+
+def test_multimodal_node_type_classification() -> None:
+    text_node = Node(id="t", type="inference", engine="vllm", model="foo-7B")
+    embed_node = Node(id="e", type="embedding", engine="vllm", model="foo-7B")
     vlm_node = Node(
         id="v",
         type="inference",
         engine="vllm",
         model="foo-7B",
-        raw={"image_embedding": {"node": "img_embed", "path": "embedding_file"}},
+        data_spec=_template_data(
+            image_embedding=NodeRead(node="img_embed", path="embedding_file")
+        ),
     )
-    diff_node = Node(id="d", type="diffusion", engine="vllm", model="foo-7B", raw={})
+    diff_node = Node(id="d", type="diffusion", engine="vllm", model="foo-7B")
 
     assert classify_multimodal_node(text_node) == NodeCostType.TEXT_INFERENCE
     assert classify_multimodal_node(embed_node) == NodeCostType.VISION_EMBEDDING
@@ -36,13 +57,13 @@ def test_multimodal_exec_cost_formulas() -> None:
     q = 4
 
     text = compute_gpu_exec_cost(
-        node=Node(id="t", type="inference", engine="vllm", model="foo-8B", raw={}),
+        node=Node(id="t", type="inference", engine="vllm", model="foo-8B"),
         model_size_b=s,
         input_query_count=q,
         coeffs=coeffs,
     )
     embed = compute_gpu_exec_cost(
-        node=Node(id="e", type="embedding", engine="vllm", model="foo-8B", raw={}),
+        node=Node(id="e", type="embedding", engine="vllm", model="foo-8B"),
         model_size_b=s,
         input_query_count=q,
         coeffs=coeffs,
@@ -53,7 +74,7 @@ def test_multimodal_exec_cost_formulas() -> None:
             type="inference",
             engine="vllm",
             model="foo-8B",
-            raw={"image_embedding": {"node": "n1"}},
+            data_spec=_template_data(image_embedding=NodeRead(node="n1")),
         ),
         model_size_b=s,
         input_query_count=q,
@@ -65,12 +86,10 @@ def test_multimodal_exec_cost_formulas() -> None:
             type="diffusion",
             engine="vllm",
             model="foo-8B",
-            raw={
-                "_inference_spec": {
-                    "num_inference_steps": 60,
-                    "height": 768,
-                    "width": 768,
-                }
+            inference_spec={
+                "num_inference_steps": 60,
+                "height": 768,
+                "width": 768,
             },
         ),
         model_size_b=s,
@@ -92,12 +111,10 @@ def test_diffusion_cost_scales_with_resolution() -> None:
             type="diffusion",
             engine="vllm",
             model="foo-8B",
-            raw={
-                "_inference_spec": {
-                    "num_inference_steps": 30,
-                    "height": 768,
-                    "width": 768,
-                }
+            inference_spec={
+                "num_inference_steps": 30,
+                "height": 768,
+                "width": 768,
             },
         ),
         model_size_b=8.0,
@@ -110,12 +127,10 @@ def test_diffusion_cost_scales_with_resolution() -> None:
             type="diffusion",
             engine="vllm",
             model="foo-8B",
-            raw={
-                "_inference_spec": {
-                    "num_inference_steps": 30,
-                    "height": 1536,
-                    "width": 1536,
-                }
+            inference_spec={
+                "num_inference_steps": 30,
+                "height": 1536,
+                "width": 1536,
             },
         ),
         model_size_b=8.0,
@@ -135,7 +150,7 @@ def test_model_init_cost_pins_switch_penalty() -> None:
     size_b = 7.0
 
     def node(node_id: str, model: str) -> Node:
-        return Node(id=node_id, type="inference", engine="vllm", model=model, raw={})
+        return Node(id=node_id, type="inference", engine="vllm", model=model)
 
     a1, a2, a3, a4 = (node(f"a{i}", model_a) for i in range(4))
     b1, b2 = node("b1", model_b), node("b2", model_b)
@@ -170,7 +185,7 @@ def test_invalid_diffusion_config_raises() -> None:
                 type="diffusion",
                 engine="vllm",
                 model="foo-8B",
-                raw={"_inference_spec": {"num_inference_steps": 0}},
+                inference_spec={"num_inference_steps": 0},
             ),
             model_size_b=8.0,
             input_query_count=1,
