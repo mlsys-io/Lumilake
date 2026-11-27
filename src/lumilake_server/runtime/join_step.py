@@ -117,12 +117,6 @@ def _key_of(row, where):
     return _encoded(key, where)
 
 
-def _required(by_key, key, where):
-    """Fail the job on an attach key the join's rows do not carry."""
-    if key not in by_key:
-        raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
-
-
 def _matched(keyed, keys, where):
     """With require_match, fail on a key one input carries and another lacks."""
     if not _REQUIRE_MATCH:
@@ -177,18 +171,14 @@ def _keyed(rows, where):
     return keyed, marked
 
 
-def _join_rows(held, additions, key, where):
-    """Merge each further-input row for ``key`` onto each row the first input holds.
+def _join_rows(held, additions, where):
+    """Merge each further-input row for a key onto each row the first input holds.
 
-    A repeat of the key must be declared many_to_many, and each pair is one output
-    row, held side first.
+    A key's rows pair with every further row of it, and each pair is one output row,
+    held side first.
     """
-    if len(additions) > 1 and _CARDINALITY != "many_to_many":
-        raise ValueError(
-            "%s: key %s repeats in a further input; declare many_to_many" % (_NODE, key)
-        )
-    # Every row pairs with every further row of its key, each pair read off the row the
-    # first input holds, so no pair sees another pair's fields.
+    # Each pair is read off the row the first input holds, so no pair sees another
+    # pair's fields.
     return [_merge(row.copy(), more, where) for row in held for more in additions]
 
 
@@ -279,7 +269,7 @@ def main(inputs):
         if key is None:
             continue
         held = keyed.setdefault(key, [])
-        if held and not _emits_a_product():
+        if held and _CARDINALITY != "many_to_many":
             raise ValueError(
                 "%s: duplicate key %s in the first input; declare one_to_many or"
                 " many_to_many" % (first, key)
@@ -296,6 +286,7 @@ def main(inputs):
             for key in dropped:
                 del keyed[key]
                 marked.pop(key, None)
+        added = set()
         for key, additions in more.items():
             if key in marked:
                 # A marked row's output is its marker: its other fields and every
@@ -304,12 +295,20 @@ def main(inputs):
             if key not in keyed:
                 if _HOW != "full":
                     continue
-                keyed[key] = [additions[0]]
+                # A key only this input carries is emitted as this input's own rows.
+                keyed[key] = additions
                 appended.append(key)
+                added.add(key)
+                if key in more_marked:
+                    marked[key] = more_marked[key]
+                continue
             if key in more_marked:
                 marked[key] = more_marked[key]
                 continue
-            keyed[key] = _join_rows(keyed[key], additions, key, where)
+            if key in added:
+                # A key this input just appended already carries its fields.
+                continue
+            keyed[key] = _join_rows(keyed[key], additions, where)
     for name, value_index, source_index, _ in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
@@ -341,11 +340,6 @@ def main(inputs):
         for held_row in keyed[key]:
             items.append({{"output": marked.get(key, held_row)}})
     return {{"items": items}}
-
-
-def _emits_a_product():
-    """True when one key may hold several first-input rows, each its own output."""
-    return _CARDINALITY != "one_to_one"
 
 
 def _row_keys(rows, where):
@@ -387,31 +381,36 @@ def _broadcast(inputs):
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
-    first_keys = {{key for _, key, _ in keyed}}
+    # Only a live row's key is matched: a marked row's output is its marker.
+    first_keys = {{key for record, key, _ in keyed if record not in marked}}
+    dropped = set()
     appended = []
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
         _matched(first_keys, more, where)
         if _HOW == "inner":
-            kept = []
-            for record, key, row in keyed:
-                if key in more:
-                    kept.append((record, key, row))
-                else:
-                    marked.pop(record, None)
-            keyed = kept
+            # A live row this input lacks a key for is not emitted, and keeps its slot
+            # so an attach over the first input still pairs each value with its own row.
+            dropped.update(
+                record
+                for record, key, _ in keyed
+                if record not in marked and key not in more
+            )
+        added = set()
         for key in more:
             if key in first_keys or _HOW != "full":
                 continue
-            if key in more_marked:
-                marked[key] = more_marked[key]
-                continue
-            # A key only this input carries takes its first row as the output row, under
+            # A key only this input carries is emitted as this input's own rows, under
             # its own record so every later input reaches it too.
             record = _appended(key)
             keyed.append((record, key, more[key][0]))
+            if key in more_marked:
+                # A stray key the input marks is emitted as that marker.
+                marked[record] = more_marked[key]
             appended.append(record)
+            first_keys.add(key)
+            added.add(record)
         for position, (record, key, row) in enumerate(keyed):
             if record in marked:
                 # A marked output row is its marker: no further input fills it.
@@ -420,17 +419,15 @@ def _broadcast(inputs):
                 marked[record] = more_marked[key]
                 continue
             if key not in more:
-                # A row this input lacks a key for is a marker under fail_row and simply
-                # misses the fields under null_fill.
-                if _ON_MISSING == "fail_row":
-                    marked[record] = _failed("key %s is missing from %r" % (key, where))
+                # A row this input lacks a key for keeps the fields it carries.
                 continue
             if len(more[key]) > 1:
                 raise ValueError(
                     "%s: key %s repeats in a further input, which pairs one row per"
                     " key" % (_NODE, key)
                 )
-            if record in appended:
+            if record in added:
+                # A row this input just appended already carries its fields.
                 continue
             merged = row.copy()
             _merge(merged, more[key][0], where)
@@ -444,21 +441,32 @@ def _broadcast(inputs):
         ]
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         _attach_broadcast(
-            keyed, marked, name, source_index, first_source, values, more, where
+            keyed,
+            marked,
+            dropped,
+            name,
+            source_index,
+            first_source,
+            values,
+            more,
+            where,
         )
     items = []
     for record, _, row in keyed:
+        if record in dropped:
+            continue
         items.append({{"output": marked.get(record, row)}})
     return {{"items": items}}
 
 
 def _attach_broadcast(
-    keyed, marked, name, source_index, first_source, values, rows, where
+    keyed, marked, dropped, name, source_index, first_source, values, rows, where
 ):
     """Merge one attach field's values onto every output row of its by key."""
     by_key = {{}}
-    for position, (_, key, _) in enumerate(keyed):
-        by_key.setdefault(key, []).append(position)
+    for position, (record, key, _) in enumerate(keyed):
+        if record not in dropped:
+            by_key.setdefault(key, []).append(position)
     live = [
         (position, row)
         for position, row in enumerate(rows)
@@ -479,12 +487,15 @@ def _attach_broadcast(
         hits.setdefault(key, []).append(position)
     covered = set()
     for key, group in hits.items():
-        if len(group) > 1 and _CARDINALITY == "one_to_one":
+        if len(group) > 1:
+            # An attach source pins one value to each key, since many_to_many cannot
+            # reach this path.
             raise ValueError(
-                "%s: duplicate key %s; declare many_to_many to read every value of it"
-                % (where, key)
+                "%s: duplicate key %s in an attach source, which pairs one value per"
+                " key" % (where, key)
             )
-        _required(by_key, key, where)
+        if key not in by_key and _REQUIRE_MATCH:
+            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
     for value, source_row, key, position in pairs:
         carried = failure_of(value)
         if carried is None:
@@ -492,7 +503,7 @@ def _attach_broadcast(
         if first_source:
             reached = [position]
         else:
-            reached = by_key[key]
+            reached = by_key.get(key, [])
         for target in reached:
             covered.add(target)
             record, held_key, held_row = keyed[target]
@@ -506,8 +517,9 @@ def _attach_broadcast(
             keyed[target] = (record, held_key, merged)
     if _ON_MISSING == "fail_row":
         for position, (record, key, _) in enumerate(keyed):
-            if position not in covered and record not in marked:
-                marked[record] = _failed("key %s is missing from %r" % (key, where))
+            if record in dropped or position in covered or record in marked:
+                continue
+            marked[record] = _failed("key %s is missing from %r" % (key, where))
 
 
 def _slot(position):
