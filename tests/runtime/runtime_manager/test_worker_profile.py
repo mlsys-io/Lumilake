@@ -87,30 +87,15 @@ def test_from_worker_keeps_every_placement_fact() -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_lists_the_advertised_task_types(
+async def test_get_worker_profile_converts_the_served_worker(
     flowmesh_manager: FlowmeshRuntimeManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _serve(monkeypatch, _worker("w", frozenset({TaskType.PYTHON})))
-
-    profile = await flowmesh_manager.get_worker_profile("w")
-
-    assert profile.supported_task_types == frozenset({"python"})
-
-
-@pytest.mark.asyncio
-async def test_profile_keeps_the_hardware_facts(
-    flowmesh_manager: FlowmeshRuntimeManager,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    devices = [GpuInfo(index=0, memory_fraction=0.3), GpuInfo(index=1)]
     hardware = WorkerHardware(
-        memory=MemoryInfo(total_bytes=1024), gpu=GpuPlatformInfo(devices=devices)
+        memory=MemoryInfo(total_bytes=1024),
+        gpu=GpuPlatformInfo(devices=[GpuInfo(index=0, memory_fraction=0.3)]),
     )
-    _serve(monkeypatch, _worker("w", frozenset(), hardware))
+    served = _worker("w", frozenset({TaskType.PYTHON}), hardware)
+    _serve(monkeypatch, served)
 
-    profile = await flowmesh_manager.get_worker_profile("w")
-
-    assert profile.memory_total_bytes == 1024
-    assert profile.gpu_memory_fraction == 0.3
-    assert profile.has_gpu is True
+    assert await flowmesh_manager.get_worker_profile("w") == worker_profile(served)
