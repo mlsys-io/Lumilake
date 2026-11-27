@@ -523,13 +523,15 @@ class ReusePlanner:
                 merge_step = _merge_step(plan.op.task_type, outcome.partial)
                 carries = not merge_step or node_id not in runtime_graph.output_node_map
                 unserved = None
-                if carries:
+                if carries and merge_step:
                     unserved = _unserved_reader_reason(
                         runtime_graph, decision, plan.op, outcome.entries or []
                     )
-                if unserved is not None:
+                if unserved is not None or not merge_step:
+                    # A step rewritten in place emits every live row itself, so its
+                    # readers take a full column and the level can skip it.
                     decision.refused.add(node_id)
-                elif carries:
+                if carries and unserved is None:
                     decision.partial[node_id] = outcome.partial
                 decision.decisions.append(
                     RecordDecision(
