@@ -398,6 +398,24 @@ def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
     ]
 
 
+def test_a_many_to_many_join_emits_a_stray_key_of_one_input_once(
+    tmp_path: Path,
+) -> None:
+    """A key only a further input carries is that input's rows, once."""
+    stray = [{"unit": "u3", "g": "x"}, {"unit": "u3", "g": "y"}]
+    node = _pairs(_CASES, _GIRLS + stray, "cardinality: many_to_many, how: full")
+    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
+    assert [(row.get("q"), row["g"]) for row in rows] == [
+        ("a", "x"),
+        ("a", "y"),
+        ("b", "x"),
+        ("b", "y"),
+        ("c", "z"),
+        (None, "x"),
+        (None, "y"),
+    ]
+
+
 def test_one_to_many_needs_a_row_key() -> None:
     """A first input that repeats a key needs the row_key that tells its rows apart."""
     with pytest.raises(ValueError, match="one_to_many also needs row_key"):
@@ -464,10 +482,10 @@ name: u
 inputs: {Rows: []}
 ops:
   - {id: State, op: DataOp, data: __ROWS__}
-  - {id: Summary, op: DataOp, data: __SIZES__}__EXTRA__
+  - {id: Summary, op: DataOp, data: __SIZES__}__SECOND__ __EXTRA__
   - {id: Tag, op: LambdaOp, mode: row, inputs: [State], fn_name: tag,
      code: "def tag(row): return row['rid'].upper()"}
-  - {id: Merge, op: JoinOp, inputs: [State__INPUTS__, Summary], by: unit,
+  - {id: Merge, op: JoinOp, inputs: [State__INPUTS__, Summary__MORE__], by: unit,
      __FIELDS__, attach: {__ATTACH__}}
 outputs: [{name: merged, ref: Merge}]
 """
@@ -481,6 +499,7 @@ def _broadcast(
     tmp_path: Path,
     rows: list[Any] | None = None,
     sizes: list[Any] | None = None,
+    second: list[Any] | None = None,
     part: list[Any] | None = None,
     tags: list[Any] | None = None,
     fields: str = "row_key: [unit, rid]",
@@ -488,11 +507,18 @@ def _broadcast(
     swaps = {
         "__ROWS__": _quoted(rows or _UNITS),
         "__SIZES__": _quoted(sizes or _SIZES),
+        "__SECOND__": "",
+        "__MORE__": "",
         "__EXTRA__": "",
         "__INPUTS__": ", Tag",
         "__FIELDS__": fields,
         "__ATTACH__": "tag: Tag",
     }
+    if second is not None:
+        swaps["__SECOND__"] = (
+            f"\n  - {{id: Second, op: DataOp, data: {_quoted(second)}}}"
+        )
+        swaps["__MORE__"] = ", Second"
     if part is not None:
         swaps["__EXTRA__"] = f"\n  - {{id: Extra, op: DataOp, data: {_quoted(part)}}}"
         swaps["__EXTRA__"] += "\n  - {id: Part, op: LambdaOp, mode: row,"
@@ -508,6 +534,27 @@ def _broadcast(
     _, value_index, *_ = node.data_spec.join.attach[0]
     staged = {value_index: _cells(*(tags or ["A", "B", "C"]))}
     return [item["output"] for item in _run(tmp_path, node, staged)["items"]]
+
+
+def test_a_broadcast_join_emits_a_stray_key_of_two_inputs_once(tmp_path: Path) -> None:
+    """A key two further inputs carry is one output row, with both their fields."""
+    sizes = _SIZES + [{"unit": "u3", "size": 1}]
+    rows = _broadcast(
+        tmp_path,
+        sizes=sizes,
+        second=[{"unit": "u3", "n": 1}],
+        fields="row_key: [unit, rid], how: full",
+    )
+    assert len(rows) == 4
+    assert rows[3] == {"unit": "u3", "size": 1, "n": 1}
+    marked = _broadcast(
+        tmp_path,
+        sizes=sizes + [{"unit": "u4", "n": _MARK}],
+        second=[{"unit": "u4", "n": 2}],
+        fields="row_key: [unit, rid], how: full",
+    )
+    assert len(marked) == 5
+    assert marked[4] == _MARK
 
 
 def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> None:

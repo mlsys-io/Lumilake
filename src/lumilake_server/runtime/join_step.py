@@ -298,10 +298,17 @@ def main(inputs):
             if key not in keyed:
                 if _HOW != "full":
                     continue
-                keyed[key] = [additions[0]]
+                # A key only this input carries is emitted as this input's own rows.
+                keyed[key] = additions
                 appended.append(key)
+                if key in more_marked:
+                    marked[key] = more_marked[key]
+                continue
             if key in more_marked:
                 marked[key] = more_marked[key]
+                continue
+            if key in appended:
+                # A key this input just appended already carries its fields.
                 continue
             keyed[key] = _join_rows(keyed[key], additions, key, where)
     for name, value_index, source_index, _ in _JOIN["attach"]:
@@ -392,17 +399,20 @@ def _broadcast(inputs):
             # A row this input lacks a key for is not emitted, and keeps its slot so an
             # attach over the first input still pairs each value with its own row.
             dropped.update(key for _, key, _ in keyed if key not in more)
+        added = set()
         for key in more:
             if key in first_keys or _HOW != "full":
                 continue
-            if key in more_marked:
-                marked[key] = more_marked[key]
-                continue
-            # A key only this input carries takes its first row as the output row, under
+            # A key only this input carries is emitted as this input's own rows, under
             # its own record so every later input reaches it too.
             record = _appended(key)
             keyed.append((record, key, more[key][0]))
+            if key in more_marked:
+                # A stray key the input marks is emitted as that marker.
+                marked[record] = more_marked[key]
             appended.append(record)
+            first_keys.add(key)
+            added.add(record)
         for position, (record, key, row) in enumerate(keyed):
             if record in marked:
                 # A marked output row is its marker: no further input fills it.
@@ -418,7 +428,8 @@ def _broadcast(inputs):
                     "%s: key %s repeats in a further input, which pairs one row per"
                     " key" % (_NODE, key)
                 )
-            if record in appended:
+            if record in added:
+                # A row this input just appended already carries its fields.
                 continue
             merged = row.copy()
             _merge(merged, more[key][0], where)
