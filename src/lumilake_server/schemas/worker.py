@@ -1,5 +1,8 @@
 """Worker / hardware schemas — re-exported from the FlowMesh SDK."""
 
+from collections.abc import Container
+from typing import Self
+
 from flowmesh.models.workers import (
     CPUInfo,
     GpuInfo,
@@ -29,6 +32,13 @@ class WorkerStatus(WorkerInfo):
             "dispatched batch."
         ),
     )
+
+    @classmethod
+    def from_worker(cls, worker: WorkerInfo, busy_workers: Container[str]) -> Self:
+        """The worker with Lumilake's busy state for it, its fields taken typed."""
+        return cls.model_validate(worker, from_attributes=True).model_copy(
+            update={"busy": worker.id in busy_workers}
+        )
 
 
 __all__ = [

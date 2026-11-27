@@ -19,7 +19,7 @@ import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
-from lumilake_server.routes.jobs import JobRecord
+from lumilake_server.routes.jobs import JobRecord, LogEventPayload
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.utils.job_storage import InMemoryJobStorage
@@ -85,41 +85,23 @@ class _FakeWorkflow:
         self.failed_tasks = ["tsk-00000005"]
 
 
-class _FakeLogEvent:
-    def __init__(self, message: str) -> None:
-        self.ts = "2026-05-31T00:00:00Z"
-        self.workflow_id = "wf-1"
-        self.task_id = "tsk-0000000a"
-        self.worker_id = "w-1"
-        self.node_id = None
-        self.level = "INFO"
-        self.stream = "stdout"
-        self.source = None
-        self.message = message
-        self.fields = None
-
-    def model_dump(self) -> dict[str, Any]:
-        return {
-            "ts": self.ts,
-            "workflow_id": self.workflow_id,
-            "task_id": self.task_id,
-            "worker_id": self.worker_id,
-            "node_id": self.node_id,
-            "level": self.level,
-            "stream": self.stream,
-            "source": self.source,
-            "message": self.message,
-            "fields": self.fields,
-        }
+def _log_event(message: str) -> LogEventPayload:
+    """A FlowMesh log event as the SDK hands it back."""
+    return LogEventPayload(
+        ts="2026-05-31T00:00:00Z",
+        workflow_id="wf-1",
+        task_id="tsk-0000000a",
+        worker_id="w-1",
+        level="INFO",
+        stream="stdout",
+        message=message,
+    )
 
 
 class _FakeLogEntry:
     def __init__(self, cursor: str, message: str) -> None:
         self.cursor = cursor
-        self.event = _FakeLogEvent(message)
-
-    def model_dump(self) -> dict[str, Any]:
-        return {"cursor": self.cursor, "event": self.event.model_dump()}
+        self.event = _log_event(message)
 
 
 class _FakeLogQueryResponse:

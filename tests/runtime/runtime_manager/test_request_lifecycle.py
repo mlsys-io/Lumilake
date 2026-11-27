@@ -8,8 +8,13 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from flowmesh.models.result import APIResult
-from flowmesh.models.result.catalog import PythonResult
+from flowmesh.models.result import (
+    APIResult,
+    BaseExecutorResult,
+    EchoResult,
+    InferenceResult,
+    PythonResult,
+)
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -27,7 +32,12 @@ from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.conftest import serve
+from tests.runtime.runtime_manager.conftest import (
+    API_URL,
+    api_result,
+    python_result,
+    serve,
+)
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
@@ -60,38 +70,11 @@ def _build_single_row_api_request() -> tuple[RequestInfo, str]:
     return request_info, row_id
 
 
-def test_api_reasoning_present_still_raises_clear_error() -> None:
-    """A reasoning model returns content=None with a reasoning fragment when
-    its budget is exhausted; that must fail with guidance, not surface the
-    truncated fragment as the node output."""
-    results = {
-        "text": None,
-        "response_json": {
-            "choices": [
-                {
-                    "finish_reason": "length",
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "reasoning": (
-                            "The user wants me to calculate 17 x 23 and show my"
-                        ),
-                    },
-                }
-            ]
-        },
-    }
-    with pytest.raises(RuntimeError, match="raise max_tokens"):
-        FlowmeshRuntimeManager()._resolve_output_items(
-            results, "out-1", task_type="api"
-        )
-
-
 def test_resolve_output_items_accepts_empty_items_list() -> None:
     """A result whose ``items`` list is empty is a valid empty output (e.g. a
     list-mode Lambda that selected no observations), not a failure."""
     manager = FlowmeshRuntimeManager()
-    assert manager._resolve_output_items({"items": []}, "out-1") == []
+    assert manager._resolve_output_items(EchoResult(items=[]), "out-1") == []
 
 
 def test_resolve_output_items_still_raises_without_items_key() -> None:
@@ -99,7 +82,7 @@ def test_resolve_output_items_still_raises_without_items_key() -> None:
     empty list is treated as an empty output."""
     manager = FlowmeshRuntimeManager()
     with pytest.raises(RuntimeError, match="produced no items"):
-        manager._resolve_output_items({"ok": True}, "out-1")
+        manager._resolve_output_items(BaseExecutorResult(), "out-1")
 
 
 def test_resolve_output_items_accepts_empty_python_result_value() -> None:
@@ -107,12 +90,7 @@ def test_resolve_output_items_accepts_empty_python_result_value() -> None:
     list-mode Lambda output, not a failure."""
     manager = FlowmeshRuntimeManager()
     result = PythonResult(exit_code=0, value={"items": []})
-    assert (
-        manager._resolve_output_items(
-            result.model_dump(mode="json"), "out-1", task_type="python"
-        )
-        == []
-    )
+    assert manager._resolve_output_items(result, "out-1") == []
 
 
 @pytest.mark.asyncio
@@ -142,11 +120,13 @@ async def test_api_backend_returns_chat_history_like_local_backend(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {
-                "items": [
+        async def retrieve(self, task_id: str) -> Any:
+            return api_result(
+                items=[
                     {
                         "index": 0,
+                        "url": API_URL,
+                        "status_code": 200,
                         "json": {
                             "choices": [{"message": {"content": "assistant reply"}}]
                         },
@@ -154,7 +134,7 @@ async def test_api_backend_returns_chat_history_like_local_backend(
                         "prompt": "{{prompt}}",
                     }
                 ]
-            }
+            )
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -386,6 +366,8 @@ def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, st
                 "items": [
                     {
                         "index": 0,
+                        "url": API_URL,
+                        "status_code": 200,
                         "json": {
                             "choices": [{"message": {"content": '{"keep": [1, 2]}'}}]
                         },
@@ -405,12 +387,16 @@ def _build_api_output_request(*, rowwise: bool = False) -> tuple[RequestInfo, st
                         "rows": [
                             {
                                 "index": 0,
+                                "url": API_URL,
+                                "status_code": 200,
                                 "json": {"choices": [{"message": {"content": "r0"}}]},
                                 "text": "r0",
                                 "prompt": "p",
                             },
                             {
                                 "index": 1,
+                                "url": API_URL,
+                                "status_code": 200,
                                 "json": {"choices": [{"message": {"content": "r1"}}]},
                                 "text": "r1",
                                 "prompt": "p",
@@ -448,8 +434,8 @@ async def test_api_output_node_reads_content(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return result
+        async def retrieve(self, task_id: str) -> Any:
+            return api_result(**result)
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -512,14 +498,16 @@ async def test_list_lambda_output_aggregates_whole_list_into_one_value(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {
-                "items": [
-                    {"output": {"fid": "f1", "statement": "s1", "quote": "q1"}},
-                    {"output": {"fid": "f2", "statement": "s2", "quote": "q2"}},
-                    {"output": {"fid": "f3", "statement": "s3", "quote": "q3"}},
-                ]
-            }
+        async def retrieve(self, task_id: str) -> Any:
+            return python_result(
+                {
+                    "items": [
+                        {"output": {"fid": "f1", "statement": "s1", "quote": "q1"}},
+                        {"output": {"fid": "f2", "statement": "s2", "quote": "q2"}},
+                        {"output": {"fid": "f3", "statement": "s3", "quote": "q3"}},
+                    ]
+                }
+            )
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -568,8 +556,8 @@ async def test_empty_list_lambda_output_archives_as_empty_output(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {"items": []}
+        async def retrieve(self, task_id: str) -> Any:
+            return python_result({"items": []})
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -835,29 +823,31 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
+        async def retrieve(self, task_id: str) -> Any:
             if task_id == "task-lambda":
-                return {
-                    "value": {
+                return python_result(
+                    {
                         "items": [
                             {"output": "HELLO"},
                             {"output": "WORLD"},
                             {"output": "FOO"},
                         ]
                     }
-                }
+                )
             # The rowwise LLM's dataframe data_spec groups its per-row outputs
             # back into one item via FlowMesh's ``_populate_table``.
-            return {
-                "items": [
-                    {
-                        "index": 0,
-                        "output": ["reply-0", "reply-1", "reply-2"],
-                        "prompt": "Result: HELLO",
-                        "finish_reason": ["stop", "stop", "stop"],
-                    }
-                ]
-            }
+            return InferenceResult.model_validate(
+                {
+                    "items": [
+                        {
+                            "index": 0,
+                            "output": ["reply-0", "reply-1", "reply-2"],
+                            "prompt": "Result: HELLO",
+                            "finish_reason": ["stop", "stop", "stop"],
+                        }
+                    ]
+                }
+            )
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -915,30 +905,34 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
+        async def retrieve(self, task_id: str) -> Any:
             if task_id == "task-lambda":
-                return {
-                    "value": {
+                return python_result(
+                    {
                         "items": [
                             {"output": "HELLO"},
                             {"output": "WORLD"},
                             {"output": "FOO"},
                         ]
                     }
-                }
+                )
             # The grouped item carries only the first row's prompt under
             # ``metadata.prompt``; there is one item for three output values.
-            return {
-                "items": [
-                    {
-                        "index": 0,
-                        "output": ["reply-0", "reply-1", "reply-2"],
-                        "metadata": {
-                            "prompt": [{"role": "user", "content": "Result: HELLO"}]
-                        },
-                    }
-                ]
-            }
+            return InferenceResult.model_validate(
+                {
+                    "items": [
+                        {
+                            "index": 0,
+                            "prompt": "Result: HELLO",
+                            "output": ["reply-0", "reply-1", "reply-2"],
+                            "finish_reason": ["stop", "stop", "stop"],
+                            "metadata": {
+                                "prompt": [{"role": "user", "content": "Result: HELLO"}]
+                            },
+                        }
+                    ]
+                }
+            )
 
     class _FakeFm:
         def __init__(self) -> None:

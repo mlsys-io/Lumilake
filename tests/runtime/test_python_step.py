@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from flowmesh.models.result import PythonResult
 from support.retrieval import retrieval_op
 
 from lumilake import envs
@@ -1067,13 +1068,12 @@ def test_halo_maps_python_to_its_own_cpu_engine() -> None:
 def test_python_output_items_come_from_value() -> None:
     manager = FlowmeshRuntimeManager.__new__(FlowmeshRuntimeManager)
     items = manager._resolve_output_items(
-        {"task_type": "python", "value": {"items": [{"output": "x"}]}},
+        PythonResult(exit_code=0, value={"items": [{"output": "x"}]}),
         "node",
-        task_type="python",
     )
     assert items == [{"output": "x"}]
     with pytest.raises(RuntimeError, match="returned no items"):
-        manager._resolve_output_items({"value": {}}, "node", task_type="python")
+        manager._resolve_output_items(PythonResult(exit_code=0, value={}), "node")
 
 
 def _sql_stage(
