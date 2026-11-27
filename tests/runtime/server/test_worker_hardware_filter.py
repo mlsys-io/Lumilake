@@ -5,8 +5,10 @@ from typing import Any
 
 import pytest
 
+from lumilake import envs
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.server import LumilakeServer
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 def _profile(
@@ -192,3 +194,39 @@ def test_gpu_model_unknown_device_names_still_pass() -> None:
         "gpu": {"devices": [{"memory_total_bytes": 24 * (1024**3)}]},
     }
     assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def _home_mini() -> dict[str, Any]:
+    profile = _profile(cores=32, mem_bytes=29 * (1024**3))
+    profile["ssh_limits"] = {"max_memory_bytes": 12 * (1024**3), "max_cpu_cores": None}
+    return profile
+
+
+def test_python_steps_fit_the_session_cap_at_lower_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    meets = LumilakeServer._worker_meets_hardware
+    hw = HardwareRequirements(memory="8Gi")
+    default = SessionLane(cpu_memory_mb=frozenset({None}))
+    mixed = SessionLane(cpu_memory_mb=frozenset({None, 16384}))
+    assert meets(_home_mini(), hw, session_lane=default) is True
+    assert meets(_home_mini(), hw, session_lane=mixed) is False
+
+
+def test_gpu_workers_are_held_to_the_session_limits_of_their_own_python_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step without a GPU request runs on a CPU worker, so a GPU worker
+    serving the same batch is held to its hardware alone."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    meets = LumilakeServer._worker_meets_hardware
+    gpu = _profile(
+        cores=32, mem_bytes=29 * (1024**3), gpu_count=1, gpu_mem_bytes=24 * (1024**3)
+    )
+    gpu["ssh_limits"] = {"max_memory_bytes": 12 * (1024**3)}
+
+    assert meets(gpu, None, session_lane=SessionLane(cpu_memory_mb=frozenset({None})))
+    assert not meets(
+        gpu, None, session_lane=SessionLane(gpu_memory_mb=frozenset({None}))
+    )

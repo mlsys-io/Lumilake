@@ -8,18 +8,49 @@ fraction of a card its engine reserves. An optimizer compares the two.
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NamedTuple, Self
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,
     GpuRequest,
+    PythonData,
 )
 
 CAPABILITY_GATED_TASK_TYPES = frozenset({PYTHON_TASK_TYPE})
 
 CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 """Task types that run on a CPU worker, unless the node asks for GPUs."""
+
+
+class SessionLane(NamedTuple):
+    """What each class of a batch's workers must admit as a session.
+
+    ``cpu_memory_mb`` holds the memory every python step in the batch's CPU group
+    asks for, in MiB (``None`` for a step on the job's memory). FlowMesh caps a
+    worker's python or SSH session at its ``ssh_limits``, so the job's CPU and
+    each of those memories must fit under the limits. ``gpu_memory_mb`` holds the
+    same for the python steps that ask for GPUs themselves, which run on a GPU
+    worker; a GPU worker running other task types is held to its hardware alone,
+    as FlowMesh does not cap those sessions.
+    """
+
+    cpu_memory_mb: frozenset[int | None] = frozenset()
+    gpu_memory_mb: frozenset[int | None] = frozenset()
+
+    def is_empty(self) -> bool:
+        """True when no step of the batch runs in a session."""
+        return not self.cpu_memory_mb and not self.gpu_memory_mb
+
+    @classmethod
+    def union(cls, *lanes: Self) -> Self:
+        """One lane holding every step of ``lanes``, empty for no lanes."""
+        cpu: frozenset[int | None] = frozenset()
+        gpu: frozenset[int | None] = frozenset()
+        for lane in lanes:
+            cpu |= lane.cpu_memory_mb
+            gpu |= lane.gpu_memory_mb
+        return cls(cpu_memory_mb=cpu, gpu_memory_mb=gpu)
 
 
 def advertised_task_types(profile: Mapping[str, Any]) -> frozenset[str]:
@@ -154,3 +185,88 @@ def requires_cpu_worker(nodes: Iterable[tuple[str, DataSpecModel]]) -> bool:
         and data_spec.gpu_request is None
         for task_type, data_spec in nodes
     )
+
+
+def python_step_session_lane(
+    nodes: Iterable[tuple[str, DataSpecModel]],
+) -> SessionLane:
+    """The session lanes the python steps among ``nodes`` put on the batch's groups.
+
+    A python step without a GPU request runs on a CPU worker and lands in
+    ``cpu_memory_mb``; one that asks for GPUs runs on a GPU worker and lands in
+    ``gpu_memory_mb``.
+    """
+    cpu_memory_mb: set[int | None] = set()
+    gpu_memory_mb: set[int | None] = set()
+    for task_type, data_spec in nodes:
+        if (task_type or "").strip().lower() != PYTHON_TASK_TYPE:
+            continue
+        memory_mb = data_spec.memory_mb if isinstance(data_spec, PythonData) else None
+        if data_spec.gpu_request is None:
+            cpu_memory_mb.add(memory_mb)
+        else:
+            gpu_memory_mb.add(memory_mb)
+    return SessionLane(frozenset(cpu_memory_mb), frozenset(gpu_memory_mb))
+
+
+def session_memory_bytes(
+    session_memory_mb: frozenset[int | None], job_memory_bytes: int | None
+) -> int | None:
+    """The largest memory the ``session_memory_mb`` steps ask for, in bytes.
+
+    A step on the job's memory (``None``) is counted at ``job_memory_bytes``, so
+    this is the memory the session-limits check is made against.
+    """
+    step_memory = [
+        job_memory_bytes if memory_mb is None else memory_mb * 1024**2
+        for memory_mb in session_memory_mb
+    ]
+    return max((b for b in step_memory if b is not None), default=None)
+
+
+def format_memory_bytes(value: int | None) -> str:
+    """``value`` as a Kubernetes-style memory string, e.g. ``2048Mi`` or ``12Gi``.
+
+    ``None`` formats as ``unknown``, for a memory the profile did not report.
+    """
+    if value is None:
+        return "unknown"
+    for suffix, size in (
+        ("Ti", 1024**4),
+        ("Gi", 1024**3),
+        ("Mi", 1024**2),
+        ("Ki", 1024),
+    ):
+        if value >= size and value % size == 0:
+            return f"{value // size}{suffix}"
+    return f"{value}"
+
+
+def session_limits_admit(
+    profile: Mapping[str, Any], cpu: int, memory_bytes: int | None
+) -> bool:
+    """True when a session on this worker can have ``cpu`` cores and ``memory_bytes``.
+
+    A session gets the smaller of the worker's hardware and its ``ssh_limits``,
+    the same bound FlowMesh's dispatcher applies to a python or SSH task. A
+    dimension the profile does not report passes.
+    """
+    limits = profile.get("ssh_limits")
+    if not isinstance(limits, Mapping):
+        return True
+    cores = (profile.get("cpu") or {}).get("logical_cores")
+    max_cores = limits.get("max_cpu_cores")
+    if isinstance(cores, int) and isinstance(max_cores, int | float):
+        if min(cores, max_cores) < cpu:
+            return False
+    total = (profile.get("memory") or {}).get("total_bytes")
+    max_memory = limits.get("max_memory_bytes")
+    if (
+        memory_bytes is not None
+        and isinstance(total, int)
+        and total > 0
+        and isinstance(max_memory, int)
+        and min(total, max_memory) < memory_bytes
+    ):
+        return False
+    return True

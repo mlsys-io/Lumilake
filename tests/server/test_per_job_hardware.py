@@ -34,10 +34,10 @@ from lumilake_server.runtime.job_manager.priority_queue import (
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import (
-    _resolve_cpu,
     _resolve_gpu_count,
     _resolve_gpu_memory,
-    _resolve_memory,
+    resolve_cpu,
+    resolve_memory,
 )
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ def test_resolve_cpu_uses_override_when_set(monkeypatch: pytest.MonkeyPatch) -> 
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
-    assert _resolve_cpu(HardwareRequirements(cpu=16)) == 16
+    assert resolve_cpu(HardwareRequirements(cpu=16)) == 16
 
 
 def test_resolve_cpu_falls_back_to_env_when_unset(
@@ -156,8 +156,8 @@ def test_resolve_cpu_falls_back_to_env_when_unset(
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_CPU_REQUIREMENT",
         8,
     )
-    assert _resolve_cpu(None) == 8
-    assert _resolve_cpu(HardwareRequirements(memory="32Gi")) == 8
+    assert resolve_cpu(None) == 8
+    assert resolve_cpu(HardwareRequirements(memory="32Gi")) == 8
 
 
 def test_resolve_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,8 +165,8 @@ def test_resolve_memory_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
         "lumilake_server.runtime.runtime_manager.envs.HARDWARE_MEMORY_REQUIREMENT",
         "16Gi",
     )
-    assert _resolve_memory(HardwareRequirements(memory="64Gi")) == "64Gi"
-    assert _resolve_memory(None) == "16Gi"
+    assert resolve_memory(HardwareRequirements(memory="64Gi")) == "64Gi"
+    assert resolve_memory(None) == "16Gi"
 
 
 def test_resolve_gpu_count_uses_override_including_zero(

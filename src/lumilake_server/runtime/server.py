@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import Callable, Generator
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
+from functools import partial
 from typing import Any, ClassVar, Self
 
 import lumid_hooks
@@ -80,18 +81,25 @@ from lumilake_server.runtime.runtime_manager import (
     DataCredential,
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
+    resolve_cpu,
+    resolve_memory,
 )
 from lumilake_server.runtime.sensitive import redact_secrets_in_text
 from lumilake_server.runtime.utils.loop import AsyncEventLoop
 from lumilake_server.runtime.utils.queue import TSQueue
 from lumilake_server.runtime.worker_capability import (
+    SessionLane,
     advertised_task_types,
     cpu_required_task_types,
+    format_memory_bytes,
     gpu_memory_fraction,
     gpu_worker_can_run,
     holds_gpu_utilizations,
+    python_step_session_lane,
     python_steps_gpu_requests,
     requires_cpu_worker,
+    session_limits_admit,
+    session_memory_bytes,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.progress import JobProgress
@@ -1087,11 +1095,7 @@ class LumilakeServer:
                     "placement_failed": workflow.workflow_id,
                     "graph": workflow.public_graph_name,
                     "slice_index": workflow.slice_index,
-                    "error": (
-                        "no worker in the cluster can satisfy this request "
-                        f"(required_cpu={self.config.cpu_worker_group_size} "
-                        f"required_gpu={self.config.gpu_worker_group_size})"
-                    ),
+                    "error": self._unplaceable_error(workflow),
                 }
             )
             state.pending_workflows.discard(workflow.workflow_id)
@@ -1106,6 +1110,38 @@ class LumilakeServer:
             )
             await state.handler.put_result(response)
         await self.job_manager.remove_workflows(workflow_ids)
+
+    def _unplaceable_error(self, workflow: WorkflowItem) -> str:
+        """Why no worker can take ``workflow``, naming what each task asks for."""
+        hardware = workflow.config.hardware_requirements
+        cpu = resolve_cpu(hardware)
+        memory = resolve_memory(hardware)
+        lane = workflow.python_step_session_lane
+        prefix = (
+            "no worker in the cluster can satisfy this request "
+            f"(cpu={cpu} memory={memory} per task, "
+            f"required_cpu={self.config.cpu_worker_group_size} "
+            f"required_gpu={self.config.gpu_worker_group_size})"
+        )
+        if lane.is_empty():
+            return prefix
+        job_memory = self._parse_memory_to_bytes(memory)
+        session_memory = session_memory_bytes(
+            lane.cpu_memory_mb | lane.gpu_memory_mb, job_memory
+        )
+        python_clause = (
+            "; python steps must also fit each worker's session limits (ssh_limits)"
+        )
+        if session_memory is not None and session_memory != job_memory:
+            python_clause += (
+                f" at memory={format_memory_bytes(session_memory)} per task"
+            )
+        return (
+            prefix
+            + python_clause
+            + ": lower hardware.cpu, and hardware.memory or the step's memory_mb, "
+            "to fit them"
+        )
 
     async def _try_claim_workers(
         self, batch: BatchSelection, free: FreeCapacity
@@ -1129,12 +1165,16 @@ class LumilakeServer:
         required_cpu = cpu_required_task_types(nodes)
         required_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
         required_gpu_utilizations = self._batch_gpu_utilizations(batch)
+        meets_hardware = partial(
+            self._worker_meets_hardware,
+            session_lane=python_step_session_lane(nodes),
+        )
 
         def claim(capacity: FreeCapacity) -> tuple[list[str], list[str]] | None:
             return capacity.eligible_workers(
                 cpu_group_size=cpu_group_size,
                 gpu_group_size=gpu_group_size,
-                worker_meets_hardware=self._worker_meets_hardware,
+                worker_meets_hardware=meets_hardware,
                 hardware=hardware,
                 required_task_types=required_cpu,
                 required_gpu_requests=required_gpu_requests,
@@ -1155,8 +1195,9 @@ class LumilakeServer:
             total = await self._snapshot_total_capacity()
             if claim(total) is None:
                 # No worker in the cluster can ever run this batch: claim as if
-                # unconstrained so the optimizer fails it with a clear error
-                # instead of leaving it waiting for capacity that never appears.
+                # unconstrained (no task-type, GPU or session-limit gate) so the
+                # optimizer fails it with a clear error instead of leaving it
+                # waiting for capacity that never appears.
                 selected = free.eligible_workers(
                     cpu_group_size=cpu_group_size,
                     gpu_group_size=gpu_group_size,
@@ -1246,6 +1287,7 @@ class LumilakeServer:
             self._requires_gpu(op) for op in runtime_graph.nodes.values()
         )
         nodes = [(op.task_type, op.data_spec) for op in runtime_graph.nodes.values()]
+        session_lane = python_step_session_lane(nodes)
         requires_cpu = requires_cpu_worker(nodes)
         needed_cpu_task_types = cpu_required_task_types(nodes)
         needed_gpu_requests = python_steps_gpu_requests(spec for _, spec in nodes)
@@ -1257,7 +1299,10 @@ class LumilakeServer:
             raw_profile = await self.runtime_manager.get_worker_profile(worker)
             is_gpu = self._has_gpu(raw_profile)
             if not self._worker_meets_hardware(
-                raw_profile, hardware, worker_has_gpu=is_gpu
+                raw_profile,
+                hardware,
+                worker_has_gpu=is_gpu,
+                session_lane=session_lane,
             ):
                 continue
             profile = self._normalize_worker_profile(raw_profile)
@@ -1378,6 +1423,7 @@ class LumilakeServer:
         hardware: HardwareRequirements | None,
         *,
         worker_has_gpu: bool | None = None,
+        session_lane: SessionLane = SessionLane(),
     ) -> bool:
         """Compare a raw FlowMesh worker profile to a per-job requirement.
 
@@ -1391,10 +1437,33 @@ class LumilakeServer:
         the caller has already classified the worker; default delegates to
         ``_has_gpu(worker_profile)``.
 
+        ``session_lane`` holds what each group's python steps ask for in MiB
+        (``None`` for a step on the job's memory). FlowMesh caps a python step at
+        the worker's ``ssh_limits``, so a CPU worker must hold the CPU group's
+        steps and a GPU worker its own; the job's CPU and the largest of those
+        memories (the job's values, else the env defaults) must fit under the
+        limits as well as under the hardware.
+
         Missing worker fields (e.g. ``cpu.logical_cores`` is ``None``) are
         treated as unknown and pass — Lumilake's contract is "filter the
         obvious no-go workers"; FlowMesh remains the authority on dispatch.
         """
+        is_gpu_worker = (
+            worker_has_gpu
+            if worker_has_gpu is not None
+            else cls._has_gpu(worker_profile)
+        )
+        session_memory_mb = (
+            session_lane.gpu_memory_mb if is_gpu_worker else session_lane.cpu_memory_mb
+        )
+        if session_memory_mb and not session_limits_admit(
+            worker_profile,
+            resolve_cpu(hardware),
+            session_memory_bytes(
+                session_memory_mb, cls._parse_memory_to_bytes(resolve_memory(hardware))
+            ),
+        ):
+            return False
         if hardware is None:
             return True
         if hardware.cpu is not None:
@@ -1406,11 +1475,6 @@ class LumilakeServer:
             total = (worker_profile.get("memory") or {}).get("total_bytes")
             if required is not None and isinstance(total, int) and total < required:
                 return False
-        is_gpu_worker = (
-            worker_has_gpu
-            if worker_has_gpu is not None
-            else cls._has_gpu(worker_profile)
-        )
         if not is_gpu_worker:
             return True
         gpu_section = worker_profile.get("gpu") or {}

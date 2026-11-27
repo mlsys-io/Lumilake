@@ -2,13 +2,16 @@
 
 from typing import Any
 
-from lumilake_server.data_specs import EmptyData, GpuRequest
+from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.worker_capability import (
     CAPABILITY_GATED_TASK_TYPES,
+    SessionLane,
     advertised_task_types,
     profile_fits_gpu_request,
+    python_step_session_lane,
     requires_cpu_worker,
+    session_limits_admit,
 )
 
 
@@ -221,3 +224,36 @@ def test_two_slot_group_serves_one_request_per_worker() -> None:
         required_gpu_requests=(a100, h100),
     )
     assert sorted(claim or []) == ["a", "c"]
+
+
+GIB = 1024**3
+
+
+def test_python_step_session_lane_splits_the_cpu_and_gpu_groups() -> None:
+    nodes = [
+        ("python", PythonData()),
+        (" Python ", PythonData(memory_mb=4096)),
+        ("python", PythonData(memory_mb=8192, gpu=GpuRequest())),
+        ("inference", EmptyData()),
+    ]
+    assert python_step_session_lane(nodes) == SessionLane(
+        cpu_memory_mb=frozenset({None, 4096}), gpu_memory_mb=frozenset({8192})
+    )
+    assert python_step_session_lane([("inference", EmptyData())]) == SessionLane()
+
+
+def _capped(limits: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "cpu": {"logical_cores": 32},
+        "memory": {"total_bytes": 29 * GIB},
+        "ssh_limits": limits,
+    }
+
+
+def test_session_limits_admit_refuses_a_cpu_cap_below_the_job() -> None:
+    assert not session_limits_admit(_capped(limits={"max_cpu_cores": 4.0}), 8, None)
+
+
+def test_session_limits_admit_passes_what_the_profile_does_not_report() -> None:
+    assert session_limits_admit(_capped(limits=None), 8, 64 * GIB)
+    assert session_limits_admit({"ssh_limits": {"max_memory_bytes": GIB}}, 8, 2 * GIB)

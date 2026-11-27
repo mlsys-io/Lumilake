@@ -21,6 +21,7 @@ from lumilake_server.runtime.protocol import LumilakeRequestConfig, Priority
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.worker_capability import SessionLane
 from tests.support.data_specs import runtime_op
 
 
@@ -421,6 +422,16 @@ class _LaneRecorder(CohortPackSchedulingPolicy):
         super().observe_free_lanes(free_lanes)
 
 
+def _profile_ok(
+    profile: Any,
+    _hardware: Any,
+    /,
+    *,
+    session_lane: SessionLane = SessionLane(),
+) -> bool:
+    return bool(profile["ok"])
+
+
 async def _lanes_seen(
     *,
     requires_gpu: bool,
@@ -438,7 +449,7 @@ async def _lanes_seen(
         policy="cohort_pack",
         cpu_worker_group_size=cpu_group_size,
         gpu_worker_group_size=gpu_group_size,
-        worker_meets_hardware=lambda profile, _hardware: bool(profile["ok"]),
+        worker_meets_hardware=_profile_ok,
     )
     recorder = _LaneRecorder()
     manager._policy_impl = recorder
