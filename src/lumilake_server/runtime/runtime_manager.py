@@ -407,19 +407,21 @@ def _below_all_run(
     return True
 
 
-def _first_level(planned: RuntimeGraph) -> list[str]:
+def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
     """The first model level a plan still dispatches: one model op, the python
     steps that read into it, and their own python ancestry up to the next model
     op.
 
-    A step that only feeds a later model op stays out, so the round that plans
-    that op runs it exactly once and no step is dispatched in two levels."""
+    A model op that is a workflow output stays out, so the main run dispatches
+    it in full and keeps its chat history. A step that only feeds a later
+    model op stays out, so the round that plans that op runs it exactly once
+    and no step is dispatched in two levels."""
     nodes = planned.nodes
     model = next(
         (
             node_id
             for node_id in planned.node_order
-            if nodes[node_id].task_type in _MODEL_TASK_TYPES
+            if nodes[node_id].task_type in _MODEL_TASK_TYPES and node_id not in outputs
         ),
         None,
     )
@@ -2385,10 +2387,11 @@ class FlowmeshRuntimeManager:
         phase = await self._run_structure(request_info, schedule)
         content_values, written = phase.content, phase.written
         level_runs: dict[str, RecordDecision] = {}
-        last: set[str] = set()
+        ran: set[str] = set()
+        plan = ReusePlan(outputs=source.output_node_map.copy())
         planned = source
         for _ in range(_MAX_MODEL_LEVELS):
-            plan, next_planned = await asyncio.to_thread(
+            plan, planned = await asyncio.to_thread(
                 ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
                 runtime_graph=source,
                 round_number=request_info.round_number,
@@ -2396,15 +2399,14 @@ class FlowmeshRuntimeManager:
                 content_values=content_values,
                 written=written,
             )
-            planned = next_planned
             wave = [
                 node_id
-                for node_id in _first_level(planned)
-                if node_id not in written and node_id not in content_values
+                for node_id in _first_level(planned, source.output_node_map)
+                if node_id not in ran
             ]
-            if not wave or set(planned.nodes) == last:
+            if not wave:
                 break
-            last = set(planned.nodes)
+            ran.update(wave)
             for decision in plan.decisions:
                 if decision.node in wave:
                     level_runs[decision.node] = decision.model_copy(
@@ -2419,6 +2421,17 @@ class FlowmeshRuntimeManager:
                 worker_ids,
                 written,
                 content_values,
+            )
+        else:
+            # The cap ended the loop after a dispatch, so plan once more and hand
+            # the main run what is left rather than the graph before that level.
+            plan, planned = await asyncio.to_thread(
+                ReusePlanner(storage=get_job_storage(), logger=self.logger).plan,
+                runtime_graph=source,
+                round_number=request_info.round_number,
+                job_id=request_info.request_id,
+                content_values=content_values,
+                written=written,
             )
         return content_values, plan, planned, level_runs
 

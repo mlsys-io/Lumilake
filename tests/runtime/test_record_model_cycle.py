@@ -560,6 +560,27 @@ async def test_a_re_ran_read_that_is_an_output_survives_a_level(
 
 
 @pytest.mark.asyncio
+async def test_a_chat_that_is_an_output_runs_once_with_its_history(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A completion that is the workflow output and sits two levels down stays
+    out of the level loop, so the main run dispatches it once and its chat
+    history comes back with every row."""
+    second = {**_COMPLETION, "id": "Ask2", "inputs": ["Ask"]}
+    ops: list[dict[str, Any]] = [_TAG, _CHAT, second]
+    await run(_workflow(ops, _ROWS, "Ask2"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Ask2")
+    ask2 = next(node for node, name in changed.op_names.items() if name == "Ask2")
+    before = len(worker.submissions)
+    outputs = await run(changed, "req-2")
+    assert sum(1 for nodes in worker.submissions[before:] if ask2 in nodes) == 1
+    assert outputs["chat_histories"][ask2] == [
+        [{"role": "user", "content": "x"}, {"role": "assistant", "content": t}]
+        for t in outputs["flat_outputs"][ask2]
+    ]
+
+
+@pytest.mark.asyncio
 async def test_two_partly_served_chats_each_dispatch_once(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
