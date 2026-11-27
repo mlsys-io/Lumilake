@@ -385,9 +385,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             seen_deps: set[str] = set()
             for dep in [
                 *upstream_llm_ids,
-                *self._collect_graph_template_dependencies(
-                    template_spec.model_dump(exclude_none=True)
-                ),
+                *self._collect_graph_template_dependencies(template_spec),
             ]:
                 if dep in seen_deps:
                     continue
@@ -481,9 +479,7 @@ class _LLMBuilder(_EmbeddingBuilder):
         seen_deps: set[str] = set()
         for dep in [
             *upstream_llm_ids,
-            *self._collect_graph_template_dependencies(
-                template_spec.model_dump(exclude_none=True)
-            ),
+            *self._collect_graph_template_dependencies(template_spec),
         ]:
             if dep in seen_deps:
                 continue
@@ -757,9 +753,7 @@ class _LLMBuilder(_EmbeddingBuilder):
                 upstream, (InputOp, DataOp)
             ):
                 dependencies.append(column.node)
-        for dep in self._collect_graph_template_dependencies(
-            template_spec.model_dump(exclude_none=True)
-        ):
+        for dep in self._collect_graph_template_dependencies(template_spec):
             if dep not in dependencies:
                 dependencies.append(dep)
 

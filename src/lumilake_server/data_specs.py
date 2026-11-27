@@ -1,5 +1,7 @@
 """Typed ``data_spec`` for every runtime task type."""
 
+import re
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -264,15 +266,6 @@ class PythonData(DataSpecModel):
         return self.gpu
 
 
-class InputRefSpec(DataSpecModel):
-    """The input key and ref path a projected literal list came from."""
-
-    model_config = ConfigDict(extra="allow")
-
-    key: str
-    path: str | None = None
-
-
 class RetrievalParam(DataSpecModel):
     """One retrieval placeholder bound to a literal list or an upstream read,
     carrying any other key the user wrote for the worker."""
@@ -283,7 +276,12 @@ class RetrievalParam(DataSpecModel):
     data: ListData | None = None
     node: str | None = None
     path: str | None = None
-    input_ref: InputRefSpec | None = None
+    input_ref: InputRef | None = None
+
+    @field_serializer("input_ref")
+    def _keep_ref_path(self, value: InputRef | None) -> Any:
+        """Serialize the ref whole: a dump would drop its null path."""
+        return value
 
 
 class RetrievalData(DataSpecModel):
@@ -291,7 +289,8 @@ class RetrievalData(DataSpecModel):
 
     type: Literal["lumid"]
     mode: Literal["sql", "s3", "agent"]
-    rows: Literal["one"] | None = None
+    rows: Literal["one", "table"] | None = None
+    require_non_empty_rows: bool | None = None
     lumid_data_url: str | None = None
     lumid_data_token: str | None = None
     params: list[RetrievalParam] = Field(default_factory=list)
@@ -357,6 +356,53 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
         return _MODEL_DATA.validate_python(value)
     except ValidationError as exc:
         raise ValueError(f"invalid data_spec for a {task_type} task: {exc}") from exc
+
+
+_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
+
+
+def _remap_entry(key: str, item: Any, mapping: Mapping[str, str]) -> Any:
+    """A dict or model field with its value renamed when it is a mapped node."""
+    if key == "node" and isinstance(item, str) and item in mapping:
+        return mapping[item]
+    return _remap_value(item, mapping)
+
+
+def _remap_value(value: Any, mapping: Mapping[str, str]) -> Any:
+    if isinstance(value, BaseModel):
+        return remap_model(value, mapping)
+    if isinstance(value, dict):
+        return remap_node_dict(value, mapping)
+    if isinstance(value, (list, tuple)):
+        items = [_remap_value(item, mapping) for item in value]
+        return tuple(items) if isinstance(value, tuple) else items
+    if isinstance(value, str):
+        return _PLACEHOLDER_RE.sub(
+            lambda match: (
+                f"${{{mapping[match.group(1)]}.{match.group(2)}}}"
+                if match.group(1) in mapping
+                else match.group(0)
+            ),
+            value,
+        )
+    return value
+
+
+def remap_model[M: BaseModel](model: M, mapping: Mapping[str, str]) -> M:
+    """Copy ``model`` with the ``node`` keys and ``${node.path}`` placeholders
+    of mapped nodes renamed, including inside its extra keys."""
+    stored = {**model.__dict__, **(model.model_extra or {})}
+    return model.model_copy(
+        update={
+            name: _remap_entry(name, item, mapping) for name, item in stored.items()
+        }
+    )
+
+
+def remap_node_dict(spec: dict[str, Any], mapping: Mapping[str, str]) -> dict[str, Any]:
+    """Copy a free-form spec with the ``node`` keys and ``${node.path}``
+    placeholders of mapped nodes renamed."""
+    return {key: _remap_entry(key, item, mapping) for key, item in spec.items()}
 
 
 Column.model_rebuild()

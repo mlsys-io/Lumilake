@@ -7,7 +7,8 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Any
+from functools import partial
+from typing import Any, Protocol
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -15,7 +16,9 @@ from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 from lumilake_server.runtime.protocol import HardwareRequirements, Priority
 from lumilake_server.runtime.worker_capability import (
+    SessionLane,
     cpu_required_task_types,
+    python_step_session_lane,
     python_steps_gpu_requests,
     requires_cpu_worker,
 )
@@ -74,6 +77,42 @@ def _partition_requires_gpu(partition: PartitionKey) -> bool:
     return bool(rest[0]) if rest else False
 
 
+class WorkerHardwareCheck(Protocol):
+    """Whether a worker profile meets a hardware requirement. ``session_lane``
+    holds the memory the work's python steps ask for per worker group, in MiB
+    (``None`` for a step on the job's memory); see
+    ``LumilakeServer._worker_meets_hardware``."""
+
+    def __call__(
+        self,
+        worker_profile: Any,
+        hardware: Any,
+        /,
+        *,
+        session_lane: SessionLane = ...,
+    ) -> bool: ...
+
+
+def _meets_any_hardware(
+    worker_profile: Any,
+    hardware: Any,
+    /,
+    *,
+    session_lane: SessionLane = SessionLane(),
+) -> bool:
+    return True
+
+
+PartitionLane = tuple[PartitionKey, SessionLane]
+"""``(partition, python_step_session_lane)``: the items of a partition that share
+one placement test. Python steps must also fit each worker's session limits, so
+a partition's python items can be unplaceable while its other items are not."""
+
+
+def _lane_of(partition: PartitionKey, item: WorkflowItem) -> PartitionLane:
+    return (partition, item.python_step_session_lane)
+
+
 def _hardware_signature(hw: HardwareRequirements | None) -> HardwareSignature:
     if hw is None:
         return (None, None, None, None, None)
@@ -111,7 +150,7 @@ class PriorityJobManager(BaseJobManager):
         policy: str = envs.LUMILAKE_SCHEDULER_POLICY,
         cost_params: CostParams | None = None,
         clock: Callable[[], float] = time.monotonic,
-        worker_meets_hardware: Callable[[Any, Any], bool] | None = None,
+        worker_meets_hardware: WorkerHardwareCheck | None = None,
         unsatisfiable_dwell_observations: int = (
             envs.LUMILAKE_UNSATISFIABLE_DWELL_OBSERVATIONS
         ),
@@ -146,13 +185,13 @@ class PriorityJobManager(BaseJobManager):
         # would let a fleet blip that outlasts a few fast iterations destroy
         # queued work. The elapsed time is what actually survives a blip.
         self._unsatisfiable_dwell_seconds = max(0.0, unsatisfiable_dwell_seconds)
-        # Consecutive observations each present partition has been
+        # Consecutive observations each present partition lane has been
         # unsatisfiable against total capacity, keyed by the wall-clock time
-        # the current unsatisfiable run began. Reset whenever a partition
-        # becomes satisfiable again. The count stops a single stale snapshot
-        # from arming the timer; the elapsed time is what survives a blip.
-        self._unsatisfiable_since: dict[PartitionKey, float] = {}
-        self._unsatisfiable_count: dict[PartitionKey, int] = {}
+        # the current unsatisfiable run began. Reset whenever a lane becomes
+        # satisfiable again. The count stops a single stale snapshot from
+        # arming the timer; the elapsed time is what survives a blip.
+        self._unsatisfiable_since: dict[PartitionLane, float] = {}
+        self._unsatisfiable_count: dict[PartitionLane, int] = {}
         # Whether the partition key carries the ``requires_gpu`` split. Mirrors
         # the server's capacity-aware-selection lever: when off, the key drops
         # ``requires_gpu`` so CPU and GPU items in the same principal/token/
@@ -171,9 +210,7 @@ class PriorityJobManager(BaseJobManager):
         # filter candidate workers by hardware when capacity is supplied.
         # Defaults to accepting every worker so selection is unconstrained when
         # the server does not wire a checker.
-        self._worker_meets_hardware = worker_meets_hardware or (
-            lambda _profile, _hw: True
-        )
+        self._worker_meets_hardware = worker_meets_hardware or _meets_any_hardware
         # Normalize None optimizer_type to this default before partitioning so
         # two requests that are semantically equivalent (both fall back to the
         # server default) are co-batched rather than split into separate batches.
@@ -298,7 +335,12 @@ class PriorityJobManager(BaseJobManager):
         return capacity.dispatch_count(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
-            worker_meets_hardware=self._worker_meets_hardware,
+            worker_meets_hardware=partial(
+                self._worker_meets_hardware,
+                session_lane=SessionLane.union(
+                    *(item.python_step_session_lane for item in candidates)
+                ),
+            ),
             hardware=self._hardware_from_signature(_partition_hardware(partition)),
             required_task_types=cpu_required_task_types(nodes),
             required_gpu_requests=python_steps_gpu_requests(spec for _, spec in nodes),
@@ -308,6 +350,7 @@ class PriorityJobManager(BaseJobManager):
         self,
         partition: PartitionKey,
         capacity: FreeCapacity,
+        session_lane: SessionLane = SessionLane(),
     ) -> bool:
         """True when ``capacity`` holds enough idle workers to run ``partition``.
 
@@ -316,7 +359,9 @@ class PriorityJobManager(BaseJobManager):
         CPU-only partition needs only the CPU group size. When the capacity
         snapshot carries worker profiles, the candidate workers must also meet
         the partition's hardware signature, so selection never picks a
-        partition that cannot be claimed.
+        partition that cannot be claimed. ``session_lane``, the memory the
+        items' python steps ask for per worker group, holds the workers to their
+        session limits too.
         """
         cpu_group_size, gpu_group_size = self._partition_group_sizes(partition)
         if not capacity.can_satisfy(
@@ -329,7 +374,9 @@ class PriorityJobManager(BaseJobManager):
         return capacity.can_satisfy_hardware(
             cpu_group_size=cpu_group_size,
             gpu_group_size=gpu_group_size,
-            worker_meets_hardware=self._worker_meets_hardware,
+            worker_meets_hardware=partial(
+                self._worker_meets_hardware, session_lane=session_lane
+            ),
             hardware=hardware,
         )
 
@@ -405,6 +452,10 @@ class PriorityJobManager(BaseJobManager):
                     data_credential_digest=job.data_credential_digest,
                     data_token=job.data_token,
                     requires_gpu=job.requires_gpu.get(graph_name, False),
+                    python_step_session_lane=python_step_session_lane(
+                        (op.task_type, op.data_spec)
+                        for op in runtime_graph.nodes.values()
+                    ),
                 )
             )
         async with self._lock:
@@ -531,44 +582,44 @@ class PriorityJobManager(BaseJobManager):
         silently forever.
         """
         async with self._lock:
-            present_partitions: set[PartitionKey] = set()
+            present_lanes: set[PartitionLane] = set()
             for priority in Priority:
                 for queue in self._queues[priority].values():
                     for item in queue:
-                        present_partitions.add(self._partition_of(item))
-            # Advance the dwell for every present partition: record the start
-            # of an unsatisfiable run and count it, reset both when
-            # satisfiable. Partitions that drained from the queue are
-            # forgotten.
-            for partition in list(self._unsatisfiable_since):
-                if partition not in present_partitions:
-                    del self._unsatisfiable_since[partition]
-                    del self._unsatisfiable_count[partition]
+                        present_lanes.add(_lane_of(self._partition_of(item), item))
+            # Advance the dwell for every present lane: record the start of an
+            # unsatisfiable run and count it, reset both when satisfiable.
+            # Lanes that drained from the queue are forgotten.
+            for lane in list(self._unsatisfiable_since):
+                if lane not in present_lanes:
+                    del self._unsatisfiable_since[lane]
+                    del self._unsatisfiable_count[lane]
             now = time.monotonic()
-            for partition in present_partitions:
-                if self._partition_eligible(partition, total_capacity):
-                    self._unsatisfiable_since.pop(partition, None)
-                    self._unsatisfiable_count.pop(partition, None)
+            for lane in present_lanes:
+                partition, session_lane = lane
+                if self._partition_eligible(partition, total_capacity, session_lane):
+                    self._unsatisfiable_since.pop(lane, None)
+                    self._unsatisfiable_count.pop(lane, None)
                     continue
-                self._unsatisfiable_since.setdefault(partition, now)
-                self._unsatisfiable_count[partition] = (
-                    self._unsatisfiable_count.get(partition, 0) + 1
+                self._unsatisfiable_since.setdefault(lane, now)
+                self._unsatisfiable_count[lane] = (
+                    self._unsatisfiable_count.get(lane, 0) + 1
                 )
-            doomed_partitions = {
-                partition
-                for partition, since in self._unsatisfiable_since.items()
+            doomed_lanes = {
+                lane
+                for lane, since in self._unsatisfiable_since.items()
                 if now - since >= self._unsatisfiable_dwell_seconds
-                and self._unsatisfiable_count[partition]
+                and self._unsatisfiable_count[lane]
                 >= self._unsatisfiable_dwell_observations
             }
-            if not doomed_partitions:
+            if not doomed_lanes:
                 return []
             return [
                 item
                 for priority in Priority
                 for queue in self._queues[priority].values()
                 for item in queue
-                if self._partition_of(item) in doomed_partitions
+                if _lane_of(self._partition_of(item), item) in doomed_lanes
             ]
 
     async def reserve_batch(
@@ -584,12 +635,14 @@ class PriorityJobManager(BaseJobManager):
 
         When ``capacity`` is given, partitions the current free capacity cannot
         run are excluded from selection before the round-robin pick and before
-        starvation pinning. Once the anchor partition and its candidates are
-        chosen, the policy is told how many whole dispatches ``capacity`` can
-        serve for them (``None`` without ``capacity``) before it selects. When
-        a candidate is starved, the batch is filled by the starvation path
-        (starved items first, then affinity clustering pinned around them) and
-        the policy is not called; otherwise the policy selects the batch.
+        starvation pinning, and so are candidates whose python steps need more
+        than the capacity's workers admit. Once the anchor partition and its
+        candidates are chosen, the policy is told how many whole dispatches
+        ``capacity`` can serve for them (``None`` without ``capacity``) before it
+        selects. When a candidate is starved, the batch is filled by the
+        starvation path (starved items first, then affinity clustering pinned
+        around them) and the policy is not called; otherwise the policy selects
+        the batch.
         """
         if batch_size <= 0:
             batch_size = 1
@@ -601,6 +654,7 @@ class PriorityJobManager(BaseJobManager):
                     "commit or abort it before reserving another batch."
                 )
             present_partitions: set[PartitionKey] = set()
+            present_lanes: set[PartitionLane] = set()
             items_by_partition: dict[PartitionKey, int] = {}
             starved_global: list[WorkflowItem] = []
             for priority in Priority:
@@ -608,24 +662,26 @@ class PriorityJobManager(BaseJobManager):
                     for item in queue:
                         partition: PartitionKey = self._partition_of(item)
                         present_partitions.add(partition)
+                        present_lanes.add(_lane_of(partition, item))
                         items_by_partition[partition] = (
                             items_by_partition.get(partition, 0) + 1
                         )
                         if item.miss_count >= self._starvation_limit:
                             starved_global.append(item)
 
+            eligible_lanes: set[PartitionLane] | None = None
             if capacity is not None:
-                eligible = {
-                    partition
-                    for partition in present_partitions
-                    if self._partition_eligible(partition, capacity)
+                eligible_lanes = {
+                    lane
+                    for lane in present_lanes
+                    if self._partition_eligible(lane[0], capacity, lane[1])
                 }
                 starved_global = [
                     item
                     for item in starved_global
-                    if self._partition_of(item) in eligible
+                    if _lane_of(self._partition_of(item), item) in eligible_lanes
                 ]
-                present_partitions = eligible
+                present_partitions = {partition for partition, _ in eligible_lanes}
 
             if not present_partitions:
                 self._not_empty.clear()
@@ -662,7 +718,9 @@ class PriorityJobManager(BaseJobManager):
                 rr_partition_to_advance = picked
 
             candidates, user_rr_priorities_to_advance = (
-                self._build_candidate_pool_for_partition_locked(anchor_partition)
+                self._build_candidate_pool_for_partition_locked(
+                    anchor_partition, eligible_lanes
+                )
             )
             if not candidates:
                 self._not_empty.clear()
@@ -869,7 +927,9 @@ class PriorityJobManager(BaseJobManager):
                 )
 
     def _build_candidate_pool_for_partition_locked(
-        self, partition: PartitionKey
+        self,
+        partition: PartitionKey,
+        eligible_lanes: set[PartitionLane] | None,
     ) -> tuple[list[WorkflowItem], tuple[Priority, ...]]:
         """Peek the candidate pool plus the priorities whose user-level RR
         pointer should be rotated by ``commit_reservation``.
@@ -881,7 +941,7 @@ class PriorityJobManager(BaseJobManager):
             if quantum == 0:
                 continue
             picked, advance = self._peek_round_robin_for_partition_locked(
-                priority, quantum, partition
+                priority, quantum, partition, eligible_lanes
             )
             candidates.extend(picked)
             if advance:
@@ -940,11 +1000,15 @@ class PriorityJobManager(BaseJobManager):
         priority: Priority,
         limit: int,
         partition: PartitionKey,
+        eligible_lanes: set[PartitionLane] | None,
     ) -> tuple[list[WorkflowItem], bool]:
-        """Peek the next ``limit`` items for ``partition`` without rotating.
+        """Peek the next ``limit`` placeable items for ``partition`` without
+        rotating.
 
-        Returns ``(candidates, should_advance)``. ``should_advance`` is True
-        when the caller's ``commit_reservation`` should rotate this
+        An item in a lane outside ``eligible_lanes`` needs more than the free
+        capacity holds, so it is skipped and the quantum fills from work that
+        can dispatch. Returns ``(candidates, should_advance)``. ``should_advance``
+        is True when the caller's ``commit_reservation`` should rotate this
         priority's user-level RR pointer; rotation is deferred so aborts
         leave the pointer untouched.
         """
@@ -983,6 +1047,10 @@ class PriorityJobManager(BaseJobManager):
                 and _hardware_signature(item.config.hardware_requirements)
                 == hardware_signature
                 and (requires_gpu is None or item.requires_gpu == requires_gpu)
+                and (
+                    eligible_lanes is None
+                    or _lane_of(partition, item) in eligible_lanes
+                )
             ]
             if user_items:
                 filtered[user_id] = user_items

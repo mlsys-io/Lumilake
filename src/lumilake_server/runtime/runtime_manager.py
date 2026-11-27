@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
@@ -56,6 +57,7 @@ from lumilake_server.runtime.runtime_graph import (
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
+from lumilake_server.runtime.worker_capability import worker_profile
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
 
@@ -97,13 +99,13 @@ def _rewrite_data_credentials(value: Any, credential: DataCredential) -> None:
             _rewrite_data_credentials(item, credential)
 
 
-def _resolve_cpu(hardware: HardwareRequirements | None) -> int:
+def resolve_cpu(hardware: HardwareRequirements | None) -> int:
     if hardware is not None and hardware.cpu is not None:
         return hardware.cpu
     return envs.HARDWARE_CPU_REQUIREMENT
 
 
-def _resolve_memory(hardware: HardwareRequirements | None) -> str:
+def resolve_memory(hardware: HardwareRequirements | None) -> str:
     if hardware is not None and hardware.memory is not None:
         return hardware.memory
     return envs.HARDWARE_MEMORY_REQUIREMENT
@@ -1062,24 +1064,14 @@ class FlowmeshRuntimeManager:
         """Return the number of runtime nodes that will be submitted."""
         return sum(graph.node_count for graph in graphs.values())
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        """The worker's hardware sections, task types and per-device GPU fractions."""
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
+        """The worker's placement facts: its cards, task types and session limits."""
         worker = await _retry_transient_read(
             lambda: flowmesh_for_server().workers.retrieve(worker_id),
             f"worker {worker_id}",
         )
         assert worker.id == worker_id
-        profile = worker.hardware.model_dump() if worker.hardware else {}
-        profile["supported_task_types"] = sorted(
-            str(task_type) for task_type in worker.capabilities.supported_task_types
-        )
-        devices = (
-            worker.hardware.gpu.devices
-            if worker.hardware and worker.hardware.gpu
-            else []
-        )
-        profile["gpu_memory_fraction"] = devices[0].memory_fraction if devices else None
-        return profile
+        return worker_profile(worker)
 
     async def get_request_status(
         self,
@@ -1995,8 +1987,8 @@ class FlowmeshRuntimeManager:
                 "resources": {
                     "replicas": 1,
                     "hardware": {
-                        "cpu": _resolve_cpu(request_info.hardware_requirements),
-                        "memory": _resolve_memory(request_info.hardware_requirements),
+                        "cpu": resolve_cpu(request_info.hardware_requirements),
+                        "memory": resolve_memory(request_info.hardware_requirements),
                     },
                 },
                 "graph": {
@@ -2107,8 +2099,8 @@ class FlowmeshRuntimeManager:
         runtime_graph: RuntimeGraph,
         hardware: HardwareRequirements | None,
     ) -> None:
-        cpu = _resolve_cpu(hardware)
-        memory = _resolve_memory(hardware)
+        cpu = resolve_cpu(hardware)
+        memory = resolve_memory(hardware)
         gpu_count = _resolve_gpu_count(hardware)
         gpu_memory = _resolve_gpu_memory(hardware)
         gpu_nodes = 0
@@ -2162,7 +2154,7 @@ class FlowmeshRuntimeManager:
         if runtime_op.data_spec.gpu_request is not None:
             return True
         backend = (runtime_op.backend or "").strip().lower()
-        if backend in {"vllm", "transformers", "diffusers"}:
+        if backend in {"vllm", "transformers", "diffusers", "omni"}:
             return True
         task_type = (runtime_op.task_type or "").strip().lower()
         return task_type in {"inference", "embedding", "diffusion"}

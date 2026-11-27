@@ -19,6 +19,8 @@ from lumilake_server.data_specs import RetrievalData
 
 ROWS_ONE = "one"
 
+ROWS_TABLE = "table"
+
 _ORDER_BY = "ORDER BY"
 
 _ORDER_BY_SPACING = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
@@ -36,6 +38,15 @@ class RetrievalSpec(RetrievalData):
     max_steps: StrictInt | None = None
 
     @model_validator(mode="after")
+    def _rows_sql_only(self) -> Self:
+        if self.rows is not None and self.mode != "sql":
+            raise ValueError(
+                "'rows' is declared only on a mode: sql retrieval (got mode"
+                f" {self.mode!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _row_order(self, info: ValidationInfo) -> Self:
         if (
             not (info.context or {}).get(_CHECK_ROW_ORDER)
@@ -48,8 +59,8 @@ class RetrievalSpec(RetrievalData):
         raise ValueError(
             "a mode: sql retrieval returns rows in no defined order without a top-level"
             " ORDER BY. End the query with an ORDER BY that breaks ties (for example on"
-            " the primary key), or declare 'rows: one' when each parameter row returns"
-            " at most one row"
+            " the primary key), declare 'rows: one' when each parameter row returns at"
+            " most one row, or declare 'rows: table' when the whole result is one value"
         )
 
     @classmethod

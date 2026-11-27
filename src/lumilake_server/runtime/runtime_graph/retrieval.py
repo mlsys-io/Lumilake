@@ -31,6 +31,7 @@ from lumilake_server.utils.data_profile_offload import (
 from lumilake_server.utils.lumid_data_client import (
     retrieve_sample as lumid_retrieve_sample,
 )
+from lumilake_server.utils.retrieval_spec import ROWS_TABLE
 
 
 def _default_sql_sampler(query: str) -> list[Any]:
@@ -220,6 +221,11 @@ class _RetrievalBuilder(_LLMBuilder):
                         f"DataRetrievalOp '{op_id}' template param {param.label!r}",
                     )
                     resolved = param.model_copy(update={"path": path})
+                elif upstream is not None:
+                    self._op_output(upstream).refuse_position(
+                        param.path or "",
+                        f"DataRetrievalOp '{op_id}' template param {param.label!r}",
+                    )
                 if param.node not in seen:
                     seen.add(param.node)
                     dependencies.append(param.node)
@@ -268,6 +274,7 @@ class _RetrievalBuilder(_LLMBuilder):
             type="lumid",
             mode=mode,
             rows=spec.rows,
+            require_non_empty_rows=False if spec.rows == ROWS_TABLE else None,
             lumid_data_url=envs.LUMID_DATA_WORKER_URL or envs.LUMID_DATA_URL,
             lumid_data_token=envs.LUMID_DATA_TOKEN,
             params=resolved_params,
@@ -303,9 +310,9 @@ class _RetrievalBuilder(_LLMBuilder):
         inputs_dict: dict[str, list[str]],
         input_ops_by_id: dict[str, InputOp],
         visited: set[str],
-    ) -> dict[str, Any] | None:
+    ) -> RetrievalParam | None:
         if param.data is not None:
-            return param.model_dump(exclude_none=True)
+            return param
         label = param.label
         node_id = param.node
         if label is None or node_id is None:
@@ -317,10 +324,9 @@ class _RetrievalBuilder(_LLMBuilder):
             values = inputs_dict.get(upstream.name) or []
             if not values:
                 return None
-            return {
-                "label": label,
-                "data": {"type": "list", "items": list(values)},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=list(values))
+            )
         if isinstance(upstream, LLMChatOp):
             sample = self._sample_value_from_structural_outputs(
                 owner_node_id=owner_node_id,
@@ -330,10 +336,9 @@ class _RetrievalBuilder(_LLMBuilder):
                 upstream_op_kind=type(upstream).__name__,
                 structural_outputs=upstream.structural_outputs,
             )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         if isinstance(upstream, DataRetrievalOp):
             sample = self._sample_value_from_upstream_retrieval(
                 owner_node_id=owner_node_id,
@@ -346,10 +351,9 @@ class _RetrievalBuilder(_LLMBuilder):
                 input_ops_by_id=input_ops_by_id,
                 visited=visited,
             )
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         if isinstance(upstream, LambdaOp):
             sample_value = upstream.sample_value
             if sample_value is None:
@@ -363,10 +367,9 @@ class _RetrievalBuilder(_LLMBuilder):
                     "LUMILAKE_DISABLE_DATA_PROFILE=1."
                 )
             sample = self._project_sample_value(sample_value, param.path)
-            return {
-                "label": label,
-                "data": {"type": "list", "items": [sample]},
-            }
+            return RetrievalParam(
+                label=label, data=ListData(type="list", items=[sample])
+            )
         raise ValueError(
             "Data profile preflight does not support upstream op kind "
             f"'{type(upstream).__name__}' for placeholder '{label}' at "
@@ -419,9 +422,7 @@ class _RetrievalBuilder(_LLMBuilder):
             data_spec: DataSpecModel = SqlProfileData(
                 type="sql",
                 template=template,
-                params=[
-                    RetrievalParam.model_validate(param) for param in resolved_params
-                ],
+                params=resolved_params,
                 constraints=constraints,
                 num_test_queries=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
                 table=table,
@@ -445,9 +446,7 @@ class _RetrievalBuilder(_LLMBuilder):
             data_spec = S3ProfileData(
                 type="s3",
                 template=template,
-                params=[
-                    RetrievalParam.model_validate(param) for param in resolved_params
-                ],
+                params=resolved_params,
                 encoding=spec.encoding or "utf-8",
             )
         return self._create_runtime_op(
@@ -666,7 +665,7 @@ class _RetrievalBuilder(_LLMBuilder):
         constraints = self._build_data_profile_constraints(params, graph_dict)
         queries = _build_sample_data_profile_queries(
             template=template,
-            params=[RetrievalParam.model_validate(param) for param in resolved_params],
+            params=resolved_params,
             constraints=constraints,
             num_samples=envs.LUMILAKE_DATA_PROFILE_NUM_TEST_QUERIES,
             node_id=upstream_id,
