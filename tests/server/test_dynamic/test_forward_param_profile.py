@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_hook import DataProfileCostEstimate
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import forward_refs
 from lumilake_server.graphs import Graph

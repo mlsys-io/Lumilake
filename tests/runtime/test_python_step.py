@@ -1052,12 +1052,12 @@ def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> N
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
     optimizer = HaloOptimizer()
 
-    def cost(raw: dict[str, Any]) -> float:
-        node = Node(id="n", type="python", engine="python", model="", raw=raw)
+    def cost(spec: PythonData) -> float:
+        node = Node(id="n", type="python", engine="python", model="", data_spec=spec)
         return optimizer._python_exec_cost(node)
 
-    assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
-    assert cost({"timeout_s": 100}) == 5.0
+    assert cost(PythonData()) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
+    assert cost(PythonData(timeout_s=100)) == 5.0
 
 
 def test_halo_maps_python_to_its_own_cpu_engine() -> None:

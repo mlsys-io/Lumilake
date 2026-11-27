@@ -63,7 +63,7 @@ from pydantic import (
 
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
+from lumilake_hook import DataProfileResultRow, ResourceAction, ResourceKind, UsageRow
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     STOP,
@@ -2885,7 +2885,7 @@ async def _run_job(
             )
             for task in data_profile_tasks:
                 result = await asyncio.to_thread(run_data_profile_task, task.payload)
-                data_profile_registry[task.task_key] = result.model_dump(mode="json")
+                data_profile_registry[task.task_key] = result
             if data_profile_tasks:
                 logger.info(
                     "Ran %d data profile task(s) inline for job %s",
@@ -3388,9 +3388,7 @@ async def preview_job(
                     result = await asyncio.to_thread(
                         run_data_profile_task, task.payload
                     )
-                    data_profile_registry[task.task_key] = result.model_dump(
-                        mode="json"
-                    )
+                    data_profile_registry[task.task_key] = result
                     preview_task_keys.append(task.task_key)
                     preview_data_profile_sources.setdefault(
                         task.payload.public_graph_name, []
@@ -3409,7 +3407,7 @@ async def preview_job(
                     detail=f"data profile preflight failed: {exc}",
                 ) from exc
 
-        preview_data_profile_results: dict[str, list[dict[str, Any]]] | None = (
+        preview_data_profile_results: dict[str, list[DataProfileResultRow]] | None = (
             {} if envs.LUMILAKE_DISABLE_DATA_PROFILE else None
         )
         try:

@@ -391,12 +391,7 @@ class FlowmeshRuntimeManager:
         log_level: LogLevel | None = None,
     ) -> None:
         self.logger = init_child_logger("FlowmeshSubmitter", logger, log_level)
-        self._schema_cache: dict[str, list[dict[str, Any]]] = (
-            {}
-        )  # Cache schema info by table name
-        self._runtime_builder = RuntimeGraphBuilder(
-            logger=self.logger, schema_cache=self._schema_cache
-        )
+        self._runtime_builder = RuntimeGraphBuilder(logger=self.logger)
 
         self._task_status_lock = asyncio.Lock()  # Used when modifying task status maps
         self._data_profile_task_status: dict[tuple[str, str], dict[str, str]] = (
@@ -1530,7 +1525,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch of graphs to Flowmesh with a schedule hint and worker assignment.
@@ -1543,9 +1537,6 @@ class FlowmeshRuntimeManager:
             Worker assignment.
         worker_ids : list[str]
             Workers selected to execute this batch.
-        data_profile_results : dict[str, list[dict[str, Any]]], optional
-            Data profile results, keyed by
-            ``"data_profile::<node_id>::<query_name>"``.
         Returns
         -------
         dict
@@ -1555,7 +1546,7 @@ class FlowmeshRuntimeManager:
         submitted: list[str] = []
         try:
             return await self._process_request(
-                request_info, schedule, worker_ids, data_profile_results, submitted
+                request_info, schedule, worker_ids, submitted
             )
         except Exception:
             for workflow_id in submitted:
@@ -1567,7 +1558,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
         submitted: list[str],
     ) -> dict[str, Any]:
         """``process_request`` body; appends the FlowMesh workflow id to
@@ -1584,14 +1574,6 @@ class FlowmeshRuntimeManager:
             f" ({sum(len(nodes) for nodes in schedule.worker_assignment.values())}"
             f" nodes, workers: {worker_ids})"
         )
-        # Update cache with data_profile results if provided
-        if data_profile_results:
-            self._schema_cache.update(data_profile_results)
-            self.logger.info(
-                f"Updated schema cache with {len(data_profile_results)} data profile"
-                " results"
-            )
-
         self.logger.info(f"Submitting request {request_info.request_id} to Flowmesh.")
 
         # Build task spec from the runtime graph.
