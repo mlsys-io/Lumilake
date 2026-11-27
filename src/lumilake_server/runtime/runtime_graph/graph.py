@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
+    JoinHow,
     ListData,
     PythonData,
     PythonMode,
@@ -197,16 +198,21 @@ class RuntimeGraph:
                 list_lambda_dependent.add(node_id)
         return list_lambda_dependent
 
-    def list_lambda_fanout_nodes(self) -> set[str]:
-        """Node ids whose output count a list-mode Lambda's fan-out sets, not
-        the job's input rows: every node below a list-mode Lambda that reads
-        nothing but nodes of that fan-out."""
+    def own_row_count_nodes(self) -> set[str]:
+        """Node ids whose rows their own data sets, not the job's input rows: a
+        list-mode Lambda, its fan-out, and an ``inner`` or ``full`` join."""
         seeds = {
             node_id
             for node_id, node in self.nodes.items()
             if node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
-            and node.data_spec.mode is PythonMode.LIST
+            and (
+                node.data_spec.mode is PythonMode.LIST
+                or (
+                    node.data_spec.join is not None
+                    and node.data_spec.join.how is not JoinHow.LEFT
+                )
+            )
         }
         reached: set[str] = set()
         for node_id in self.node_order:
@@ -214,13 +220,13 @@ class RuntimeGraph:
             if node_id in seeds:
                 reached.add(node_id)
                 continue
-            reads = self._fanout_graph_reads(node)
+            reads = self._non_literal_reads(node)
             if reads and all(read in reached for read in reads):
                 reached.add(node_id)
         return reached - self.list_lambda_cardinality_nodes()
 
     @staticmethod
-    def _fanout_graph_reads(node: RuntimeOp) -> set[str] | None:
+    def _non_literal_reads(node: RuntimeOp) -> set[str] | None:
         """The node ids a node reads, or ``None`` when it also reads a literal
         value such as the job's input rows."""
         data_spec = node.data_spec
