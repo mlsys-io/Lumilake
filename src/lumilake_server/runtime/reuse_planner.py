@@ -90,10 +90,10 @@ class ReusePlan(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
     """Node id -> its output name, so a fully answered request rebuilds every
     hit output without the graph it planned from."""
-    key_paths: dict[str, str] = Field(default_factory=dict)
-    """Node id -> the record-key path it plans with, so a dispatched op keeps
-    the key it inherited from a served input even after that input left the
-    graph."""
+    key_paths: dict[str, str | list[str]] = Field(default_factory=dict)
+    """Node id -> the record-key path or paths it plans with, so a dispatched op
+    keeps the key it inherited from a served input even after that input left
+    the graph."""
 
 
 @dataclass(frozen=True)
@@ -496,7 +496,7 @@ def _served_input(records: Sequence[RecordEntry]) -> _Input:
     )
 
 
-def _literal_input(values: Sequence[Any], key_path: str | None) -> _Input:
+def _literal_input(values: Sequence[Any], key_path: str | list[str] | None) -> _Input:
     """One literal rows list, named per value and keyed by the op's key path."""
     return _Input(
         named=RecordInput(
