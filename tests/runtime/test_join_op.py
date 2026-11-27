@@ -244,6 +244,16 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     full = run("full", "full")
     assert [row["case_id"] for row in full] == ["a", "b", "z"]
     assert full[2] == stray
+    with pytest.raises(ValueError, match="how"):
+        _join_node(_merge("State, Route.diagnose", "    how:\n"))
+
+
+def test_fail_row_leaves_a_key_a_further_input_lacks_alone(tmp_path: Path) -> None:
+    """on_missing governs an attach source, so a further input that lacks a key keeps
+    the row with the fields it carries."""
+    node = _join_node(_merge("State, Route.diagnose", "    on_missing: fail_row\n"))
+    out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
+    assert [item["output"] for item in out["items"]] == _ROWS
 
 
 def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None:
@@ -388,19 +398,34 @@ def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
     ]
 
 
-def test_one_to_many_reads_one_further_row_per_key(tmp_path: Path) -> None:
-    """A declared one_to_many lines up with the default: one row per first row."""
-    node = _pairs(_CASES[:2], _GIRLS[:1], "cardinality: one_to_many")
+def test_one_to_many_needs_a_row_key() -> None:
+    """A first input that repeats a key needs the row_key that tells its rows apart."""
+    with pytest.raises(ValueError, match="one_to_many also needs row_key"):
+        _pairs(_CASES, _GIRLS, "cardinality: one_to_many")
+
+
+def test_many_to_many_reads_no_row_key() -> None:
+    """Each pair of a key's rows is one output row, so row_key has nothing to name."""
+    with pytest.raises(ValueError, match="many_to_many reads no row_key"):
+        _pairs(_CASES, _GIRLS, "cardinality: many_to_many, row_key: [unit, q]")
+
+
+def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None:
+    """An undeclared repeat fails the job, naming the cardinality that reads it."""
+    with pytest.raises(ValueError, match="declare one_to_many or many_to_many"):
+        _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {})
+
+
+def test_one_to_many_keeps_every_row_of_a_repeated_key(tmp_path: Path) -> None:
+    """Each first-input row of a key keeps its own output row, in its order."""
+    node = _pairs(
+        _CASES[:2], _GIRLS[:1], "cardinality: one_to_many, row_key: [unit, q]"
+    )
     rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert [(row["q"], row["g"]) for row in rows] == [("a", "x"), ("b", "x")]
-
-
-def test_a_repeated_key_needs_many_to_many(tmp_path: Path) -> None:
-    """An undeclared repeat fails, and declaring it emits one row per repeat."""
-    with pytest.raises(ValueError, match="declare many_to_many"):
-        _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {}, name="plain")
-    node = _pairs(_CASES, _GIRLS, "cardinality: many_to_many")
-    assert len(_run(tmp_path, node, {}, name="declared")["items"]) == 5
+    assert [(row["unit"], row["q"], row["g"]) for row in rows] == [
+        ("u1", "a", "x"),
+        ("u1", "b", "x"),
+    ]
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
@@ -501,6 +526,25 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
     fail = "row_key: [unit, rid], on_missing: fail_row"
     rows = _broadcast(tmp_path, sizes=only_u1, fields=fail)
     assert rows[:2] == _JOINED[:2] and "key" in rows[2]["_fail"]["reason"]
+
+
+def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
+    """A row_key join reads how too: inner drops a stray key, full appends it."""
+    stray = {"unit": "u3", "size": 1}
+    sizes = _SIZES + [stray]
+    inner = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: inner")
+    assert inner == _JOINED
+    full = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: full")
+    assert full == _JOINED + [stray]
+
+
+def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
+    tmp_path: Path,
+) -> None:
+    """With require_match, a key one input carries and another lacks fails the job."""
+    fields = "row_key: [unit, rid], require_match: true"
+    with pytest.raises(ValueError, match=r'key "u3" is not in'):
+        _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
 
 
 def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
