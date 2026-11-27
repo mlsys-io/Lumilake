@@ -27,24 +27,24 @@ CPU_ONLY_TASK_TYPES = frozenset({"data_retrieval", "api", "python"})
 
 def worker_profile(worker: Worker) -> WorkerProfile:
     """The placement facts of a FlowMesh worker."""
-    hardware = worker.hardware
     devices: list[GpuInfo] = (
-        hardware.gpu.devices if hardware is not None and hardware.gpu else []
+        worker.hardware.gpu.devices
+        if worker.hardware is not None and worker.hardware.gpu
+        else []
     )
-    limits = worker.ssh_limits
     return WorkerProfile(
         supported_task_types=frozenset(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         ),
         gpu_memory_fraction=devices[0].memory_fraction if devices else None,
         cpu_cores=(
-            hardware.cpu.logical_cores
-            if hardware is not None and hardware.cpu
+            worker.hardware.cpu.logical_cores
+            if worker.hardware is not None and worker.hardware.cpu
             else None
         ),
         memory_total_bytes=(
-            hardware.memory.total_bytes
-            if hardware is not None and hardware.memory
+            worker.hardware.memory.total_bytes
+            if worker.hardware is not None and worker.hardware.memory
             else None
         ),
         gpu=(
@@ -59,9 +59,13 @@ def worker_profile(worker: Worker) -> WorkerProfile:
             if devices
             else None
         ),
-        max_session_cpu_cores=limits.max_cpu_cores if limits is not None else None,
+        max_session_cpu_cores=(
+            worker.ssh_limits.max_cpu_cores if worker.ssh_limits is not None else None
+        ),
         max_session_memory_bytes=(
-            limits.max_memory_bytes if limits is not None else None
+            worker.ssh_limits.max_memory_bytes
+            if worker.ssh_limits is not None
+            else None
         ),
     )
 

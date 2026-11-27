@@ -1429,9 +1429,10 @@ class LumilakeServer:
         treated as unknown and passes — Lumilake's contract is "filter the
         obvious no-go workers"; FlowMesh remains the authority on dispatch.
         """
-        is_gpu_worker = worker_profile.has_gpu
         session_memory_mb = (
-            session_lane.gpu_memory_mb if is_gpu_worker else session_lane.cpu_memory_mb
+            session_lane.gpu_memory_mb
+            if worker_profile.has_gpu
+            else session_lane.cpu_memory_mb
         )
         if session_memory_mb and not session_limits_admit(
             worker_profile,
@@ -1451,13 +1452,15 @@ class LumilakeServer:
             return False
         if hardware.memory is not None:
             required = cls._parse_memory_to_bytes(hardware.memory)
-            total = worker_profile.memory_total_bytes
-            if required is not None and total is not None and total < required:
+            if (
+                required is not None
+                and worker_profile.memory_total_bytes is not None
+                and worker_profile.memory_total_bytes < required
+            ):
                 return False
-        if not is_gpu_worker:
+        if not worker_profile.has_gpu:
             return True
-        device_count = len(worker_profile.gpu_devices)
-        if hardware.gpu is not None and device_count < hardware.gpu:
+        if hardware.gpu is not None and len(worker_profile.gpu_devices) < hardware.gpu:
             return False
         if hardware.gpu_memory is not None:
             required_vram = cls._parse_memory_to_bytes(hardware.gpu_memory)
