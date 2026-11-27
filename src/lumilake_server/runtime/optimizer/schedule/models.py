@@ -46,7 +46,6 @@ class Node:
     gpu_request: GpuRequest | None = None
     data_spec: DataSpecModel = field(default_factory=EmptyData)
     inference_spec: Mapping[str, Any] = field(default_factory=dict)
-    api_spec: Mapping[str, Any] = field(default_factory=dict)
     parent: str | None = None
 
 

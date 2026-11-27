@@ -995,15 +995,12 @@ class DPSolver:
         return total_cost, plan_map
 
     def _http_sleep_cost(self, node: Node) -> float:
-        """An ``api`` node costs its declared request timeout."""
+        """An ``api`` node's sleep, from an externally profiled latency only."""
         if self._http_latency_s:
             profiled = self._http_latency_s.get(node.id)
             if profiled is not None:
                 return max(0.0, float(profiled))
-        timeout_sec = node.api_spec.get("timeout_sec")
-        if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool):
-            return 0.0
-        return max(0.0, float(timeout_sec))
+        return 0.0
 
     def _order_cpu_nodes_by_parent_depth(
         self, cpu_nodes: Sequence[str], gpu_depths: Mapping[str, int]

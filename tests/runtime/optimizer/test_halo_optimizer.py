@@ -347,13 +347,6 @@ def test_python_exec_cost_prefers_the_recorded_row_count() -> None:
     assert optimizer._python_exec_cost(node) == 14
 
 
-def test_http_exec_cost_reads_the_api_spec_timeout() -> None:
-    optimizer = HaloOptimizer()
-    node = Node(id="a1", type="api", engine="http", api_spec={"timeout_sec": 15.0})
-    assert optimizer._http_exec_cost(node) == 15.0
-    assert optimizer._http_exec_cost(Node(id="a2", type="api", engine="http")) == 0.0
-
-
 def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
     optimizer = HaloOptimizer()
     assert optimizer._python_exec_cost(_python_node(PythonData(timeout_s=600))) == 30

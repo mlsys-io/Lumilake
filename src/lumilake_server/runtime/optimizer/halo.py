@@ -232,7 +232,6 @@ class HaloOptimizer(BaseOptimizer):
                     gpu_request=op.data_spec.gpu_request,
                     data_spec=op.data_spec,
                     inference_spec=op.inference_spec,
-                    api_spec=op.api_spec,
                     parent=deps[0] if deps else None,
                 )
                 for dep in deps:
@@ -1094,7 +1093,7 @@ class HaloOptimizer(BaseOptimizer):
                 coeffs=coeffs,
             )
         if node.engine == "http":
-            return self._http_exec_cost(node)
+            return 0.0
         if node.engine == "python":
             return self._python_exec_cost(node)
         return self._db_input_sec * self._input_query_count
@@ -1130,13 +1129,6 @@ class HaloOptimizer(BaseOptimizer):
             for entry in spec.plan
         ]
         return max([1, *counts])
-
-    def _http_exec_cost(self, node: Node) -> float:
-        """An ``api`` node costs its declared request timeout."""
-        timeout_sec = node.api_spec.get("timeout_sec")
-        if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool):
-            return 0.0
-        return max(0.0, float(timeout_sec))
 
     def _cache_multiplier(
         self,
