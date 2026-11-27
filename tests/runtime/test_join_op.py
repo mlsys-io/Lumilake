@@ -244,6 +244,8 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     full = run("full", "full")
     assert [row["case_id"] for row in full] == ["a", "b", "z"]
     assert full[2] == stray
+    with pytest.raises(ValueError, match="how"):
+        _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
 
 def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None:
