@@ -151,7 +151,6 @@ async def _run(
         member_job_ids=[job_id],
         round_number=0,
         runtime_graph=graph,
-        task_worker={},
         served=served,
         node_task_map={_node(graph, n): f"task-{n}" for n in raw},
         results={f"task-{n}": r for n, r in raw.items()},
