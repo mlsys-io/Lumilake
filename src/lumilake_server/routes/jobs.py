@@ -1218,15 +1218,15 @@ def _validate_runtime_graphs(
             ) from exc
 
 
-def _validate_list_lambda_slice_span(
+def _validate_row_count_slice_span(
     runtime_graphs: dict[str, RuntimeGraph],
     workflow_slices: dict[str, list[WorkflowSliceMeta]],
 ) -> None:
-    """Reject at submit a list-derived output that would span several slices."""
+    """Reject at submit a row-count-derived output that would span several slices."""
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
-        list_lambda_fanout = graph.list_lambda_fanout_nodes()
-        if not list_lambda_dependent and not list_lambda_fanout:
+        own_row_count = graph.own_row_count_nodes()
+        if not list_lambda_dependent and not own_row_count:
             continue
         slices = workflow_slices.get(graph_name, [])
         if len(slices) <= 1:
@@ -1237,10 +1237,11 @@ def _validate_list_lambda_slice_span(
                     "by a list-mode Lambda, which runs once over the whole input "
                     "lists of one run"
                 )
-            elif node_id in list_lambda_fanout:
+            elif node_id in own_row_count:
                 produced = (
-                    "below a list-mode Lambda, whose fan-out sets its row count to "
-                    "one value per list element"
+                    "below a list-mode Lambda whose fan-out sets its row count, or"
+                    " by a join under 'how: inner' or 'how: full', whose own keys"
+                    " set its rows rather than one per input row"
                 )
             else:
                 continue
@@ -3769,7 +3770,7 @@ async def submit_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=_GPU_ZERO_CONFLICT,
             )
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {
                 name: server._runtime_builder.build(compiled, node_prefix=name)
                 for name, compiled in graphs.items()
