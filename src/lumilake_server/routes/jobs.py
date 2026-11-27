@@ -1239,19 +1239,18 @@ def _validate_row_count_slice_span(
                 )
             elif node_id in own_row_count:
                 produced = (
-                    "below a list-mode Lambda whose fan-out sets its row count, or"
-                    " by a join under 'how: inner' or 'how: full', whose own keys"
-                    " set its rows rather than one per input row"
+                    "below a list-mode Lambda whose fan-out sets its row count, or by"
+                    " an inner or full join, whose own keys set its rows"
                 )
             else:
                 continue
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Workflow '{graph_name}' output '{output_name}' is produced "
-                    f"{produced} and cannot be split across {len(slices)} slice(s). "
-                    "Submit one input value per job, or raise input_batch_size so the "
-                    "whole input set runs in a single slice."
+                    f"Workflow '{slices[0].public_graph_name}' output '{output_name}' "
+                    f"is produced {produced}, so it cannot be split across "
+                    f"{len(slices)} slice(s). Submit one input value per job, or a "
+                    "larger input_batch_size so the whole input set runs in one slice."
                 ),
             )
 
@@ -3626,6 +3625,7 @@ async def submit_job(
     job_id = f"req-{unique_id()}"
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
+    slice_public_names: dict[str, str] = {}
     resolved_inputs: dict[str, dict[str, list[str]]] = {}
     output_locations: dict[str, IOLocation] = {}
     seen_public_names: set[str] = set()
@@ -3727,6 +3727,7 @@ async def submit_job(
                     template_hash=template_hash,
                     varying_input_keys=varying_input_keys,
                 )
+                slice_public_names[graph_name] = name
                 logger.debug(
                     "Resolved inputs for %s: %s",
                     graph_name,
@@ -3779,7 +3780,7 @@ async def submit_job(
                 name: [
                     meta
                     for slice_name, meta in workflow_slices.items()
-                    if meta.public_graph_name == name
+                    if meta.public_graph_name == slice_public_names[name]
                 ]
                 for name in graphs
             },
