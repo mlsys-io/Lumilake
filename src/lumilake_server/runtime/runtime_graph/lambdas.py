@@ -1,10 +1,16 @@
 from collections.abc import Sequence
 
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    ColumnPlanEntry,
+    PythonData,
+    PythonMode,
+)
 from lumilake_server.ops import (
     DataOp,
     DataRetrievalOp,
     InputOp,
+    LambdaMode,
     LambdaOp,
     LLMOp,
 )
@@ -103,7 +109,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 if op.timeout_s is None
                 else op.timeout_s
             ),
-            mode=op.mode if op.mode != "row" else None,
+            mode=PythonMode(op.mode) if op.mode is not LambdaMode.ROW else None,
             by=op.by,
             memory_mb=op.memory_mb,
             image=op.image,
@@ -180,13 +186,13 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                     )
                 )
         row_count = self._python_step_row_count(
-            op_id, row_counts, combines_rows=op.mode == "aligned"
+            op_id, row_counts, combines_rows=op.mode is LambdaMode.ALIGNED
         )
         data_spec = PythonData(
             code=op.code,
             fn_name=op.fn.__name__,
             plan=plan,
-            mode=op.mode,
+            mode=PythonMode(op.mode),
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None
@@ -224,7 +230,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             return None
         referenced = self._referenced_row_lambdas(ctx)
         if (
-            op.mode == "row"
+            op.mode is LambdaMode.ROW
             and op.id in ctx.visited
             and op.id not in ctx.outputs_by_source
             and op.image is None

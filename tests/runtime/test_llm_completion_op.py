@@ -9,6 +9,7 @@ from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
+    LambdaMode,
     LambdaOp,
     LLMCompletionOp,
     as_output,
@@ -106,7 +107,7 @@ def test_completion_prompt_from_list_mode_lambda_skips_message_inference() -> No
     render = LambdaOp(
         [prompt],
         fn=lambda inputs: [f"{value}?" for value in inputs[0]],
-        mode="list",
+        mode=LambdaMode.LIST,
     )
     completion = LLMCompletionOp(
         prompt=render,

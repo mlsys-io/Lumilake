@@ -10,6 +10,7 @@ from lumilake_server.data_specs import (
     Message,
     NodeRead,
     PythonData,
+    PythonMode,
     TemplateOptions,
 )
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
@@ -271,7 +272,7 @@ class _VisionBuilder(_RetrievalBuilder):
             name=flatten_id,
             task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
-                mode="flatten",
+                mode=PythonMode.FLATTEN,
                 plan=plan,
                 template=llm_op.rowwise_template,
                 timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
@@ -321,7 +322,7 @@ class _VisionBuilder(_RetrievalBuilder):
             name=llm_op_id,
             task_type=PYTHON_TASK_TYPE,
             data_spec=PythonData(
-                mode="regroup",
+                mode=PythonMode.REGROUP,
                 plan=[
                     ColumnPlanEntry(kind="stage", node=infer_id, label="outputs"),
                     ColumnPlanEntry(

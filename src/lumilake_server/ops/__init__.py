@@ -44,6 +44,7 @@ from lumilake_server.ops.ops import (
 )
 from lumilake_server.ops.util_ops import (
     FormatOp,
+    LambdaMode,
     LambdaOp,
     format_op,
     lambda_op,
@@ -68,6 +69,7 @@ __all__ = [
     "LLMCompletionOp",
     "LLMOp",
     "LLMVisionOp",
+    "LambdaMode",
     "LambdaOp",
     "MessageOp",
     "Op",
