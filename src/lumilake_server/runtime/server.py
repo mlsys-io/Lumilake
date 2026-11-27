@@ -633,14 +633,13 @@ class LumilakeServer:
         merged = ProgressDetails()
         has_details = False
         for step in present:
-            details = step.details
-            if details is None:
+            if step.details is None:
                 continue
             has_details = True
-            merged.succeeded += details.succeeded
-            merged.failed += details.failed
-            merged.pending += details.pending
-            merged.dispatched += details.dispatched
+            merged.succeeded += step.details.succeeded
+            merged.failed += step.details.failed
+            merged.pending += step.details.pending
+            merged.dispatched += step.details.dispatched
         return ProgressStep(
             completed=all(step.completed for step in present),
             details=merged if has_details else None,
@@ -663,26 +662,23 @@ class LumilakeServer:
         flowmesh_nodes = 0
         eta_values: list[float] = []
         for status in statuses:
-            batch_progress = status.batch_progress
-            if batch_progress is None:
+            if status.batch_progress is None:
                 continue
-            batch_total += batch_progress.total
-            batch_completed += batch_progress.completed
-            batch_running += batch_progress.running
-            batch_pending += batch_progress.pending
-            batch_failed += batch_progress.failed
-            batch_entries.extend(batch_progress.batches)
-            total_nodes += batch_progress.overall_progress.total_nodes
-            completed_nodes += batch_progress.overall_progress.completed_nodes
-            raw_nodes += batch_progress.overall_progress.raw_nodes
-            flowmesh_nodes += batch_progress.overall_progress.flowmesh_nodes
-            if batch_progress.eta_seconds is not None:
-                eta_values.append(batch_progress.eta_seconds)
+            batch_total += status.batch_progress.total
+            batch_completed += status.batch_progress.completed
+            batch_running += status.batch_progress.running
+            batch_pending += status.batch_progress.pending
+            batch_failed += status.batch_progress.failed
+            batch_entries.extend(status.batch_progress.batches)
+            total_nodes += status.batch_progress.overall_progress.total_nodes
+            completed_nodes += status.batch_progress.overall_progress.completed_nodes
+            raw_nodes += status.batch_progress.overall_progress.raw_nodes
+            flowmesh_nodes += status.batch_progress.overall_progress.flowmesh_nodes
+            if status.batch_progress.eta_seconds is not None:
+                eta_values.append(status.batch_progress.eta_seconds)
 
         batch_progress = None
-        if any((batch_total, batch_running, batch_pending, batch_failed)) or (
-            batch_entries
-        ):
+        if batch_entries:
             batch_progress = BatchProgress(
                 total=batch_total,
                 completed=batch_completed,
