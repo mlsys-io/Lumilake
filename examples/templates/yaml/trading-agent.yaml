@@ -51,6 +51,7 @@ ops:
     data_spec:
       type: lumid
       mode: sql
+      rows: one
       template: |-
         WITH profile AS (
           SELECT symbol, "companyName", sector, industry, "marketCap", beta
@@ -96,6 +97,7 @@ ops:
     data_spec:
       type: lumid
       mode: sql
+      rows: one
       template: |-
         WITH bars_recent AS (
           SELECT
@@ -144,6 +146,7 @@ ops:
     data_spec:
       type: lumid
       mode: sql
+      rows: one
       template: |-
         SELECT
           symbol,

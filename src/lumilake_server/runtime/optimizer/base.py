@@ -1,14 +1,14 @@
 """Base optimizer class for Lumilake runtime supporting multiple implementations."""
 
 import json
-import re
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_hook import Schedule
-from lumilake_server.data_specs import parse_data_spec
+from lumilake_hook import Schedule, WorkerProfile
+from lumilake_server.data_specs import remap_model, remap_node_dict
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     chunk_group_parent,
@@ -74,11 +74,11 @@ def _normalize_label_tokens(value: object) -> object:
 def _normalize_spec_for_signature(
     spec: dict[str, Any], mapping: dict[str, str]
 ) -> dict[str, Any]:
-    remapped = _remap_node_spec(spec, mapping)
+    remapped = remap_node_dict(spec, mapping)
     normalized = _normalize_label_tokens(remapped)
     if not isinstance(normalized, dict):
         raise TypeError("Expected dict after normalizing runtime spec")
-    return cast(dict[str, Any], normalized)
+    return normalized
 
 
 def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, ...]:
@@ -161,45 +161,6 @@ def _dedupe_ordered(items: list[str]) -> list[str]:
     return ordered
 
 
-_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
-
-
-def _remap_placeholder(text: str, mapping: dict[str, str]) -> str:
-    def _sub(match: re.Match[str]) -> str:
-        node = match.group(1)
-        remapped = mapping.get(node)
-        if remapped is None:
-            return match.group(0)
-        return f"${{{remapped}.{match.group(2)}}}"
-
-    return _PLACEHOLDER_RE.sub(_sub, text)
-
-
-def _remap_node_refs(value: object, mapping: dict[str, str]) -> object:
-    if isinstance(value, dict):
-        updated: dict[str, object] = {}
-        for key, item in value.items():
-            if key == "node" and isinstance(item, str) and item in mapping:
-                updated[key] = mapping[item]
-            else:
-                updated[key] = _remap_node_refs(item, mapping)
-        return updated
-    if isinstance(value, list):
-        return [_remap_node_refs(item, mapping) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_remap_node_refs(item, mapping) for item in value)
-    if isinstance(value, str):
-        return _remap_placeholder(value, mapping)
-    return value
-
-
-def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
-    remapped = _remap_node_refs(spec, mapping)
-    if not isinstance(remapped, dict):
-        raise TypeError("Expected dict after remapping runtime spec")
-    return cast(dict[str, Any], remapped)
-
-
 def _dedupe_runtime_graph(
     graph: RuntimeGraph,
     logical_ops: dict[str, tuple[tuple[str, str], ...]],
@@ -247,21 +208,18 @@ def _dedupe_runtime_graph(
         new_nodes[canonical] = replace(
             op,
             node_id=canonical,
-            data_spec=parse_data_spec(
-                op.task_type,
-                _remap_node_spec(op.data_spec.model_dump(exclude_none=True), mapping),
-            ),
-            model_spec=_remap_node_spec(op.model_spec, mapping),
-            inference_spec=_remap_node_spec(op.inference_spec, mapping),
-            api_spec=_remap_node_spec(op.api_spec, mapping),
+            data_spec=remap_model(op.data_spec, mapping),
+            model_spec=remap_node_dict(op.model_spec, mapping),
+            inference_spec=remap_node_dict(op.inference_spec, mapping),
+            api_spec=remap_node_dict(op.api_spec, mapping),
             dependencies=tuple(_dedupe_ordered(remapped_deps)),
             output_spec=(
-                _remap_node_spec(op.output_spec, mapping)
+                remap_node_dict(op.output_spec, mapping)
                 if op.output_spec is not None
                 else None
             ),
             condition=(
-                _remap_node_spec(op.condition, mapping)
+                remap_node_dict(op.condition, mapping)
                 if op.condition is not None
                 else None
             ),
@@ -309,7 +267,7 @@ class BaseOptimizer(ABC):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         """Generate execution schedule for operations in the batch.
@@ -320,8 +278,8 @@ class BaseOptimizer(ABC):
             Runtime graph in the batch
         worker_names : list[str]
             Workers selected for this batch.
-        worker_profiles : dict[str, dict[str, Any]]
-            Worker hardware/profile information keyed by worker id.
+        worker_profiles : dict[str, WorkerProfile]
+            Worker placement facts keyed by worker id.
         data_profile_results : dict[str, list[dict[str, Any]]] | None, optional
             Data profile outputs keyed by "data_profile::<node_id>::<query_name>".
 

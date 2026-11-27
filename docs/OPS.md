@@ -7,7 +7,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `InputOp` | Generated from workflow-level inputs. |
 | `OutputOp` | Generated from workflow-level outputs. |
 | `DataOp` | Inline static data. |
-| `DataRetrievalOp` | Retrieve data via lumid-data-app (`type: lumid`, `mode: sql\|s3\|agent`). All modes route through the lumid connector; `LUMID_DATA_URL` is required, plus an effective lumid-data bearer token (`LUMID_DATA_TOKEN` overrides the fallback to `LUMILAKE_RUNTIME_TOKEN`). Optional `data_spec.sample_value` short-circuits data-profile preflight when this op is used as a placeholder source for a downstream `DataRetrievalOp`. |
+| `DataRetrievalOp` | Retrieve data through lumid-data-app in `sql`, `s3` or `agent` mode (see below). |
 | `MessageOp` | Build role/content message lists for language model calls. |
 | `LLMChatOp` | Run text chat generation, including aggregate and row-wise table prompts. An optional `config.api` block routes the op to an external LLM API endpoint instead of a locally-loaded model (see below). |
 | `LLMCompletionOp` | Run rendered string prompts through local generation without a chat template. |
@@ -25,6 +25,50 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 ## YAML Use
 
 YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` are generated from the top-level `inputs:` and `outputs:` blocks; do not declare them manually in YAML.
+
+### DataRetrievalOp
+
+`DataRetrievalOp` retrieves data through lumid-data-app in `sql`, `s3` or `agent` mode. Downstream ops pair rows by position: a row step matches each output to the row it read, a join attaches 1:1 outputs by position, and `input_batch_size` splits rows into slices by position. A result in no defined order could pair different rows on each run, so a retrieval defines the order its rows come back in:
+
+- A `sql` retrieval ends its query with a top-level `ORDER BY`, or declares `rows: one` when a lookup returns at most one row per parameter row. Submit refuses a query with neither, naming the op; only the outer query of the last statement counts.
+- The `ORDER BY` breaks ties on a column no two returned rows share, such as the primary key. Submit reads the template only, so the author keeps ties unique.
+- `rows: one` is checked at run time: a parameter row that returns more than one row fails the job. An n8n Postgres node declares it as `"rows": "one"` in its `notes`.
+- A retrieval whose whole result is one value declares `rows: table` instead, for example to put every fetched row into one prompt. Each parameter row emits one record holding the whole table; an empty result is one record with an empty table. The rows inside the table come in the database's order unless the query orders them, so a prompt built from them can change between runs. Submit refuses a path that indexes a position under the result field, naming the consumer, op and path; rename an all-digit column in the query (`AS y2024`). An n8n Postgres node declares it as `"rows": "table"` in its `notes`.
+- `rows` is accepted only on a `sql` retrieval; submit rejects it elsewhere, naming the op.
+- An `agent` retrieval replays SQL it writes at run time, so its order is the run-time SQL's. An `s3` retrieval reads one key per parameter row, in parameter-row order; a workflow `S3Location` input naming a prefix is expanded to its keys in lexicographic order.
+
+```yaml
+ops:
+  - id: "OHLC via SQL"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      template: |-
+        SELECT symbol, close, timestamp
+        FROM demo.fact_ohlc_10m
+        WHERE symbol = '{symbol}'
+        ORDER BY timestamp DESC
+        LIMIT 5
+      params:
+        - {label: symbol, node: "Stock"}
+
+  - id: "OHLC table"
+    op: DataRetrievalOp
+    inputs: [Stock]
+    data_spec:
+      type: lumid
+      mode: sql
+      rows: table
+      template: |-
+        SELECT symbol, close, timestamp
+        FROM demo.fact_ohlc_10m
+        WHERE symbol = '{symbol}'
+      params:
+        - label: symbol
+          node: "Stock"
+```
 
 ### FormatOp
 
@@ -279,7 +323,7 @@ ops:
 
 #### Where the function runs
 
-- **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
+- **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image` or `gpu`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type (a Docker-backed worker on a FlowMesh version that supports it), or, when the op sets `gpu`, on a GPU worker that advertises it. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
 - **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import`, so the code imports nothing; Lumilake wraps each row so it arrives decoded, and submit refuses code that binds a wrapper name, annotates a top-level assignment or uses a `Message`/`ops` type. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
 - **API-mode `LLMChatOp`**: cannot read a `LambdaOp`, since the request body carries no function step; the build fails naming the step. Make the Lambda a workflow output, or use a non-API chat.
 
@@ -300,11 +344,14 @@ These fields apply to the standalone task only:
 | `timeout_s` | 600 | (0, 600]; (0, 3600] with `image` | Task timeout in seconds. |
 | `memory_mb` | worker default | [128, 8192] | Task memory limit. |
 | `image` | worker default | non-empty string | Container image; a Lambda with an image always runs as a standalone task. |
+| `gpu` | none (CPU) | `count` in [1, 8]; optional `type`, `memory` | GPUs the task needs, sent as `resources.hardware.gpu`. The task is placed on a GPU worker that advertises the `python` task type. |
 | `expected_runtime_s` | none | (0, effective `timeout_s`] | Planning hint for HALO: seconds per input row, never enforced. |
 | `cache` | none | bool | Opt-in FlowMesh task caching, sent only when set. |
 | `sample_value` | none | any non-null JSON | Value that data-profile preflight uses for a placeholder reading this Lambda; never executed. |
 
-When a job's input slices are coalesced into one workflow, the task runs their rows in sequence, so Lumilake coalesces only as many slices as keep `expected_runtime_s` times the rows within `timeout_s`; a slice whose row count is unknown before it runs is never coalesced.
+A `LambdaOp` with `gpu` is placed on a GPU worker that advertises the `python` task type by HALO and by `topological-sort`; every other `python` step runs on a CPU worker. The job waits while every GPU worker that can carry the step is busy and fails when the cluster has none; when the claimed GPU workers cannot carry it, HALO and `topological-sort` fail the job naming the node, and a remote optimizer refuses such a graph before submitting it. The step's own `gpu` request reaches FlowMesh unchanged and filters the workers it may land on, so `count`, `type` and `memory` choose the device; the job-level `hardware.gpu` hint does not override it. `memory` is a per-device floor in `Ki`, `Mi`, `Gi` or `Ti` units, so `24Gi` accepts a 24 GiB card or larger; a bare `24G` or `24GB` is rejected at submit. `type` is a case-insensitive substring of the device name, and `any`, `auto` or `*` means no type constraint. Use an `image` that provides the GPU libraries the code imports, for example `gpu: {count: 1, memory: 24Gi}` with a CUDA image.
+
+When a job's input slices are coalesced into one workflow, the task runs their rows in sequence, so Lumilake coalesces only as many slices as keep `expected_runtime_s` times the rows within `timeout_s`; the rest run as separate copies of the workflow in the same batch. A slice whose row count is unknown before it runs is never coalesced.
 
 ### RouterOp
 

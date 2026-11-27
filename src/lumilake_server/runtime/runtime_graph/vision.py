@@ -6,12 +6,13 @@ from lumilake_server.data_specs import (
     GraphTemplate,
     GraphTemplateData,
     ListData,
+    LiteralColumn,
     Message,
     NodeRead,
     PythonData,
     TemplateOptions,
 )
-from lumilake_server.ops import DataRetrievalOp, InputOp, LambdaOp, Op
+from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
 from lumilake_server.ops.llm_ops import ImageGenerationOp, LLMVisionOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import (
@@ -48,6 +49,7 @@ class _VisionBuilder(_RetrievalBuilder):
         nodes a flattened per-row VLM runs as."""
         ctx.visited.add(op.id)
         ctx.visited.add(op.image_source)
+        self._mark_literal_column_producers_visited(op.rowwise_columns, ctx.visited)
         runtime_ops = self._build_vlm_nodes_from_image_op(
             op.id,
             op,
@@ -79,44 +81,29 @@ class _VisionBuilder(_RetrievalBuilder):
                 runtime_nodes=runtime_nodes,
             )
             columns: list[Column] = []
-            for col in llm_op.rowwise_columns or []:
-                label = col.get("label")
-                data = col.get("data")
-                node_ref = col.get("node")
-                path = col.get("path")
-                if isinstance(label, str) and isinstance(data, dict):
-                    columns.append(
-                        Column.model_validate({"label": label, "data": data})
-                    )
+            for column in llm_op.rowwise_columns or []:
+                if isinstance(column, LiteralColumn):
+                    columns.append(Column(label=column.label, data=column.data))
                     continue
-                if isinstance(label, str) and isinstance(node_ref, str):
-                    if path is None and not isinstance(
-                        graph_dict.get(node_ref), InputOp
-                    ):
-                        raise ValueError(
-                            f"Column '{label}' of consumer '{llm_op_id}'"
-                            f" references node '{node_ref}' without a path;"
-                            " only InputOp refs may omit it."
-                        )
-                    self._guard_marked_column(
+                upstream = graph_dict.get(column.node)
+                if column.path is None and not isinstance(upstream, (InputOp, DataOp)):
+                    raise ValueError(
+                        f"Column '{column.label}' of consumer '{llm_op_id}' references"
+                        f" node '{column.node}' without a path; only InputOp and DataOp"
+                        " refs may omit it."
+                    )
+                self._guard_marked_column(
+                    consumer_id=llm_op_id,
+                    label=column.label,
+                    upstream=upstream,
+                )
+                columns.append(
+                    self._node_ref_column(
                         consumer_id=llm_op_id,
-                        label=label,
-                        upstream=graph_dict.get(node_ref),
+                        column=column,
+                        upstream=upstream,
+                        inputs_dict=inputs_dict,
                     )
-                    columns.append(
-                        self._node_ref_column(
-                            consumer_id=llm_op_id,
-                            label=label,
-                            node_ref=node_ref,
-                            path=path if isinstance(path, str) else "",
-                            upstream=graph_dict.get(node_ref),
-                            inputs_dict=inputs_dict,
-                        )
-                    )
-                    continue
-                raise ValueError(
-                    f"Column '{label}' of consumer '{llm_op_id}' has neither"
-                    " data nor node+path"
                 )
             if not columns:
                 raise ValueError(f"LLMVisionOp {llm_op_id} has empty rowwise_columns")
@@ -179,7 +166,7 @@ class _VisionBuilder(_RetrievalBuilder):
         if llm_op_id not in self._flattened_vlm_ids:
             template_spec.columns = [*template_spec.columns, batch_column]
             template_dependencies = self._collect_graph_template_dependencies(
-                template_spec.model_dump(exclude_none=True)
+                template_spec
             )
             dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
             dependencies.extend(template_dependencies)

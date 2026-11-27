@@ -2,10 +2,14 @@
 The golden fixture holds the wire origin/main's builders produced for the same
 graphs."""
 
-from typing import Any
+from typing import Any, Literal
 
 from lumilake_server.common import ApiConfig, GenerationConfig
-from lumilake_server.data_specs import PythonData
+from lumilake_server.data_specs import (
+    PythonData,
+    RetrievalParam,
+    build_column_table,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -29,7 +33,7 @@ from lumilake_server.ops.http_fetch_ops import HttpFetchOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.data_specs import wire
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -53,8 +57,10 @@ def _config(model: str = MODEL) -> GenerationConfig:
     return GenerationConfig(model=model)
 
 
-def _lumid_spec(mode: str, template: str, params: list) -> dict[str, Any]:
-    return {"type": "lumid", "mode": mode, "template": template, "params": params}
+def _lumid_spec(
+    mode: Literal["sql", "s3", "agent"], template: str, params: list
+) -> RetrievalSpec:
+    return RetrievalSpec(type="lumid", mode=mode, template=template, params=params)
 
 
 def explode_rows(items):
@@ -80,10 +86,13 @@ def _python_rowwise():
     rowwise = LLMChatOp(
         [OpMessage(role="user", content="hello")],
         rowwise_template="Summarize {value}",
-        rowwise_columns=[
-            {"label": "value", "node": explode.id, "path": "items.output.value"},
-            {"label": "tone", "data": {"type": "list", "items": ["a", "b"]}},
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {"label": "value", "node": explode.id, "path": "items.output.value"},
+                {"label": "tone", "data": {"type": "list", "items": ["a", "b"]}},
+            ],
+            "rowwise_columns",
+        ),
         rowwise_seed=RowwiseSeed(node=explode.id, path="items.output.value"),
         rowwise_seed_op=explode,
         config=_config(),
@@ -139,9 +148,10 @@ def _completion_vision_image():
         image_source_op=images,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA"]}}],
+            "rowwise_columns",
+        ),
     )
     image = ImageGenerationOp(
         content=prompt, config=GenerationConfig(model="black-forest-labs/FLUX.1-dev")
@@ -165,7 +175,9 @@ def _grouped_fetch_classify():
         [OpMessage(role="user", content=prompt)],
         config=_config(),
         rowwise_template="{prompt}",
-        rowwise_columns=[{"label": "prompt", "node": prompt.id, "path": ""}],
+        rowwise_columns=build_column_table(
+            [{"label": "prompt", "node": prompt.id, "path": ""}], "rowwise_columns"
+        ),
     )
     fetch = HttpFetchOp("https://example.com/{query}", rowwise)
     candidates = LambdaOp([stock], fn=shout_rows, mode="list")
@@ -191,19 +203,20 @@ def _aggregate_retrieval_python():
     digest = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table")],
         config=_config(),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     agent = DataRetrievalOp(
-        data_spec={
-            "type": "lumid",
-            "mode": "agent",
-            "description": "Find the revenue for {symbol}",
-            "params": [{"label": "symbol", "node": stock.id}],
-            "schema_scope": "finance",
-            "max_steps": 4,
-        },
+        data_spec=RetrievalSpec(
+            type="lumid",
+            mode="agent",
+            description="Find the revenue for {symbol}",
+            params=[RetrievalParam(label="symbol", node=stock.id)],
+            schema_scope="finance",
+            max_steps=4,
+        ),
         inputs=[stock],
     )
     big = LambdaOp(
@@ -241,7 +254,10 @@ def build(graph_name: str) -> dict[str, dict[str, Any]]:
     built = GRAPHS[graph_name]()
     entries: dict[str, dict[str, Any]] = {}
     for node_id, op in built.nodes.items():
-        entry: dict[str, Any] = {"task_type": op.task_type, "data_spec": wire(op)}
+        entry: dict[str, Any] = {
+            "task_type": op.task_type,
+            "data_spec": op.data_spec.model_dump(exclude_none=True),
+        }
         code = _generated_code(op)
         if code is not None:
             entry["code"] = code

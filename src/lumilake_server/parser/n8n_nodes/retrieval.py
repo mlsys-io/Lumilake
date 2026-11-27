@@ -5,6 +5,8 @@ plus the three retrieval translators.
 import re
 from typing import Any
 
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from ..common import make_id as _make_id
 from . import references, shared
 from .entries import NodeDict, OpContext
@@ -234,6 +236,28 @@ def _build_sql_template_and_params(
     return query, query_params
 
 
+def _sql_data_spec(
+    template: str,
+    params: list[dict[str, Any]],
+    notes: dict[str, Any],
+    node_name: str,
+    table: str | None = None,
+) -> dict[str, Any]:
+    """The n8n postgres node's retrieval spec, with its notes' ``rows`` declaration."""
+    raw: dict[str, Any] = {
+        "type": "lumid",
+        "mode": "sql",
+        "template": template,
+        "params": params,
+    }
+    if table is not None:
+        raw["table"] = table
+    if notes.get("rows") is not None:
+        raw["rows"] = notes["rows"]
+    where = f"n8n postgres node '{node_name}' data_spec"
+    return RetrievalSpec.load(raw, where).model_dump(exclude_none=True)
+
+
 def make_postgres(
     node: NodeDict, ctx: OpContext, node_name: str
 ) -> tuple[list[NodeDict], str]:
@@ -249,6 +273,7 @@ def make_postgres(
         for dep in references.main_incoming(node_name, ctx.incoming, ctx.node_map)
         if dep in ctx.op_ids
     ]
+    notes = shared.parse_notes(node.get("notes", ""))
 
     if operation == "executeQuery":
         query = _get_param_value(params.get("query"), "query", node_name)
@@ -270,12 +295,7 @@ def make_postgres(
             "_op": "DataRetrievalOp",
             "_max_iter": None,
             "_inputs": list(dict.fromkeys(extra_inputs + dep_inputs + main_inputs)),
-            "data_spec": {
-                "type": "lumid",
-                "mode": "sql",
-                "template": sql_template,
-                "params": sql_params,
-            },
+            "data_spec": _sql_data_spec(sql_template, sql_params, notes, node_name),
         }
         return [query_op], query_op["_id"]
 
@@ -325,13 +345,9 @@ def make_postgres(
         "_inputs": list(
             dict.fromkeys(extra_inputs + limit_inputs + dep_inputs + main_inputs)
         ),
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": sql_template,
-            "params": sql_params,
-            "table": full_table,
-        },
+        "data_spec": _sql_data_spec(
+            sql_template, sql_params, notes, node_name, full_table
+        ),
     }
     return [op], op["_id"]
 

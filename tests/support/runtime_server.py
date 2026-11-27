@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from support.runtime_graphs import build_dummy_runtime_graph
 
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import EmptyData
 from lumilake_server.runtime.job_manager.base import BatchSelection, WorkflowItem
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -56,8 +57,8 @@ class RecordingRuntimeManager:
     async def get_workers(self) -> list[str]:
         return ["worker-1"]
 
-    async def get_worker_profile(self, worker_id: str) -> dict[str, Any]:
-        return {"gpu": {"count": 0}}
+    async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
+        return WorkerProfile()
 
     def count_runtime_nodes(self, graphs: dict[str, Any]) -> int:
         return sum(graph.node_count for graph in graphs.values())

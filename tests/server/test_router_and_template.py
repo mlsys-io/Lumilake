@@ -253,7 +253,7 @@ def test_template_and_api_are_mutually_exclusive() -> None:
                     "id": "Live_r{{round}}",
                     "op": "DataRetrievalOp",
                     "inputs": ["Symbols"],
-                    "data_spec": {"type": "lumid", "mode": "sql", "template": "S"},
+                    "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
                 }
             ],
             [_state("Live_r{{round}}", ["Symbols"])],
