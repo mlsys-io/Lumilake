@@ -165,9 +165,18 @@ class ContentRecords(BaseModel):
     keyed: bool = False
     values: list[Any] = Field(default_factory=list)
     keys: list[str | None] = Field(default_factory=list)
+    items: list[Any] = Field(default_factory=list)
+    """One entry per item the read's task returned, as its readers take them."""
 
     def value_at(self, position: int) -> Any:
         return self.values[position] if self.keyed else self.values
+
+    @property
+    def lines_up(self) -> bool:
+        """Whether the read hands one item per record, so its rows and the items
+        its readers take stand at the same positions; one item for several
+        records leaves them unkeyed."""
+        return len(self.items) == len(self.values)
 
 
 class GroupSlot(BaseModel):
@@ -592,6 +601,7 @@ class ReusePlanner:
                 if records.keyed
                 else []
             ),
+            items=records.items.copy(),
         )
         if _content_servable(runtime_graph, decision, plan.op.node_id):
             decision.content_served.add(plan.op.node_id)
@@ -685,6 +695,8 @@ class ReusePlanner:
         if not isinstance(spec, PythonData) or spec.mode != "expand":
             return None
         parent_keys = _expand_parent_keys(plan, stored)
+        if parent_keys is None:
+            parent_keys = _content_parent_keys(plan, decision)
         if parent_keys is None:
             return None
         return self._decide_children(
@@ -925,6 +937,23 @@ def _expand_parent_keys(
         return None
     source = sources[0]
     keys = [entry.address.record for entry in stored[source]]
+    if not keys or any(key is None for key in keys):
+        return None
+    return [str(key) for key in keys]
+
+
+def _content_parent_keys(plan: RecordPlan, decision: ReusePlan) -> list[str] | None:
+    """A live parent key per row an expand reads, from an unversioned read the
+    plan re-ran and its rows read keyed; ``None`` when that read is not its one
+    keyed input."""
+    keyed = [
+        node
+        for node in input_nodes(plan)
+        if node in decision.content and decision.content[node].keyed
+    ]
+    if len(keyed) != 1 or not decision.content[keyed[0]].lines_up:
+        return None
+    keys = decision.content[keyed[0]].keys
     if not keys or any(key is None for key in keys):
         return None
     return [str(key) for key in keys]
@@ -1234,11 +1263,13 @@ def _reader_takes_content(plan: ReusePlan, node_id: str, reader: RuntimeOp) -> b
 def _content_column(
     plan: ReusePlan, node: str, entry: ColumnPlanEntry
 ) -> list[Any] | None:
-    """The column a python reader takes from a re-ran read."""
+    """The column a python reader takes from a re-ran read: its items, which a
+    full run's task hands it one cell per, not one cell per stored record."""
+    content = plan.content[node]
     try:
         return items_column(
             entry.model_dump(exclude_none=True, exclude={"values"}),
-            plan.content[node].values,
+            content.items,
             _as_is,
             "served",
         )
@@ -1574,7 +1605,9 @@ def _content_input(
     positions = range(len(records.values)) if records.keyed else range(1)
     contents = [content_value(records.value_at(position)) for position in positions]
     keys: list[str | None] = (
-        [records.keys[position] for position in positions] if records.keyed else [None]
+        [records.keys[position] for position in positions]
+        if records.keyed and records.lines_up
+        else [None]
     )
     return _Input(
         named=RecordInput(

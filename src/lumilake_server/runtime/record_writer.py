@@ -140,6 +140,14 @@ class NodeRecords:
         its whole value list."""
         return self.values[position] if self.keyed else self.values
 
+    @property
+    def lines_up(self) -> bool:
+        """Whether the node hands one item per record, so a reader may take its
+        keys by position. A node the store served has one entry per record; a
+        produced node lines up when it has one item per value, so a read whose
+        one item holds several records carries no row identity to hand down."""
+        return bool(self.entries) or len(self.items) == len(self.values)
+
     def identity_at(self, position: int, round_number: int) -> tuple[str, str] | None:
         """The record at ``position`` as a consumer at ``round_number`` names
         it: its two digests, or ``None`` when the row has no record. A node
@@ -543,7 +551,9 @@ class RecordWriter:
                 continue
             parent_index = _index_field(item, "parent")
             parent_key = (
-                None if parent is None else record_key_at(parent.keys, parent_index)
+                None
+                if parent is None or not parent.lines_up
+                else record_key_at(parent.keys, parent_index)
             )
             if parent_key is None:
                 continue
@@ -609,7 +619,7 @@ class RecordWriter:
     ) -> list[RecordEntry]:
         """One entry per live parent holding its child count, so a parent that
         expanded to nothing is still answered from the store."""
-        if parent is None:
+        if parent is None or not parent.lines_up:
             return []
         counts: dict[int, int] = {}
         served: set[int] = set()
@@ -1935,7 +1945,7 @@ def _child_record_key(
 ) -> str | None:
     """One expand child's record key: its parent's key and its index among that
     parent's children, or ``None`` when the parent row carries no key."""
-    if parent is None:
+    if parent is None or not parent.lines_up:
         return None
     parent_key = record_key_at(parent.keys, _index_field(item, "parent"))
     if parent_key is None:
@@ -2027,7 +2037,7 @@ def _node_keys(
     if own is not None:
         return _own_keys(own, plan, records)
     inherited = None if plan.inherits_key is None else records.get(plan.inherits_key)
-    if inherited is None or inherited.keys is None:
+    if inherited is None or inherited.keys is None or not inherited.lines_up:
         return None
     if len(inherited.keys) != len(values):
         return None
@@ -2040,7 +2050,7 @@ def _own_keys(
     """A 1:1 node's own keys, each None taken from its keyed input at the same
     position when the counts match."""
     inherited = None if plan.inherits_key is None else records.get(plan.inherits_key)
-    if inherited is None or inherited.keys is None:
+    if inherited is None or inherited.keys is None or not inherited.lines_up:
         return own
     if len(inherited.keys) != len(own):
         return own
@@ -2063,7 +2073,7 @@ def _declared_keys(
     if rows is not None:
         return [composite_key(row, [declared.path]) for row in rows]
     served = records.get(declared.node)
-    if served is not None and served.keys is not None:
+    if served is not None and served.keys is not None and served.lines_up:
         return served.keys
     literal = _declared_rows(plan, declared.path, count)
     return (
@@ -2105,7 +2115,7 @@ def _inherit_input_keys(
         if node_records is None or node_records.keys is None or source is None:
             continue
         inherited = records.get(source)
-        if inherited is None or inherited.keys is None:
+        if inherited is None or inherited.keys is None or not inherited.lines_up:
             continue
         if len(inherited.keys) != len(node_records.keys):
             continue
