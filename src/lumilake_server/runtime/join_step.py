@@ -388,9 +388,13 @@ def _broadcast(inputs):
         more, more_marked = _keyed(_rows(column, where), where)
         _matched(first_keys, more, where)
         if _HOW == "inner":
-            # A row this input lacks a key for is not emitted, and keeps its slot so an
-            # attach over the first input still pairs each value with its own row.
-            dropped.update(key for _, key, _ in keyed if key not in more)
+            # A live row this input lacks a key for is not emitted, and keeps its slot
+            # so an attach over the first input still pairs each value with its own row.
+            dropped.update(
+                record
+                for record, key, _ in keyed
+                if record not in marked and key not in more
+            )
         added = set()
         for key in more:
             if key in first_keys or _HOW != "full":
@@ -435,23 +439,32 @@ def _broadcast(inputs):
         ]
         more = _rows(_column(_PLAN[source_index], inputs, _decoded_cell), where)
         _attach_broadcast(
-            keyed, marked, name, source_index, first_source, values, more, where
+            keyed,
+            marked,
+            dropped,
+            name,
+            source_index,
+            first_source,
+            values,
+            more,
+            where,
         )
     items = []
-    for record, key, row in keyed:
-        if key in dropped:
+    for record, _, row in keyed:
+        if record in dropped:
             continue
         items.append({{"output": marked.get(record, row)}})
     return {{"items": items}}
 
 
 def _attach_broadcast(
-    keyed, marked, name, source_index, first_source, values, rows, where
+    keyed, marked, dropped, name, source_index, first_source, values, rows, where
 ):
     """Merge one attach field's values onto every output row of its by key."""
     by_key = {{}}
-    for position, (_, key, _) in enumerate(keyed):
-        by_key.setdefault(key, []).append(position)
+    for position, (record, key, _) in enumerate(keyed):
+        if record not in dropped:
+            by_key.setdefault(key, []).append(position)
     live = [
         (position, row)
         for position, row in enumerate(rows)
@@ -502,8 +515,9 @@ def _attach_broadcast(
             keyed[target] = (record, held_key, merged)
     if _ON_MISSING == "fail_row":
         for position, (record, key, _) in enumerate(keyed):
-            if position not in covered and record not in marked:
-                marked[record] = _failed("key %s is missing from %r" % (key, where))
+            if record in dropped or position in covered or record in marked:
+                continue
+            marked[record] = _failed("key %s is missing from %r" % (key, where))
 
 
 def _slot(position):

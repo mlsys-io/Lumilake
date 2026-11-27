@@ -624,6 +624,15 @@ def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
     stray = {"unit": "u3", "size": 1}
     full = _broadcast(tmp_path, sizes=_SIZES + [stray], fields=fields + "full")
     assert full == _JOINED + [stray]
+    # A marked first-input row has no readable key, so inner passes it through.
+    inner_marked = _broadcast(
+        tmp_path, rows=[_UNITS[0], _MARK, _UNITS[1]], fields=fields + "inner"
+    )
+    assert inner_marked == [
+        {**_UNITS[0], "size": 2, "tag": "A"},
+        _MARK,
+        {**_UNITS[1], "size": 2, "tag": "C"},
+    ]
 
 
 def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
