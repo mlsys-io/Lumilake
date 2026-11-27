@@ -81,8 +81,9 @@ from lumilake_server.utils.retrieval_key import retrieval_key_column
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _MAX_MODEL_LEVELS = 8
-"""How many model levels a reusing job plans and dispatches one at a time, so a
-chain that keeps finding a new level cannot loop without bound."""
+"""How many model depths a reusing job plans and dispatches, one round each:
+the model ops that share a depth run in that round's one sub-run, so a chain
+that keeps finding a deeper level cannot loop without bound."""
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
 
 
@@ -408,27 +409,32 @@ def _below_all_run(
 
 
 def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
-    """The first model level a plan still dispatches: one model op, the python
-    steps that read into it, and their own python ancestry up to the next model
-    op.
+    """The first model level a plan still dispatches: every model op this round
+    can run, the python steps that read into them, and their own python
+    ancestry up to the next model op.
 
+    A model op joins the level once no model op below it is left to run, so
+    two chats over the same served rows run in one sub-run rather than two.
     A model op that is a workflow output stays out, so the main run dispatches
     it in full and keeps its chat history. A step that only feeds a later
     model op stays out, so the round that plans that op runs it exactly once
     and no step is dispatched in two levels."""
     nodes = planned.nodes
-    model = next(
-        (
-            node_id
-            for node_id in planned.node_order
-            if nodes[node_id].task_type in _MODEL_TASK_TYPES and node_id not in outputs
-        ),
-        None,
-    )
-    if model is None:
-        return []
-    wave = {model}
-    stack = list(nodes[model].dependencies)
+    below_model: dict[str, bool] = {}
+    for node_id in planned.topological_order():
+        below_model[node_id] = any(
+            below_model.get(dep, False) or nodes[dep].task_type in _MODEL_TASK_TYPES
+            for dep in nodes[node_id].dependencies
+            if dep in nodes
+        )
+    wave = {
+        node_id
+        for node_id in planned.node_order
+        if nodes[node_id].task_type in _MODEL_TASK_TYPES
+        and node_id not in outputs
+        and not below_model[node_id]
+    }
+    stack = [dep for node_id in wave for dep in nodes[node_id].dependencies]
     while stack:
         dep = stack.pop()
         if dep in wave or dep not in nodes:

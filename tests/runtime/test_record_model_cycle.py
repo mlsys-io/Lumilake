@@ -560,6 +560,29 @@ async def test_a_re_ran_read_that_is_an_output_survives_a_level(
 
 
 @pytest.mark.asyncio
+async def test_two_independent_chats_run_in_one_level(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """Two chats that read the same phase rows and neither feeds the other run
+    in one sub-run, not two."""
+    ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
+    await run(_workflow(ops, _ROWS, "Both"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Both")
+    ask_x, ask_y = (
+        node for node, name in changed.op_names.items() if name in ("AskX", "AskY")
+    )
+    before = len(worker.submissions)
+    await run(changed, "req-2")
+    together = [
+        nodes
+        for nodes in worker.submissions[before:]
+        if ask_x in nodes or ask_y in nodes
+    ]
+    assert len(together) == 1, worker.submissions[before:]
+    assert set(together[0]) >= {ask_x, ask_y}
+
+
+@pytest.mark.asyncio
 async def test_a_chat_that_is_an_output_runs_once_with_its_history(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
