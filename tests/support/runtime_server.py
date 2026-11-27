@@ -58,7 +58,7 @@ class RecordingRuntimeManager:
         return ["worker-1"]
 
     async def get_worker_profile(self, worker_id: str) -> WorkerProfile:
-        return WorkerProfile(has_gpu=False)
+        return WorkerProfile()
 
     def count_runtime_nodes(self, graphs: dict[str, Any]) -> int:
         return sum(graph.node_count for graph in graphs.values())

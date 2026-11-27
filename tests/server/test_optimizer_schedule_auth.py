@@ -125,7 +125,7 @@ def _schedule_body() -> dict[str, Any]:
     return {
         "graph": graph.serialize(),
         "worker_names": ["w1"],
-        "worker_profiles": {"w1": WorkerProfile(has_gpu=False).model_dump(mode="json")},
+        "worker_profiles": {"w1": WorkerProfile().model_dump(mode="json")},
         "optimizer_type": "halo",
     }
 

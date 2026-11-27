@@ -1,5 +1,6 @@
 from support.worker_profiles import worker_profile
 
+from lumilake_hook import GpuDevice
 from lumilake_server.runtime.optimizer.topological_sort import TopologicalSortOptimizer
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
@@ -36,7 +37,7 @@ def test_topological_sort_assigns_omni_node_to_gpu_worker() -> None:
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
         worker_profiles={
-            "gpu-0": worker_profile(has_gpu=True),
+            "gpu-0": worker_profile(devices=(GpuDevice(),)),
             "cpu-0": worker_profile(),
         },
     )
@@ -64,7 +65,7 @@ def test_topological_sort_assigns_vllm_and_diffusers_to_gpu() -> None:
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
         worker_profiles={
-            "gpu-0": worker_profile(has_gpu=True),
+            "gpu-0": worker_profile(devices=(GpuDevice(),)),
             "cpu-0": worker_profile(),
         },
     )

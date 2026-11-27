@@ -3,6 +3,8 @@
 from collections.abc import Collection
 from typing import Any
 
+from support.worker_profiles import worker_profile
+
 from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.data_specs import EmptyData, GpuRequest, PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
@@ -28,17 +30,6 @@ def test_requires_cpu_worker_for_cpu_only_task_types() -> None:
     assert not requires_cpu_worker([])
 
 
-def _profile(
-    task_types: Collection[str] = (),
-    devices: tuple[GpuDevice, ...] = (),
-) -> WorkerProfile:
-    return WorkerProfile(
-        has_gpu=bool(devices),
-        supported_task_types=frozenset(task_types),
-        gpu_devices=devices,
-    )
-
-
 def _free(profiles: dict[str, WorkerProfile]) -> FreeCapacity:
     return FreeCapacity(
         cpu_worker_ids=tuple(profiles), gpu_worker_ids=(), profiles=profiles
@@ -60,8 +51,8 @@ def _claim(free: FreeCapacity, required: frozenset[str]) -> list[str] | None:
     return None if selected is None else selected[0]
 
 
-_PLAIN = _profile({"echo"})
-_PYTHON = _profile({"python"})
+_PLAIN = worker_profile(task_types={"echo"})
+_PYTHON = worker_profile(task_types={"python"})
 
 
 def test_claim_takes_a_worker_that_advertises_the_required_type() -> None:
@@ -128,7 +119,7 @@ def _gpu_profile(
     devices: tuple[GpuDevice, ...], task_types: Collection[str]
 ) -> WorkerProfile:
     """A GPU worker profile in the shape the server's snapshot stores."""
-    return _profile(task_types, devices)
+    return worker_profile(devices=devices, task_types=task_types)
 
 
 _GPU_VLLM = _gpu_profile((_A100,), frozenset({"echo"}))
@@ -253,7 +244,6 @@ def test_python_step_session_lane_splits_the_cpu_and_gpu_groups() -> None:
 
 def _capped(cpu_cap: float | None, memory_cap: int | None) -> WorkerProfile:
     return WorkerProfile(
-        has_gpu=False,
         cpu_cores=32,
         memory_total_bytes=29 * GIB,
         max_session_cpu_cores=cpu_cap,
@@ -267,6 +257,4 @@ def test_session_limits_admit_refuses_a_cpu_cap_below_the_job() -> None:
 
 def test_session_limits_admit_passes_what_the_profile_does_not_report() -> None:
     assert session_limits_admit(_capped(None, None), 8, 64 * GIB)
-    assert session_limits_admit(
-        WorkerProfile(has_gpu=False, max_session_memory_bytes=GIB), 8, 2 * GIB
-    )
+    assert session_limits_admit(WorkerProfile(max_session_memory_bytes=GIB), 8, 2 * GIB)

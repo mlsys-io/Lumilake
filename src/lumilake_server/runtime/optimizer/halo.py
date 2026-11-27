@@ -42,7 +42,7 @@ from .schedule.models import DBQuery, Edge, GraphSpec, Node, QueryPlanChoice, Wo
 
 _HF_SAFETENSORS_FILE = "model.safetensors"
 _HF_SAFETENSORS_INDEX_FILE = "model.safetensors.index.json"
-_NO_PROFILE = WorkerProfile(has_gpu=False)
+_NO_PROFILE = WorkerProfile()
 
 
 def _describe_gpu_fractions(workers: Mapping[str, Worker]) -> str:

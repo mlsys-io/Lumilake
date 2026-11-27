@@ -64,7 +64,9 @@ def test_python_node_is_never_placed_on_a_gpu_worker() -> None:
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["gpu-python", "cpu-plain"],
             worker_profiles={
-                "gpu-python": worker_profile(has_gpu=True, task_types={"python"}),
+                "gpu-python": worker_profile(
+                    devices=(GpuDevice(),), task_types={"python"}
+                ),
                 "cpu-plain": worker_profile(),
             },
         )
@@ -76,7 +78,9 @@ def test_python_node_on_a_gpu_only_pool_fails_rather_than_treating_it_as_cpu() -
             graph=_graph(_op("p1", "python", "python")),
             worker_names=["gpu-python"],
             worker_profiles={
-                "gpu-python": worker_profile(has_gpu=True, task_types={"python"})
+                "gpu-python": worker_profile(
+                    devices=(GpuDevice(),), task_types={"python"}
+                )
             },
         )
 
@@ -94,15 +98,9 @@ def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
     h100 = GpuDevice(name="H100", memory_total_bytes=80 * 1024**3)
     profiles = {
         "gpu-rtx": worker_profile(
-            has_gpu=True,
-            task_types={"python"},
-            gpu_devices=(GpuDevice(name="RTX 4090"),),
+            devices=(GpuDevice(name="RTX 4090"),), task_types={"python"}
         ),
-        "gpu-h100": worker_profile(
-            has_gpu=True,
-            task_types={"python"},
-            gpu_devices=(h100, h100),
-        ),
+        "gpu-h100": worker_profile(devices=(h100, h100), task_types={"python"}),
     }
     schedule = TopologicalSortOptimizer().generate_schedule(
         graph=_graph(_gpu_python_op("p1", {"count": 2, "type": "H100"})),
@@ -128,9 +126,7 @@ def test_gpu_request_skips_a_python_gpu_worker_it_does_not_fit() -> None:
             worker_names=["gpu-rtx", "gpu-h100"],
             worker_profiles={
                 "gpu-rtx": profiles["gpu-rtx"],
-                "gpu-h100": profiles["gpu-h100"].model_copy(
-                    update={"gpu_devices": (h100,)}
-                ),
+                "gpu-h100": profiles["gpu-h100"].model_copy(update={"gpu": None}),
             },
         )
 

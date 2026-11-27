@@ -7,7 +7,7 @@ import pytest
 from support.worker_profiles import worker_profile
 
 from lumilake import envs
-from lumilake_hook import WorkerProfile
+from lumilake_hook import GpuDevice, WorkerProfile
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.cost import estimate_area
@@ -463,7 +463,7 @@ async def _lanes_seen(
     profiles = (
         {
             w: worker_profile(
-                has_gpu=w in gpu,
+                devices=(GpuDevice(),) if w in gpu else (),
                 task_types=(
                     {"python"}
                     if python_workers and w in python_workers

@@ -14,7 +14,7 @@ from flowmesh.models.workers import (
     WorkerInfo,
 )
 
-from lumilake_hook import GpuDevice, WorkerProfile
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.worker_capability import worker_profile
 
@@ -75,11 +75,12 @@ def test_from_worker_keeps_every_placement_fact() -> None:
     )
 
     assert profile == WorkerProfile(
-        has_gpu=True,
         supported_task_types=frozenset({"python"}),
+        gpu=WorkerGpu(
+            devices=(GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),) * 2
+        ),
         cpu_cores=32,
         memory_total_bytes=29 * 1024**3,
-        gpu_devices=(GpuDevice(name="H100", memory_total_bytes=80 * 1024**3),) * 2,
         max_session_cpu_cores=8.0,
         max_session_memory_bytes=12 * 1024**3,
     )

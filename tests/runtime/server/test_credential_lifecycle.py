@@ -17,7 +17,7 @@ from support.runtime_server import (
 )
 
 from lumilake import envs
-from lumilake_hook import WorkerProfile
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder
@@ -107,7 +107,9 @@ async def test_preview_path_carries_api_credential_digest(
     monkeypatch.setattr(PriorityJobManager, "enqueue", _capture_enqueue)
 
     async def _stub_select_workers(*a, **k):
-        return ["gpu-worker"], {"gpu-worker": WorkerProfile(has_gpu=True)}
+        return ["gpu-worker"], {
+            "gpu-worker": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))
+        }
 
     monkeypatch.setattr(
         server, "_select_preview_workers_and_profiles", _stub_select_workers
@@ -250,7 +252,7 @@ async def test_process_batch_fills_member_request_ids_from_originating_jobs(
         batch,
         "batch-1",
         ["worker-1"],
-        {"worker-1": WorkerProfile(has_gpu=False)},
+        {"worker-1": WorkerProfile()},
         execution_request_id="exec-1",
         member_request_ids={"req-a", "req-b"},
     )

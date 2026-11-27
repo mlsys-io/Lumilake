@@ -17,13 +17,11 @@ from tests.support.data_specs import runtime_op
 
 
 def _profile(gpu_count: int, task_types: Collection[str] = ()) -> WorkerProfile:
-    devices = (GpuDevice(),) * gpu_count
     return worker_profile(
-        has_gpu=bool(devices),
+        devices=(GpuDevice(),) * gpu_count,
         task_types=task_types,
         cpu_cores=16,
         memory_total_bytes=64 * (1024**3),
-        gpu_devices=devices,
     )
 
 

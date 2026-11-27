@@ -67,7 +67,7 @@ def test_halo_optimizer_generates_schedule_covering_all_nodes() -> None:
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
         worker_profiles={
-            "gpu-0": worker_profile(has_gpu=True),
+            "gpu-0": worker_profile(devices=(GpuDevice(),)),
             "cpu-0": worker_profile(),
         },
     )
@@ -164,7 +164,7 @@ def test_halo_optimizer_places_api_node_on_cpu_worker() -> None:
         graph=graph,
         worker_names=["gpu-0", "cpu-0"],
         worker_profiles={
-            "gpu-0": worker_profile(has_gpu=True),
+            "gpu-0": worker_profile(devices=(GpuDevice(),)),
             "cpu-0": worker_profile(),
         },
     )
@@ -214,7 +214,7 @@ def test_halo_optimizer_prefers_a_cpu_python_worker_over_a_gpu_one() -> None:
         graph=_python_graph(),
         worker_names=["gpu-python", "cpu-python"],
         worker_profiles={
-            "gpu-python": worker_profile(has_gpu=True, task_types={"python"}),
+            "gpu-python": worker_profile(devices=(GpuDevice(),), task_types={"python"}),
             "cpu-python": worker_profile(task_types={"python"}),
         },
     )
@@ -227,7 +227,9 @@ def test_halo_optimizer_never_places_python_on_a_gpu_worker() -> None:
             graph=_python_graph(),
             worker_names=["gpu-python", "cpu-plain"],
             worker_profiles={
-                "gpu-python": worker_profile(has_gpu=True, task_types={"python"}),
+                "gpu-python": worker_profile(
+                    devices=(GpuDevice(),), task_types={"python"}
+                ),
                 "cpu-plain": worker_profile(),
             },
         )
@@ -831,13 +833,12 @@ def _gpu_profiles(*cards: tuple[str, ...]) -> dict[str, WorkerProfile]:
     plain GPU worker and a CPU python worker."""
     profiles = {
         f"gpu-{index}": worker_profile(
-            has_gpu=True,
+            devices=tuple(GpuDevice(name=name) for name in names),
             task_types={"python"},
-            gpu_devices=tuple(GpuDevice(name=name) for name in names),
         )
         for index, names in enumerate(cards)
     }
-    profiles["gpu-plain"] = worker_profile(has_gpu=True)
+    profiles["gpu-plain"] = worker_profile(devices=(GpuDevice(),))
     profiles["cpu-python"] = worker_profile(task_types={"python"})
     return profiles
 

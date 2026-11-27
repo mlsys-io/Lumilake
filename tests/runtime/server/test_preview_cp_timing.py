@@ -2,7 +2,7 @@
 
 import pytest
 
-from lumilake_hook import WorkerProfile
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.common import GenerationConfig
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -34,7 +34,9 @@ async def test_preview_schedule_surfaces_control_plane_timings(
     async def _stub_select_workers(
         _runtime_graph, _hardware=None
     ) -> tuple[list[str], dict[str, WorkerProfile]]:
-        return ["gpu-worker"], {"gpu-worker": WorkerProfile(has_gpu=True)}
+        return ["gpu-worker"], {
+            "gpu-worker": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))
+        }
 
     monkeypatch.setattr(
         server, "_select_preview_workers_and_profiles", _stub_select_workers

@@ -11,7 +11,7 @@ from typing import Any, NamedTuple, Self
 
 from flowmesh.models.workers import GpuInfo, Worker
 
-from lumilake_hook import GpuDevice, WorkerProfile
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,
@@ -33,7 +33,6 @@ def worker_profile(worker: Worker) -> WorkerProfile:
     )
     limits = worker.ssh_limits
     return WorkerProfile(
-        has_gpu=bool(devices),
         supported_task_types=frozenset(
             str(task_type) for task_type in worker.capabilities.supported_task_types
         ),
@@ -48,9 +47,17 @@ def worker_profile(worker: Worker) -> WorkerProfile:
             if hardware is not None and hardware.memory
             else None
         ),
-        gpu_devices=tuple(
-            GpuDevice(name=device.name, memory_total_bytes=device.memory_total_bytes)
-            for device in devices
+        gpu=(
+            WorkerGpu(
+                devices=tuple(
+                    GpuDevice(
+                        name=device.name, memory_total_bytes=device.memory_total_bytes
+                    )
+                    for device in devices
+                )
+            )
+            if devices
+            else None
         ),
         max_session_cpu_cores=limits.max_cpu_cores if limits is not None else None,
         max_session_memory_bytes=(

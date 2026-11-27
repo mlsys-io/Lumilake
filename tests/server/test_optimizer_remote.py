@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from lumilake import envs as envs_mod
-from lumilake_hook import WorkerProfile
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.remote import RemoteOptimizer
@@ -72,7 +72,7 @@ def test_remote_optimizer_posts_schedule_and_maps_response(
     schedule = optimizer.generate_schedule(
         graph,
         worker_names=["w1"],
-        worker_profiles={"w1": WorkerProfile(has_gpu=True)},
+        worker_profiles={"w1": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))},
     )
 
     assert isinstance(schedule, Schedule)
@@ -111,7 +111,9 @@ def test_remote_optimizer_refuses_a_gpu_python_step_before_dispatch(
         RemoteOptimizer(optimizer_type="halo-greedy").generate_schedule(
             graph,
             worker_names=["w1"],
-            worker_profiles={"w1": WorkerProfile(has_gpu=True)},
+            worker_profiles={
+                "w1": WorkerProfile(gpu=WorkerGpu(devices=(GpuDevice(),)))
+            },
         )
     assert not route.called
 
@@ -140,13 +142,19 @@ def test_remote_optimizer_sends_constructor_optimizer_type(
     optimizer.generate_schedule(
         _make_graph(),
         worker_names=["w1"],
-        worker_profiles={"w1": WorkerProfile(has_gpu=True, gpu_memory_fraction=0.5)},
+        worker_profiles={
+            "w1": WorkerProfile(
+                gpu=WorkerGpu(devices=(GpuDevice(name="H100"),)),
+                gpu_memory_fraction=0.5,
+            )
+        },
     )
 
     assert captured_body.get("optimizer_type") == "halo-greedy"
     assert captured_body["worker_profiles"]["w1"] == {
         "has_gpu": True,
         "supported_task_types": [],
+        "gpu": {"devices": [{"name": "H100", "memory_total_bytes": None}]},
         "gpu_memory_fraction": 0.5,
         "cpu_cores": None,
         "memory_total_bytes": None,
@@ -177,7 +185,7 @@ def test_remote_optimizer_forwards_bearer(monkeypatch: pytest.MonkeyPatch) -> No
         schedule = optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": WorkerProfile(has_gpu=False)},
+            worker_profiles={"w1": WorkerProfile()},
         )
     finally:
         runtime_token_var.reset(token)
@@ -235,7 +243,7 @@ def test_remote_optimizer_raises_on_http_error(
         optimizer.generate_schedule(
             _make_graph(),
             worker_names=["w1"],
-            worker_profiles={"w1": WorkerProfile(has_gpu=False)},
+            worker_profiles={"w1": WorkerProfile()},
         )
 
 

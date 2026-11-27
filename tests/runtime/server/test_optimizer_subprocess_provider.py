@@ -173,7 +173,7 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
         optimizer_type="fake-remote-x",
         runtime_graph=graph,
         selected_workers=["w1"],
-        worker_profiles={"w1": WorkerProfile(has_gpu=False)},
+        worker_profiles={"w1": WorkerProfile()},
         data_profile_results={},
         result_queue=result_q,
     )
