@@ -87,7 +87,6 @@ def _entry(
     op: str,
     *,
     task_id: str,
-    worker: str,
     round_number: int = 0,
     producer: RecordEntry | None = None,
 ) -> RecordEntry:
@@ -114,7 +113,6 @@ def _entry(
             job=_JOB,
             round=round_number,
             task_id=task_id,
-            worker=worker,
             member_jobs=[_JOB],
         ),
         written_at=0.0,
@@ -126,13 +124,11 @@ async def test_lineage_reads_a_stored_chain(
     app: tuple[FastAPI, Any],
 ) -> None:
     """A record's chain comes back level by level from the archive alone, each
-    entry naming the job, task, worker and round that produced it, and an
-    unknown record is 404."""
+    entry naming the job, task and round that produced it, and an unknown record
+    is 404."""
     application, storage = app
-    upstream = _entry("Mark", task_id="task-mark", worker="w1")
-    consumer = _entry(
-        "Join", task_id="task-join", worker="w2", round_number=2, producer=upstream
-    )
+    upstream = _entry("Mark", task_id="task-mark")
+    consumer = _entry("Join", task_id="task-join", round_number=2, producer=upstream)
     for entry in (upstream, consumer):
         storage.save_blob(
             entry_object_name(entry.digest), entry.body(), "application/json"
@@ -169,5 +165,6 @@ async def test_lineage_reads_a_stored_chain(
         ("Join", 2),
         ("Mark", 0),
     ]
-    assert (entries[0]["task_id"], entries[0]["worker"]) == ("task-join", "w2")
+    assert entries[0]["task_id"] == "task-join"
+    assert "worker" not in entries[0]
     assert missing.status_code == 404

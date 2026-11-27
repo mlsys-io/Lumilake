@@ -166,7 +166,6 @@ class RecordWriter:
         round_number: int,
         runtime_graph: RuntimeGraph,
         node_task_map: Mapping[str, str],
-        task_worker: Mapping[str, str | None],
         results: Mapping[str, Any],
         member_store: Mapping[str, bool] | None = None,
         member_rounds: Mapping[str, int] | None = None,
@@ -212,7 +211,6 @@ class RecordWriter:
                     job=job_id,
                     round=member_round,
                     task_id=task_id,
-                    worker=task_worker.get(task_id),
                     member_jobs=member_job_ids,
                 )
                 written.extend(
