@@ -1726,6 +1726,13 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     assert {i["parent"] for i in state[f"task-{split}"]["items"]} == (
         {0, 1} if per_row else {0}
     )
+    index = read_index(job_storage, "req-1")
+    assert index is not None
+    stored = {e.record for e in index.entries if e.op == "Split"}
+    if per_row:
+        assert stored == {"a1\x1f0", "a1\x1fcount", "a2\x1f0", "a2\x1fcount"}
+    else:
+        assert stored == set()
     assert (await once(rows, "req-2", True))["Split"] == (
         ("hit", None) if per_row else ("miss", "unkeyed row")
     )
