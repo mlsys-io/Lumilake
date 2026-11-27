@@ -131,7 +131,7 @@ class RecordPlan:
         *,
         op: RuntimeOp,
         op_name: str,
-        key_path: str | None,
+        key_path: str | list[str] | None,
         logical_names: Mapping[str, str],
     ) -> None:
         self.op = op
@@ -595,9 +595,10 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def _key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | None:
-    """A node's record-key path: the one its op declares, else the path of the
-    single keyed input a 1:1 node reads by position, else ``None`` (whole-op)."""
+) -> str | list[str] | None:
+    """A node's record-key path or paths: the ones its op declares, else the
+    path of the single keyed input a 1:1 node reads by position, else ``None``
+    (whole-op)."""
     declared = runtime_graph.record_keys.get(node_id)
     if declared is not None:
         return declared.path
@@ -684,7 +685,7 @@ def _collect_node_records(
 def _record_keys(
     runtime_graph: RuntimeGraph,
     plan: RecordPlan,
-    key_path: str,
+    key_path: str | list[str],
     values: Sequence[Any],
     produced: Mapping[str, Sequence[Any]],
     logger: Logger,
@@ -713,7 +714,7 @@ def _record_keys(
 
 
 def _declared_rows(
-    plan: RecordPlan, path: str, count: int, logger: Logger
+    plan: RecordPlan, path: str | list[str], count: int, logger: Logger
 ) -> Sequence[Any] | None:
     """The literal list the op carries for a declared input, when exactly one of
     its lists holds ``count`` rows that all carry a key at ``path``."""

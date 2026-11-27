@@ -4,7 +4,14 @@ from collections.abc import Callable
 from enum import Enum
 from typing import Any, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
 from lumilake_server.common import Message
 from lumilake_server.utils.utils import unique_id
@@ -16,12 +23,22 @@ type AnyOp = Op
 
 class RecordKey(BaseModel):
     """A record key an op declares: the node that carries its rows' keys, and
-    the path into it."""
+    the path into it, or the several paths whose values in order name a key."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     node: StrictStr = Field(min_length=1)
-    path: StrictStr = ""
+    path: StrictStr | list[StrictStr] = ""
+
+    @field_validator("path")
+    @classmethod
+    def _every_path_names_one(cls, path: str | list[str]) -> str | list[str]:
+        """Refuse an empty path list and an empty path in one."""
+        if isinstance(path, str):
+            return path
+        if not path or not all(part for part in path):
+            raise ValueError("path must name at least one non-empty path")
+        return path
 
 
 def record_key(key: Any, op_id: str) -> RecordKey:
