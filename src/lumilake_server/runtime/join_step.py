@@ -148,6 +148,7 @@ def _merged(merged, field, value, where):
 def _merge(row, more, where):
     for name, value in more.items():
         _merged(row, name, value, where)
+    return row
 
 
 def _keyed(rows, where):
@@ -177,23 +178,16 @@ def _keyed(rows, where):
 def _join_rows(held, additions, key, where):
     """Merge each further-input row for ``key`` onto each row the first input holds.
 
-    A repeat of the key must be declared many_to_many, and each repeat emits one
-    output row per row held for the key, in held-then-repeat order.
+    A repeat of the key must be declared many_to_many, and each pair is one output
+    row, held side first.
     """
     if len(additions) > 1 and _CARDINALITY != "many_to_many":
         raise ValueError(
             "%s: key %s repeats in a further input; declare many_to_many" % (_NODE, key)
         )
-    for repeat, more in enumerate(additions):
-        targets = held
-        if repeat:
-            targets = []
-            for row in held:
-                copy = row.copy()
-                targets.append(copy)
-                held.append(copy)
-        for row in targets:
-            _merge(row, more, where)
+    # Every row pairs with every further row of its key, each pair read off the row the
+    # first input holds, so no pair sees another pair's fields.
+    return [_merge(row.copy(), more, where) for row in held for more in additions]
 
 
 def _pairs(values, rows, live, where):
@@ -314,7 +308,7 @@ def main(inputs):
             if key in more_marked:
                 marked[key] = more_marked[key]
                 continue
-            _join_rows(keyed[key], additions, key, where)
+            keyed[key] = _join_rows(keyed[key], additions, key, where)
     for name, value_index, source_index, _ in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [
