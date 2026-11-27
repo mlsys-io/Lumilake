@@ -9,7 +9,13 @@ optimizer share this model.
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_serializer, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    model_serializer,
+)
 
 
 class GpuDevice(BaseModel):
@@ -64,7 +70,7 @@ class WorkerProfile(BaseModel):
         return sorted(task_types)
 
     @model_serializer(mode="wrap")
-    def _with_has_gpu(self, handler: Any) -> dict[str, Any]:
+    def _with_has_gpu(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
         """Add the derived ``has_gpu``, which a dict-reading client expects."""
         dumped: dict[str, Any] = handler(self)
         dumped["has_gpu"] = self.has_gpu
