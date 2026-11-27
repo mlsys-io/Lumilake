@@ -12,8 +12,8 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
-    remap_data_spec,
-    remap_node_refs,
+    remap_model,
+    remap_node_dict,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
@@ -272,19 +272,19 @@ class RuntimeGraph:
                 task_type=op.task_type,
                 backend=op.backend,
                 model=op.model,
-                data_spec=remap_data_spec(op.data_spec, rewritable),
-                model_spec=remap_node_refs(op.model_spec, rewritable),
-                inference_spec=remap_node_refs(op.inference_spec, rewritable),
-                api_spec=remap_node_refs(op.api_spec, rewritable),
+                data_spec=remap_model(op.data_spec, rewritable),
+                model_spec=remap_node_dict(op.model_spec, rewritable),
+                inference_spec=remap_node_dict(op.inference_spec, rewritable),
+                api_spec=remap_node_dict(op.api_spec, rewritable),
                 output_enforcement=op.output_enforcement,
                 dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
                 output_spec=(
-                    remap_node_refs(op.output_spec, rewritable)
+                    remap_node_dict(op.output_spec, rewritable)
                     if op.output_spec is not None
                     else None
                 ),
                 condition=(
-                    remap_node_refs(op.condition, rewritable)
+                    remap_node_dict(op.condition, rewritable)
                     if op.condition is not None
                     else None
                 ),

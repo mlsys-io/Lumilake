@@ -3,11 +3,11 @@
 import json
 from abc import ABC, abstractmethod
 from dataclasses import replace
-from typing import Any, cast
+from typing import Any
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
-from lumilake_server.data_specs import remap_data_spec, remap_node_refs
+from lumilake_server.data_specs import remap_model, remap_node_dict
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     chunk_group_parent,
@@ -73,11 +73,11 @@ def _normalize_label_tokens(value: object) -> object:
 def _normalize_spec_for_signature(
     spec: dict[str, Any], mapping: dict[str, str]
 ) -> dict[str, Any]:
-    remapped = _remap_node_spec(spec, mapping)
+    remapped = remap_node_dict(spec, mapping)
     normalized = _normalize_label_tokens(remapped)
     if not isinstance(normalized, dict):
         raise TypeError("Expected dict after normalizing runtime spec")
-    return cast(dict[str, Any], normalized)
+    return normalized
 
 
 def _runtime_signature(op: RuntimeOp, mapping: dict[str, str]) -> tuple[object, ...]:
@@ -160,13 +160,6 @@ def _dedupe_ordered(items: list[str]) -> list[str]:
     return ordered
 
 
-def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
-    remapped = remap_node_refs(spec, mapping)
-    if not isinstance(remapped, dict):
-        raise TypeError("Expected dict after remapping runtime spec")
-    return cast(dict[str, Any], remapped)
-
-
 def _dedupe_runtime_graph(
     graph: RuntimeGraph,
     logical_ops: dict[str, tuple[tuple[str, str], ...]],
@@ -214,18 +207,18 @@ def _dedupe_runtime_graph(
         new_nodes[canonical] = replace(
             op,
             node_id=canonical,
-            data_spec=remap_data_spec(op.data_spec, mapping),
-            model_spec=_remap_node_spec(op.model_spec, mapping),
-            inference_spec=_remap_node_spec(op.inference_spec, mapping),
-            api_spec=_remap_node_spec(op.api_spec, mapping),
+            data_spec=remap_model(op.data_spec, mapping),
+            model_spec=remap_node_dict(op.model_spec, mapping),
+            inference_spec=remap_node_dict(op.inference_spec, mapping),
+            api_spec=remap_node_dict(op.api_spec, mapping),
             dependencies=tuple(_dedupe_ordered(remapped_deps)),
             output_spec=(
-                _remap_node_spec(op.output_spec, mapping)
+                remap_node_dict(op.output_spec, mapping)
                 if op.output_spec is not None
                 else None
             ),
             condition=(
-                _remap_node_spec(op.condition, mapping)
+                remap_node_dict(op.condition, mapping)
                 if op.condition is not None
                 else None
             ),

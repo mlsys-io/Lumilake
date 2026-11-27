@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -352,33 +352,20 @@ def parse_data_spec(task_type: str, value: dict[str, Any]) -> DataSpecModel:
 _PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 
 
-def remap_node_refs(value: Any, mapping: Mapping[str, str]) -> Any:
-    """Copy ``value`` with the ``node`` keys and ``${node.path}`` placeholders
-    of mapped nodes renamed. A model keeps its type, and its extra keys are
-    remapped with its declared fields."""
+def _remap_entry(key: str, item: Any, mapping: Mapping[str, str]) -> Any:
+    """A dict or model field with its value renamed when it is a mapped node."""
+    if key == "node" and isinstance(item, str) and item in mapping:
+        return mapping[item]
+    return _remap_value(item, mapping)
+
+
+def _remap_value(value: Any, mapping: Mapping[str, str]) -> Any:
     if isinstance(value, BaseModel):
-        stored = {**value.__dict__, **(value.model_extra or {})}
-        return value.model_copy(
-            update={
-                name: (
-                    mapping[item]
-                    if name == "node" and isinstance(item, str) and item in mapping
-                    else remap_node_refs(item, mapping)
-                )
-                for name, item in stored.items()
-            }
-        )
+        return remap_model(value, mapping)
     if isinstance(value, dict):
-        return {
-            key: (
-                mapping[item]
-                if key == "node" and isinstance(item, str) and item in mapping
-                else remap_node_refs(item, mapping)
-            )
-            for key, item in value.items()
-        }
+        return remap_node_dict(value, mapping)
     if isinstance(value, (list, tuple)):
-        items = [remap_node_refs(item, mapping) for item in value]
+        items = [_remap_value(item, mapping) for item in value]
         return tuple(items) if isinstance(value, tuple) else items
     if isinstance(value, str):
         return _PLACEHOLDER_RE.sub(
@@ -392,10 +379,21 @@ def remap_node_refs(value: Any, mapping: Mapping[str, str]) -> Any:
     return value
 
 
-def remap_data_spec(spec: DataSpecModel, mapping: Mapping[str, str]) -> DataSpecModel:
-    """Copy ``spec`` with the node references and placeholders of mapped nodes
-    renamed."""
-    return cast(DataSpecModel, remap_node_refs(spec, mapping))
+def remap_model[M: BaseModel](model: M, mapping: Mapping[str, str]) -> M:
+    """Copy ``model`` with the ``node`` keys and ``${node.path}`` placeholders
+    of mapped nodes renamed, including inside its extra keys."""
+    stored = {**model.__dict__, **(model.model_extra or {})}
+    return model.model_copy(
+        update={
+            name: _remap_entry(name, item, mapping) for name, item in stored.items()
+        }
+    )
+
+
+def remap_node_dict(spec: dict[str, Any], mapping: Mapping[str, str]) -> dict[str, Any]:
+    """Copy a free-form spec with the ``node`` keys and ``${node.path}``
+    placeholders of mapped nodes renamed."""
+    return {key: _remap_entry(key, item, mapping) for key, item in spec.items()}
 
 
 Column.model_rebuild()

@@ -10,7 +10,7 @@ from lumilake import envs
 from lumilake_server.data_specs import (
     RetrievalData,
     parse_data_spec,
-    remap_data_spec,
+    remap_model,
 )
 from tests.support import golden_graphs
 
@@ -47,7 +47,7 @@ def test_unknown_data_spec_key_is_refused() -> None:
         parse_data_spec("python", {"plan": [], "bogus": 1})
 
 
-def test_remap_data_spec_renames_refs_placeholders_and_extras() -> None:
+def test_remap_model_renames_refs_placeholders_and_extras() -> None:
     """A remap renames mapped node refs, ``${node.path}`` placeholders and the
     ``node`` keys inside literal items, including inside a model's extra key."""
     spec = parse_data_spec(
@@ -67,7 +67,7 @@ def test_remap_data_spec_renames_refs_placeholders_and_extras() -> None:
         },
     )
 
-    remapped = remap_data_spec(spec, {"src": "src_1"})
+    remapped = remap_model(spec, {"src": "src_1"})
 
     assert isinstance(remapped, RetrievalData)
     first, second = remapped.params
