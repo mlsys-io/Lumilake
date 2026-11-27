@@ -292,9 +292,11 @@ def _column(
         if "path" in entry:
             return entry["values"]
         return [read(v) for v in entry["values"]]
-    if entry["kind"] == "literal":
+    if "file" in entry:
         with open(entry["file"], encoding="utf-8") as fh:
             values = json.load(fh)
+        if "path" in entry:
+            return values
         return [read(v) for v in values]
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
