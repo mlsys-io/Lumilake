@@ -9,6 +9,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .worker_profile import WorkerProfile
+
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # Set by the server's auth middleware; read by RemoteOptimizer to
@@ -47,7 +49,7 @@ class OptimizerHandle(Protocol):
         self,
         graph: Any,
         worker_names: list[str],
-        worker_profiles: Mapping[str, Any],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule: ...
 
@@ -90,7 +92,7 @@ class RemoteOptimizer:
         self,
         graph: Any,
         worker_names: list[str],
-        worker_profiles: Mapping[str, Any],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         serialize = getattr(graph, "serialize", None)
@@ -101,7 +103,10 @@ class RemoteOptimizer:
         request_body = {
             "graph": serialize(),
             "worker_names": worker_names,
-            "worker_profiles": worker_profiles,
+            "worker_profiles": {
+                worker: profile.model_dump(mode="json")
+                for worker, profile in worker_profiles.items()
+            },
             "data_profile_results": data_profile_results,
             "optimizer_type": self._optimizer_type,
         }

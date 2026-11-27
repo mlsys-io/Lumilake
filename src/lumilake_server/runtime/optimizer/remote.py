@@ -66,7 +66,7 @@ class RemoteOptimizer(BaseOptimizer):
         request = ScheduleRequest(
             graph=graph_schema,
             worker_names=worker_names,
-            worker_profiles=dict(worker_profiles),
+            worker_profiles=worker_profiles,
             data_profile_results=data_profile_results,
             optimizer_type=self._optimizer_type,
         )
