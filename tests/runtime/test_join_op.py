@@ -529,12 +529,16 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
 
 
 def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
-    """A row_key join reads how too: inner drops a stray key, full appends it."""
+    """A row_key join reads how too: inner drops a missing key, full appends it."""
+    fields = "row_key: [unit, rid], how: "
+    rows = [_UNITS[0], _UNITS[2], _UNITS[1]]
+    inner = _broadcast(tmp_path, rows=rows, sizes=_SIZES[:1], fields=fields + "inner")
+    assert inner == [
+        {**_UNITS[0], "size": 2, "tag": "A"},
+        {**_UNITS[1], "size": 2, "tag": "C"},
+    ]
     stray = {"unit": "u3", "size": 1}
-    sizes = _SIZES + [stray]
-    inner = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: inner")
-    assert inner == _JOINED
-    full = _broadcast(tmp_path, sizes=sizes, fields="row_key: [unit, rid], how: full")
+    full = _broadcast(tmp_path, sizes=_SIZES + [stray], fields=fields + "full")
     assert full == _JOINED + [stray]
 
 

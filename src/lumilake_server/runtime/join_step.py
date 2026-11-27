@@ -117,12 +117,6 @@ def _key_of(row, where):
     return _encoded(key, where)
 
 
-def _required(by_key, key, where):
-    """Fail the job on an attach key the join's rows do not carry."""
-    if key not in by_key:
-        raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
-
-
 def _matched(keyed, keys, where):
     """With require_match, fail on a key one input carries and another lacks."""
     if not _REQUIRE_MATCH:
@@ -388,19 +382,16 @@ def _broadcast(inputs):
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
     first_keys = {{key for _, key, _ in keyed}}
+    dropped = set()
     appended = []
     for index, column in zip(indexes[1:], columns[1:]):
         where = _where(_PLAN[index])
         more, more_marked = _keyed(_rows(column, where), where)
         _matched(first_keys, more, where)
         if _HOW == "inner":
-            kept = []
-            for record, key, row in keyed:
-                if key in more:
-                    kept.append((record, key, row))
-                else:
-                    marked.pop(record, None)
-            keyed = kept
+            # A row this input lacks a key for is not emitted, and keeps its slot so an
+            # attach over the first input still pairs each value with its own row.
+            dropped.update(key for _, key, _ in keyed if key not in more)
         for key in more:
             if key in first_keys or _HOW != "full":
                 continue
@@ -447,7 +438,9 @@ def _broadcast(inputs):
             keyed, marked, name, source_index, first_source, values, more, where
         )
     items = []
-    for record, _, row in keyed:
+    for record, key, row in keyed:
+        if key in dropped:
+            continue
         items.append({{"output": marked.get(record, row)}})
     return {{"items": items}}
 
@@ -484,7 +477,8 @@ def _attach_broadcast(
                 "%s: duplicate key %s; declare many_to_many to read every value of it"
                 % (where, key)
             )
-        _required(by_key, key, where)
+        if key not in by_key and _REQUIRE_MATCH:
+            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
     for value, source_row, key, position in pairs:
         carried = failure_of(value)
         if carried is None:
@@ -492,7 +486,7 @@ def _attach_broadcast(
         if first_source:
             reached = [position]
         else:
-            reached = by_key[key]
+            reached = by_key.get(key, [])
         for target in reached:
             covered.add(target)
             record, held_key, held_row = keyed[target]
