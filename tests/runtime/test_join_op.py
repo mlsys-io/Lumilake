@@ -248,6 +248,14 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
         _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
 
+def test_fail_row_leaves_a_key_a_further_input_lacks_alone(tmp_path: Path) -> None:
+    """on_missing governs an attach source, so a further input that lacks a key keeps
+    the row with the fields it carries."""
+    node = _join_node(_merge("State, Route.diagnose", "    on_missing: fail_row\n"))
+    out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
+    assert [item["output"] for item in out["items"]] == _ROWS
+
+
 def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None:
     node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
     with pytest.raises(ValueError, match=r'key "a" is missing from'):

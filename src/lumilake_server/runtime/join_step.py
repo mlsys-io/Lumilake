@@ -117,11 +117,10 @@ def _key_of(row, where):
     return _encoded(key, where)
 
 
-def _required(keyed, keys, where):
-    """Fail the job on a further-input key the first input does not carry."""
-    for key in keys:
-        if key not in keyed:
-            raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
+def _required(by_key, key, where):
+    """Fail the job on an attach key the join's rows do not carry."""
+    if key not in by_key:
+        raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))
 
 
 def _matched(keyed, keys, where):
@@ -297,13 +296,6 @@ def main(inputs):
             for key in dropped:
                 del keyed[key]
                 marked.pop(key, None)
-        missing = [key for key in keyed if key not in more]
-        if missing and _ON_MISSING == "fail_row":
-            # Only the row whose key a further input lacks becomes a marker; the other
-            # rows merge as usual.
-            for key in missing:
-                if key not in marked:
-                    marked[key] = _failed("key %s is missing from %r" % (key, where))
         for key, additions in more.items():
             if key in marked:
                 # A marked row's output is its marker: its other fields and every
@@ -492,7 +484,7 @@ def _attach_broadcast(
                 "%s: duplicate key %s; declare many_to_many to read every value of it"
                 % (where, key)
             )
-        _required(by_key, (key,), where)
+        _required(by_key, key, where)
     for value, source_row, key, position in pairs:
         carried = failure_of(value)
         if carried is None:
