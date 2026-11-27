@@ -427,14 +427,20 @@ def _first_level(
     a second time. A step that only feeds a later model op stays out, so the
     round that plans that op runs it exactly once and no step is dispatched in
     two levels. So does a plan's ``refused`` op, whose records a reader
-    rejects, so the main run dispatches it once with every reader it has."""
+    rejects, so the main run dispatches it once with every reader it has. A
+    model op with a refused op below it stays out too, since a level would
+    dispatch that op a second time as the model op's input."""
     nodes = planned.nodes
     below_model: dict[str, bool] = {}
+    below_refused: dict[str, bool] = {}
     for node_id in planned.topological_order():
         below_model[node_id] = any(
             below_model.get(dep, False) or nodes[dep].task_type in _MODEL_TASK_TYPES
             for dep in nodes[node_id].dependencies
             if dep in nodes
+        )
+        below_refused[node_id] = node_id in refused or any(
+            below_refused.get(dep, False) for dep in nodes[node_id].dependencies
         )
     wave = {
         node_id
@@ -445,6 +451,7 @@ def _first_level(
         and not reads_unversioned(nodes[node_id])
         and not below_model[node_id]
         and not any(dep in content for dep in nodes[node_id].dependencies)
+        and not below_refused[node_id]
     }
     stack = [dep for node_id in wave for dep in nodes[node_id].dependencies]
     while stack:
@@ -546,7 +553,8 @@ def _with_between_steps(
 ) -> list[str]:
     """A level's nodes with the python steps that read its ops and feed only a
     later model op, so the plan after them reads their stored rows. A step a
-    model op also feeds, or one the level already holds, stays out.
+    model op also feeds, or one the level already holds, stays out; so does one
+    a reader refuses, which the main run dispatches with that reader.
 
     ``planned`` is the level's graph, where a partly served wave op's readers
     name its merge step, so a step here reads a node the level already holds.
@@ -561,6 +569,7 @@ def _with_between_steps(
         dependencies = planned.nodes[node_id].dependencies
         if (
             dependencies
+            and node_id not in plan.refused
             and all(dep in kept or dep in served for dep in dependencies)
             and _feeds_only_model(planned, node_id)
         ):

@@ -703,6 +703,34 @@ async def test_a_model_level_a_later_reader_refuses_is_left_to_the_main_run(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_step_stays_out_of_every_later_level(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A phase step whose stored rows a reader cannot take runs in the phase and
+    once more in the main run with that reader, not again in every level above
+    it."""
+    pack = {
+        **_TAG,
+        "id": "Pack",
+        "code": "def tag(c):\n    return [c[0]['t']]\n",
+    }
+    whole_list = {
+        **_CHAT,
+        "inputs": ["Pack"],
+        "rowwise_columns": [{"label": "v", "node": "Pack", "path": "items.output"}],
+        "key": {"node": "Pack", "path": "id"},
+    }
+    ops: list[dict[str, Any]] = [_TAG, pack, whole_list, _AFTER]
+    await run(_workflow(ops, _ROWS, "After"), "req-1")
+    graph = _workflow(ops, _AMENDED, "After")
+    assert _reasons(await run(graph, "req-2"))["Pack"] == (
+        "miss",
+        "read by a non-literal op",
+    )
+    assert _runs(worker, 2, [_node(graph, "Pack")]) == {_node(graph, "Pack"): 2}
+
+
+@pytest.mark.asyncio
 async def test_a_failed_sub_run_cancels_its_workflow(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
