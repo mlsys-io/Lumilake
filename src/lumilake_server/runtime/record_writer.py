@@ -147,11 +147,23 @@ class NodeRecords:
 
     @property
     def lines_up(self) -> bool:
-        """Whether the node hands one item per record, so a reader may take its
-        keys by position. A node the store served has one entry per record; a
-        produced node lines up when it has one item per value, so a read whose
-        one item holds several records carries no row identity to hand down."""
-        return bool(self.entries) or len(self.items) == len(self.values)
+        """Whether the node's keys stand at its values' positions, so a reader may
+        take them by position. A node the store served has one entry per record; a
+        produced node lines up when it has one item per value, and a grouped item
+        that holds exactly one value per record lines up too, since a reader that
+        reads the group positionally addresses those same rows."""
+        return (
+            bool(self.entries)
+            or len(self.items) == len(self.values)
+            or self._groups_one_value_per_record()
+        )
+
+    def _groups_one_value_per_record(self) -> bool:
+        """Whether the node's one item holds one output per record."""
+        if len(self.items) != 1 or not self.values:
+            return False
+        output = self.items[0].get("output")
+        return isinstance(output, list) and len(output) == len(self.values)
 
     def identity_at(self, position: int, round_number: int) -> tuple[str, str] | None:
         """The record at ``position`` as a consumer at ``round_number`` names
