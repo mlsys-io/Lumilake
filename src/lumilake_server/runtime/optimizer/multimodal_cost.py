@@ -1,7 +1,8 @@
 from enum import StrEnum
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
+
+from lumilake_server.data_specs import GraphTemplateData
 
 from .schedule.models import Node
 
@@ -24,13 +25,7 @@ class MultimodalCostCoefficients(BaseModel):
     beta_diff: float = Field(default=0.05, ge=0)
 
 
-class VisionMarker(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    image_embedding: dict[str, Any] | None = None
-
-
 class DiffusionInferenceConfig(BaseModel):
-    model_config = ConfigDict(extra="ignore")
     num_inference_steps: float = Field(default=30.0, gt=0)
     height: float = Field(default=768.0, gt=0)
     width: float = Field(default=768.0, gt=0)
@@ -42,8 +37,11 @@ def classify_multimodal_node(node: Node) -> NodeCostType:
         return NodeCostType.IMAGE_GENERATION
     if node_type == "embedding":
         return NodeCostType.VISION_EMBEDDING
-    marker = VisionMarker.model_validate(node.raw)
-    if node_type == "inference" and marker.image_embedding is not None:
+    if (
+        node_type == "inference"
+        and isinstance(node.data_spec, GraphTemplateData)
+        and node.data_spec.image_embedding is not None
+    ):
         return NodeCostType.VISION_INFERENCE
     return NodeCostType.TEXT_INFERENCE
 
@@ -65,21 +63,15 @@ def compute_gpu_exec_cost(
     if node_type == NodeCostType.VISION_INFERENCE:
         return coeffs.alpha_vlm * model_size + coeffs.beta_vlm * query_count
 
-    config = _parse_diffusion_inference_config(node)
+    config = _diffusion_inference_config(node)
     step_scale = config.num_inference_steps / 30.0
     pixel_scale = (config.height * config.width) / (768.0 * 768.0)
     base = coeffs.alpha_diff * model_size + coeffs.beta_diff * query_count
     return base * step_scale * pixel_scale
 
 
-def _parse_diffusion_inference_config(node: Node) -> DiffusionInferenceConfig:
-    raw = node.raw
-    if "_inference_spec" not in raw:
-        return DiffusionInferenceConfig()
-    payload = raw["_inference_spec"]
-    if isinstance(payload, dict):
-        return DiffusionInferenceConfig.model_validate(payload)
-    return DiffusionInferenceConfig()
+def _diffusion_inference_config(node: Node) -> DiffusionInferenceConfig:
+    return DiffusionInferenceConfig.model_validate(node.inference_spec)
 
 
 __all__ = [

@@ -371,23 +371,18 @@ ops:
 
 ### JoinOp
 
-`JoinOp` merges row columns back by a key. The first input fixes the output: one row per its row, in its order; every further input contributes the fields of the row carrying the same key. A row column is any op with a runtime node, or a workflow input or `DataOp`, whose literal values are the column's rows. Each `attach` field joins one node's per-row output to the row it was computed from, and the node is resolved at submit, so no user code positions values. An attach target must be 1:1 over rows: a rowwise `LLMChatOp` (including one with a `rowwise_messages` column), a `LLMCompletionOp` or `EmbeddingOp` whose columns read one node, a row-mode or aligned `LambdaOp` over one non-broadcast input, an `HttpFetchOp`, a `ClassificationOp`, another `JoinOp`, or a chain of these that reaches one. A `FormatOp` counts only as a hop on such a chain: it has no runtime node of its own, so a format op named directly as an attach target is refused at submit, naming the op, the attach field and that reason. List every attach target in `inputs:` too, so its producer is built before the join. Router branches are disjoint, so a case lands in one branch and the other branch's fields are left out of the output row.
+`JoinOp` merges row columns back by a key. A row column is any op with a runtime node, or a workflow input or `DataOp`, whose literal values are the column's rows. `how: left` (the default) keeps the first input's rows and their order, `how: inner` keeps only the keys every input carries, and `how: full` also appends a key only a later input carries, in first-seen order, with the fields it lacks left out. `require_match: true` fails the job unless every input carries the same keys. Each `attach` field joins one node's per-row output to the row it was computed from, under any `how`, and the node is resolved at submit, so no user code positions values. An attach target must be 1:1 over rows: a rowwise `LLMChatOp` (including one with a `rowwise_messages` column), a `LLMCompletionOp` or `EmbeddingOp` whose columns read one node, a row-mode or aligned `LambdaOp` over one non-broadcast input, an `HttpFetchOp`, a `ClassificationOp`, another `JoinOp`, or a chain of these that reaches one. A `FormatOp` counts only as a hop on such a chain: it has no runtime node of its own, so a format op named directly as an attach target is refused at submit, naming the op, the attach field and that reason. List every attach target in `inputs:` too, so its producer is built before the join. Router branches are disjoint, so a case lands in one branch and the other branch's fields are left out of the output row.
 
 `by` is one dotted field path, or a list of them for a composite key; a live row whose key path is missing or null fails the job.
 
 A first-input row carrying a failed record makes its output row that marker, and a marked further or attach row turns its key's output row into its marker; a marked further-input row whose key cannot be read fails the job.
 
-`on_missing` is the per-row policy and defaults to `null_fill`:
-
-- `null_fill` leaves out fields a further input or attach source does not carry and fails the job on a further-input key the first input lacks, an unpaired attach column, or a field two inputs disagree on.
-- `fail_row` marks the rows lacking a key instead of failing the job.
-
-A duplicate key and an attach length mismatch fail the job under either policy.
+`on_missing` governs an attach source only and defaults to `null_fill`: `null_fill` leaves the field out when the source lacks the row's key, and `fail_row` marks that row as failed instead. A duplicate key, an unpaired attach column and a field two inputs disagree on fail the job under either policy.
 
 ```yaml
 ops:
-  - {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id,
-     attach: {reply: Reply}, on_missing: null_fill}
+  - {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, how: inner,
+     require_match: true, attach: {reply: Reply}, on_missing: null_fill}
 ```
 
 ### ParseOp

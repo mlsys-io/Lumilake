@@ -12,6 +12,7 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
+    PythonMode,
     remap_model,
     remap_node_dict,
 )
@@ -205,7 +206,7 @@ class RuntimeGraph:
             for node_id, node in self.nodes.items()
             if node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
-            and node.data_spec.mode == "list"
+            and node.data_spec.mode is PythonMode.LIST
         }
         reached: set[str] = set()
         for node_id in self.node_order:

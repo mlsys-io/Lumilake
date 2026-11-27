@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from flowmesh.models.result import PythonResult
 from support.retrieval import retrieval_op
 
 from lumilake import envs
@@ -13,11 +14,13 @@ from lumilake_server.data_specs import (
     ColumnPlanEntry,
     GpuRequest,
     PythonData,
+    PythonMode,
     build_column_table,
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     FormatOp,
+    LambdaMode,
     LambdaOp,
     LLMChatOp,
     OpMessage,
@@ -292,7 +295,7 @@ def test_aligned_mode_rejects_unequal_multi_row_inputs() -> None:
         fn=lambda inputs: [
             str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
         ],
-        mode="aligned",
+        mode=LambdaMode.ALIGNED,
     )
     compiled = Graph.from_ops([as_output("out", combine)]).compile(
         A=["a1", "a2"], B=["b1", "b2", "b3"]
@@ -309,7 +312,7 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
         fn=lambda inputs: [
             str(inputs[0][i]) + str(inputs[1][i]) for i in range(len(inputs[0]))
         ],
-        mode="list",
+        mode=LambdaMode.LIST,
     )
     compiled = Graph.from_ops([as_output("out", combine)]).compile(
         A=["a1", "a2"], B=["b1", "b2", "b3"]
@@ -318,8 +321,10 @@ def test_list_mode_accepts_unequal_multi_row_inputs() -> None:
     assert len(_python_nodes(graph)) == 1
 
 
-@pytest.mark.parametrize("mode", ["expand", "reduce"])
-def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> None:
+@pytest.mark.parametrize("mode", [LambdaMode.EXPAND, LambdaMode.REDUCE])
+def test_expand_and_reduce_build_standalone_steps_with_their_mode(
+    mode: LambdaMode,
+) -> None:
     """An expand or reduce LambdaOp compiles to its own python task with its mode."""
     stock = input_placeholder("Stock")
     source = LambdaOp([stock], fn=lambda row: [row[0], row[0]])
@@ -333,10 +338,14 @@ def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> 
         ),
     )
     llm.inputs.append(source)
-    if mode == "reduce":
-        reading = LambdaOp([llm], fn=lambda rows: len(rows), mode="reduce", by="v")
+    if mode is LambdaMode.REDUCE:
+        reading = LambdaOp(
+            [llm], fn=lambda rows: len(rows), mode=LambdaMode.REDUCE, by="v"
+        )
     else:
-        reading = LambdaOp([llm], fn=lambda row: [row[0], row[0]], mode="expand")
+        reading = LambdaOp(
+            [llm], fn=lambda row: [row[0], row[0]], mode=LambdaMode.EXPAND
+        )
     compiled = Graph.from_ops([as_output("out", reading)]).compile(Stock=["a", "b"])
     graph = RuntimeGraphBuilder().build(compiled)
 
@@ -360,7 +369,7 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     whole = LambdaOp(
         [a, b],
         fn=lambda inputs: [len(inputs[0]) + len(inputs[1])],
-        mode="list",
+        mode=LambdaMode.LIST,
         expected_runtime_s=2,
     )
     plain = LambdaOp([a, b], fn=lambda inputs: str(inputs[0]) + str(inputs[1]))
@@ -381,11 +390,11 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
 
 def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
     a = input_placeholder("A")
-    inner = LambdaOp([a], fn=lambda inputs: list(inputs[0]), mode="list")
+    inner = LambdaOp([a], fn=lambda inputs: list(inputs[0]), mode=LambdaMode.LIST)
     outer = LambdaOp(
         [inner, a],
         fn=lambda inputs: [len(inputs[0])],
-        mode="list",
+        mode=LambdaMode.LIST,
         expected_runtime_s=2,
     )
     compiled = Graph.from_ops([as_output("out", outer)]).compile(A=["a1", "a2"])
@@ -406,7 +415,7 @@ def _run_wrapper(
     plan: list[dict[str, Any]],
     inputs: dict[str, str],
     fn_name: str | None = None,
-    mode: str = "row",
+    mode: PythonMode = PythonMode.ROW,
     by: str | None = None,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
@@ -423,7 +432,7 @@ def _run_wrapper(
 
 
 def _run_reshape(
-    mode: str,
+    mode: PythonMode,
     plan: list[dict[str, Any]],
     inputs: dict[str, str],
     template: str = "{symbol}: {title}",
@@ -431,7 +440,7 @@ def _run_reshape(
     """Run a generated flatten/regroup step, which never calls user code."""
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
-    if mode == "flatten":
+    if mode is PythonMode.FLATTEN:
         code = python_step.flatten_source("reshape", _entries(plan), template).replace(
             python_step.TASK_RUNTIME_MOUNT, runtime_mount
         )
@@ -509,7 +518,7 @@ def test_wrapper_flattens_rowwise_llm_grouped_item(tmp_path: Path) -> None:
         "lambda inputs: inputs[0]",
         [{"kind": "stage", "node": "llm", "flatten": True}],
         {"llm": llm_dir},
-        mode="list",
+        mode=PythonMode.LIST,
     )
     assert out == {"items": [{"output": "r0"}, {"output": "r1"}, {"output": "r2"}]}
 
@@ -547,7 +556,7 @@ def test_wrapper_flattens_api_rowwise_llm_rows_list_mode(tmp_path: Path) -> None
         "lambda inputs: inputs[0]",
         [{"kind": "stage", "node": "llm", "flatten": True}],
         {"llm": llm_dir},
-        mode="list",
+        mode=PythonMode.LIST,
     )
     assert out == {"items": [{"output": "r0"}, {"output": "r1"}, {"output": "r2"}]}
 
@@ -580,7 +589,7 @@ def test_wrapper_flattens_api_rowwise_llm_rows_standalone(tmp_path: Path) -> Non
         "lambda inputs: inputs[0]",
         [{"kind": "stage", "node": "llm", "flatten": True}],
         {"llm": llm_dir},
-        mode="row",
+        mode=PythonMode.ROW,
     )
     assert out == {
         "items": [{"output": "r0", "value": "r0"}, {"output": "r1", "value": "r1"}]
@@ -599,7 +608,7 @@ def test_wrapper_flatten_keeps_a_list_value_as_one_value(tmp_path: Path) -> None
         "lambda inputs: inputs[0]",
         [{"kind": "stage", "node": "llm", "flatten": True}],
         {"llm": llm_dir},
-        mode="list",
+        mode=PythonMode.LIST,
     )
     assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
 
@@ -621,7 +630,7 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
         "lambda inputs: inputs[0]",
         [{"kind": "stage", "node": "llm", "flatten": True}],
         {"llm": llm_dir},
-        mode="list",
+        mode=PythonMode.LIST,
     )
     assert out == {
         "items": [
@@ -648,7 +657,8 @@ def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
         "lambda inputs: [v[0]['title'] for v in inputs[0]]",
         [{"kind": "stage", "node": "ret"}],
         {"ret": ret_dir},
-        mode="list",
+        mode=PythonMode.LIST,
+        fn_name="titles",
     )
     assert out == {"items": [{"output": "t0"}, {"output": "t1"}]}
 
@@ -675,12 +685,24 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
         _run_wrapper(code, plan, {}, fn_name="b")
 
 
-@pytest.mark.parametrize("mode", ["list", "aligned"])
-def test_wrapper_whole_column_modes_decode_each_element(mode: str) -> None:
+def test_wrapper_whole_column_modes_decode_each_element() -> None:
     item = {"table": {"df": '{"k": {"0": 1}}'}}
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": [json.dumps(item)]}]
-    out = _run_wrapper("lambda c: c[0][0]", plan, {}, mode=mode)
-    assert out == {"items": [{"output": {"k": 1}}]}
+    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
+        out = _run_wrapper("lambda c: c[0][0]", plan, {}, mode=mode)
+        assert out == {"items": [{"output": {"k": 1}}]}
+
+
+def test_wrapper_whole_column_modes_pass_each_row_decoded() -> None:
+    # A whole-column function receives its JSON rows already decoded, so one
+    # group per row comes back as a list of lists under either mode.
+    code = "def rows(columns):\n    return columns[0]\n"
+    plan: list[dict[str, Any]] = [
+        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    ]
+    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
+        out = _run_wrapper(code, plan, {}, fn_name="rows", mode=mode)
+        assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
 
 
 def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
@@ -691,7 +713,7 @@ def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
     with pytest.raises(
         ValueError, match="aligned lambda 'op-1' returned 1 values for 3 rows"
     ):
-        _run_wrapper(code, plan, {}, fn_name="bad", mode="aligned")
+        _run_wrapper(code, plan, {}, fn_name="bad", mode=PythonMode.ALIGNED)
 
 
 def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
@@ -701,7 +723,7 @@ def test_wrapper_aligned_mode_rejects_unequal_columns(tmp_path: Path) -> None:
         {"kind": "literal", "values": ["x", "y"]},
     ]
     with pytest.raises(ValueError, match="expected 1 or 3"):
-        _run_wrapper(code, plan, {}, fn_name="f", mode="aligned")
+        _run_wrapper(code, plan, {}, fn_name="f", mode=PythonMode.ALIGNED)
 
 
 def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
@@ -713,7 +735,7 @@ def test_wrapper_treats_fn_name_as_a_label_for_a_lambda() -> None:
 def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> None:
     code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a,b", "", "c"]}]
-    out = _run_wrapper(code, plan, {}, fn_name="split", mode="expand")
+    out = _run_wrapper(code, plan, {}, fn_name="split", mode=PythonMode.EXPAND)
     assert out == {
         "items": [
             {"output": "a", "parent": 0, "child": 0},
@@ -728,7 +750,7 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
     pairs = (("p1", 5), ("p2", 9), ("p1", 7), (1, 2), ("1", 3), ("p1", 1))
     rows = [json.dumps({"id": i, "s": s}) for i, s in pairs]
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": rows}]
-    out = _run_wrapper(code, plan, {}, fn_name="best", mode="reduce", by="id")
+    out = _run_wrapper(code, plan, {}, fn_name="best", mode=PythonMode.REDUCE, by="id")
     scores = [[row[0]["s"] for row in item["output"]] for item in out["items"]]
     assert scores == [[7, 5], [9], [2], [3]]
 
@@ -756,14 +778,14 @@ def test_wrapper_expand_mode_decodes_only_a_serialized_table(
 ) -> None:
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": [json.dumps(value)]}]
     code = "def rows(r):\n    return r[0] if isinstance(r[0], list) else [r[0]]\n"
-    out = _run_wrapper(code, plan, {}, fn_name="rows", mode="expand")
+    out = _run_wrapper(code, plan, {}, fn_name="rows", mode=PythonMode.EXPAND)
     assert out == {"items": expected}
 
 
 def test_wrapper_reduce_mode_names_the_row_missing_its_by_path() -> None:
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": ['{"x": 1}']}]
     with pytest.raises(ValueError, match="group row 0 by 'patient_id'"):
-        _run_wrapper("lambda rows: 0", plan, {}, "f", "reduce", "patient_id")
+        _run_wrapper("lambda rows: 0", plan, {}, "f", PythonMode.REDUCE, "patient_id")
 
 
 @pytest.mark.parametrize(
@@ -1132,12 +1154,12 @@ def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> N
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
     optimizer = HaloOptimizer()
 
-    def cost(raw: dict[str, Any]) -> float:
-        node = Node(id="n", type="python", engine="python", model="", raw=raw)
+    def cost(spec: PythonData) -> float:
+        node = Node(id="n", type="python", engine="python", model="", data_spec=spec)
         return optimizer._python_exec_cost(node)
 
-    assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
-    assert cost({"timeout_s": 100}) == 5.0
+    assert cost(PythonData()) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
+    assert cost(PythonData(timeout_s=100)) == 5.0
 
 
 def test_halo_maps_python_to_its_own_cpu_engine() -> None:
@@ -1148,13 +1170,12 @@ def test_halo_maps_python_to_its_own_cpu_engine() -> None:
 def test_python_output_items_come_from_value() -> None:
     manager = FlowmeshRuntimeManager.__new__(FlowmeshRuntimeManager)
     items = manager._resolve_output_items(
-        {"task_type": "python", "value": {"items": [{"output": "x"}]}},
+        PythonResult(exit_code=0, value={"items": [{"output": "x"}]}),
         "node",
-        task_type="python",
     )
     assert items == [{"output": "x"}]
     with pytest.raises(RuntimeError, match="returned no items"):
-        manager._resolve_output_items({"value": {}}, "node", task_type="python")
+        manager._resolve_output_items(PythonResult(exit_code=0, value={}), "node")
 
 
 def _sql_stage(
@@ -1218,7 +1239,9 @@ def test_flatten_renders_one_prompt_per_image_row_major(tmp_path: Path) -> None:
     # sizes (2, 0, 3): symbol 0 has 2 images, symbol 1 none, symbol 2 has 3.
     titles = [["t0", "t1"], [], ["t2", "t3", "t4"]]
     inputs = _flatten_inputs(tmp_path, [2, 0, 3], titles)
-    out = _run_reshape("flatten", _flatten_plan(), inputs, template="{symbol}: {title}")
+    out = _run_reshape(
+        PythonMode.FLATTEN, _flatten_plan(), inputs, template="{symbol}: {title}"
+    )
     items = out["items"]
     assert len(items) == 5
     # Row-major: row 0's two images first, then row 2's three.
@@ -1232,7 +1255,9 @@ def test_flatten_renders_one_prompt_per_image_row_major(tmp_path: Path) -> None:
 def test_flatten_renders_one_prompt_per_image_middle_empty(tmp_path: Path) -> None:
     titles = [["t0", "t1"], ["t2", "t3", "t4"], []]
     inputs = _flatten_inputs(tmp_path, [2, 3, 0], titles)
-    out = _run_reshape("flatten", _flatten_plan(), inputs, template="{symbol}: {title}")
+    out = _run_reshape(
+        PythonMode.FLATTEN, _flatten_plan(), inputs, template="{symbol}: {title}"
+    )
     items = out["items"]
     assert len(items) == 5
     assert [i["row"] for i in items] == [0, 0, 1, 1, 1]
@@ -1252,7 +1277,7 @@ def test_flatten_rejects_group_size_mismatch(tmp_path: Path) -> None:
     art = _s3_stage(tmp_path, "art", [["k0", "k1", "k2"], ["k3"], ["k4"]])
     inputs = {"news": news, "art": art}
     with pytest.raises(ValueError, match="row 0 has 4 values; expected 3"):
-        _run_reshape("flatten", _flatten_plan(), inputs)
+        _run_reshape(PythonMode.FLATTEN, _flatten_plan(), inputs)
 
 
 def test_flatten_rejects_missing_key(tmp_path: Path) -> None:
@@ -1261,7 +1286,7 @@ def test_flatten_rejects_missing_key(tmp_path: Path) -> None:
     art = _stage(tmp_path, "art", {"items": [{"nokeys": []}]})
     inputs = {"news": news, "art": art}
     with pytest.raises(ValueError, match="missing 'keys'"):
-        _run_reshape("flatten", _flatten_plan(), inputs)
+        _run_reshape(PythonMode.FLATTEN, _flatten_plan(), inputs)
 
 
 def test_flatten_checks_grouped_columns_against_image_counts(tmp_path: Path) -> None:
@@ -1294,7 +1319,7 @@ def test_flatten_checks_grouped_columns_against_image_counts(tmp_path: Path) -> 
     ]
     inputs = {"news": news, "art": art}
     with pytest.raises(ValueError, match="row 1 has 2 values; expected 1"):
-        _run_reshape("flatten", plan, inputs)
+        _run_reshape(PythonMode.FLATTEN, plan, inputs)
 
 
 def test_flatten_with_only_literal_symbol_emits_prompts_without_image_text(
@@ -1318,7 +1343,7 @@ def test_flatten_with_only_literal_symbol_emits_prompts_without_image_text(
             "grouped": False,
         },
     ]
-    out = _run_reshape("flatten", plan, {"art": art}, template="{symbol}")
+    out = _run_reshape(PythonMode.FLATTEN, plan, {"art": art}, template="{symbol}")
     items = out["items"]
     assert len(items) == 3
     assert [i["row"] for i in items] == [0, 0, 1]
@@ -1371,7 +1396,7 @@ def test_regroup_groups_outputs_back_per_symbol(tmp_path: Path) -> None:
         {"kind": "stage", "node": "news", "path": "table.title", "grouped": True},
     ]
     out = _run_reshape(
-        "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+        PythonMode.REGROUP, plan, {"infer": infer, "flatten": flatten, "news": news}
     )
     assert out == {
         "items": [
@@ -1397,7 +1422,9 @@ def test_regroup_rejects_row_out_of_range(tmp_path: Path) -> None:
     ]
     with pytest.raises(ValueError, match="row 5 out of range for 3 symbols"):
         _run_reshape(
-            "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+            PythonMode.REGROUP,
+            plan,
+            {"infer": infer, "flatten": flatten, "news": news},
         )
 
 
@@ -1416,7 +1443,9 @@ def test_regroup_rejects_output_count_mismatch(tmp_path: Path) -> None:
     ]
     with pytest.raises(ValueError, match="1 outputs but 2 rows"):
         _run_reshape(
-            "regroup", plan, {"infer": infer, "flatten": flatten, "news": news}
+            PythonMode.REGROUP,
+            plan,
+            {"infer": infer, "flatten": flatten, "news": news},
         )
 
 

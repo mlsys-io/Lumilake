@@ -1,9 +1,18 @@
+"""The data-profile rows the schedule protocol carries.
+
+A profiled SQL or S3 node contributes one row per profiled query, and each row
+lists the plan variants the profile measured. Both the server and a remote
+optimizer read these rows, so they live here.
+"""
+
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class DataProfileCostEstimate(BaseModel):
+    """One measured plan variant of a profiled query."""
+
     plan_id: str = Field(min_length=1)
     description: str | None = None
     raw_cost: float = Field(ge=0)
@@ -18,6 +27,8 @@ class DataProfileCostEstimate(BaseModel):
 
 
 class DataProfileResultRow(BaseModel):
+    """The plan variants profiled for one query of one node."""
+
     node_id: str = Field(min_length=1)
     raw_node_id: str = Field(min_length=1)
     query_name: str = Field(min_length=1)
@@ -25,11 +36,3 @@ class DataProfileResultRow(BaseModel):
     cost_estimates: list[DataProfileCostEstimate]
 
     model_config = ConfigDict(extra="ignore")
-
-
-class DataProfileResultsPayload(BaseModel):
-    data_profile_results: dict[str, list[DataProfileResultRow]] = Field(
-        default_factory=dict
-    )
-
-    model_config = ConfigDict(extra="forbid")

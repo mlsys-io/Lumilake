@@ -16,7 +16,6 @@ import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
-from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -30,7 +29,12 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
-from tests.runtime.runtime_manager.conftest import serve
+from tests.runtime.runtime_manager.conftest import (
+    API_URL,
+    RESULT_ADAPTER,
+    api_result,
+    serve,
+)
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -253,10 +257,12 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return {
-                    "items": [
+                return api_result(
+                    items=[
                         {
                             "index": 0,
+                            "url": API_URL,
+                            "status_code": 200,
                             "json": {
                                 "choices": [{"message": {"content": "assistant reply"}}]
                             },
@@ -264,7 +270,7 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
                             "prompt": "{{prompt}}",
                         }
                     ]
-                }
+                )
             raise APIError(
                 "task spec invalid",
                 status_code=422,
@@ -440,7 +446,7 @@ async def test_archive_task_response_archives_grouped_api_result(
             }
         ],
     }
-    validated = _RESULT_ADAPTER.validate_python(grouped_payload)
+    validated = RESULT_ADAPTER.validate_python(grouped_payload)
 
     monkeypatch.setattr(
         "lumilake_server.runtime.runtime_manager.flowmesh_for_context",

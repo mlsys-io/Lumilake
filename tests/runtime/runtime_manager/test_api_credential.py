@@ -27,7 +27,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )
-from tests.runtime.runtime_manager.conftest import serve
+from tests.runtime.runtime_manager.conftest import API_URL, api_result, serve
 
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"
@@ -109,11 +109,13 @@ async def test_dispatched_request_carries_resolved_caller_credential(
             )
 
     class _FakeResults:
-        async def retrieve(self, task_id: str) -> dict[str, Any]:
-            return {
-                "items": [
+        async def retrieve(self, task_id: str) -> Any:
+            return api_result(
+                items=[
                     {
                         "index": 0,
+                        "url": API_URL,
+                        "status_code": 200,
                         "json": {
                             "choices": [{"message": {"content": "assistant reply"}}]
                         },
@@ -121,7 +123,7 @@ async def test_dispatched_request_carries_resolved_caller_credential(
                         "prompt": "{{prompt}}",
                     }
                 ]
-            }
+            )
 
     class _FakeFm:
         def __init__(self) -> None:
