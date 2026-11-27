@@ -640,7 +640,7 @@ async def test_an_op_a_later_reader_refuses_is_left_to_the_main_run(
     refused: str,
 ) -> None:
     """An op whose stored rows a reader cannot take stays out of a level, so a
-    rerun dispatches it once in the main run, never again in each later level."""
+    rerun dispatches it once in the phase or once in the main run."""
     await run(_workflow(ops, _ROWS, out), "req-1")
     graph = _workflow(ops, _AMENDED, out)
     node = _node(graph, refused)

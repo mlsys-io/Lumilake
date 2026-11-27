@@ -540,17 +540,21 @@ class ReusePlanner:
                             unserved
                             or ("partial records" if carries else "value not servable")
                         ),
-                        records=len(outcome.partial.missed),
+                        records=(
+                            len(outcomes)
+                            if unserved is not None
+                            else len(outcome.partial.missed)
+                        ),
                         outcomes=(
                             outcomes
                             if unserved is None
                             else [
                                 RecordOutcome(
-                                    record=outcome.record,
+                                    record=row.record,
                                     decision="miss",
                                     reason=unserved,
                                 )
-                                for outcome in outcomes
+                                for row in outcomes
                             ]
                         ),
                     )
