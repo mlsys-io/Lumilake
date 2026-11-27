@@ -738,3 +738,79 @@ async def test_an_expand_between_two_chats_decides_per_record(
     assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 5
+
+
+@pytest.mark.asyncio
+async def test_a_failed_level_cancels_its_workflow(
+    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage, worker: _Worker
+) -> None:
+    """A model level whose task fails leaves the other tasks of its sub-run
+    running, so the request aborts the workflow it submitted rather than
+    leaving GPU workers held."""
+    cancelled: list[str] = []
+    build = FlowmeshRuntimeManager._build_task_spec
+
+    async def _build(self: Any, info: RequestInfo, graph: Any, schedule: Any = None):
+        worker.graph = graph
+        return await build(self, info, graph, schedule)
+
+    async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
+        return worker.submit(worker.graph, task_yaml)
+
+    async def _fail(_self: Any, status: dict[str, str], _id: str) -> bool:
+        failed = next(iter(status))
+        status.update(dict.fromkeys(status, "DONE"))
+        status[failed] = "FAILED"
+        return True
+
+    async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
+        rows = [
+            {"task_id": task, "status": "DONE", "graph_node_name": task[5:]}
+            for task in worker.responses
+        ]
+        return TaskStatusPage(rows=rows, next_cursor="0")
+
+    class _Workflows:
+        async def cancel(self, workflow_id: str) -> None:
+            cancelled.append(workflow_id)
+
+    fm = SimpleNamespace(
+        results=SimpleNamespace(retrieve=_retrieve_result(worker)),
+        workflows=_Workflows(),
+    )
+    for name, value in (
+        ("_build_task_spec", _build),
+        ("_submit_workflow", _submit),
+        ("update_task_status", _fail),
+        ("fetch_workflow_task_statuses", _statuses),
+        ("fm", property(lambda _self: fm)),
+    ):
+        monkeypatch.setattr(FlowmeshRuntimeManager, name, value)
+    monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
+
+    graph = _workflow([_TAG, _CHAT], _ROWS, "Ask")
+    info = RequestInfo(
+        request_id="req-fail",
+        runtime_graphs={"g": graph},
+        data_profile_graphs={},
+        store_records=True,
+        reuse_records=True,
+        member_reuse={"req-fail": True},
+    )
+    info.runtime_graph = graph
+    info.batch_id = "batch-1"
+    info.output_node_map = {
+        node: ("g", name) for node, name in graph.output_node_map.items()
+    }
+    with pytest.raises(RuntimeError):
+        await FlowmeshRuntimeManager().process_request(
+            info, Schedule({"w": list(graph.nodes)}), ["w"]
+        )
+    assert cancelled, "the level's workflow was not cancelled"
+
+
+def _retrieve_result(worker: _Worker) -> Any:
+    async def _retrieve(task_id: str) -> Any:
+        return worker.responses[task_id]
+
+    return _retrieve

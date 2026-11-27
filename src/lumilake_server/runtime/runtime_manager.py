@@ -792,6 +792,9 @@ class FlowmeshRuntimeManager:
         self._reuse_read_responses: dict[str, dict[str, tuple[Any, str | None]]] = {}
         # The outputs such reads export, as their own run would.
         self._reuse_read_outputs: dict[str, dict[str, list[str]]] = {}
+        # Every FlowMesh workflow one request submitted, so an abort after a
+        # sub-run fails or times out stops that sub-run's tasks too.
+        self._request_submits: dict[str, list[str]] = {}
 
         # Cross-thread (FastAPI loop set/clear, _AsyncRunner loop get),
         # so threading lock, not asyncio.
@@ -1914,6 +1917,7 @@ class FlowmeshRuntimeManager:
             - prompts: dict[op_id, prompt_metadata] for history tracking
         """
         submitted: list[str] = []
+        self._request_submits[request_info.request_id] = submitted
         try:
             return await self._process_request(
                 request_info, schedule, worker_ids, data_profile_results, submitted
@@ -1923,6 +1927,7 @@ class FlowmeshRuntimeManager:
                 await self._abort_workflow(workflow_id)
             raise
         finally:
+            self._request_submits.pop(request_info.request_id, None)
             self._reuse_content_reads.pop(request_info.request_id, None)
             self._reuse_read_responses.pop(request_info.request_id, None)
             self._reuse_read_outputs.pop(request_info.request_id, None)
@@ -2622,6 +2627,9 @@ class FlowmeshRuntimeManager:
         }
         task_yaml, _ = await asyncio.to_thread(_dump_task_spec_yaml, task_spec)
         workflow_id, task_ids = await self._submit_workflow(task_yaml, uuid.uuid4().hex)
+        self._request_submits.setdefault(request_info.request_id, []).append(
+            workflow_id
+        )
         async with self._task_status_lock:
             self._batch_workflow_id[
                 (request_info.request_id, request_info.batch_id)
@@ -2636,7 +2644,7 @@ class FlowmeshRuntimeManager:
         )
         status = {task_id: "PENDING" for task_id in task_ids}
         try:
-            await self._await_tasks(status, workflow_id, request_info.request_id)
+            await self._await_tasks(status, workflow_id, request_info.request_id, label)
         finally:
             self._workflow_status_cursors.pop(workflow_id, None)
         results: dict[str, Any] = {}
@@ -2783,9 +2791,10 @@ class FlowmeshRuntimeManager:
         return response
 
     async def _await_tasks(
-        self, status: dict[str, str], workflow_id: str, request_id: str
+        self, status: dict[str, str], workflow_id: str, request_id: str, label: str
     ) -> None:
-        """Poll one sub-run's tasks until every one is terminal."""
+        """Poll one sub-run's tasks until every one is terminal; ``label`` names
+        the sub-run in a timeout."""
         poll_interval = envs.LUMILAKE_POLL_INTERVAL_SECONDS
         timeout = envs.LUMILAKE_POLL_TIMEOUT_SECONDS
         start = time.time()
@@ -2795,7 +2804,7 @@ class FlowmeshRuntimeManager:
             if await self.update_task_status(status, workflow_id):
                 return
             await asyncio.sleep(poll_interval)
-        raise RuntimeError(f"unversioned read timed out after {elapsed:.0f}s")
+        raise RuntimeError(f"{label} timed out after {elapsed:.0f}s")
 
     async def _write_records(
         self,
