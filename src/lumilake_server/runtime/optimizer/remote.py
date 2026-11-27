@@ -6,12 +6,13 @@ at plugin-load time. URL must use ``https://``; ``http://`` only for loopback
 (``localhost``, ``127.0.0.1``, ``::1``).
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
 
 from lumilake import envs
-from lumilake_hook import validate_remote_url
+from lumilake_hook import WorkerProfile, validate_remote_url
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse
@@ -47,9 +48,20 @@ class RemoteOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
+        gpu_python_nodes = sorted(
+            node_id
+            for node_id, op in graph.nodes.items()
+            if op.data_spec.gpu_request is not None
+        )
+        if gpu_python_nodes:
+            raise ValueError(
+                f"Graph has GPU python step node(s) {gpu_python_nodes}, but a remote"
+                " optimizer cannot place them; run the job under HALO or"
+                " topological-sort."
+            )
         graph_schema = RuntimeGraphSchema.model_validate(graph.serialize())
         request = ScheduleRequest(
             graph=graph_schema,

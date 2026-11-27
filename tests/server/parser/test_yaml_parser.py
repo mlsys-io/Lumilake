@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from lumilake_server.common import ApiConfig
+from lumilake_server.data_specs import GpuRequest
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     InputOp,
@@ -136,8 +137,8 @@ def test_data_retrieval_op_resolves_node_refs() -> None:
             op: DataRetrievalOp
             inputs: [entity]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: "docs/{name}.json"
               params:
                 - label: name
@@ -259,8 +260,8 @@ def test_data_spec_param_node_must_reference_known_id() -> None:
             op: DataRetrievalOp
             inputs: [query]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: docs/{entity}.json
               params:
                 - { label: entity, node: does_not_exist, path: data }
@@ -310,8 +311,8 @@ def test_llm_chat_bare_user_id_content_wraps_in_implicit_format_op() -> None:
             op: DataRetrievalOp
             inputs: [query]
             data_spec:
-              type: s3
-              connection_string: s3://bucket
+              type: lumid
+              mode: s3
               template: docs/{entity}.json
               params:
                 - { label: entity, node: query, path: data }
@@ -672,3 +673,44 @@ def test_messages_column_is_refused_beside_prompt_fields_and_outside_chat(
     with pytest.raises(ValueError, match=message):
         graph_dict = parse_yaml_payload(payload)["messages_column"]["graph"]
         Graph.from_json(graph_dict)
+
+
+def _gpu_lambda_yaml(gpu: str) -> str:
+    return textwrap.dedent(f"""
+        name: lambda_gpu
+        inputs:
+          stock: ["NVDA"]
+        ops:
+          - id: measure
+            op: LambdaOp
+            inputs: [stock]
+            fn_name: measure
+            code: |
+              def measure(inputs):
+                  return str(inputs[0])
+            image: ghcr.io/me/bench:1
+            gpu: {gpu}
+        outputs:
+          - {{ name: out, ref: measure }}
+        """)
+
+
+def test_lambda_op_gpu_request_round_trips_and_rejects_a_bad_count() -> None:
+    specs = parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24Gi}"))
+    graph = Graph.from_json(specs["lambda_gpu"]["graph"])
+    (op,) = [op for op in graph.iter_ops() if isinstance(op, LambdaOp)]
+    assert op.gpu == GpuRequest(count=1, memory="24Gi")
+    with pytest.raises(ValueError, match="'gpu' is invalid"):
+        parse_yaml_payload(_gpu_lambda_yaml("{count: 0}"))
+    with pytest.raises(ValueError, match="'gpu' is invalid"):
+        parse_yaml_payload(_gpu_lambda_yaml("{count: 1, memory: 24G}"))
+
+
+def test_column_without_data_or_node_names_the_field() -> None:
+    """A column with neither ``data`` nor ``node`` is refused, naming the field."""
+    payload = _messages_payload(
+        messages=[{"role": "user", "content": ""}],
+        rowwise_columns=[{"label": "topic"}],
+    )
+    with pytest.raises(ValueError, match=r"rowwise_columns\[0\]\.node"):
+        parse_yaml_payload(payload)

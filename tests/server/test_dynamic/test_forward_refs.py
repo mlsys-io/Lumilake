@@ -25,7 +25,6 @@ from lumilake_server.routes.jobs import (
     _dispatch_workflow_to_graph_specs,
 )
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from tests.support.data_specs import wire
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -46,7 +45,7 @@ def _sql_config(op_id: str) -> dict:
         "id": op_id,
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
 
 
@@ -89,7 +88,7 @@ def test_forward_explicit_sql_column_reference_binds_and_rewrites():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE s = {p}",
+                "template": "SELECT * FROM t WHERE s = {p} ORDER BY 1",
                 "params": [
                     {"label": "p", "node": sql_id, "path": "items.table.symbol"}
                 ],
@@ -208,7 +207,7 @@ def test_forward_rewritten_ops_parse_through_yaml_parser():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE c = {p}",
+                "template": "SELECT * FROM t WHERE c = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": sql_id, "path": "items.table.close"}],
             },
         }
@@ -237,7 +236,7 @@ def test_validate_rejects_reference_to_unavailable_earlier_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
+                "template": "SELECT * FROM t WHERE id = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
             },
         }
@@ -258,7 +257,7 @@ def test_validate_accepts_reference_to_available_earlier_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE id = {p}",
+                "template": "SELECT * FROM t WHERE id = {p} ORDER BY 1",
                 "params": [{"label": "p", "node": "s0", "path": "items.table.symbol"}],
             },
         }
@@ -275,7 +274,7 @@ def test_validate_rejects_export_not_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
@@ -288,7 +287,7 @@ def test_validate_accepts_export_in_subgraph():
             "id": "q1",
             "op": "DataRetrievalOp",
             "inputs": [],
-            "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+            "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
         }
     ]
     validate_emitted_subgraph(subgraph, {}, max_nodes=4, export=["q1"])
@@ -302,7 +301,7 @@ def test_admit_subgraph_forwards_export_to_validation():
         "id": "q1",
         "op": "DataRetrievalOp",
         "inputs": [],
-        "data_spec": {"type": "lumid", "mode": "sql", "template": "SELECT *"},
+        "data_spec": {"type": "lumid", "mode": "sql", "rows": "one"},
     }
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
@@ -360,7 +359,7 @@ def test_build_round_round2_graph_has_no_round1_op():
             "data_spec": {
                 "type": "lumid",
                 "mode": "sql",
-                "template": "SELECT * FROM t WHERE s = {p}",
+                "template": "SELECT * FROM t WHERE s = {p} ORDER BY 1",
                 "params": [
                     {"label": "p", "node": sql_id, "path": "items.table.symbol"}
                 ],
@@ -850,7 +849,7 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
         Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
-    assert wire(node)["seeds"] == [7, 9]
+    assert node.data_spec.model_dump(exclude_none=True)["seeds"] == [7, 9]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():
@@ -906,7 +905,8 @@ def test_forward_aligned_materializers_are_row_cardinality():
     aligned = [
         node
         for node in graph.nodes.values()
-        if node.task_type == "python" and wire(node).get("mode") == "aligned"
+        if node.task_type == "python"
+        and node.data_spec.model_dump(exclude_none=True).get("mode") == "aligned"
     ]
     assert len(aligned) == 2
     # Neither the materializers nor News Report are whole-list-per-run.
@@ -919,7 +919,9 @@ def test_forward_aligned_materializers_are_row_cardinality():
     )
     assert report.node_id not in cardinality
     # News Report's columns still read the materializers at value.items.output.
-    df_columns = wire(report)["template"]["columns"][0]["data"]["columns"]
+    df_columns = report.data_spec.model_dump(exclude_none=True)["template"]["columns"][
+        0
+    ]["data"]["columns"]
     assert [c["label"] for c in df_columns] == ["title", "summary"]
     for column in df_columns:
         assert column["path"] == "value.items.output"

@@ -5,13 +5,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig, Message
-from lumilake_server.data_specs import ColumnPlanEntry, PythonData
+from lumilake_server.data_specs import (
+    ColumnPlanEntry,
+    GpuRequest,
+    PythonData,
+    build_column_table,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
-    DataRetrievalOp,
     FormatOp,
     LambdaOp,
     LLMChatOp,
@@ -27,7 +32,6 @@ from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.support.data_specs import wire
 
 _MODEL = "meta-llama/Llama-3.1-8B-Instruct"
 
@@ -109,7 +113,10 @@ def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="Reply {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     reply.inputs.append(shout)
     tally = LambdaOp([reply], fn=lambda inputs: str(len(inputs[0])))
@@ -119,7 +126,7 @@ def test_standalone_lambda_over_rowwise_llm_flattens_plan_entry() -> None:
     graph = RuntimeGraphBuilder().build(compiled)
 
     node = _python_nodes(graph)[tally.id]
-    (reply_plan,) = wire(node)["plan"]
+    (reply_plan,) = node.data_spec.model_dump(exclude_none=True)["plan"]
     assert reply_plan == {"kind": "stage", "node": reply.id, "flatten": True}
 
 
@@ -178,7 +185,7 @@ def test_lambda_fed_to_llm_and_retrieval_runs_as_python_step() -> None:
     materialize as a python step so the retrieval node can reference it."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -208,7 +215,7 @@ def test_lambda_named_only_by_retrieval_dependency_materializes() -> None:
     unemitted node."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -320,7 +327,10 @@ def test_expand_and_reduce_build_standalone_steps_with_their_mode(mode: str) -> 
         [OpMessage(role="user", content="Reply {r}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="Say {v}",
-        rowwise_columns=[{"label": "v", "node": source.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "v", "node": source.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(source)
     if mode == "reduce":
@@ -359,9 +369,13 @@ def test_python_step_records_its_row_count_with_a_runtime_hint() -> None:
     ).compile(A=["a1", "a2", "a3"], B=["b"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    assert wire(graph.nodes[row.id])["row_count"] == 3
-    assert wire(graph.nodes[whole.id])["row_count"] == 3
-    assert "row_count" not in wire(graph.nodes[plain.id])
+    assert graph.nodes[row.id].data_spec.model_dump(exclude_none=True)["row_count"] == 3
+    assert (
+        graph.nodes[whole.id].data_spec.model_dump(exclude_none=True)["row_count"] == 3
+    )
+    assert "row_count" not in graph.nodes[plain.id].data_spec.model_dump(
+        exclude_none=True
+    )
     assert "row_count" not in _spec(graph.nodes[row.id])
 
 
@@ -377,7 +391,9 @@ def test_python_step_omits_row_count_when_an_input_count_is_unknown() -> None:
     compiled = Graph.from_ops([as_output("out", outer)]).compile(A=["a1", "a2"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    assert "row_count" not in wire(graph.nodes[outer.id])
+    assert "row_count" not in graph.nodes[outer.id].data_spec.model_dump(
+        exclude_none=True
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -900,7 +916,7 @@ def test_python_step_carries_the_declared_fn_name() -> None:
     compiled = Graph.from_ops([as_output("shouted", op)]).compile(Stock=["NVDA"])
     node = RuntimeGraphBuilder().build(compiled).nodes[op.id]
 
-    assert wire(node)["fn_name"] == "shout"
+    assert node.data_spec.model_dump(exclude_none=True)["fn_name"] == "shout"
     code = _spec(node)["code"]
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
@@ -916,11 +932,22 @@ def test_python_step_timeout_and_memory_reach_the_task() -> None:
     assert spec["timeoutSeconds"] == 45
     assert spec["resources"] == {"hardware": {"memory": "512Mi"}}
 
+    _, own, own_compiled = _llm_then_lambda(
+        image="ghcr.io/me/bench:1", gpu=GpuRequest(count=1, memory="24Gi")
+    )
+    own_spec = _spec(RuntimeGraphBuilder().build(own_compiled).nodes[own.id])
+    assert own_spec["resources"] == {
+        "hardware": {"gpu": {"count": 1, "memory": "24Gi"}}
+    }
+
 
 def test_python_step_defaults_carry_the_default_timeout() -> None:
     _, shout, compiled = _llm_then_lambda()
     node = RuntimeGraphBuilder().build(compiled).nodes[shout.id]
-    assert wire(node)["timeout_s"] == python_step.DEFAULT_TIMEOUT_SECONDS
+    assert (
+        node.data_spec.model_dump(exclude_none=True)["timeout_s"]
+        == python_step.DEFAULT_TIMEOUT_SECONDS
+    )
     spec = _spec(node)
     assert spec["timeoutSeconds"] == python_step.DEFAULT_TIMEOUT_SECONDS
     assert "resources" not in spec
@@ -949,19 +976,21 @@ def test_python_step_carries_image_when_set_and_omits_it_when_not() -> None:
     assert "image" not in plain_spec
 
 
-def test_image_lambda_read_by_an_llm_message_chain_is_rejected() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"image": "ghcr.io/me/sim:latest"}, {"gpu": GpuRequest(count=1)}],
+)
+def test_lambda_needing_its_own_worker_read_by_an_llm_message_chain_is_rejected(
+    kwargs: dict[str, Any],
+) -> None:
     stock = input_placeholder("Stock")
-    shout = LambdaOp(
-        [stock], fn=lambda inputs: str(inputs[0]).upper(), image="ghcr.io/me/sim:latest"
-    )
+    shout = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper(), **kwargs)
     llm = LLMChatOp(
         [OpMessage(role="user", content=shout)],
         config=GenerationConfig(model=_MODEL),
     )
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
-    with pytest.raises(
-        ValueError, match="image-bearing LambdaOp '.*' through its message chain"
-    ):
+    with pytest.raises(ValueError, match="asks for an image or GPUs"):
         RuntimeGraphBuilder().build(compiled)
 
 
@@ -974,7 +1003,10 @@ def test_image_lambda_read_by_llm_via_node_column_compiles() -> None:
         [OpMessage(role="user", content="Result: {r}")],
         config=GenerationConfig(model=_MODEL),
         rowwise_template="Result: {r}",
-        rowwise_columns=[{"label": "r", "node": shout.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "r", "node": shout.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(shout)
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
@@ -1012,13 +1044,15 @@ def test_python_step_carries_expected_runtime_when_set_and_omits_it_when_not() -
     _, shout, compiled = _llm_then_lambda(expected_runtime_s=5)
     graph = RuntimeGraphBuilder().build(compiled)
     node = graph.nodes[shout.id]
-    assert wire(node)["expected_runtime_s"] == 5
+    assert node.data_spec.model_dump(exclude_none=True)["expected_runtime_s"] == 5
     # The hint is planning-only and never reaches the FlowMesh task spec.
     assert "expected_runtime_s" not in _spec(node)
 
     _, plain, compiled_plain = _llm_then_lambda()
     plain_node = RuntimeGraphBuilder().build(compiled_plain).nodes[plain.id]
-    assert "expected_runtime_s" not in wire(plain_node)
+    assert "expected_runtime_s" not in plain_node.data_spec.model_dump(
+        exclude_none=True
+    )
 
 
 def test_python_step_passes_cache_through_when_set_and_omits_it_when_not() -> None:
@@ -1427,7 +1461,7 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     path fails the way it fails in FlowMesh."""
     stock = input_placeholder("Stock")
     terms = LambdaOp([stock], fn=lambda inputs: str(inputs[0]).upper())
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1448,7 +1482,7 @@ def test_retrieval_param_paths_resolve_against_python_result() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(Stock=["NVDA"])
     graph = RuntimeGraphBuilder().build(compiled)
 
-    params = wire(graph.nodes[retrieval.id])["params"]
+    params = graph.nodes[retrieval.id].data_spec.model_dump(exclude_none=True)["params"]
     (whole,) = [p for p in params if p.get("label") == "whole"]
 
     # The whole-item read maps to the python step's textified output.

@@ -1,12 +1,13 @@
 """``_worker_meets_hardware`` filters out workers that can't satisfy the
 per-job hardware override before scheduler dispatch / preview selection."""
 
-from typing import Any
-
 import pytest
 
+from lumilake import envs
+from lumilake_hook import GpuDevice, WorkerGpu, WorkerProfile
 from lumilake_server.runtime.protocol import HardwareRequirements
 from lumilake_server.runtime.server import LumilakeServer
+from lumilake_server.runtime.worker_capability import SessionLane
 
 
 def _profile(
@@ -15,17 +16,23 @@ def _profile(
     gpu_count: int = 0,
     gpu_mem_bytes: int | None = None,
     gpu_names: list[str] | None = None,
-) -> dict[str, Any]:
+    gpu_unnamed: bool = False,
+    ssh_limits: tuple[float | None, int | None] | None = None,
+) -> WorkerProfile:
     names = gpu_names or ["NVIDIA GeForce RTX 5080"] * gpu_count
-    devices: list[dict[str, Any]] = [
-        {"memory_total_bytes": gpu_mem_bytes, "name": names[i]}
+    devices = tuple(
+        GpuDevice(
+            name=None if gpu_unnamed else names[i], memory_total_bytes=gpu_mem_bytes
+        )
         for i in range(gpu_count)
-    ]
-    return {
-        "cpu": {"logical_cores": cores},
-        "memory": {"total_bytes": mem_bytes},
-        "gpu": {"devices": devices},
-    }
+    )
+    return WorkerProfile(
+        cpu_cores=cores,
+        memory_total_bytes=mem_bytes,
+        gpu=WorkerGpu(devices=devices) if devices else None,
+        max_session_cpu_cores=None if ssh_limits is None else ssh_limits[0],
+        max_session_memory_bytes=None if ssh_limits is None else ssh_limits[1],
+    )
 
 
 def test_no_requirement_accepts_every_worker() -> None:
@@ -124,17 +131,6 @@ def test_gpu_worker_still_checked_for_gpu_constraints() -> None:
     assert LumilakeServer._worker_meets_hardware(one_gpu, hw) is False
 
 
-def test_explicit_worker_has_gpu_hint_avoids_redundant_classification() -> None:
-    """Callers that already classified the worker can pass ``worker_has_gpu``
-    to skip the internal ``_has_gpu`` lookup."""
-    hw = HardwareRequirements(gpu=2)
-    cpu_only = _profile(gpu_count=0)
-    assert (
-        LumilakeServer._worker_meets_hardware(cpu_only, hw, worker_has_gpu=False)
-        is True
-    )
-
-
 # ---------------------------------------------------------------------------
 # gpu_model: substring, case-insensitive, GPU-role-only
 # ---------------------------------------------------------------------------
@@ -186,9 +182,52 @@ def test_gpu_model_unknown_device_names_still_pass() -> None:
     """A GPU worker whose devices report no ``name`` is treated as unknown and
     passes (unknown-passes rule)."""
     hw = HardwareRequirements(gpu_model="RTX 5080")
-    profile = {
-        "cpu": {"logical_cores": 16},
-        "memory": {"total_bytes": 64 * (1024**3)},
-        "gpu": {"devices": [{"memory_total_bytes": 24 * (1024**3)}]},
-    }
+    profile = _profile(
+        cores=16,
+        mem_bytes=64 * (1024**3),
+        gpu_count=1,
+        gpu_mem_bytes=24 * (1024**3),
+        gpu_unnamed=True,
+    )
     assert LumilakeServer._worker_meets_hardware(profile, hw) is True
+
+
+def _home_mini() -> WorkerProfile:
+    return _profile(
+        cores=32,
+        mem_bytes=29 * (1024**3),
+        ssh_limits=(None, 12 * (1024**3)),
+    )
+
+
+def test_python_steps_fit_the_session_cap_at_lower_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    meets = LumilakeServer._worker_meets_hardware
+    hw = HardwareRequirements(memory="8Gi")
+    default = SessionLane(cpu_memory_mb=frozenset({None}))
+    mixed = SessionLane(cpu_memory_mb=frozenset({None, 16384}))
+    assert meets(_home_mini(), hw, session_lane=default) is True
+    assert meets(_home_mini(), hw, session_lane=mixed) is False
+
+
+def test_gpu_workers_are_held_to_the_session_limits_of_their_own_python_steps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step without a GPU request runs on a CPU worker, so a GPU worker
+    serving the same batch is held to its hardware alone."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    meets = LumilakeServer._worker_meets_hardware
+    gpu = _profile(
+        cores=32,
+        mem_bytes=29 * (1024**3),
+        gpu_count=1,
+        gpu_mem_bytes=24 * (1024**3),
+        ssh_limits=(None, 12 * (1024**3)),
+    )
+
+    assert meets(gpu, None, session_lane=SessionLane(cpu_memory_mb=frozenset({None})))
+    assert not meets(
+        gpu, None, session_lane=SessionLane(gpu_memory_mb=frozenset({None}))
+    )

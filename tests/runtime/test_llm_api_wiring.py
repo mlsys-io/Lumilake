@@ -4,6 +4,7 @@ import types
 from typing import Any
 
 import pytest
+from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig, Message
@@ -13,6 +14,7 @@ from lumilake_server.data_specs import (
     GraphTemplate,
     GraphTemplateData,
     TemplateOptions,
+    build_column_table,
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
@@ -36,7 +38,6 @@ from lumilake_server.runtime.runtime_graph import (
     make_node_prefix,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
-from tests.support.data_specs import wire
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -77,7 +78,7 @@ def test_api_config_emits_api_task_type() -> None:
     assert spec["taskType"] == "api"
     assert "model" not in spec
     assert "inference" not in spec
-    assert spec["data"] == wire(node)
+    assert spec["data"] == node.data_spec.model_dump(exclude_none=True)
     assert spec["data"]["type"] == "graph_template"
     api = spec["api"]
     assert api["method"] == "POST"
@@ -213,7 +214,7 @@ def test_api_dynamic_column_renders_as_dispatch_placeholder() -> None:
     FlowMesh ``${node.path}`` dispatch-time placeholder and declares the node
     as a dependency."""
     stock = input_placeholder("Stock")
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -345,7 +346,9 @@ def test_node_prefix_preserves_literal_placeholder_in_user_content() -> None:
     (second_row_id,) = prefixed.dsl_to_runtime[second.id]
     node = prefixed.nodes[second_row_id]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
-    template_messages = wire(node)["template"]["options"]["format"]["messages"]
+    template_messages = node.data_spec.model_dump(exclude_none=True)["template"][
+        "options"
+    ]["format"]["messages"]
     assert {"role": "system", "content": sibling_literal} in template_messages
 
 
@@ -372,7 +375,9 @@ def test_local_node_downstream_of_api_node_uses_text_path() -> None:
 
     (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
     (local_row_id,) = runtime_graph.dsl_to_runtime[local_node.id]
-    columns = wire(runtime_graph.nodes[local_row_id])["template"]["columns"]
+    columns = runtime_graph.nodes[local_row_id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     upstream_columns = [col for col in columns if col.get("node") == api_row_id]
     assert any(
         col.get("path") == "items.json.choices[0].message.content"
@@ -452,7 +457,9 @@ def test_embedding_op_downstream_of_api_node_uses_text_path() -> None:
 
     (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
     (embed_row_id,) = runtime_graph.dsl_to_runtime[embed.id]
-    data_spec = wire(runtime_graph.nodes[embed_row_id])
+    data_spec = runtime_graph.nodes[embed_row_id].data_spec.model_dump(
+        exclude_none=True
+    )
     assert data_spec["node"] == api_row_id
     assert data_spec["path"] == "items.json.choices[0].message.content"
 
@@ -475,7 +482,9 @@ def test_image_generation_op_downstream_of_api_node_uses_text_path() -> None:
 
     (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
     (image_row_id,) = runtime_graph.dsl_to_runtime[image.id]
-    data_spec = wire(runtime_graph.nodes[image_row_id])
+    data_spec = runtime_graph.nodes[image_row_id].data_spec.model_dump(
+        exclude_none=True
+    )
     assert data_spec["node"] == api_row_id
     assert data_spec["path"] == "items.json.choices[0].message.content"
 
@@ -505,7 +514,7 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
 
     node = runtime_graph.nodes[llm.id]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
-    columns = wire(node)["template"]["columns"]
+    columns = node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
     assert lambda_cols and lambda_cols[0]["data"]["items"] == ["HELLO, NVDA!"]
 
@@ -554,9 +563,10 @@ def test_api_rowwise_template_emits_single_task() -> None:
             api=ApiConfig(timeout_sec=300.0, model="gpt-4o"),
         ),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}],
+            "rowwise_columns",
+        ),
         system_messages=["You are concise."],
     )
     output = as_output("result", llm)
@@ -566,7 +576,7 @@ def test_api_rowwise_template_emits_single_task() -> None:
     (row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     assert row_id == llm.id
     node = runtime_graph.nodes[row_id]
-    assert wire(node) == {
+    assert node.data_spec.model_dump(exclude_none=True) == {
         "type": "dataframe",
         "columns": [
             {"label": "Stock", "data": {"type": "list", "items": ["NVDA", "AAPL"]}}
@@ -580,7 +590,9 @@ def test_api_rowwise_template_emits_single_task() -> None:
     assert node.api_spec["timeout_sec"] == 300.0
     assert node.api_spec["json"]["model"] == "gpt-4o"
     assert node.model == "gpt-4o"
-    assert node.to_flowmesh_node()["spec"]["data"] == wire(node)
+    assert node.to_flowmesh_node()["spec"]["data"] == node.data_spec.model_dump(
+        exclude_none=True
+    )
     assert node.to_flowmesh_node()["spec"]["data"]["type"] == "dataframe"
 
 
@@ -604,9 +616,10 @@ def test_api_aggregate_table_renders_df_column() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(timeout_sec=300.0, model="gpt-4o"),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -616,7 +629,7 @@ def test_api_aggregate_table_renders_df_column() -> None:
     (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_row_id]
     assert upstream.id in node.dependencies
-    template = wire(node)["template"]
+    template = node.data_spec.model_dump(exclude_none=True)["template"]
     df_col = next(c for c in template["columns"] if c.get("label") == "df")
     assert df_col["data"]["type"] == "dataframe"
     assert df_col["data"]["columns"] == [
@@ -651,9 +664,10 @@ def test_api_aggregate_df_prompt_renders_into_request_body() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     output = as_output("result", llm)
     compiled = Graph.from_ops([output]).compile(Stock=["NVDA"])
@@ -662,7 +676,7 @@ def test_api_aggregate_df_prompt_renders_into_request_body() -> None:
     (llm_row_id,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_row_id]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
-    template = wire(node)["template"]
+    template = node.data_spec.model_dump(exclude_none=True)["template"]
     df_col = next(c for c in template["columns"] if c.get("label") == "df")
     assert df_col["data"]["type"] == "dataframe"
 
@@ -684,9 +698,10 @@ def test_api_aggregate_op_emits_condition() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
         condition={"node": "gate", "expr": "gate == 'on'"},
     )
     output = as_output("result", llm)
@@ -724,7 +739,9 @@ def test_api_ancestor_with_return_history_feeds_local_downstream() -> None:
 
     (api_row_id,) = runtime_graph.dsl_to_runtime[api_node.id]
     (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
-    columns = wire(runtime_graph.nodes[downstream_row_id])["template"]["columns"]
+    columns = runtime_graph.nodes[downstream_row_id].data_spec.model_dump(
+        exclude_none=True
+    )["template"]["columns"]
     context_cols = [c for c in columns if c.get("label") == f"{api_row_id}_context"]
     assert context_cols and context_cols[0]["data"]["items"] == ["NVDA"]
     output_cols = [c for c in columns if c.get("label") == f"{api_row_id}_output"]
@@ -761,7 +778,7 @@ def test_api_ancestor_with_return_history_feeds_api_downstream() -> None:
     (downstream_row_id,) = runtime_graph.dsl_to_runtime[downstream.id]
     node = runtime_graph.nodes[downstream_row_id]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
-    columns = wire(node)["template"]["columns"]
+    columns = node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     context_cols = [c for c in columns if c.get("label") == f"{api_row_id}_context"]
     assert context_cols and context_cols[0]["data"]["items"] == ["NVDA"]
     output_cols = [c for c in columns if c.get("label") == f"{api_row_id}_output"]
@@ -1005,7 +1022,7 @@ def test_retrieval_param_referencing_single_row_node_builds() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1226,7 +1243,7 @@ def test_api_node_feeding_local_node_builds() -> None:
     local_node = next(
         node for node in runtime_graph.nodes.values() if node.task_type == "inference"
     )
-    columns = wire(local_node)["template"]["columns"]
+    columns = local_node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     upstream_cols = [c for c in columns if c.get("node") is not None]
     assert upstream_cols
     assert upstream_cols[0]["path"] == "items.json.choices[0].message.content"
@@ -1295,7 +1312,7 @@ def test_api_node_feeding_single_row_local_upstream_builds() -> None:
         node for node in runtime_graph.nodes.values() if node.task_type == "api"
     )
     assert api_node.api_spec["json"]["messages"] == "{{prompt}}"
-    columns = wire(api_node)["template"]["columns"]
+    columns = api_node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     upstream_cols = [c for c in columns if c.get("node") is not None]
     assert upstream_cols and upstream_cols[0]["path"] == "items.output"
 
@@ -1315,9 +1332,10 @@ def test_api_aggregate_node_feeding_local_multi_row_upstream_builds() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": local.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": local.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(local)
     output = as_output("result", llm)
@@ -1342,7 +1360,10 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
@@ -1350,9 +1371,10 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": api_up.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": api_up.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     llm.inputs.append(api_up)
     output = as_output("result", llm)
@@ -1364,7 +1386,9 @@ def test_api_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
     assert node.dependencies == (api_up.id,)
     df_col = next(
-        c for c in wire(node)["template"]["columns"] if c.get("label") == "df"
+        c
+        for c in node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
+        if c.get("label") == "df"
     )
     assert df_col["data"]["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
@@ -1382,7 +1406,10 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1391,7 +1418,10 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(api_up)
     output = as_output("result", llm)
@@ -1402,7 +1432,7 @@ def test_api_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
     node = runtime_graph.nodes[llm_row]
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
     assert node.dependencies == (api_up.id,)
-    assert wire(node)["columns"][0]["path"] == (
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
     )
 
@@ -1419,7 +1449,9 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     llm = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1428,7 +1460,10 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": src.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": src.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(src)
     output = as_output("result", llm)
@@ -1442,7 +1477,7 @@ def test_api_rowwise_node_ref_source_mapping_is_authoritative() -> None:
     assert llm_row == llm.id
     node = runtime_graph.nodes[llm_row]
     assert node.dependencies == (src_row,)
-    assert wire(node)["columns"][0]["path"] == (
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
     )
 
@@ -1472,7 +1507,7 @@ def test_api_node_consuming_upstream_feeding_local_vlm_builds() -> None:
     vision_rows = runtime_graph.dsl_to_runtime[vision.id]
     vision_node = runtime_graph.nodes[vision_rows[-1]]
     assert draft_row in vision_node.dependencies
-    columns = wire(vision_node)["template"]["columns"]
+    columns = vision_node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     upstream_cols = [c for c in columns if c.get("node") == draft_row]
     assert upstream_cols
     assert upstream_cols[0]["path"] == "items.json.choices[0].message.content"
@@ -1486,7 +1521,10 @@ def test_api_node_consuming_local_rowwise_literal_upstream_fails_closed() -> Non
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     relay = FormatOp("{prior}", prior=local_rw)
     api = LLMChatOp(
@@ -1553,7 +1591,10 @@ def test_fanned_consumer_condition_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     relay = FormatOp("{prior}", prior=gate)
     consumer = LLMChatOp(
@@ -1582,13 +1623,19 @@ def test_local_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local_rw = LLMChatOp(
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     local_rw.inputs.append(api_up)
     output = as_output("result", local_rw)
@@ -1598,7 +1645,7 @@ def test_local_rowwise_node_feeding_fanned_api_upstream_builds() -> None:
     (local_row,) = runtime_graph.dsl_to_runtime[local_rw.id]
     node = runtime_graph.nodes[local_row]
     assert node.dependencies == (api_up.id,)
-    assert wire(node)["columns"][0]["path"] == (
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
     )
 
@@ -1615,14 +1662,18 @@ def test_local_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local_agg = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
-        aggregate_table=[
-            {"label": "summary", "node": api_up.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": api_up.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     local_agg.inputs.append(api_up)
     output = as_output("result", local_agg)
@@ -1633,7 +1684,9 @@ def test_local_aggregate_node_feeding_fanned_api_upstream_builds() -> None:
     node = runtime_graph.nodes[local_row]
     assert node.dependencies == (api_up.id,)
     df_col = next(
-        c for c in wire(node)["template"]["columns"] if c.get("label") == "df"
+        c
+        for c in node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
+        if c.get("label") == "df"
     )
     assert df_col["data"]["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
@@ -1651,7 +1704,10 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     vision = LLMVisionOp(
         [OpMessage(role="user", content="ignored")],
@@ -1659,7 +1715,10 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
         image_source_op=stock,
         config=GenerationConfig(model="llava-hf/llava-1.5-7b-hf"),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": api_up.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     vision.inputs.append(api_up)
     output = as_output("result", vision)
@@ -1668,7 +1727,7 @@ def test_vlm_rowwise_column_feeding_fanned_api_upstream_builds() -> None:
     runtime_graph = RuntimeGraphBuilder().build(compiled)
     vision_rows = runtime_graph.dsl_to_runtime[vision.id]
     vision_node = runtime_graph.nodes[vision_rows[-1]]
-    columns = wire(vision_node)["template"]["columns"]
+    columns = vision_node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     upstream_cols = [c for c in columns if c.get("node") == api_up.id]
     assert upstream_cols
     assert upstream_cols[0]["path"] == "items.rows.json.choices[0].message.content"
@@ -1696,7 +1755,9 @@ def test_local_llm_consuming_multi_row_local_llm_binds_row_wise() -> None:
 
     columns = {
         col["label"]: col
-        for col in wire(runtime_graph.nodes[consumer.id])["template"]["columns"]
+        for col in runtime_graph.nodes[consumer.id].data_spec.model_dump(
+            exclude_none=True
+        )["template"]["columns"]
     }
     assert columns[f"{upstream.id}_output"]["node"] == upstream.id
     assert columns[stock.id]["data"]["items"] == ["A", "B", "C"]
@@ -1727,9 +1788,12 @@ def test_retrieval_param_feeding_multi_row_upstream_fails_closed() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1750,7 +1814,7 @@ def _retrieval_with_params(upstream: LLMChatOp, stock: Any) -> DataRetrievalOp:
         {"label": "symbol", "node": stock.id},
         {"label": "start_date", "node": upstream.id, "path": "items.output"},
     ]
-    return DataRetrievalOp(
+    return retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1776,7 +1840,9 @@ def test_retrieval_param_binds_row_wise_to_multi_row_local_llm() -> None:
 
     node = runtime_graph.nodes[retrieval.id]
     assert tuple(node.dependencies or ()) == (planner.id,)
-    params = {p["label"]: p for p in wire(node)["params"]}
+    params = {
+        p["label"]: p for p in node.data_spec.model_dump(exclude_none=True)["params"]
+    }
     assert params["symbol"]["data"] == {"type": "list", "items": ["A", "B", "C"]}
     assert params["start_date"] == {
         "label": "start_date",
@@ -1828,7 +1894,7 @@ def test_retrieval_param_feeding_multi_row_embedding_fails_closed() -> None:
         content=stock,
         config=GenerationConfig(model="bge-m3", api=ApiConfig()),
     )
-    retrieval = DataRetrievalOp(
+    retrieval = retrieval_op(
         data_spec={
             "type": "lumid",
             "mode": "sql",
@@ -1858,15 +1924,18 @@ def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
                 api=ApiConfig(),
             ),
             rowwise_template="Summarize {S}.",
-            rowwise_columns=[
-                {
-                    "label": "S",
-                    "data": {
-                        "type": "list",
-                        "items": [str(i) for i in range(source_rows)],
-                    },
-                }
-            ],
+            rowwise_columns=build_column_table(
+                [
+                    {
+                        "label": "S",
+                        "data": {
+                            "type": "list",
+                            "items": [str(i) for i in range(source_rows)],
+                        },
+                    }
+                ],
+                "rowwise_columns",
+            ),
         )
         consumer = LLMChatOp(
             [OpMessage(role="user", content=stock)],
@@ -1875,15 +1944,18 @@ def test_fanned_condition_cardinality_mismatch_fails_closed() -> None:
                 api=ApiConfig(),
             ),
             rowwise_template="Summarize {Stock}.",
-            rowwise_columns=[
-                {
-                    "label": "Stock",
-                    "data": {
-                        "type": "list",
-                        "items": [str(i) for i in range(consumer_rows)],
-                    },
-                }
-            ],
+            rowwise_columns=build_column_table(
+                [
+                    {
+                        "label": "Stock",
+                        "data": {
+                            "type": "list",
+                            "items": [str(i) for i in range(consumer_rows)],
+                        },
+                    }
+                ],
+                "rowwise_columns",
+            ),
             condition={"node": gate.id, "expr": "gate == on"},
         )
         gate_out = as_output("gate_out", gate)
@@ -1909,7 +1981,10 @@ def test_one_row_consumer_of_fanned_source_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1973,7 +2048,10 @@ def test_condition_on_local_rowwise_source_fails_closed() -> None:
         [OpMessage(role="user", content=stock)],
         config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -1982,12 +2060,15 @@ def test_condition_on_local_rowwise_source_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Stock}.",
-        rowwise_columns=[
-            {
-                "label": "Stock",
-                "data": {"type": "list", "items": ["x", "y"]},
-            }
-        ],
+        rowwise_columns=build_column_table(
+            [
+                {
+                    "label": "Stock",
+                    "data": {"type": "list", "items": ["x", "y"]},
+                }
+            ],
+            "rowwise_columns",
+        ),
         condition={"node": local_rw.id, "expr": "gate == on"},
     )
     compiled = Graph.from_ops(
@@ -2009,7 +2090,9 @@ def test_condition_source_rowwise_node_ref_fails_closed() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     relay = FormatOp("{prior}", prior=gate)
     consumer = LLMChatOp(
@@ -2040,7 +2123,9 @@ def test_condition_source_rowwise_node_ref_consumer_first_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[{"label": "Prior", "node": stock.id, "path": ""}],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": stock.id, "path": ""}], "rowwise_columns"
+        ),
     )
     consumer = LLMChatOp(
         [OpMessage(role="user", content="hi")],
@@ -2078,7 +2163,10 @@ def test_local_consumer_of_fanned_source_builds() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     local = LLMChatOp(
         [OpMessage(role="user", content="hi")],
@@ -2157,7 +2245,9 @@ def test_vlm_through_format_op_feeds_api_llm() -> None:
 
     assert runtime_graph.nodes[api.id].task_type == "api"
     assert runtime_graph.nodes[api.id].api_spec["json"]["messages"] == "{{prompt}}"
-    columns = wire(runtime_graph.nodes[api.id])["template"]["columns"]
+    columns = runtime_graph.nodes[api.id].data_spec.model_dump(exclude_none=True)[
+        "template"
+    ]["columns"]
     upstream_cols = [c for c in columns if c.get("node") == vlm.id]
     assert upstream_cols and upstream_cols[0]["path"] == "items.output"
 
@@ -2274,9 +2364,10 @@ def test_api_node_ref_column_accepts_items_output_path() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": upstream.id, "path": "items.output"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": upstream.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -2285,7 +2376,9 @@ def test_api_node_ref_column_accepts_items_output_path() -> None:
 
     (llm_row,) = runtime_graph.dsl_to_runtime[llm.id]
     node = runtime_graph.nodes[llm_row]
-    assert wire(node)["columns"][0]["path"] == ("items.json.choices[0].message.content")
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0]["path"] == (
+        "items.json.choices[0].message.content"
+    )
 
 
 def test_api_node_ref_column_rejects_other_paths() -> None:
@@ -2307,9 +2400,10 @@ def test_api_node_ref_column_rejects_other_paths() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": upstream.id, "path": "items.output.statement"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": upstream.id, "path": "items.output.statement"}],
+            "rowwise_columns",
+        ),
     )
     llm.inputs.append(upstream)
     output = as_output("result", llm)
@@ -2333,7 +2427,9 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[{"label": "summary", "node": stock.id, "path": ""}],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": stock.id, "path": ""}], "aggregate_table"
+        ),
     )
     aggregate.inputs.append(stock)
     rowwise = LLMChatOp(
@@ -2343,9 +2439,10 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": aggregate.id, "path": "items.output"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": aggregate.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     rowwise.inputs.append(aggregate)
     output = as_output("result", rowwise)
@@ -2355,7 +2452,9 @@ def test_api_aggregate_upstream_read_at_item_path() -> None:
     (rowwise_row,) = runtime_graph.dsl_to_runtime[rowwise.id]
     node = runtime_graph.nodes[rowwise_row]
     assert node.dependencies == (aggregate.id,)
-    assert wire(node)["columns"][0]["path"] == ("items.json.choices[0].message.content")
+    assert node.data_spec.model_dump(exclude_none=True)["columns"][0]["path"] == (
+        "items.json.choices[0].message.content"
+    )
 
 
 def test_api_rowwise_fanout_aggregate_refanout() -> None:
@@ -2371,7 +2470,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a", "b"]}}],
+            "rowwise_columns",
+        ),
     )
     aggregate = LLMChatOp(
         [OpMessage(role="user", content="Summarize the table.")],
@@ -2379,9 +2481,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": fanout.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": fanout.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     aggregate.inputs.append(fanout)
     refanout = LLMChatOp(
@@ -2391,9 +2494,10 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
             api=ApiConfig(),
         ),
         rowwise_template="Summarize {Prior}.",
-        rowwise_columns=[
-            {"label": "Prior", "node": aggregate.id, "path": "items.output"}
-        ],
+        rowwise_columns=build_column_table(
+            [{"label": "Prior", "node": aggregate.id, "path": "items.output"}],
+            "rowwise_columns",
+        ),
     )
     refanout.inputs.append(aggregate)
     output = as_output("result", refanout)
@@ -2406,17 +2510,34 @@ def test_api_rowwise_fanout_aggregate_refanout() -> None:
     assert fanout_row == fanout.id
     assert aggregate_row == aggregate.id
     assert refanout_row == refanout.id
-    assert wire(runtime_graph.nodes[fanout_row])["type"] == "dataframe"
-    assert wire(runtime_graph.nodes[aggregate_row])["type"] == "graph_template"
-    assert wire(runtime_graph.nodes[refanout_row])["type"] == "dataframe"
+    assert (
+        runtime_graph.nodes[fanout_row].data_spec.model_dump(exclude_none=True)["type"]
+        == "dataframe"
+    )
+    assert (
+        runtime_graph.nodes[aggregate_row].data_spec.model_dump(exclude_none=True)[
+            "type"
+        ]
+        == "graph_template"
+    )
+    assert (
+        runtime_graph.nodes[refanout_row].data_spec.model_dump(exclude_none=True)[
+            "type"
+        ]
+        == "dataframe"
+    )
     refanout_node = runtime_graph.nodes[refanout_row]
     assert refanout_node.dependencies == (aggregate_row,)
-    assert wire(refanout_node)["columns"][0]["path"] == (
-        "items.json.choices[0].message.content"
-    )
+    assert refanout_node.data_spec.model_dump(exclude_none=True)["columns"][0][
+        "path"
+    ] == ("items.json.choices[0].message.content")
     aggregate_node = runtime_graph.nodes[aggregate_row]
     df_col = next(
-        c for c in wire(aggregate_node)["template"]["columns"] if c.get("label") == "df"
+        c
+        for c in aggregate_node.data_spec.model_dump(exclude_none=True)["template"][
+            "columns"
+        ]
+        if c.get("label") == "df"
     )
     assert df_col["data"]["columns"][0]["path"] == (
         "items.rows.json.choices[0].message.content"
@@ -2442,9 +2563,10 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
             [OpMessage(role="user", content=stock)],
             config=cfg,
             rowwise_template="Summarize {Prior}.",
-            rowwise_columns=[
-                {"label": "Prior", "node": upstream.id, "path": "items.output"}
-            ],
+            rowwise_columns=build_column_table(
+                [{"label": "Prior", "node": upstream.id, "path": "items.output"}],
+                "rowwise_columns",
+            ),
         )
         llm.inputs.append(upstream)
         output = as_output("result", llm)
@@ -2453,7 +2575,7 @@ def test_api_rowwise_data_spec_matches_local_path() -> None:
         (row,) = runtime_graph.dsl_to_runtime[llm.id]
         node = runtime_graph.nodes[row]
         return (
-            wire(node),
+            node.data_spec.model_dump(exclude_none=True),
             node.dependencies,
             (node.skip_when_all_inputs_empty),
         )
@@ -2485,7 +2607,10 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
             api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
         rowwise_template="Summarize {S}.",
-        rowwise_columns=[{"label": "S", "data": {"type": "list", "items": ["a"]}}],
+        rowwise_columns=build_column_table(
+            [{"label": "S", "data": {"type": "list", "items": ["a"]}}],
+            "rowwise_columns",
+        ),
     )
     aggregate = LLMChatOp(
         [OpMessage(role="user", content=stock)],
@@ -2493,9 +2618,10 @@ def test_api_retries_reaches_rowwise_and_aggregate_spec() -> None:
             model="meta-llama/Llama-3.1-8B-Instruct",
             api=ApiConfig(retries=3, timeout_sec=120.0, concurrency=4),
         ),
-        aggregate_table=[
-            {"label": "summary", "node": upstream.id, "path": "items.output"}
-        ],
+        aggregate_table=build_column_table(
+            [{"label": "summary", "node": upstream.id, "path": "items.output"}],
+            "aggregate_table",
+        ),
     )
     aggregate.inputs.append(upstream)
     output = as_output("result", rowwise)
