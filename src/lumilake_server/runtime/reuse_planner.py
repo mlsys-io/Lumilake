@@ -130,6 +130,8 @@ class ContentRecords(BaseModel):
     keyed: bool = False
     values: list[Any] = Field(default_factory=list)
     keys: list[str | None] = Field(default_factory=list)
+    items: list[Any] = Field(default_factory=list)
+    """One entry per item the read's task returned, as its readers take them."""
 
     def value_at(self, position: int) -> Any:
         return self.values[position] if self.keyed else self.values
@@ -477,6 +479,7 @@ class ReusePlanner:
                 if records.keyed
                 else []
             ),
+            items=records.items.copy(),
         )
         if _content_servable(runtime_graph, decision, plan.op.node_id):
             decision.content_served.add(plan.op.node_id)
@@ -1046,11 +1049,13 @@ def _reader_takes_content(plan: ReusePlan, node_id: str, reader: RuntimeOp) -> b
 def _content_column(
     plan: ReusePlan, node: str, entry: ColumnPlanEntry
 ) -> list[Any] | None:
-    """The column a python reader takes from a re-ran read."""
+    """The column a python reader takes from a re-ran read: its items, which a
+    full run's task hands it one cell per, not one cell per stored record."""
+    content = plan.content[node]
     try:
         return items_column(
             entry.model_dump(exclude_none=True, exclude={"values"}),
-            plan.content[node].values,
+            content.items or content.values,
             _as_is,
             "served",
         )
