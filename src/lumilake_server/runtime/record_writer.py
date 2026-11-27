@@ -18,6 +18,7 @@ from weakref import WeakValueDictionary
 from lumilake.log import Logger
 from lumilake_server.data_specs import (
     ColumnPlanEntry,
+    DataFrame,
     JoinDescription,
     PythonData,
 )
@@ -253,7 +254,6 @@ class RecordWriter:
         round_number: int,
         runtime_graph: RuntimeGraph,
         node_task_map: Mapping[str, str],
-        task_worker: Mapping[str, str | None],
         results: Mapping[str, Any],
         member_store: Mapping[str, bool] | None = None,
         member_rounds: Mapping[str, int] | None = None,
@@ -302,7 +302,6 @@ class RecordWriter:
                     job=job_id,
                     round=member_round,
                     task_id=task_id,
-                    worker=task_worker.get(task_id),
                     member_jobs=list(member_job_ids),
                 )
                 written.extend(
@@ -1895,15 +1894,19 @@ def _record_values(
     response: Any, plan: RecordPlan, items: Sequence[Mapping[str, Any]]
 ) -> list[Any]:
     """The values one task produced, in order, under ``items``: one output per
-    item, a retrieval's rows, or a rowwise API task's grouped rows."""
-    values: list[Any] = []
+    item, a retrieval's rows, a rowwise API task's grouped rows, or a local
+    rowwise model task's per-row outputs grouped into one item."""
     if plan.column is not None:
         return [row for item in items for row in _table_rows(item.get("table"))]
     typed = typed_row_step(plan.op)
+    grouped = grouped_local_chat(plan.op)
+    values: list[Any] = []
     for item in items:
         rows = item.get("rows")
         if isinstance(rows, list):
             values.extend(_row_value(row) for row in rows)
+        elif grouped and isinstance(item.get("output"), list):
+            values.extend(item["output"])
         else:
             values.append(_item_output(item, typed))
     return values
@@ -1933,6 +1936,12 @@ def typed_row_step(op: RuntimeOp) -> bool:
         and isinstance(spec, PythonData)
         and spec.mode in (None, "row", "parse")
     )
+
+
+def grouped_local_chat(op: RuntimeOp) -> bool:
+    """Whether ``op`` is a local rowwise chat that groups every row's reply into
+    one item."""
+    return op.task_type == "inference" and isinstance(op.data_spec, DataFrame)
 
 
 def _item_output(item: Any, typed: bool) -> Any:

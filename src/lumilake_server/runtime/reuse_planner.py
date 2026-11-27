@@ -43,6 +43,7 @@ from lumilake_server.runtime.record_writer import (
     RecordPlan,
     _decoded,
     content_input,
+    grouped_local_chat,
     input_nodes,
     input_values,
     literal_rows,
@@ -261,7 +262,7 @@ class ReusePlanner:
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
-        for node_id in order:
+        for node_id in runtime_graph.topological_order(_seed_edges(runtime_graph)):
             plan = plans[node_id]
             if plan.key_path is not None:
                 decision.key_paths[node_id] = plan.key_path
@@ -1121,34 +1122,40 @@ def _plan_column(
     """An answered input's column for a python step, built as the worker builds it."""
     if node in plan.content:
         return _content_column(plan, node, entry)
+    producer = runtime_graph.nodes[node]
     return served_column(
         plan.hits[node],
         entry,
-        wrapped=_wrap(runtime_graph.nodes[node]),
+        _wrap(producer),
+        grouped_local_chat(producer),
     )
 
 
-def served_lists(entries: Sequence[RecordEntry]) -> list[list[Any]]:
-    """A hit producer's item outputs, one list per keyed row or per whole-op value."""
-    if entries[0].address.record is not None:
-        return [[entry.value] for entry in entries]
-    return [[output] for output in entries[0].value]
+def served_lists(entries: Sequence[RecordEntry], grouped: bool) -> list[list[Any]]:
+    """A hit producer's item outputs: one list per keyed row, one whole-op value,
+    or every keyed row folded into the one grouped list a local chat emits."""
+    if entries[0].address.record is None:
+        return [[output] for output in entries[0].value]
+    if grouped:
+        return [[[entry.value for entry in entries]]]
+    return [[entry.value] for entry in entries]
 
 
 def served_column(
     entries: Sequence[RecordEntry],
     entry: ColumnPlanEntry,
-    wrapped: _Wrapping | None,
+    wrapping: _Wrapping | None,
+    grouped: bool,
 ) -> list[Any] | None:
     """The column a python step reads from a hit producer, built as its item shape."""
     if entry.grouped:
         return None
     items: list[Any] = []
-    for values in served_lists(entries):
+    for values in served_lists(entries, grouped):
         for item in values:
-            if wrapped == "text":
+            if wrapping == "text":
                 items.append({"output": _output_text(item), "value": item})
-            elif wrapped == "output":
+            elif wrapping == "output":
                 items.append({"output": item})
             else:
                 items.append(item)
@@ -1408,6 +1415,16 @@ def _record_keys(plan: RecordPlan, inputs: Sequence[_Input]) -> list[str | None]
     return keys or None
 
 
+def _seed_edges(runtime_graph: RuntimeGraph) -> dict[str, list[str]]:
+    """Each seed node paired with the chats reading it, so they sort after it."""
+    edges: dict[str, list[str]] = {}
+    for node_id, node in runtime_graph.nodes.items():
+        spec = node.data_spec
+        if isinstance(spec, DataFrame) and isinstance(spec.seeds, NodeRead):
+            edges.setdefault(spec.seeds.node, []).append(node_id)
+    return edges
+
+
 def _seeded_records(
     plan: RecordPlan,
     stored: Mapping[str, list[RecordEntry]],
@@ -1512,7 +1529,7 @@ def _unserved_reader_reason(
         for entry in spec.plan:
             if entry.node != op.node_id:
                 continue
-            if served_column(hit, entry, _wrap(op)) is None:
+            if served_column(hit, entry, _wrap(op), grouped_local_chat(op)) is None:
                 return "value not servable"
     return None
 
