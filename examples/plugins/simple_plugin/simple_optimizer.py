@@ -1,5 +1,4 @@
 from collections.abc import Mapping, Sequence
-from typing import Any
 
 from lumilake_hook import WorkerProfile
 from lumilake_server.data_profile_models import DataProfileResultRow

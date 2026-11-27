@@ -4,7 +4,6 @@ Field names are the canonical wire contract; remote implementations must match e
 """
 
 from collections.abc import Mapping
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
