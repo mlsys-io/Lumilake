@@ -557,11 +557,10 @@ def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
     assert _broadcast(
         tmp_path, sizes=_SIZES + [stray], second=[stray], fields=full
     ) == (_JOINED + [stray])
-    bad = [{"unit": "u4", "n": _MARK}]
-    marked = _broadcast(
-        tmp_path, sizes=bad, second=[{"unit": "u4", "n": 2}], fields=full
-    )
-    assert marked[-1] == _MARK
+    marked = [{"unit": "u4", "n": _MARK}]
+    bad = [{"unit": "u4", "n": 2}]
+    out = _broadcast(tmp_path, sizes=marked, second=bad, tags=3 * ["A"], fields=full)
+    assert out[-1] == _MARK
 
 
 def test_a_broadcast_join_applies_on_missing_to_an_attach_source_only(
@@ -573,9 +572,13 @@ def test_a_broadcast_join_applies_on_missing_to_an_attach_source_only(
     for policy in (_ROW_KEY, fields):  # the further input's gap is not a failure
         kept = _broadcast(tmp_path, sizes=_SIZES[:1], fields=policy)
         assert kept == [_JOINED[0], _JOINED[1], missing]
-    part = [{"unit": "u1", "part": "P"}]
-    rows = _broadcast(tmp_path, part=part, tags=["P"], fields=fields)
-    assert [row.get("part") for row in rows] == ["P", "P", None]
+    parts = _broadcast(tmp_path, part=[{"unit": "u1", "part": "P"}], tags=["P"])
+    assert [row.get("part") for row in parts] == ["P", "P", None]
+    marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
+    assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
+    src = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
+    out = _broadcast(tmp_path, part=src, tags=["C"])
+    assert out == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
 
 
 def test_a_marked_broadcast_row_keeps_a_readable_key(tmp_path: Path) -> None:
@@ -592,12 +595,3 @@ def test_a_marked_broadcast_row_keeps_a_readable_key(tmp_path: Path) -> None:
     fields = _ROW_KEY + ", how: full"
     full = _broadcast(tmp_path, rows, _SIZES + [stray], tags=["A", "C"], fields=fields)
     assert full == [_JOINED[0], _MARK, stray]
-
-
-def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
-    """A marked further-input row marks each row of its key."""
-    marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
-    assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
-    src = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
-    out = _broadcast(tmp_path, part=src, tags=["C"])
-    assert out == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
