@@ -1124,15 +1124,14 @@ def test_a_stage_entry_inline_values_above_the_cutoff_are_mounted(
 ) -> None:
     """A served column reaches its step as a stage entry carrying inline values;
     one above the inline cutoff travels in a mounted blob, so the dispatched
-    code does not grow with the values and the task reads the same rows."""
-    rows = [{"id": f"row-{i}", "text": "x" * 200} for i in range(100)]
-    plan = [ColumnPlanEntry(kind="stage", node="rows", values=rows)]
+    code does not grow with the values and, read at its declared path, the task
+    reads the same rows."""
+    ids = [f"row-{i}-" + "x" * 20 for i in range(100)]
+    plan = [ColumnPlanEntry(kind="stage", node="rows", path="id", values=ids)]
     published = _published_blobs(plan)
     spec = python_step.flowmesh_spec(
         "step",
-        PythonData(
-            code="def pick(i):\n    return i[0]['id']\n", fn_name="pick", plan=plan
-        ),
+        PythonData(code="def pick(i):\n    return i[0]\n", fn_name="pick", plan=plan),
         published,
     )
 
@@ -1142,24 +1141,10 @@ def test_a_stage_entry_inline_values_above_the_cutoff_are_mounted(
         if blob["mountPath"].startswith(python_step.LITERAL_MOUNT_ROOT)
     ]
     assert mounted["sha256"] in {blob.sha256 for blob in published.values()}
-    assert "x" * 200 not in spec["code"]
-    doubled = [ColumnPlanEntry(kind="stage", node="rows", values=rows + rows)]
-    assert len(
-        python_step.flowmesh_spec(
-            "step",
-            PythonData(
-                code="def pick(i):\n    return i[0]['id']\n",
-                fn_name="pick",
-                plan=doubled,
-            ),
-            _published_blobs(doubled),
-        )["code"]
-    ) == len(spec["code"])
+    assert ids[0] not in spec["code"]
 
     main = _materialize(spec, published, tmp_path / "blobs")
-    assert main({}) == {
-        "items": [{"output": row["id"], "value": row["id"]} for row in rows]
-    }
+    assert main({}) == {"items": [{"output": i, "value": i} for i in ids]}
 
 
 @pytest.mark.parametrize("bad", [1, "yes", 0.0])

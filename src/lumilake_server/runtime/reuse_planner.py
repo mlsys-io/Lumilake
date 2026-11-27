@@ -1078,7 +1078,7 @@ def _content_column(
     try:
         return items_column(
             entry.model_dump(exclude_none=True, exclude={"values"}),
-            content.items or content.values,
+            content.items,
             _as_is,
             "served",
         )

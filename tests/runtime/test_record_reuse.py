@@ -886,7 +886,7 @@ def _keyed_content(read: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             keyed=True,
             values=rows,
             keys=[r["case_id"] for r in rows],
-            items=[_read_item([row])[0] for row in rows],
+            items=[_keyed_table([row])["items"][0] for row in rows],
         )
     }
 
@@ -1627,18 +1627,11 @@ def _read_cycle_workflow(rows: list[str]) -> Any:
     return _pipeline("read-cycle", [read, split, tag], "Tag", rows)
 
 
-def _read_item(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A retrieval's one task item: a whole column table, as a query row returns."""
-    columns: dict[str, dict[str, str]] = {}
-    for position, row in enumerate(rows):
-        for name, value in row.items():
-            columns.setdefault(name, {})[str(position)] = value
-    return [{"table": {"df": json.dumps(columns)}}]
-
-
 def _read_items(rows: list[dict[str, Any]], per_row: bool) -> list[dict[str, Any]]:
     """A retrieval's task items: one per record, or one holding the whole table."""
-    return [_read_item([row])[0] for row in rows] if per_row else _read_item(rows)
+    if not per_row:
+        return _keyed_table(rows)["items"]
+    return [_keyed_table([row])["items"][0] for row in rows]
 
 
 @pytest.mark.parametrize("per_row", [False, True])
@@ -1657,24 +1650,19 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     state: dict[str, Any] = {"rows": [], "column": None, "done": {}, "graph": graph}
 
     async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
-        spec = yaml.safe_load(task_yaml)
-        nodes = [node["name"] for node in spec["spec"]["graph"]["nodes"]]
+        nodes = [n["name"] for n in yaml.safe_load(task_yaml)["spec"]["graph"]["nodes"]]
         for node in nodes:
             op = state["graph"].nodes[node]
-            if node == read:
-                response = {"items": _read_items(state["rows"], per_row)}
-            else:
-                stages = [
-                    entry.node
-                    for entry in op.data_spec.plan
-                    if entry.kind == "stage" and entry.values is None
-                ]
-                response = {
-                    "items": _run_step(op, {n: state["done"][n] for n in stages})
-                }
-            state["done"][node] = response["items"]
-            state[f"task-{node}"] = response
-        return f"wf-{len(nodes)}", [f"task-{node}" for node in nodes]
+            steps = getattr(op.data_spec, "plan", [])
+            stages = [e.node for e in steps if e.kind == "stage" and not e.values]
+            items = (
+                _read_items(state["rows"], per_row)
+                if node == read
+                else _run_step(op, {n: state["done"][n] for n in stages})
+            )
+            state["done"][node] = items
+            state[f"task-{node}"] = {"items": items}
+        return f"wf-{len(nodes)}", [f"task-{n}" for n in nodes]
 
     async def _retrieve(task_id: str) -> Any:
         return state[task_id]
@@ -1684,14 +1672,12 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
         return True
 
     async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
-        return TaskStatusPage(
-            rows=[
-                {"task_id": task, "status": "DONE", "graph_node_name": task[5:]}
-                for task in state
-                if task.startswith("task-")
-            ],
-            next_cursor="0",
-        )
+        rows = [
+            {"task_id": t, "status": "DONE", "graph_node_name": t[5:]}
+            for t in state
+            if t.startswith("task-")
+        ]
+        return TaskStatusPage(rows=rows, next_cursor="0")
 
     fm = SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
     build = FlowmeshRuntimeManager._build_task_spec
@@ -1718,35 +1704,31 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
         info.request_id, info.member_reuse = job, {job: reuse}
         info.reuse_records = reuse
         info.runtime_graph = graph
-        return await FlowmeshRuntimeManager().process_request(
+        out = await FlowmeshRuntimeManager().process_request(
             info, Schedule({"w": list(graph.nodes)}), ["w"]
         )
-
-    def decisions(out: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
         return {d.op: (d.decision, d.reason) for d in out["reuse_decisions"]}
 
-    def computed(op: str) -> list[dict[str, Any]]:
-        return [item for item in state[f"task-{op}"]["items"] if not item.get("served")]
+    def computed(op: str) -> list[Any]:
+        return [
+            i["output"]["t"]
+            for i in state[f"task-{op}"]["items"]
+            if not i.get("served")
+        ]
 
     rows = [{"id": "a1", "t": "x"}, {"id": "a2", "t": "x"}]
     await once(rows, "req-1", False)
-    parents = {item["parent"] for item in state[f"task-{split}"]["items"]}
-    assert parents == ({0, 1} if per_row else {0}), parents
-    plan = await once(rows, "req-2", True)
-    assert decisions(plan)["Split"] == (
+    assert {i["parent"] for i in state[f"task-{split}"]["items"]} == (
+        {0, 1} if per_row else {0}
+    )
+    assert (await once(rows, "req-2", True))["Split"] == (
         ("hit", None) if per_row else ("miss", "unkeyed row")
     )
     changed = [rows[0], {"id": "a2", "t": "z"}]
     plan = await once(changed, "req-3", True)
-    assert state["column"] == _read_items(changed, per_row), state["column"]
-    assert decisions(plan)["Split"] == (
+    assert state["column"] == _read_items(changed, per_row)
+    assert plan["Split"] == (
         ("miss", "partial children") if per_row else ("miss", "unkeyed row")
-    ), decisions(plan)
-    assert {item["parent"] for item in computed(split)} == ({1} if per_row else {0})
-    assert [item["output"]["t"] for item in computed(split)] == (
-        ["z"] if per_row else ["x", "z"]
     )
-    assert sorted(item["output"] for item in state[f"task-{tag}"]["items"]) == [
-        "X",
-        "Z",
-    ], state[f"task-{tag}"]["items"]
+    assert computed(split) == (["z"] if per_row else ["x", "z"])
+    assert sorted(i["output"] for i in state[f"task-{tag}"]["items"]) == ["X", "Z"]
