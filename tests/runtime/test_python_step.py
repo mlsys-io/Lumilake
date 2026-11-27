@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from flowmesh.models.result import PythonResult
 from support.retrieval import retrieval_op
 
 from lumilake import envs
@@ -1153,12 +1154,12 @@ def test_lambda_op_expected_runtime_must_not_exceed_the_effective_timeout() -> N
 def test_halo_costs_a_default_python_step_at_five_percent_of_its_timeout() -> None:
     optimizer = HaloOptimizer()
 
-    def cost(raw: dict[str, Any]) -> float:
-        node = Node(id="n", type="python", engine="python", model="", raw=raw)
+    def cost(spec: PythonData) -> float:
+        node = Node(id="n", type="python", engine="python", model="", data_spec=spec)
         return optimizer._python_exec_cost(node)
 
-    assert cost({}) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
-    assert cost({"timeout_s": 100}) == 5.0
+    assert cost(PythonData()) == 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS == 30.0
+    assert cost(PythonData(timeout_s=100)) == 5.0
 
 
 def test_halo_maps_python_to_its_own_cpu_engine() -> None:
@@ -1169,13 +1170,12 @@ def test_halo_maps_python_to_its_own_cpu_engine() -> None:
 def test_python_output_items_come_from_value() -> None:
     manager = FlowmeshRuntimeManager.__new__(FlowmeshRuntimeManager)
     items = manager._resolve_output_items(
-        {"task_type": "python", "value": {"items": [{"output": "x"}]}},
+        PythonResult(exit_code=0, value={"items": [{"output": "x"}]}),
         "node",
-        task_type="python",
     )
     assert items == [{"output": "x"}]
     with pytest.raises(RuntimeError, match="returned no items"):
-        manager._resolve_output_items({"value": {}}, "node", task_type="python")
+        manager._resolve_output_items(PythonResult(exit_code=0, value={}), "node")
 
 
 def _sql_stage(

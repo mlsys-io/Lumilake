@@ -9,11 +9,13 @@ import pytest
 from huggingface_hub.utils import NotASafetensorsRepoError
 from support.worker_profiles import worker_profile
 
-from lumilake_hook import GpuDevice, WorkerProfile
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
+    GpuDevice,
+    WorkerProfile,
 )
+from lumilake_server.data_specs import ColumnPlanEntry, PythonData
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output, input_placeholder
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
@@ -57,6 +59,32 @@ def _simple_graph() -> RuntimeGraph:
         output_node_map={},
         dsl_to_runtime={},
     )
+
+
+def test_input_query_count_reads_a_literal_list_inside_a_template() -> None:
+    optimizer = HaloOptimizer()
+    op = runtime_op(
+        node_id="n1",
+        task_type="inference",
+        backend="vllm",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        data_spec={
+            "type": "graph_template",
+            "template": {
+                "name": "format",
+                "columns": [
+                    {"label": "x", "data": {"type": "list", "items": ["a", "b"]}}
+                ],
+                "options": {"format": {"messages": [{"content": "{x}"}]}},
+            },
+        },
+        model_spec={},
+        inference_spec={},
+    )
+    graph = RuntimeGraph(
+        nodes={"n1": op}, node_order=["n1"], output_node_map={}, dsl_to_runtime={}
+    )
+    assert optimizer._resolve_input_query_count(graph) == 2
 
 
 def test_halo_optimizer_generates_schedule_covering_all_nodes() -> None:
@@ -253,7 +281,7 @@ def test_halo_optimizer_fails_before_scheduling_without_a_python_worker(
         )
 
 
-def _python_node(raw: dict[str, object]) -> Node:
+def _python_node(spec: PythonData) -> Node:
     return Node(
         id="p1",
         type="python",
@@ -262,37 +290,30 @@ def _python_node(raw: dict[str, object]) -> Node:
         inputs=(),
         outputs=(),
         db_queries=(),
-        raw=raw,
+        data_spec=spec,
     )
 
 
 def test_python_exec_cost_uses_expected_runtime_when_present() -> None:
     optimizer = HaloOptimizer()
-    assert (
-        optimizer._python_exec_cost(
-            _python_node({"timeout_s": 600, "expected_runtime_s": 5})
-        )
-        == 5
+    spec = PythonData(
+        timeout_s=600,
+        expected_runtime_s=5,
+        plan=[ColumnPlanEntry(kind="stage", node="upstream")],
     )
+    assert optimizer._python_exec_cost(_python_node(spec)) == 5
     optimizer._input_query_count = 10
-    assert (
-        optimizer._python_exec_cost(
-            _python_node({"timeout_s": 600, "expected_runtime_s": 5})
-        )
-        == 50
-    )
+    assert optimizer._python_exec_cost(_python_node(spec)) == 50
 
 
 def test_python_exec_cost_scales_with_literal_plan_rows() -> None:
     optimizer = HaloOptimizer()
     node = _python_node(
-        {
-            "timeout_s": 600,
-            "expected_runtime_s": 2,
-            "plan": [
-                {"kind": "literal", "values": list(range(10))},
-            ],
-        }
+        PythonData(
+            timeout_s=600,
+            expected_runtime_s=2,
+            plan=[ColumnPlanEntry(kind="literal", values=list(range(10)))],
+        )
     )
     assert optimizer._python_exec_cost(node) == 20
 
@@ -301,14 +322,14 @@ def test_python_exec_cost_counts_stage_rows_alongside_a_broadcast_literal() -> N
     optimizer = HaloOptimizer()
     optimizer._input_query_count = 10
     node = _python_node(
-        {
-            "timeout_s": 600,
-            "expected_runtime_s": 2,
-            "plan": [
-                {"kind": "stage", "node": "upstream"},
-                {"kind": "literal", "values": ["prefix"]},
+        PythonData(
+            timeout_s=600,
+            expected_runtime_s=2,
+            plan=[
+                ColumnPlanEntry(kind="stage", node="upstream"),
+                ColumnPlanEntry(kind="literal", values=["prefix"]),
             ],
-        }
+        )
     )
     assert optimizer._python_exec_cost(node) == 20
 
@@ -317,22 +338,25 @@ def test_python_exec_cost_prefers_the_recorded_row_count() -> None:
     optimizer = HaloOptimizer()
     optimizer._input_query_count = 10
     node = _python_node(
-        {
-            "timeout_s": 600,
-            "expected_runtime_s": 2,
-            "row_count": 7,
-            "plan": [{"kind": "stage", "node": "upstream"}],
-        }
+        PythonData(
+            timeout_s=600,
+            expected_runtime_s=2,
+            row_count=7,
+            plan=[ColumnPlanEntry(kind="stage", node="upstream")],
+        )
     )
     assert optimizer._python_exec_cost(node) == 14
 
 
 def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
     optimizer = HaloOptimizer()
-    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
-    assert optimizer._python_exec_cost(_python_node({})) == 30
+    assert optimizer._python_exec_cost(_python_node(PythonData(timeout_s=600))) == 30
+    assert optimizer._python_exec_cost(_python_node(PythonData())) == 30
+    assert (
+        optimizer._python_exec_cost(Node(id="p1", type="python", engine="python")) == 30
+    )
     optimizer._input_query_count = 10
-    assert optimizer._python_exec_cost(_python_node({"timeout_s": 600})) == 30
+    assert optimizer._python_exec_cost(_python_node(PythonData(timeout_s=600))) == 30
 
 
 def test_halo_dp_places_generated_python_steps_on_the_advertising_worker() -> None:
@@ -390,7 +414,7 @@ def test_model_size_resolution_parses_suffix(
         resolve,
     )
     size = optimizer._model_size_b(
-        Node(id="n1", type="inference", engine="vllm", model="foo-1.5B", raw={})
+        Node(id="n1", type="inference", engine="vllm", model="foo-1.5B")
     )
     assert size == pytest.approx(1.5)
     assert metadata_calls == []
@@ -420,7 +444,7 @@ def test_model_size_resolution_uses_lookup(
         resolve,
     )
     size = optimizer._model_size_b(
-        Node(id="n1", type=node_type, engine="vllm", model=model, raw={})
+        Node(id="n1", type=node_type, engine="vllm", model=model)
     )
     assert size == pytest.approx(expected)
     assert metadata_calls == []
@@ -441,7 +465,6 @@ def test_model_size_resolution_uses_safetensors_metadata(
             type="inference",
             engine="vllm",
             model="org/model-without-a-size-suffix",
-            raw={},
         )
     )
     assert size == pytest.approx(1.25)
@@ -467,7 +490,6 @@ def test_model_size_resolution_caches_safetensors_metadata(
         type="inference",
         engine="vllm",
         model="org/cache-test-model",
-        raw={},
     )
     assert optimizer._model_size_b(node) == pytest.approx(0.75)
     assert optimizer._model_size_b(node) == pytest.approx(0.75)
@@ -729,7 +751,6 @@ def test_model_size_resolution_rejects_unknown_model(
                 type="inference",
                 engine="vllm",
                 model="unknown/model-without-size",
-                raw={},
             )
         )
     message = str(exc_info.value)
@@ -745,7 +766,7 @@ def test_model_size_resolution_rejects_missing_model() -> None:
     optimizer = HaloOptimizer()
     with pytest.raises(ValueError, match="requires a non-empty model name"):
         optimizer._model_size_b(
-            Node(id="n1", type="inference", engine="vllm", model=None, raw={})
+            Node(id="n1", type="inference", engine="vllm", model=None)
         )
 
 
