@@ -226,6 +226,45 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
         )
 
 
+def test_an_inner_or_full_join_output_sets_its_own_row_count() -> None:
+    """A join over the job's own rows drops or appends rows under ``inner`` and
+    ``full``, so its output reads as a whole-run value there; a ``left`` join
+    keeps one row per first-input row and splits like a row step."""
+    yaml = """
+name: j
+inputs:
+  Cases: [a, b, c]
+ops:
+  - id: Left
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: left
+    code: |
+      def left(row):
+          return {"case_id": row[0], "text": row[0]}
+  - id: Right
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: right
+    code: |
+      def right(row):
+          return {"case_id": row[0], "n": 1}
+"""
+    for how, whole_run in (("left", False), ("inner", True), ("full", True)):
+        spec = parse_yaml_payload(
+            yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
+            f" case_id\n    how: {how}\n"
+        )["j"]
+        runtime = RuntimeGraphBuilder().build(
+            Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
+            node_prefix="g",
+        )
+        merged = _join_of(runtime)
+        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
+
+
 def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     stray = {"case_id": "z", "text": "not in the first input"}
     staged = {
