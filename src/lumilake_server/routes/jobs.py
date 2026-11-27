@@ -1245,6 +1245,7 @@ def _validate_row_count_slice_span(
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
         own_row_count = graph.own_row_count_nodes()
+        join_row_count = graph.join_row_count_nodes()
         if not list_lambda_dependent and not own_row_count:
             continue
         slices = workflow_slices.get(graph_name, [])
@@ -1256,11 +1257,10 @@ def _validate_row_count_slice_span(
                     "by a list-mode Lambda, which runs once over the whole input "
                     "lists of one run"
                 )
+            elif node_id in join_row_count:
+                produced = "by an inner or full join, whose own keys set its rows"
             elif node_id in own_row_count:
-                produced = (
-                    "below a list-mode Lambda whose fan-out sets its row count, or by"
-                    " an inner or full join, whose own keys set its rows"
-                )
+                produced = "below a list-mode Lambda whose fan-out sets its row count"
             else:
                 continue
             raise HTTPException(
@@ -3652,7 +3652,6 @@ async def submit_job(
     job_id = f"req-{unique_id()}"
     graph_specs: dict[str, dict[str, Any]] = {}
     workflow_slices: dict[str, WorkflowSliceMeta] = {}
-    slice_public_names: dict[str, str] = {}
     resolved_inputs: dict[str, dict[str, list[str]]] = {}
     output_locations: dict[str, IOLocation] = {}
     seen_public_names: set[str] = set()
@@ -3754,7 +3753,6 @@ async def submit_job(
                     template_hash=template_hash,
                     varying_input_keys=varying_input_keys,
                 )
-                slice_public_names[graph_name] = name
                 logger.debug(
                     "Resolved inputs for %s: %s",
                     graph_name,
@@ -3807,7 +3805,7 @@ async def submit_job(
                 name: [
                     meta
                     for slice_name, meta in workflow_slices.items()
-                    if meta.public_graph_name == slice_public_names[name]
+                    if meta.public_graph_name == workflow_slices[name].public_graph_name
                 ]
                 for name in graphs
             },

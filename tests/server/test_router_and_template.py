@@ -273,22 +273,18 @@ def test_template_accepts_a_list_lambda_export_and_counts_its_rows() -> None:
     assert archived_element_count([{"output": []}]) == 0
 
 
-def _merged(
-    op_id: str, inputs: list[str], attach: dict[str, str] | None = None
-) -> dict[str, Any]:
-    op: dict[str, Any] = {
+def _merged(op_id: str, inputs: list[str], attach: dict[str, str]) -> dict[str, Any]:
+    return {
         "id": op_id,
         "op": "JoinOp",
         "inputs": inputs,
         "by": "case_id",
+        "attach": attach,
     }
-    if attach is not None:
-        op["attach"] = attach
-    return op
 
 
 def test_template_accepts_a_join_as_the_round_export_and_stop_leaf() -> None:
-    first = [
+    rounds = [
         _state("Live_r{{round}}", ["Symbols"]),
         _state("Turn_r{{round}}", ["Live_r{{round}}"], mode="row"),
         _merged(
@@ -297,18 +293,8 @@ def test_template_accepts_a_join_as_the_round_export_and_stop_leaf() -> None:
             {"note": "Turn_r{{round}}"},
         ),
     ]
-    template = _spec(
-        first,
-        [
-            _state("Live_r{{round}}", ["Live_r{{prev}}"]),
-            _state("Turn_r{{round}}", ["Live_r{{round}}"], mode="row"),
-            _merged(
-                "Merged_r{{round}}",
-                ["Live_r{{round}}", "Turn_r{{round}}"],
-                {"note": "Turn_r{{round}}"},
-            ),
-        ],
-    ).driver.template
+    next_ops = [_state("Live_r{{round}}", ["Live_r{{prev}}"]), *rounds[1:]]
+    template = _spec(rounds, next_ops).driver.template
     assert template is not None
     template.first.export = ["Merged_r{{round}}"]
     template.next.export = ["Merged_r{{round}}"]
