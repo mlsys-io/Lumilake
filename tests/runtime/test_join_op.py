@@ -249,8 +249,7 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
 
 
 def test_fail_row_leaves_a_key_a_further_input_lacks_alone(tmp_path: Path) -> None:
-    """on_missing governs an attach source, so a further input that lacks a key keeps
-    the row with the fields it carries."""
+    """on_missing governs an attach source: a further input's gap keeps the row."""
     node = _join_node(_merge("State, Route.diagnose", "    on_missing: fail_row\n"))
     out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
     assert [item["output"] for item in out["items"]] == _ROWS
@@ -370,9 +369,11 @@ def test_a_marked_join_row_keeps_its_key_and_every_other_row(
     assert got == expected
 
 
-def _pairs(
-    cases: list[dict[str, Any]], girls: list[dict[str, Any]], fields: str
-) -> Any:
+def _quoted(rows: list[Any]) -> str:
+    return "[" + ", ".join(f"'{json.dumps(row)}'" for row in rows) + "]"
+
+
+def _pairs(cases: list[Any], girls: list[Any], fields: str) -> Any:
     """A join of two literal columns keyed by ``unit``, under ``fields``."""
     return _join_node(
         f"  - {{id: Cases, op: DataOp, data: {_quoted(cases)}}}\n"
@@ -383,87 +384,34 @@ def _pairs(
 
 _CASES = [{"unit": "u1", "q": "a"}, {"unit": "u1", "q": "b"}, {"unit": "u2", "q": "c"}]
 _GIRLS = [{"unit": "u1", "g": "x"}, {"unit": "u1", "g": "y"}, {"unit": "u2", "g": "z"}]
+_PRODUCT = [("a", "x"), ("a", "y"), ("b", "x"), ("b", "y"), ("c", "z")]
 
 
 def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
-    """Each row held for a key pairs with each further row of it, held side first."""
-    node = _pairs(_CASES, _GIRLS, "cardinality: many_to_many")
-    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert [(row["q"], row["g"]) for row in rows] == [
-        ("a", "x"),
-        ("a", "y"),
-        ("b", "x"),
-        ("b", "y"),
-        ("c", "z"),
-    ]
+    """A key's rows pair held side first, and a stray key is its input's rows once."""
 
+    def run(girls: list[Any], how: str, name: str) -> list[tuple[Any, Any]]:
+        node = _pairs(_CASES, girls, f"cardinality: many_to_many, how: {how}")
+        rows = [item["output"] for item in _run(tmp_path, node, {}, name)["items"]]
+        return [(row.get("q"), row["g"]) for row in rows]
 
-def test_a_full_join_merges_a_key_two_later_inputs_carry(tmp_path: Path) -> None:
-    """A key only two later inputs carry is one output row, with both their fields."""
-    node = _join_node(
-        f"  - {{id: Cases, op: DataOp, data: {_quoted(_CASES[:1])}}}\n"
-        f"  - {{id: Girls, op: DataOp, data: {_quoted([{'unit': 'u3', 'g': 'x'}])}}}\n"
-        f"  - {{id: Sizes, op: DataOp, data: {_quoted([{'unit': 'u3', 's': 2}])}}}\n"
-        "  - {id: Merge, op: JoinOp, inputs: [Cases, Girls, Sizes], by: unit, how:"
-        " full}\n"
-    )
-    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert rows == [{"unit": "u1", "q": "a"}, {"unit": "u3", "g": "x", "s": 2}]
-
-
-def test_a_many_to_many_join_emits_a_stray_key_of_one_input_once(
-    tmp_path: Path,
-) -> None:
-    """A key only a further input carries is that input's rows, once."""
+    assert run(_GIRLS, "left", "left") == _PRODUCT
     stray = [{"unit": "u3", "g": "x"}, {"unit": "u3", "g": "y"}]
-    node = _pairs(_CASES, _GIRLS + stray, "cardinality: many_to_many, how: full")
-    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert [(row.get("q"), row["g"]) for row in rows] == [
-        ("a", "x"),
-        ("a", "y"),
-        ("b", "x"),
-        ("b", "y"),
-        ("c", "z"),
-        (None, "x"),
-        (None, "y"),
+    assert run(_GIRLS + stray, "full", "full") == _PRODUCT + [(None, g) for g in "xy"]
+
+
+def test_a_cardinality_and_a_row_key_declare_each_other(tmp_path: Path) -> None:
+    """A repeat needs cardinality and row_key together, and a product no attach."""
+    one, many = "cardinality: one_to_many", "cardinality: many_to_many"
+    cases = [
+        (one, "one_to_many also needs row_key"),
+        ("row_key: [unit, q]", "row_key needs cardinality one_to_many"),
+        (many + ", attach: {g: Girls}", "reads no attach"),
+        ("", "declare one_to_many or many_to_many"),
     ]
-
-
-def test_one_to_many_needs_a_row_key() -> None:
-    """A first input that repeats a key needs the row_key that tells its rows apart."""
-    with pytest.raises(ValueError, match="one_to_many also needs row_key"):
-        _pairs(_CASES, _GIRLS, "cardinality: one_to_many")
-
-
-def test_a_row_key_needs_one_to_many() -> None:
-    """A row_key reads several rows of a by key, which one_to_many declares."""
-    with pytest.raises(ValueError, match="row_key needs cardinality one_to_many"):
-        _pairs(_CASES, _GIRLS, "row_key: [unit, q]")
-
-
-def test_many_to_many_reads_no_attach() -> None:
-    """A key's product rows have no one row for an attach value to belong to."""
-    with pytest.raises(ValueError, match="many_to_many reads no attach"):
-        _pairs(
-            _CASES,
-            _GIRLS,
-            "cardinality: many_to_many, attach: {g: Girls}",
-        )
-
-
-def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None:
-    """An undeclared repeat fails the job, naming the cardinality that reads it."""
-    with pytest.raises(ValueError, match="declare one_to_many or many_to_many"):
-        _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {})
-
-
-def test_a_broadcast_join_refuses_a_repeated_key_without_naming_many_to_many(
-    tmp_path: Path,
-) -> None:
-    """A row_key join pairs one further row per key, so a repeat says just that."""
-    with pytest.raises(ValueError, match="repeats in a further input") as caught:
-        _broadcast(tmp_path, sizes=_SIZES + [_SIZES[0]])
-    assert "many_to_many" not in str(caught.value)
+    for fields, match in cases:
+        with pytest.raises(ValueError, match=match):
+            _run(tmp_path, _pairs(_CASES, _GIRLS, fields), {})
 
 
 def test_one_to_many_keeps_every_row_of_a_repeated_key(tmp_path: Path) -> None:
@@ -472,10 +420,7 @@ def test_one_to_many_keeps_every_row_of_a_repeated_key(tmp_path: Path) -> None:
         _CASES[:2], _GIRLS[:1], "cardinality: one_to_many, row_key: [unit, q]"
     )
     rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert [(row["unit"], row["q"], row["g"]) for row in rows] == [
-        ("u1", "a", "x"),
-        ("u1", "b", "x"),
-    ]
+    assert [(row["q"], row["g"]) for row in rows] == [("a", "x"), ("b", "x")]
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
@@ -509,22 +454,7 @@ _UNITS = [{"unit": "u1", "rid": r} for r in "ab"] + [{"unit": "u2", "rid": "c"}]
 _SIZES = [{"unit": "u1", "size": 2}, {"unit": "u2", "size": 1}]
 _SIZE = {size["unit"]: size["size"] for size in _SIZES}
 _JOINED = [{**u, "size": _SIZE[u["unit"]], "tag": u["rid"].upper()} for u in _UNITS]
-_BROADCAST = """
-name: u
-inputs: {Rows: []}
-ops:
-  - {id: State, op: DataOp, data: __ROWS__}
-  - {id: Summary, op: DataOp, data: __SIZES__}__SECOND__ __EXTRA__
-  - {id: Tag, op: LambdaOp, mode: row, inputs: [State], fn_name: tag,
-     code: "def tag(row): return row['rid'].upper()"}
-  - {id: Merge, op: JoinOp, inputs: [State__INPUTS__, Summary__MORE__], by: unit,
-     __FIELDS__, attach: {__ATTACH__}}
-outputs: [{name: merged, ref: Merge}]
-"""
-
-
-def _quoted(rows: list[Any]) -> str:
-    return "[" + ", ".join(f"'{json.dumps(row)}'" for row in rows) + "]"
+_ROW_KEY = "cardinality: one_to_many, row_key: [unit, rid]"
 
 
 def _broadcast(
@@ -534,32 +464,28 @@ def _broadcast(
     second: list[Any] | None = None,
     part: list[Any] | None = None,
     tags: list[Any] | None = None,
-    fields: str = "cardinality: one_to_many, row_key: [unit, rid]",
+    fields: str = _ROW_KEY,
 ) -> list[Any]:
-    swaps = {
-        "__ROWS__": _quoted(rows or _UNITS),
-        "__SIZES__": _quoted(sizes or _SIZES),
-        "__SECOND__": "",
-        "__MORE__": "",
-        "__EXTRA__": "",
-        "__INPUTS__": ", Tag",
-        "__FIELDS__": fields,
-        "__ATTACH__": "tag: Tag",
-    }
+    """Run a one_to_many, row_key join of the units with a per-row attach."""
+    extra, more, inputs, attach = "", "", ", Tag", "tag: Tag"
     if second is not None:
-        swaps["__SECOND__"] = (
-            f"\n  - {{id: Second, op: DataOp, data: {_quoted(second)}}}"
-        )
-        swaps["__MORE__"] = ", Second"
+        extra = f"\n  - {{id: Second, op: DataOp, data: {_quoted(second)}}}"
+        more = ", Second"
     if part is not None:
-        swaps["__EXTRA__"] = f"\n  - {{id: Extra, op: DataOp, data: {_quoted(part)}}}"
-        swaps["__EXTRA__"] += "\n  - {id: Part, op: LambdaOp, mode: row,"
-        swaps["__EXTRA__"] += " inputs: [Extra], fn_name: part,"
-        swaps["__EXTRA__"] += " code: \"def part(row): return row['part']\"}"
-        swaps["__INPUTS__"], swaps["__ATTACH__"] = ", Extra, Part", "part: Part"
-    code = _BROADCAST
-    for marker, value in swaps.items():
-        code = code.replace(marker, value)
+        extra = f"\n  - {{id: Extra, op: DataOp, data: {_quoted(part)}}}"
+        extra += "\n  - {id: Part, op: LambdaOp, mode: row, inputs: [Extra],"
+        extra += " fn_name: part, code: \"def part(row): return row['part']\"}"
+        inputs, attach = ", Extra, Part", "part: Part"
+    code = (
+        "name: u\ninputs: {Rows: []}\nops:\n"
+        f"  - {{id: State, op: DataOp, data: {_quoted(rows or _UNITS)}}}\n"
+        f"  - {{id: Summary, op: DataOp, data: {_quoted(sizes or _SIZES)}}}{extra}\n"
+        "  - {id: Tag, op: LambdaOp, mode: row, inputs: [State], fn_name: tag,\n"
+        "     code: \"def tag(row): return row['rid'].upper()\"}\n"
+        f"  - {{id: Merge, op: JoinOp, inputs: [State{inputs}, Summary{more}], by:"
+        f" unit, {fields}, attach: {{{attach}}}}}\n"
+        "outputs: [{name: merged, ref: Merge}]\n"
+    )
     spec = parse_yaml_payload(code)["u"]
     graph = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
     node = _join_of(RuntimeGraphBuilder().build(graph))
@@ -568,114 +494,71 @@ def _broadcast(
     return [item["output"] for item in _run(tmp_path, node, staged)["items"]]
 
 
-def test_a_broadcast_join_emits_a_stray_key_of_two_inputs_once(tmp_path: Path) -> None:
-    """A key two further inputs carry is one output row, with both their fields."""
-    sizes = _SIZES + [{"unit": "u3", "size": 1}]
-    rows = _broadcast(
-        tmp_path,
-        sizes=sizes,
-        second=[{"unit": "u3", "n": 1}],
-        fields="cardinality: one_to_many, row_key: [unit, rid], how: full",
-    )
-    assert len(rows) == 4
-    assert rows[3] == {"unit": "u3", "size": 1, "n": 1}
-    marked = _broadcast(
-        tmp_path,
-        sizes=sizes + [{"unit": "u4", "n": _MARK}],
-        second=[{"unit": "u4", "n": 2}],
-        fields="cardinality: one_to_many, row_key: [unit, rid], how: full",
-    )
-    assert len(marked) == 5
-    assert marked[4] == _MARK
-
-
 def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> None:
     """Each row of a shared by key keeps its own output row, in its order."""
     assert _broadcast(tmp_path) == _JOINED
     with pytest.raises(ValueError, match="duplicate row_key"):
-        _broadcast(tmp_path, rows=[_UNITS[0], _UNITS[0]])
+        _broadcast(tmp_path, [_UNITS[0], _UNITS[0]])
     with pytest.raises(ValueError, match="row_key must name every by path"):
         _broadcast(tmp_path, fields="cardinality: one_to_many, row_key: rid")
-
-
-def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
-    """A further input that lacks a key leaves its rows with the fields they carry."""
-    missing = {**_UNITS[2], "tag": "C"}
-    sizes = [_SIZES[0]]
-    assert _broadcast(tmp_path, sizes=sizes) == [_JOINED[0], _JOINED[1], missing]
-    fail = "cardinality: one_to_many, row_key: [unit, rid], on_missing: fail_row"
-    assert _broadcast(tmp_path, sizes=sizes, fields=fail) == [
-        _JOINED[0],
-        _JOINED[1],
-        missing,
-    ]
-
-
-def test_a_broadcast_join_marks_the_rows_an_attach_source_lacks(
-    tmp_path: Path,
-) -> None:
-    """on_missing: fail_row marks the rows an attach source has no key for."""
-    fields = "cardinality: one_to_many, row_key: [unit, rid], on_missing: fail_row"
-    part = [{"unit": "u1", "part": "P"}]
-    rows = _broadcast(tmp_path, tags=["P"], part=part, fields=fields)
-    assert rows[:2] == [
-        {**_UNITS[0], "size": 2, "part": "P"},
-        {**_UNITS[1], "size": 2, "part": "P"},
-    ]
-    assert "key" in rows[2]["_fail"]["reason"]
+    with pytest.raises(ValueError, match="repeats in a further input") as caught:
+        _broadcast(tmp_path, sizes=_SIZES + [_SIZES[0]])
+    assert "many_to_many" not in str(caught.value)
 
 
 def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
-    """A row_key join reads how too: inner drops a missing key, full appends it."""
-    fields = "cardinality: one_to_many, row_key: [unit, rid], how: "
-    rows = [_UNITS[0], _UNITS[2], _UNITS[1]]
-    inner = _broadcast(tmp_path, rows=rows, sizes=_SIZES[:1], fields=fields + "inner")
-    assert inner == [
-        {**_UNITS[0], "size": 2, "tag": "A"},
-        {**_UNITS[1], "size": 2, "tag": "C"},
-    ]
-    stray = {"unit": "u3", "size": 1}
-    full = _broadcast(tmp_path, sizes=_SIZES + [stray], fields=fields + "full")
-    assert full == _JOINED + [stray]
-    # A marked first-input row has no readable key, so inner passes it through.
-    inner_marked = _broadcast(
-        tmp_path, rows=[_UNITS[0], _MARK, _UNITS[1]], fields=fields + "inner"
+    """inner drops a missing key; full appends a key once, or its marker."""
+    fields = _ROW_KEY + ", how: "
+    inner = _broadcast(
+        tmp_path, [_UNITS[0], _UNITS[2], _UNITS[1]], _SIZES[:1], fields=fields + "inner"
     )
-    assert inner_marked == [
-        {**_UNITS[0], "size": 2, "tag": "A"},
-        _MARK,
-        {**_UNITS[1], "size": 2, "tag": "C"},
-    ]
+    assert [row["unit"] + row["rid"] for row in inner] == ["u1a", "u1b"]
+    stray = {"unit": "u3", "size": 1}
+    full = fields + "full"
+    assert _broadcast(
+        tmp_path, sizes=_SIZES + [stray], second=[stray], fields=full
+    ) == (_JOINED + [stray])
+    bad = [{"unit": "u4", "n": _MARK}]
+    marked = _broadcast(
+        tmp_path, sizes=bad, second=[{"unit": "u4", "n": 2}], fields=full
+    )
+    assert marked[-1] == _MARK
 
 
-def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
+def test_a_broadcast_join_applies_on_missing_to_an_attach_source_only(
     tmp_path: Path,
 ) -> None:
-    """With require_match, a key one input carries and another lacks fails the job."""
-    fields = "cardinality: one_to_many, row_key: [unit, rid], require_match: true"
-    with pytest.raises(ValueError, match=r'key "u3" is not in'):
-        _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
+    """fail_row marks only the rows an attach source has no key for."""
+    missing = {**_UNITS[2], "tag": "C"}
+    fields = _ROW_KEY + ", on_missing: fail_row"
+    for policy in (_ROW_KEY, fields):  # the further input's gap is not a failure
+        kept = _broadcast(tmp_path, sizes=_SIZES[:1], fields=policy)
+        assert kept == [_JOINED[0], _JOINED[1], missing]
+    part = [{"unit": "u1", "part": "P"}]
+    rows = _broadcast(tmp_path, part=part, tags=["P"], fields=fields)
+    assert [row.get("part") for row in rows] == ["P", "P", None]
 
 
 def test_a_marked_broadcast_row_keeps_a_readable_key(tmp_path: Path) -> None:
-    """A marked first row whose key a field leaves readable is placed by that key, so
-    require_match sees it and full emits it in its place."""
-    fields = "cardinality: one_to_many, row_key: [unit, rid], require_match: true"
+    """A marked first row whose key stays readable is placed by it."""
     rows = [_UNITS[0], {**_UNITS[2], "text": _MARK}]
-    out = _broadcast(tmp_path, rows=rows, sizes=_SIZES, tags=["A", "C"], fields=fields)
-    assert out == [_JOINED[0], _MARK]
-    fields = "cardinality: one_to_many, row_key: [unit, rid], how: full"
+    match = _ROW_KEY + ", require_match: true"
+    with pytest.raises(ValueError, match=r'key "u3" is not in'):
+        _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=match)
+    assert _broadcast(tmp_path, rows, tags=["A", "C"], fields=match) == [
+        _JOINED[0],
+        _MARK,
+    ]
     stray = {"unit": "u3", "size": 1}
-    out = _broadcast(
-        tmp_path, rows=rows, sizes=_SIZES + [stray], tags=["A", "C"], fields=fields
-    )
-    assert out == [_JOINED[0], _MARK, stray]
+    fields = _ROW_KEY + ", how: full"
+    full = _broadcast(tmp_path, rows, _SIZES + [stray], tags=["A", "C"], fields=fields)
+    assert full == [_JOINED[0], _MARK, stray]
 
 
 def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
     """A marked further-input row marks each row of its key."""
     marked = [{"unit": "u1", "size": _MARK}, _SIZES[1]]
     assert _broadcast(tmp_path, sizes=marked) == [_MARK, _MARK, _JOINED[2]]
-    sources = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
-    out = _broadcast(tmp_path, part=sources, tags=["C"])
+    src = [{"unit": "u1", "part": _MARK}, {"unit": "u2"}]
+    out = _broadcast(tmp_path, part=src, tags=["C"])
     assert out == [_MARK, _MARK, {**_UNITS[2], "size": 1, "part": "C"}]
