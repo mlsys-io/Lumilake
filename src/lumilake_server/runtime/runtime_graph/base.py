@@ -8,7 +8,9 @@ from lumilake_server.common import project_input_keys
 from lumilake_server.data_specs import (
     Column,
     ColumnTable,
+    DataFrame,
     DataSpecModel,
+    GraphTemplate,
     ListData,
     NodeColumn,
 )
@@ -264,34 +266,22 @@ class _RuntimeGraphBuilderBase:
         ]
 
     def _collect_graph_template_dependencies(
-        self, template_spec: dict[str, Any]
+        self, template_spec: GraphTemplate
     ) -> list[str]:
+        """The runtime node ids a rendered graph template reads, in template order."""
         deps: list[str] = []
         seen: set[str] = set()
 
-        def add_dep(node_id: Any) -> None:
-            if not isinstance(node_id, str) or node_id in seen:
-                return
-            seen.add(node_id)
-            deps.append(node_id)
-
-        def visit_column(column: Any) -> None:
-            if not isinstance(column, dict):
-                return
-            add_dep(column.get("node"))
-            data = column.get("data")
-            if not isinstance(data, dict):
-                return
-            if data.get("type") == "dataframe":
-                for nested in data.get("columns", []) or []:
+        def visit_column(column: Column) -> None:
+            node = column.node
+            if node is not None and node not in seen:
+                seen.add(node)
+                deps.append(node)
+            if isinstance(column.data, DataFrame):
+                for nested in column.data.columns:
                     visit_column(nested)
-            elif data.get("type") == "graph_template":
-                nested_template = data.get("template")
-                if isinstance(nested_template, dict):
-                    for nested in nested_template.get("columns", []) or []:
-                        visit_column(nested)
 
-        for column in template_spec.get("columns", []) or []:
+        for column in template_spec.columns:
             visit_column(column)
         return deps
 

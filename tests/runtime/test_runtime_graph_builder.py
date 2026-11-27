@@ -7,7 +7,15 @@ from support.retrieval import retrieval_op
 
 from lumilake import envs
 from lumilake_server.common import GenerationConfig
-from lumilake_server.data_specs import build_column_table
+from lumilake_server.data_specs import (
+    Column,
+    DataFrame,
+    FormatConfig,
+    GraphTemplate,
+    ListData,
+    TemplateOptions,
+    build_column_table,
+)
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import (
     DataOp,
@@ -2723,3 +2731,32 @@ def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
     with pytest.raises(ValueError, match="list-mode LambdaOp"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_graph_template_dependencies_walk_a_nested_dataframe() -> None:
+    """A template's nested dataframe columns, and the outer columns, become
+    dependencies in template order without duplicates."""
+    builder = RuntimeGraphBuilder()
+    template = GraphTemplate(
+        name="t",
+        options=TemplateOptions(format=FormatConfig(messages=[])),
+        columns=[
+            Column(label="a", node="outer"),
+            Column(
+                label="df",
+                data=DataFrame(
+                    type="dataframe",
+                    columns=[
+                        Column(label="b", node="inner"),
+                        Column(data=ListData(items=["literal-node"])),
+                        Column(label="c", node="outer"),
+                    ],
+                ),
+            ),
+        ],
+    )
+
+    assert builder._collect_graph_template_dependencies(template) == [
+        "outer",
+        "inner",
+    ]
