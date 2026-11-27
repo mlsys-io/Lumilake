@@ -161,7 +161,7 @@ class _VisionBuilder(_RetrievalBuilder):
         if llm_op_id not in self._flattened_vlm_ids:
             template_spec.columns = [*template_spec.columns, batch_column]
             template_dependencies = self._collect_graph_template_dependencies(
-                template_spec.model_dump(exclude_none=True)
+                template_spec
             )
             dependencies = list(upstream_llm_ids) if upstream_llm_ids else []
             dependencies.extend(template_dependencies)

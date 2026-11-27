@@ -12,13 +12,13 @@ from lumilake_server.data_specs import (
     DataFrame,
     ListData,
     PythonData,
-    parse_data_spec,
+    remap_model,
+    remap_node_dict,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp, RuntimeOpSchema
 from lumilake_server.runtime.sensitive import redact_sensitive
 from lumilake_server.utils.graph import topological_sort
 
-_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
 _API_CREDENTIAL_PLACEHOLDER = "${credential}"
 
 
@@ -261,33 +261,6 @@ class RuntimeGraph:
 
         mapping = {node_id: f"{prefix}{separator}{node_id}" for node_id in self.nodes}
 
-        def _remap_placeholder(text: str, rewritable: dict[str, str]) -> str:
-            def _sub(match: re.Match[str]) -> str:
-                node = match.group(1)
-                prefixed = rewritable.get(node)
-                if prefixed is None:
-                    return match.group(0)
-                return f"${{{prefixed}.{match.group(2)}}}"
-
-            return _PLACEHOLDER_RE.sub(_sub, text)
-
-        def remap(value: Any, rewritable: dict[str, str]) -> Any:
-            if isinstance(value, dict):
-                updated: dict[str, Any] = {}
-                for key, item in value.items():
-                    if key == "node" and isinstance(item, str) and item in mapping:
-                        updated[key] = mapping[item]
-                    else:
-                        updated[key] = remap(item, rewritable)
-                return updated
-            if isinstance(value, list):
-                return [remap(item, rewritable) for item in value]
-            if isinstance(value, tuple):
-                return tuple(remap(item, rewritable) for item in value)
-            if isinstance(value, str):
-                return _remap_placeholder(value, rewritable)
-            return value
-
         nodes: dict[str, RuntimeOp] = {}
         for old_id, op in self.nodes.items():
             new_id = mapping[old_id]
@@ -299,22 +272,19 @@ class RuntimeGraph:
                 task_type=op.task_type,
                 backend=op.backend,
                 model=op.model,
-                data_spec=parse_data_spec(
-                    op.task_type,
-                    remap(op.data_spec.model_dump(exclude_none=True), rewritable),
-                ),
-                model_spec=remap(op.model_spec, rewritable),
-                inference_spec=remap(op.inference_spec, rewritable),
-                api_spec=remap(op.api_spec, rewritable),
+                data_spec=remap_model(op.data_spec, rewritable),
+                model_spec=remap_node_dict(op.model_spec, rewritable),
+                inference_spec=remap_node_dict(op.inference_spec, rewritable),
+                api_spec=remap_node_dict(op.api_spec, rewritable),
                 output_enforcement=op.output_enforcement,
                 dependencies=tuple(mapping.get(dep, dep) for dep in op.dependencies),
                 output_spec=(
-                    remap(op.output_spec, rewritable)
+                    remap_node_dict(op.output_spec, rewritable)
                     if op.output_spec is not None
                     else None
                 ),
                 condition=(
-                    remap(op.condition, rewritable)
+                    remap_node_dict(op.condition, rewritable)
                     if op.condition is not None
                     else None
                 ),

@@ -30,6 +30,7 @@ from lumilake_server.ops import (
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from tests.support.data_specs import runtime_op
 
 _LUMID_URL = "http://lumid-data"
 _LUMID_TOKEN = "test-token"
@@ -2723,3 +2724,52 @@ def test_messages_column_refuses_a_row_mode_lambda_producer() -> None:
     compiled = Graph.from_ops([as_output("result", llm)]).compile(rows=["[]"])
     with pytest.raises(ValueError, match="list-mode LambdaOp"):
         RuntimeGraphBuilder().build(compiled)
+
+
+def test_runtime_refs_come_from_typed_reads_not_literal_payload_keys() -> None:
+    """The ref scan reads a spec's own fields: a ``node`` key nested in a
+    python literal payload is data, while a plan stage, a retrieval
+    parameter's ``node`` + ``path`` item and a condition node are reads."""
+    node = runtime_op(
+        node_id="n",
+        task_type="python",
+        backend="python",
+        model="python",
+        data_spec={
+            "plan": [
+                {"kind": "stage", "node": "upstream"},
+                {"kind": "literal", "values": [{"node": "in-values", "path": "x"}]},
+            ]
+        },
+        model_spec={},
+        inference_spec={},
+        condition={"node": "guarded", "when": "always"},
+    )
+    retrieval = runtime_op(
+        node_id="r",
+        task_type="data_retrieval",
+        backend="data_retrieval",
+        model="data_retrieval",
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT {p}",
+            "params": [
+                {
+                    "label": "p",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": "sampled", "path": "items.output"}],
+                    },
+                }
+            ],
+        },
+        model_spec={},
+        inference_spec={},
+    )
+
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(node)) == [
+        "upstream",
+        "guarded",
+    ]
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(retrieval)) == ["sampled"]

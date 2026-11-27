@@ -7,7 +7,11 @@ import pytest
 
 import lumilake_server.ops.ops as ops_module
 from lumilake import envs
-from lumilake_server.data_specs import parse_data_spec
+from lumilake_server.data_specs import (
+    RetrievalData,
+    parse_data_spec,
+    remap_model,
+)
 from tests.support import golden_graphs
 
 _GOLDEN = Path(__file__).resolve().parent / "fixtures" / "data_spec_golden.json"
@@ -41,3 +45,33 @@ def test_unknown_task_type_is_refused() -> None:
 def test_unknown_data_spec_key_is_refused() -> None:
     with pytest.raises(ValueError, match="invalid data_spec"):
         parse_data_spec("python", {"plan": [], "bogus": 1})
+
+
+def test_remap_model_renames_refs_placeholders_and_extras() -> None:
+    """A remap renames mapped node refs, ``${node.path}`` placeholders and the
+    ``node`` keys inside literal items, including inside a model's extra key."""
+    spec = parse_data_spec(
+        "data_retrieval",
+        {
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT ${src.col} FROM t",
+            "params": [
+                {
+                    "label": "p",
+                    "data": {"type": "list", "items": [{"node": "src"}]},
+                    "worker_key": {"node": "src", "path": "items.id"},
+                },
+                {"label": "q", "node": "src", "path": "items.id"},
+            ],
+        },
+    )
+
+    remapped = remap_model(spec, {"src": "src_1"})
+
+    assert isinstance(remapped, RetrievalData)
+    first, second = remapped.params
+    assert first.data is not None and first.data.items == [{"node": "src_1"}]
+    assert first.model_extra == {"worker_key": {"node": "src_1", "path": "items.id"}}
+    assert second.node == "src_1"
+    assert remapped.template == "SELECT ${src_1.col} FROM t"
