@@ -220,10 +220,19 @@ class RuntimeGraph:
             if node_id in seeds:
                 reached.add(node_id)
                 continue
-            reads = self._non_literal_reads(node)
+            reads = self._row_count_reads(node)
             if reads and all(read in reached for read in reads):
                 reached.add(node_id)
         return reached - self.list_lambda_cardinality_nodes()
+
+    def _row_count_reads(self, node: RuntimeOp) -> set[str] | None:
+        """The node ids a node's row count follows, or ``None`` when it also
+        reads literal values. A join's row count follows its first input alone."""
+        data_spec = node.data_spec
+        if isinstance(data_spec, PythonData) and data_spec.join is not None:
+            entry = data_spec.plan[data_spec.join.inputs[0]]
+            return {entry.node} if entry.kind == "stage" and entry.node else None
+        return self._non_literal_reads(node)
 
     @staticmethod
     def _non_literal_reads(node: RuntimeOp) -> set[str] | None:

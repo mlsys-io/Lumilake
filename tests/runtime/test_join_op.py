@@ -229,41 +229,18 @@ def test_join_refuses_a_duplicate_key_and_a_stray_row_under_require_match(
         )
 
 
-def test_an_inner_or_full_join_output_sets_its_own_row_count() -> None:
-    """A join over the job's own rows drops or appends rows under ``inner`` and
-    ``full``, so its output reads as a whole-run value there; a ``left`` join
-    keeps one row per first-input row and splits like a row step."""
-    yaml = """
-name: j
-inputs:
-  Cases: [a, b, c]
-ops:
-  - id: Left
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: left
-    code: |
-      def left(row):
-          return {"case_id": row[0], "text": row[0]}
-  - id: Right
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: right
-    code: |
-      def right(row):
-          return {"case_id": row[0], "n": 1}
+_PER_ROW = """
+  - {id: PerRow, op: LambdaOp, mode: row, inputs: [Rows], fn_name: per_row,
+     code: "def per_row(row):\\n    return {'case_id': json.loads(row[0])['case_id']}"}
 """
-    for how, whole_run in (("left", False), ("inner", True), ("full", True)):
-        spec = parse_yaml_payload(
-            yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
-            f" case_id\n    how: {how}\n"
-        )["j"]
-        runtime = RuntimeGraphBuilder().build(
-            Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
-            node_prefix="g",
-        )
+
+
+def test_a_join_follows_its_first_input_s_row_count() -> None:
+    """A join's rows are its first input's, so a ``left`` join of a fan-out with
+    a per-row further input sets its own row count; the reverse shape keeps one
+    row per job row and stays out."""
+    for inputs, whole_run in (("State, PerRow", True), ("PerRow, State", False)):
+        runtime = _build(_PER_ROW + _merge(inputs, "    how: left\n"))
         merged = _join_of(runtime)
         assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
 
