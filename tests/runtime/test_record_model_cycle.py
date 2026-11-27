@@ -690,3 +690,51 @@ async def test_a_second_model_level_decides_per_record(
     assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
+
+
+_EXPAND_BETWEEN = {
+    "id": "Between",
+    "op": "LambdaOp",
+    "inputs": ["Ask"],
+    "mode": "expand",
+    "fn_name": "between",
+    "code": (
+        "def between(c):\n"
+        "    text = c[0]\n"
+        "    return [{'id': text + '/' + str(i), 'v': text} for i in range(2)]\n"
+    ),
+}
+_OVER_BETWEEN = {
+    **_CHAT,
+    "id": "Ask2",
+    "inputs": ["Between"],
+    "rowwise_columns": [{"label": "v", "node": "Between", "path": "items.output.v"}],
+    "key": {"node": "Between", "path": "id"},
+}
+
+
+@pytest.mark.asyncio
+async def test_an_expand_between_two_chats_decides_per_record(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """An expand between two chats, the brief's two-level shape, leaves this
+    run's stored rows for the second level to probe: a changed row recomputes
+    only its own records at both chats."""
+    tail: dict[str, Any] = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
+    ops: list[dict[str, Any]] = [_TAG, _CHAT, _EXPAND_BETWEEN, _OVER_BETWEEN, tail]
+    await run(_workflow(ops, _ROWS, "Tail"), "req-1")
+    changed = _workflow(ops, _AMENDED, "Tail")
+    names = {node: changed.op_names.get(node) for node in changed.nodes}
+    ask, ask2 = (node for node, name in names.items() if name in ("Ask", "Ask2"))
+    before = len(worker.submissions)
+    second = await run(changed, "req-2")
+    reasons = _reasons(second)
+    assert reasons["Ask"] == ("miss", "partial records"), reasons
+    assert reasons["Ask2"] == ("miss", "partial records"), reasons
+    ran = {
+        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
+        for node in (ask, ask2)
+    }
+    assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
+    again = await run(changed, "req-3")
+    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 5

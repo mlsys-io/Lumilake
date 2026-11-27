@@ -448,6 +448,37 @@ def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
     return [node_id for node_id in planned.node_order if node_id in wave]
 
 
+def _feeds_only_model(runtime_graph: RuntimeGraph, node_id: str) -> bool:
+    """Whether every op ``node_id`` feeds reaches a model op through python
+    steps alone, so it belongs to the gap before the next model level rather
+    than to a reader the main run dispatches."""
+    readers = [
+        reader
+        for reader, op in runtime_graph.nodes.items()
+        if node_id in op.dependencies
+    ]
+    if not readers:
+        return False
+    stack = list(readers)
+    seen: set[str] = set()
+    while stack:
+        reader = stack.pop()
+        if reader in seen or reader not in runtime_graph.nodes:
+            continue
+        seen.add(reader)
+        op = runtime_graph.nodes[reader]
+        if op.task_type in _MODEL_TASK_TYPES:
+            continue
+        if op.task_type != PYTHON_TASK_TYPE:
+            return False
+        stack.extend(
+            other
+            for other, other_op in runtime_graph.nodes.items()
+            if reader in other_op.dependencies
+        )
+    return True
+
+
 def _served_for_level(
     plan: ReusePlan,
     written: Mapping[str, Sequence[RecordEntry]],
@@ -497,6 +528,28 @@ def _with_generated(
                 kept.add(node_id)
         elif node_id in plan.pass_throughs and node_id in read:
             kept.add(node_id)
+    return [node_id for node_id in planned.node_order if node_id in kept]
+
+
+def _with_between_steps(
+    planned: RuntimeGraph, nodes: Sequence[str], wave: Sequence[str]
+) -> list[str]:
+    """A level's nodes with the python steps that read its ops and feed only a
+    later model op, so the plan after them reads their stored rows. A step a
+    model op also feeds, or one the level already holds, stays out.
+
+    ``planned`` is the level's graph, where a partly served wave op's readers
+    name its merge step, so a step here reads a node the level already holds."""
+    kept = set(nodes)
+    steps = [
+        node_id
+        for node_id in planned.node_order
+        if node_id not in kept
+        and planned.nodes[node_id].task_type == PYTHON_TASK_TYPE
+        and any(dep in kept for dep in planned.nodes[node_id].dependencies)
+        and _feeds_only_model(planned, node_id)
+    ]
+    kept.update(steps)
     return [node_id for node_id in planned.node_order if node_id in kept]
 
 
@@ -2459,9 +2512,15 @@ class FlowmeshRuntimeManager:
 
         The level's sub-run comes from the plan's own graph, so a partly served
         op dispatches with the merge step and the pass-throughs that carry its
-        rows, and the writer stores the op's records under the op itself."""
+        rows, and the writer stores the op's records under the op itself. The
+        level also carries the python steps that read its ops and feed only a
+        later model op, so the plan after them probes the next level on their
+        stored rows: a join or expand between two levels is not partly
+        servable, and a plan before this sub-run would miss the next level."""
         graph = _without_hits(source, plan)
-        graph = _sub_graph(graph, _with_generated(graph, plan, wave))
+        nodes = _with_generated(graph, plan, wave)
+        nodes = _with_between_steps(graph, nodes, wave)
+        graph = _sub_graph(graph, nodes)
         level_schedule = _sub_schedule(schedule, graph.node_order)
         _assign_generated_steps(
             level_schedule, graph, worker_ids, request_info.gpu_worker_ids
