@@ -201,8 +201,8 @@ class RuntimeGraph:
 
     def own_row_count_nodes(self) -> set[str]:
         """Node ids whose rows their own data sets, not the job's input rows: a
-        list-mode Lambda, its fan-out, and a join that emits a key's pairs rather than
-        one row per input row, under ``inner``, ``full`` or ``many_to_many``."""
+        list-mode Lambda, its fan-out, and an ``inner``, ``full`` or ``many_to_many``
+        join, whose own keys set its rows."""
         seeds = {
             node_id
             for node_id, node in self.nodes.items()
