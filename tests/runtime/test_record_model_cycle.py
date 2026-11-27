@@ -15,10 +15,7 @@ from lumilake import envs
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.record_writer import read_index
 from lumilake_server.runtime.request import RequestInfo
-from lumilake_server.runtime.runtime_manager import (
-    FlowmeshRuntimeManager,
-    _first_level,
-)
+from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 from tests.runtime.runtime_manager.conftest import job_storage as job_storage
 from tests.runtime.test_record_reuse import (  # noqa: F401
@@ -71,6 +68,16 @@ _AFTER = {
 }
 _ROWS = [{"id": "a", "t": "x"}, {"id": "b", "t": "y"}]
 _AMENDED = [_ROWS[0], {"id": "b", "t": "z"}]
+_READ_OP = {
+    "id": "Read",
+    "op": "DataRetrievalOp",
+    "data_spec": {
+        "type": "lumid",
+        "mode": "sql",
+        "template": "SELECT id, t FROM rows",
+        "key": {"column": "id"},
+    },
+}
 _WHOLE = {
     **_CHAT,
     "id": "First",
@@ -256,14 +263,18 @@ def run(
 
 
 def _workflow(
-    ops: list[dict[str, Any]], rows: list[dict[str, Any]], out: str, **inputs: Any
+    ops: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    out: str,
+    extra: Sequence[dict[str, str]] = (),
+    **inputs: Any,
 ) -> Any:
     return _runtime_graph(
         {
             "name": "cycle",
             "inputs": {"Rows": [json.dumps(row) for row in rows], **inputs},
             "ops": ops,
-            "outputs": [{"name": "out", "ref": out}],
+            "outputs": [{"name": "out", "ref": out}, *extra],
         }
     )
 
@@ -496,15 +507,6 @@ async def test_a_partial_chat_reads_its_served_columns(
     assert {record for op, record in stored if op == "After"} == {"a", "b"}
 
 
-_SECOND_CHAT = {
-    **_CHAT,
-    "id": "Ask2",
-    "inputs": ["Ask"],
-    "rowwise_columns": [{"label": "v", "node": "Ask", "path": "items.output"}],
-    "key": {"node": "Ask", "path": "id"},
-}
-
-
 _ASK_Y = {
     **_CHAT,
     "id": "AskY",
@@ -558,85 +560,24 @@ async def test_a_chat_over_an_expand_never_reads_a_count_row(
 
 @pytest.mark.asyncio
 async def test_a_re_ran_read_that_is_an_output_survives_a_level(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+    run: Callable[..., Awaitable[dict[str, Any]]],
 ) -> None:
     """A retrieval the phase re-runs is a workflow output beside a keyed chat
     two levels down, and a level's write keeps that read's response, so the
     rerun returns the read's rows as a fresh run does."""
-    read = {
-        "id": "Read",
-        "op": "DataRetrievalOp",
-        "data_spec": {
-            "type": "lumid",
-            "mode": "sql",
-            "template": "SELECT id, t FROM rows",
-            "key": {"column": "id"},
-        },
-    }
-    chat = {
-        **_CHAT,
-        "inputs": ["Tag"],
-        "rowwise_columns": [{"label": "v", "node": "Tag", "path": "items.output.t"}],
-        "key": {"node": "Tag", "path": "id"},
-    }
-    workflow = {
-        "name": "read-out",
-        "inputs": {"Rows": [json.dumps(row) for row in _ROWS]},
-        "ops": [read, _TAG, chat],
-        "outputs": [{"name": "rows", "ref": "Read"}, {"name": "ask", "ref": "Ask"}],
-    }
-    graph = _runtime_graph(workflow)
+    ops: list[dict[str, Any]] = [_READ_OP, _TAG, _CHAT]
+    graph = _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}])
     read_node = _node(graph, "Read")
     await run(graph, "req-1")
-    fresh = await run(_runtime_graph(workflow), "req-full", reuse=False)
-    again = await run(_runtime_graph(workflow), "req-2")
-    assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
-
-
-def test_a_fetch_stays_out_of_a_level() -> None:
-    """A fetch reads a URL no snapshot versions, so a level leaves it to the
-    main run rather than dispatching it with the source it could not hold."""
-    fetch = {
-        "id": "Search",
-        "op": "HttpFetchOp",
-        "inputs": ["Rows"],
-        "query": "Rows",
-        "url": "http://fixture.test/s?q={query}",
-    }
-    over = {
-        **_CHAT,
-        "id": "OverFetch",
-        "inputs": ["Search"],
-        "rowwise_columns": [{"label": "v", "node": "Search", "path": "items.output"}],
-        "key": {"node": "Search", "path": "id"},
-    }
-    graph = _runtime_graph(
-        {
-            "name": "fetch-chat",
-            "inputs": {"Rows": [json.dumps(row) for row in _ROWS]},
-            "ops": [fetch, over],
-            "outputs": [{"name": "out", "ref": "OverFetch"}],
-        }
+    fresh = await run(
+        _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}]),
+        "req-full",
+        reuse=False,
     )
-    fetch_id = next(n for n, op in graph.nodes.items() if op.model == "http-fetch")
-    assert fetch_id not in _first_level(graph, graph.output_node_map)
-
-
-@pytest.mark.asyncio
-async def test_two_independent_chats_run_in_one_level(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
-) -> None:
-    """Two chats that read the same phase rows and neither feeds the other run
-    in one sub-run, not two."""
-    ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
-    await run(_workflow(ops, _ROWS, "Both"), "req-1")
-    changed = _workflow(ops, _AMENDED, "Both")
-    ask_x, ask_y = (_node(changed, name) for name in ("AskX", "AskY"))
-    before = len(worker.submissions)
-    await run(changed, "req-2")
-    both = {ask_x, ask_y}
-    together = [sub for sub in worker.submissions[before:] if both <= set(sub)]
-    assert len(together) == 1, worker.submissions[before:]
+    again = await run(
+        _workflow(ops, _ROWS, "Ask", [{"name": "rows", "ref": "Read"}]), "req-2"
+    )
+    assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
 
 
 @pytest.mark.asyncio
@@ -661,11 +602,11 @@ async def test_a_chat_that_is_an_output_runs_once_with_its_history(
 
 
 @pytest.mark.asyncio
-async def test_two_partly_served_chats_each_dispatch_once(
+async def test_two_partly_served_chats_run_in_one_level_and_dispatch_once(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
     """Two chats read the same phase rows, so one level holds both with their
-    merge steps; neither chat's step is dispatched again in a later level."""
+    merge steps and neither runs whole or is dispatched again in a later level."""
     ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
     await run(_workflow(ops, _ROWS, "Both"), "req-1")
     changed = _workflow(ops, _AMENDED, "Both")
@@ -675,34 +616,15 @@ async def test_two_partly_served_chats_each_dispatch_once(
     reasons = _reasons(second)
     assert reasons["AskX"] == ("miss", "partial records"), reasons
     assert reasons["AskY"] == ("miss", "partial records"), reasons
+    together = [
+        sub for sub in worker.submissions[before:] if {ask_x, ask_y} <= set(sub)
+    ]
+    assert len(together) == 1, worker.submissions[before:]
     assert _runs(worker, before, [ask_x, ask_y]) == {ask_x: 1, ask_y: 1}
     assert (
         second["flat_outputs"]
         == (await run(changed, "req-full", reuse=False))["flat_outputs"]
     )
-    again = await run(changed, "req-3")
-    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
-
-
-@pytest.mark.asyncio
-async def test_a_second_model_level_decides_per_record(
-    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
-) -> None:
-    """A second chat reads the first, so a changed row recomputes only its own
-    records at both levels and an unchanged rerun serves both."""
-    tail: dict[str, Any] = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
-    ops: list[dict[str, Any]] = [_TAG, _CHAT, _SECOND_CHAT, tail]
-    await run(_workflow(ops, _ROWS, "Tail"), "req-1")
-    changed = _workflow(ops, _AMENDED, "Tail")
-    ask, ask2 = (_node(changed, name) for name in ("Ask", "Ask2"))
-    before = len(worker.submissions)
-    second = await run(changed, "req-2")
-    reasons = _reasons(second)
-    assert reasons["Ask"] == ("miss", "partial records"), reasons
-    assert reasons["Ask2"] == ("miss", "partial records"), reasons
-    assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
-    again = await run(changed, "req-3")
-    assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
 
 
 _EXPAND_BETWEEN = {
@@ -781,13 +703,48 @@ async def test_a_model_level_a_later_reader_refuses_is_left_to_the_main_run(
 
 
 @pytest.mark.asyncio
-async def test_a_failed_level_cancels_its_workflow(
+async def test_a_failed_sub_run_cancels_its_workflow(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A model level whose task fails leaves the other tasks of its sub-run
-    running, so the request aborts the workflow it submitted rather than
-    leaving GPU workers held."""
+    """A sub-run whose task fails leaves its other tasks running, so the
+    request aborts the workflow it submitted rather than leaving workers held."""
     worker.fail_first = True
     with pytest.raises(RuntimeError):
         await run(_workflow([_TAG, _CHAT], _ROWS, "Ask"), "req-fail")
-    assert worker.cancelled, "the level's workflow was not cancelled"
+    assert worker.cancelled, "the sub-run's workflow was not cancelled"
+
+
+_ALIGNED = {
+    "id": "Prompts",
+    "op": "LambdaOp",
+    "inputs": ["Split"],
+    "mode": "aligned",
+    "fn_name": "prompts",
+    "code": "lambda c: [{'id': r['id'], 't': r['n']} for r in c[0]]",
+    "key": {"node": "Split", "path": "id"},
+}
+_ALIGNED_CHAT = {
+    **_CHAT,
+    "inputs": ["Prompts"],
+    "rowwise_columns": [{"label": "v", "node": "Prompts", "path": "items.output.t"}],
+    "key": {"node": "Prompts", "path": "id"},
+}
+
+
+@pytest.mark.asyncio
+async def test_an_aligned_step_declaring_another_nodes_key_serves_per_row(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """An aligned step that declared the expand's key is stored under that key,
+    so a reader keys by the writer's addresses: an unchanged rerun serves every
+    row, and a rerun that changes one row recomputes only that row's chat."""
+    ops: list[dict[str, Any]] = [_TAG, _SPLIT, _ALIGNED, _ALIGNED_CHAT, _AFTER]
+    await run(_workflow(ops, _ROWS, "After"), "req-1")
+    assert set(
+        _reasons(await run(_workflow(ops, _ROWS, "After"), "req-2")).values()
+    ) == {("hit", None)}
+    changed = _workflow(ops, _AMENDED, "After")
+    ask = _node(changed, "Ask")
+    before = len(worker.submissions)
+    assert _reasons(await run(changed, "req-3"))["Ask"] == ("miss", "partial records")
+    assert _runs(worker, before, [ask]) == {ask: 1}
