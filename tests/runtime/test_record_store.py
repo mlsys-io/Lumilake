@@ -138,7 +138,6 @@ async def _write(
         member_job_ids=[job_id],
         round_number=round_number,
         runtime_graph=graph,
-        task_worker={},
         results=task_results,
         node_task_map={_node_id(graph, n): f"task-{n}" for n in results},
     )
@@ -177,7 +176,6 @@ async def _write_batch(
         round_number=0,
         runtime_graph=graph,
         node_task_map=nodes,
-        task_worker={},
         results={
             t: {"items": [{"output": r, "value": r} for r in _TWO_ROWS]}
             for t in nodes.values()

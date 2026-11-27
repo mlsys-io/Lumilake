@@ -165,7 +165,6 @@ async def _run(
         or {
             _node(graph, name): f"task-{name}" for name in {**results, **(items or {})}
         },
-        task_worker={},
         results=tasks,
         served=served,
         content_nodes=content_nodes,
