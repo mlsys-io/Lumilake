@@ -3,13 +3,14 @@ from typing import Any, cast
 import pytest
 from fastapi import HTTPException
 
-from lumilake_server.graphs import CompiledGraph
+from lumilake_server.graphs import CompiledGraph, Graph
+from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.routes.jobs import (
-    _validate_list_lambda_slice_span,
+    _validate_row_count_slice_span,
     _validate_runtime_graphs,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.server import LumilakeServer
 from tests.support.data_specs import runtime_op
 
@@ -135,9 +136,11 @@ def _row_graph(output_name: str) -> RuntimeGraph:
     )
 
 
-def _slice(graph_name: str, slice_index: int, slice_length: int) -> WorkflowSliceMeta:
+def _slice(
+    graph_name: str, slice_index: int, slice_length: int, public: str = "g"
+) -> WorkflowSliceMeta:
     return WorkflowSliceMeta(
-        public_graph_name="g",
+        public_graph_name=public,
         slice_index=slice_index,
         slice_start=slice_index * slice_length,
         slice_length=slice_length,
@@ -152,7 +155,7 @@ def test_list_lambda_output_spanning_multiple_slices_is_rejected() -> None:
     that would split it across more than one slice must be rejected at submit
     time with a message naming the op and the fix."""
     with pytest.raises(HTTPException) as exc_info:
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {"g": _list_lambda_graph("out")},
             {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
         )
@@ -162,7 +165,7 @@ def test_list_lambda_output_spanning_multiple_slices_is_rejected() -> None:
 
 
 def test_list_lambda_output_single_slice_is_accepted() -> None:
-    _validate_list_lambda_slice_span(
+    _validate_row_count_slice_span(
         {"g": _list_lambda_graph("out")},
         {"g": [_slice("g", 0, 2)]},
     )
@@ -171,7 +174,7 @@ def test_list_lambda_output_single_slice_is_accepted() -> None:
 def test_row_mode_output_spanning_multiple_slices_is_accepted() -> None:
     """A row-mode op emits one output per input row, so it can be split across
     slices; only list-cardinality outputs are constrained."""
-    _validate_list_lambda_slice_span(
+    _validate_row_count_slice_span(
         {"g": _row_graph("out")},
         {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
     )
@@ -211,9 +214,77 @@ def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> 
         output_node_map={downstream_id: "out"},
     )
     with pytest.raises(HTTPException) as exc_info:
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {"g": graph},
             {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
         )
     assert exc_info.value.status_code == 422
     assert "fan-out" in exc_info.value.detail
+
+
+_JOIN_WORKFLOW = """
+name: w
+inputs:
+  Cases: [a, b, c]
+ops:
+  - id: Left
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: left
+    code: |
+      def left(row):
+          return {{"case_id": row[0], "text": row[0]}}
+  - id: Right
+    op: LambdaOp
+    mode: row
+    inputs: [Cases]
+    fn_name: right
+    code: |
+      def right(row):
+          return {{"case_id": row[0], "n": 1}}
+  - id: Merge
+    op: JoinOp
+    inputs: [Left, Right]
+    by: case_id
+    how: {how}
+outputs: [{{name: merged, ref: Merge}}]
+"""
+
+
+def _join_graph(how: str, prefix: str) -> RuntimeGraph:
+    spec = parse_yaml_payload(_JOIN_WORKFLOW.format(how=how))["w"]
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    return RuntimeGraphBuilder().build(compiled, node_prefix=prefix)
+
+
+def test_a_sliced_inner_or_full_join_output_is_refused_at_submit() -> None:
+    """A join under ``inner`` or ``full`` sets its own row count, so a sliced
+    output of it cannot be partitioned and is refused with the public name."""
+    for how in ("inner", "full"):
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_row_count_slice_span(
+                {"w__slice_1": _join_graph(how, "w__slice_1")},
+                {
+                    "w__slice_1": [
+                        _slice("w__slice_1", 0, 1, public="w"),
+                        _slice("w__slice_2", 1, 1, public="w"),
+                    ]
+                },
+            )
+        assert exc_info.value.status_code == 422
+        assert "Workflow 'w' output 'merged'" in exc_info.value.detail
+
+
+def test_a_sliced_left_join_output_splits_per_input_row() -> None:
+    """A ``left`` join keeps one row per first-input row, so its sliced output
+    is accepted."""
+    _validate_row_count_slice_span(
+        {"w__slice_1": _join_graph("left", "w__slice_1")},
+        {
+            "w__slice_1": [
+                _slice("w__slice_1", 0, 1, public="w"),
+                _slice("w__slice_2", 1, 1, public="w"),
+            ]
+        },
+    )
