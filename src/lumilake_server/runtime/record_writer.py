@@ -205,7 +205,7 @@ class RecordPlan:
         *,
         op: RuntimeOp,
         op_name: str,
-        key_path: str | None,
+        key_path: str | list[str] | None,
         key_paths: list[str],
         row_key_paths: list[str],
         join_inputs: list[str | None],
@@ -1016,8 +1016,8 @@ def logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | None:
-    """A node's record-key path."""
+) -> str | list[str] | None:
+    """A node's record-key path or paths."""
     return _key_path(runtime_graph, node_id, plans)
 
 
@@ -1557,11 +1557,11 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def _key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | None:
-    """A node's record-key path: the one its op declares, else the path of the
-    single keyed input a 1:1 node reads by position, else ``None`` (whole-op).
-    An input keyed by a mode passes no path: its consumer takes those keys by
-    position."""
+) -> str | list[str] | None:
+    """A node's record-key path or paths: the ones its op declares, else the
+    path of the single keyed input a 1:1 node reads by position, else ``None``
+    (whole-op). An input keyed by a mode passes no path: its consumer takes
+    those keys by position."""
     declared = runtime_graph.record_keys.get(node_id)
     if declared is not None:
         return declared.path
@@ -1850,7 +1850,7 @@ def _node_keys(
     own = (
         None
         if plan.key_path is None
-        else [composite_key(value, [plan.key_path]) for value in values]
+        else [composite_key(value, plan.key_path) for value in values]
     )
     declared = runtime_graph.record_keys.get(plan.op.node_id)
     if declared is not None and declared.node != plan.op.node_id:
@@ -1899,7 +1899,7 @@ def _declared_keys(
     keys a reuse plan served for it, or its literal rows' keys."""
     rows = produced.get(declared.node)
     if rows is not None:
-        return [composite_key(row, [declared.path]) for row in rows]
+        return [composite_key(row, declared.path) for row in rows]
     served = records.get(declared.node)
     if served is not None and served.keys is not None and served.lines_up:
         return served.keys
@@ -1907,18 +1907,20 @@ def _declared_keys(
     return (
         None
         if literal is None
-        else [composite_key(row, [declared.path]) for row in literal]
+        else [composite_key(row, declared.path) for row in literal]
     )
 
 
-def _declared_rows(plan: RecordPlan, path: str, count: int) -> Sequence[Any] | None:
+def _declared_rows(
+    plan: RecordPlan, path: str | list[str], count: int
+) -> Sequence[Any] | None:
     """The literal list the op carries for a declared input, when exactly one of
     its lists holds ``count`` rows that all carry a key at ``path``."""
     matching = [
         rows
         for rows in _literal_rows(plan)
         if len(rows) == count
-        and all(composite_key(row, [path]) is not None for row in rows)
+        and all(composite_key(row, path) is not None for row in rows)
     ]
     return matching[0] if len(matching) == 1 else None
 

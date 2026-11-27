@@ -28,7 +28,7 @@ YAML workflows declare user-authored ops under `ops:`. `InputOp` and `OutputOp` 
 
 ### Per-record store keys
 
-Any op may declare `key: {node, path}` to name its records' logical keys, so a job submitted with `store: true` writes one entry per key instead of one for the whole op. `node` names an op or input of the workflow, and `path` drills into its rows. A row-mode `LambdaOp`, a `ParseOp` or a one-row-in-one-row-out model op needs no declaration: it inherits its single keyed input's key by position, and one keyed on an input reads it from the literal column that input feeds it. An expand, a reduce and a join key their own records from their children, groups and `by` values; a `key:` on one is refused at submit.
+Any op may declare `key: {node, path}` to name its records' logical keys, so a job submitted with `store: true` writes one entry per key instead of one for the whole op. `node` names an op or input of the workflow, and `path` drills into its rows; `path` may also name several paths, and the key is then the values at those paths in order, the way a join's composite `by` forms its key. A row-mode `LambdaOp`, a `ParseOp` or a one-row-in-one-row-out model op needs no declaration: it inherits its single keyed input's key by position, and one keyed on an input reads it from the literal column that input feeds it. An expand, a reduce and a join key their own records from their children, groups and `by` values; a `key:` on one is refused at submit.
 
 ```yaml
   - id: Answer
