@@ -605,11 +605,17 @@ def address_text(record: str | None) -> str:
     return "" if record is None else record
 
 
-def row_key(value: Any, path: str) -> str | None:
-    """A row's record key at ``path`` as text, or ``None`` when it does not resolve."""
-    found = path_value(value, path)
-    if found is None or isinstance(found, str):
-        return found
+def row_key(value: Any, paths: str | Sequence[str]) -> str | None:
+    """The record key a row carries at one path or a list of paths, as text; a
+    JSON string row is decoded first, and a path that resolves to ``None``
+    gives ``None`` for the whole key, as a join's composite key does."""
+    named = [paths] if isinstance(paths, str) else paths
+    found = [path_value(value, path) for path in named]
+    if not found or any(part is None for part in found):
+        return None
+    if len(found) == 1:
+        one = found[0]
+        return one if isinstance(one, str) else canonical_json(one)
     return canonical_json(found)
 
 
