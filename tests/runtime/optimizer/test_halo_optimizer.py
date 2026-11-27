@@ -9,10 +9,11 @@ import pytest
 from huggingface_hub.utils import NotASafetensorsRepoError
 from support.worker_profiles import worker_profile
 
-from lumilake_hook import GpuDevice, WorkerProfile
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
+    GpuDevice,
+    WorkerProfile,
 )
 from lumilake_server.data_specs import ColumnPlanEntry, PythonData
 from lumilake_server.graphs import Graph

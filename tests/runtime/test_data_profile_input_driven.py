@@ -104,7 +104,7 @@ class TestInputDrivenProfile:
     def test_sql_driven_placeholder_still_uses_sql_estimated_rows(self) -> None:
         """Regression guard: SQL placeholders still honor the SQL
         projection path (previous behavior must not be broken)."""
-        from lumilake_server.data_profile_models import (
+        from lumilake_hook import (
             DataProfileCostEstimate,
             DataProfileResultRow,
         )

@@ -47,8 +47,7 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,

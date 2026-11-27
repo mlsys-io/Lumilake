@@ -2,7 +2,7 @@ from typing import Any, cast
 
 import pytest
 
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )

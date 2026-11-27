@@ -7,8 +7,13 @@ lives on disk instead of being injected through ``sys.modules``.
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from lumilake_hook import BaseBindings, OptimizerHandle, Schedule, WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import (
+    BaseBindings,
+    DataProfileResultRow,
+    OptimizerHandle,
+    Schedule,
+    WorkerProfile,
+)
 from lumilake_server.runtime.optimizer.base import BaseOptimizer
 
 OPTIMIZER_TYPE = "bulk-schedule"

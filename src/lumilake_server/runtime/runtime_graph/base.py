@@ -4,8 +4,8 @@ from typing import Any
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
+from lumilake_hook import DataProfileResultRow
 from lumilake_server.common import project_input_keys
-from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.data_specs import (
     Column,
     ColumnTable,

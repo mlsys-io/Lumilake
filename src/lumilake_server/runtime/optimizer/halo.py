@@ -12,10 +12,10 @@ from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
 
 from lumilake import envs
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
+    WorkerProfile,
 )
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,

@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
-from lumilake_server.data_profile_models import DataProfileCostEstimate
+from lumilake_hook import DataProfileCostEstimate
 from lumilake_server.graphs.graph import CompiledGraph, Graph
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.data_profile_utils import (

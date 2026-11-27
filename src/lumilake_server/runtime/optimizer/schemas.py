@@ -7,8 +7,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.runtime.runtime_graph import RuntimeGraphSchema
 
 

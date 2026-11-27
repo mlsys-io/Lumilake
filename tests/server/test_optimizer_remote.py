@@ -8,7 +8,12 @@ import respx
 from support.worker_profiles import worker_profile
 
 from lumilake import envs as envs_mod
-from lumilake_hook import GpuDevice, WorkerProfile
+from lumilake_hook import (
+    DataProfileCostEstimate,
+    DataProfileResultRow,
+    GpuDevice,
+    WorkerProfile,
+)
 from lumilake_hook.optimizer import RemoteOptimizer as HookRemoteOptimizer
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import Schedule
@@ -320,4 +325,67 @@ def test_hook_remote_optimizer_posts_the_profiles_as_json() -> None:
     assert captured_body["worker_profiles"] == {"w1": profile.model_dump(mode="json")}
     assert captured_body["worker_profiles"]["w1"]["gpu"] == {
         "devices": [{"name": "H100", "memory_total_bytes": None}]
+    }
+
+
+@respx.mock
+def test_hook_remote_optimizer_posts_profile_rows_as_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profiled job posts each row's JSON, not the model object."""
+    monkeypatch.setattr(
+        envs_mod, "LUMILAKE_REMOTE_OPTIMIZER_URL", "http://127.0.0.1:9000"
+    )
+    captured_body: dict = {}
+
+    def _capture(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(200, json={"worker_assignment": {"w1": ["n1"]}})
+
+    respx.post("http://127.0.0.1:9000/api/v1/optimizer/schedule").mock(
+        side_effect=_capture
+    )
+
+    row = DataProfileResultRow(
+        node_id="n1",
+        raw_node_id="n1",
+        query_name="n1_query",
+        table="public.t",
+        cost_estimates=[
+            DataProfileCostEstimate(
+                plan_id="default", raw_cost=1.5, footprints={"t": 1}
+            )
+        ],
+    )
+    HookRemoteOptimizer(
+        base_url="http://127.0.0.1:9000", optimizer_type="halo-greedy"
+    ).generate_schedule(
+        _make_graph(),
+        worker_names=["w1"],
+        worker_profiles={"w1": WorkerProfile()},
+        data_profile_results={"data_profile::n1::n1_query": [row]},
+    )
+
+    assert captured_body["data_profile_results"] == {
+        "data_profile::n1::n1_query": [
+            {
+                "node_id": "n1",
+                "raw_node_id": "n1",
+                "query_name": "n1_query",
+                "table": "public.t",
+                "cost_estimates": [
+                    {
+                        "plan_id": "default",
+                        "description": None,
+                        "raw_cost": 1.5,
+                        "estimated_rows": None,
+                        "estimated_files": None,
+                        "total_size_bytes": None,
+                        "avg_file_size_bytes": None,
+                        "footprints": {"t": 1},
+                        "explain_json": None,
+                    }
+                ],
+            }
+        ]
     }

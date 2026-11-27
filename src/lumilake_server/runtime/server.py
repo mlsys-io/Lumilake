@@ -28,9 +28,8 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
-from lumilake_hook import WorkerProfile
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.common import InputRef, project_input_values
-from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataSpecModel,

@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .data_profile import DataProfileResultRow
 from .worker_profile import WorkerProfile
 
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -50,7 +51,9 @@ class OptimizerHandle(Protocol):
         graph: Any,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: Mapping[str, Sequence[Any]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule: ...
 
 
@@ -93,7 +96,9 @@ class RemoteOptimizer:
         graph: Any,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         serialize = getattr(graph, "serialize", None)
         if not callable(serialize):
@@ -107,7 +112,14 @@ class RemoteOptimizer:
                 worker: profile.model_dump(mode="json")
                 for worker, profile in worker_profiles.items()
             },
-            "data_profile_results": data_profile_results,
+            "data_profile_results": (
+                None
+                if data_profile_results is None
+                else {
+                    key: [row.model_dump(mode="json") for row in rows]
+                    for key, rows in data_profile_results.items()
+                }
+            ),
             "optimizer_type": self._optimizer_type,
         }
         headers: dict[str, str] = {"Content-Type": "application/json"}

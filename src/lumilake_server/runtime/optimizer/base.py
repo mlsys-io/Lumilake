@@ -7,8 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_hook import Schedule, WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, Schedule, WorkerProfile
 from lumilake_server.data_specs import remap_model, remap_node_dict
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,

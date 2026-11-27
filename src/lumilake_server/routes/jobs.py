@@ -63,8 +63,7 @@ from pydantic import (
 
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
-from lumilake_hook import ResourceAction, ResourceKind, UsageRow
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, ResourceAction, ResourceKind, UsageRow
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     STOP,

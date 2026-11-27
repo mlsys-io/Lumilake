@@ -19,7 +19,7 @@ from support.runtime_server import (
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow
 from lumilake_server.data_specs import Column, DataFrame, ListData
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection

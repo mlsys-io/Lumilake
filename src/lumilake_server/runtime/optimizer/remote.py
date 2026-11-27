@@ -12,8 +12,7 @@ from typing import Any
 import httpx
 
 from lumilake import envs
-from lumilake_hook import WorkerProfile, validate_remote_url
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, WorkerProfile, validate_remote_url
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.optimizer.schemas import ScheduleRequest, ScheduleResponse

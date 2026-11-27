@@ -1,7 +1,6 @@
 from collections.abc import Mapping, Sequence
 
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph

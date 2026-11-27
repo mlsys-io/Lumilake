@@ -5,8 +5,7 @@ from typing import Any
 
 import pytest
 
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import DataProfileResultRow
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.runtime.optimizer import (
     OPTIMIZER_PROVIDERS,
     OPTIMIZER_TYPES,
