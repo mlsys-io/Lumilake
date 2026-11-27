@@ -2,6 +2,11 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Self
 
 from lumilake_server.common import GenerationConfig
+from lumilake_server.data_specs import (
+    ColumnTable,
+    NodeColumn,
+    build_column_table,
+)
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
 from lumilake_server.ops.seed_spec import ColumnSeed
@@ -48,9 +53,9 @@ class RowwiseSeed:
 def _refuse_fields_beside_rowwise_messages(
     op_kind: str,
     producer: Op,
-    aggregate_table: list[dict[str, Any]] | None,
+    aggregate_table: ColumnTable | None,
     rowwise_template: str | None,
-    rowwise_columns: list[dict[str, Any]] | None,
+    rowwise_columns: ColumnTable | None,
     system_messages: list[str] | None,
     condition: dict[str, str] | None,
     return_history: bool,
@@ -119,9 +124,9 @@ class LLMChatOp(LLMOp):
     config: GenerationConfig
     return_history: bool
     structural_outputs: dict[str, Any] | list[dict[str, Any]] | None
-    aggregate_table: list[dict[str, Any]] | None
+    aggregate_table: ColumnTable | None
     rowwise_template: str | None
-    rowwise_columns: list[dict[str, Any]] | None
+    rowwise_columns: ColumnTable | None
     rowwise_messages: RowwiseMessages | None
     rowwise_seed: RowwiseSeed | None
     system_messages: list[str] | None
@@ -137,9 +142,9 @@ class LLMChatOp(LLMOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         structural_outputs: dict[str, Any] | list[dict[str, Any]] | None = None,
-        aggregate_table: list[dict[str, Any]] | None = None,
+        aggregate_table: ColumnTable | None = None,
         rowwise_template: str | None = None,
-        rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTable | None = None,
         rowwise_messages: RowwiseMessages | None = None,
         rowwise_messages_op: Op | None = None,
         system_messages: list[str] | None = None,
@@ -153,8 +158,7 @@ class LLMChatOp(LLMOp):
         if rowwise_messages is not None:
             if rowwise_messages_op is None:
                 raise ValueError(
-                    f"{type(self).__name__} rowwise_messages requires the"
-                    " producing op"
+                    f"{type(self).__name__} rowwise_messages requires the producing op"
                 )
             _refuse_fields_beside_rowwise_messages(
                 type(self).__name__,
@@ -226,11 +230,15 @@ class LLMChatOp(LLMOp):
         if self.structural_outputs is not None:
             payload["structural_outputs"] = self.structural_outputs
         if self.aggregate_table is not None:
-            payload["aggregate_table"] = self.aggregate_table
+            payload["aggregate_table"] = [
+                column.model_dump(exclude_none=True) for column in self.aggregate_table
+            ]
         if self.rowwise_template is not None:
             payload["rowwise_template"] = self.rowwise_template
         if self.rowwise_columns is not None:
-            payload["rowwise_columns"] = self.rowwise_columns
+            payload["rowwise_columns"] = [
+                column.model_dump(exclude_none=True) for column in self.rowwise_columns
+            ]
         if self.rowwise_messages is not None:
             payload["rowwise_messages"] = self.rowwise_messages.to_dict(
                 self.inputs[1].id
@@ -250,9 +258,13 @@ class LLMChatOp(LLMOp):
         return_history = data["return_history"]
         cacheable = data["cacheable"]
         structural_outputs = data.get("structural_outputs")
-        aggregate_table = data.get("aggregate_table")
+        aggregate_table = build_column_table(
+            data.get("aggregate_table"), "aggregate_table"
+        )
         rowwise_template = data.get("rowwise_template")
-        rowwise_columns = data.get("rowwise_columns")
+        rowwise_columns = build_column_table(
+            data.get("rowwise_columns"), "rowwise_columns"
+        )
         column_data = data.get("rowwise_messages")
         rowwise_messages: RowwiseMessages | None = None
         rowwise_messages_op: Op | None = None
@@ -275,7 +287,7 @@ class LLMChatOp(LLMOp):
                     f"LLMChatOp rowwise_seed references '{seed.node}', which is"
                     " not built before it; list it in the op's inputs"
                 )
-        return cls(
+        op = cls(
             message,
             config,
             return_history,
@@ -291,6 +303,23 @@ class LLMChatOp(LLMOp):
             seed,
             seed_op,
         )
+        op._add_column_producers(other_ops)
+        return op
+
+    def _add_column_producers(self, other_ops: dict[str, Op]) -> None:
+        """Add each node column's producer op to the chat's inputs."""
+        tables = [
+            table
+            for table in (self.aggregate_table, self.rowwise_columns)
+            if table is not None
+        ]
+        for table in tables:
+            for column in table:
+                if not isinstance(column, NodeColumn):
+                    continue
+                producer = other_ops.get(column.node)
+                if producer is not None and producer not in self.inputs:
+                    self.inputs.append(producer)
 
 
 def check_rowwise_seed(
@@ -415,7 +444,7 @@ class LLMVisionOp(LLMChatOp):
         config: GenerationConfig | None = None,
         return_history: bool = False,
         rowwise_template: str | None = None,
-        rowwise_columns: list[dict[str, Any]] | None = None,
+        rowwise_columns: ColumnTable | None = None,
         system_messages: list[str] | None = None,
         cacheable: bool = False,
     ) -> None:
@@ -451,10 +480,12 @@ class LLMVisionOp(LLMChatOp):
         image_source = data.get("image_source", "")
         image_path = data.get("image_path", "images")
         rowwise_template = data.get("rowwise_template")
-        rowwise_columns = data.get("rowwise_columns")
+        rowwise_columns = build_column_table(
+            data.get("rowwise_columns"), "rowwise_columns"
+        )
         system_messages = data.get("system_messages")
         image_source_op = other_ops.get(image_source)
-        return cls(
+        op = cls(
             message,
             image_source=image_source,
             image_path=image_path,
@@ -466,6 +497,8 @@ class LLMVisionOp(LLMChatOp):
             system_messages=system_messages,
             cacheable=cacheable,
         )
+        op._add_column_producers(other_ops)
+        return op
 
 
 def llm_vision(
@@ -476,7 +509,7 @@ def llm_vision(
     config: GenerationConfig | None = None,
     return_history: bool = False,
     rowwise_template: str | None = None,
-    rowwise_columns: list[dict[str, Any]] | None = None,
+    rowwise_columns: ColumnTable | None = None,
     system_messages: list[str] | None = None,
     cacheable: bool = False,
 ) -> LLMVisionOp:

@@ -10,14 +10,14 @@ import logging
 import queue
 import sys
 import types
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from typing import Any
 
 import lumid_hooks
 import pytest
 
 from lumilake import envs
-from lumilake_hook import BaseBindings
+from lumilake_hook import BaseBindings, WorkerProfile
 from lumilake_server.hooks import IDENTITY_PROVIDERS
 from lumilake_server.runtime.optimizer import OPTIMIZER_PROVIDERS, OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
@@ -38,7 +38,7 @@ class _FakeOptimizer(BaseOptimizer):
         self,
         graph: RuntimeGraph,
         worker_names: list[str],
-        worker_profiles: dict[str, dict[str, Any]],
+        worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> Schedule:
         assignment: dict[str, list[str]] = {w: [] for w in worker_names}
@@ -173,7 +173,7 @@ def test_optimizer_subprocess_entry_uses_registered_provider(
         optimizer_type="fake-remote-x",
         runtime_graph=graph,
         selected_workers=["w1"],
-        worker_profiles={"w1": {}},
+        worker_profiles={"w1": WorkerProfile()},
         data_profile_results={},
         result_queue=result_q,
     )

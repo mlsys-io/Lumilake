@@ -1,10 +1,14 @@
 import logging
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from support.runtime_graphs import build_dummy_runtime_graph
+from support.worker_profiles import worker_profile
 
+from lumilake import envs
+from lumilake_server.data_specs import PythonData
 from lumilake_server.runtime.capacity import FreeCapacity
 from lumilake_server.runtime.job_manager.base import Job, WorkflowItem
 from lumilake_server.runtime.job_manager.policies.fifo import FifoSchedulingPolicy
@@ -18,6 +22,7 @@ from lumilake_server.runtime.protocol import (
 from lumilake_server.runtime.request import WorkflowSliceMeta
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.runtime.server import LumilakeServer
 from tests.support.data_specs import runtime_op
 
 
@@ -54,6 +59,7 @@ def _build_job(
     optimizer_type: str | None = None,
     hardware_requirements: HardwareRequirements | None = None,
     requires_gpu: dict[str, bool] | None = None,
+    data_credential_digest: str | None = None,
 ) -> Job:
     runtime_graph = build_dummy_runtime_graph(graph_name)
     owner = request_id if user_id is None else user_id
@@ -73,6 +79,7 @@ def _build_job(
         ),
         dispatch_token=dispatch_token,
         api_credential_digest=api_credential_digest,
+        data_credential_digest=data_credential_digest,
         requires_gpu=requires_gpu or {},
     )
 
@@ -209,6 +216,38 @@ async def test_select_batch_partitions_same_principal_by_dispatch_token() -> Non
         "tok-old",
         "tok-new",
     }
+
+
+@pytest.mark.asyncio
+async def test_select_batch_partitions_same_principal_by_data_credential() -> None:
+    """Two lum.id/data jobs from the same principal+token with DIFFERENT data
+    credentials must land in separate batches: ``_resolve_data_credentials``
+    applies one credential per batch, so mixing them would let job B's data
+    steps read with job A's job-scoped token."""
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+    )
+    for request_id, digest in (("req-a", "data-a"), ("req-b", "data-b")):
+        await manager.enqueue(
+            _build_job(
+                request_id,
+                f"graph-{request_id}",
+                principal_id="p-1",
+                dispatch_token="tok-shared",
+                data_credential_digest=digest,
+            )
+        )
+
+    first = await manager.select_batch(2)
+    second = await manager.select_batch(2)
+    assert first is not None and second is not None
+    assert len({item.data_credential_digest for item in first.workflows}) == 1
+    assert len({item.data_credential_digest for item in second.workflows}) == 1
+    assert (
+        first.workflows[0].data_credential_digest
+        != second.workflows[0].data_credential_digest
+    )
 
 
 @pytest.mark.asyncio
@@ -1044,6 +1083,101 @@ async def test_permanently_unsatisfiable_reports_unplaceable_partition() -> None
     assert [item.request_id for item in doomed] == ["req-gpu"]
 
 
+def _as_python_job(job: Job, memory_mb: int | None = None) -> Job:
+    graphs = {
+        name: RuntimeGraph(
+            nodes={
+                node_id: replace(
+                    op, task_type="python", data_spec=PythonData(memory_mb=memory_mb)
+                )
+                for node_id, op in graph.nodes.items()
+            },
+            node_order=graph.node_order,
+            output_node_map=graph.output_node_map,
+        )
+        for name, graph in job.runtime_graphs.items()
+    }
+    return replace(job, runtime_graphs=graphs, data_profile_graphs=graphs)
+
+
+@pytest.mark.asyncio
+async def test_permanently_unsatisfiable_holds_python_steps_to_session_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step that needs more memory than every worker's session cap is
+    reported, while non-python work and a python step that fits are not."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        unsatisfiable_dwell_observations=1,
+        unsatisfiable_dwell_seconds=0,
+        worker_meets_hardware=LumilakeServer._worker_meets_hardware,
+    )
+    await manager.enqueue(_as_python_job(_build_job("req-python", "graph-python")))
+    await manager.enqueue(
+        _as_python_job(_build_job("req-small", "graph-small"), memory_mb=8192)
+    )
+    await manager.enqueue(_build_job("req-inference", "graph-inference"))
+    capacity = _free_capacity(
+        cpu=("cpu-0",),
+        profiles={
+            "cpu-0": worker_profile(
+                cpu_cores=32,
+                memory_total_bytes=29 * 1024**3,
+                max_session_memory_bytes=12 * 1024**3,
+            )
+        },
+    )
+
+    doomed = await manager.permanently_unsatisfiable(capacity)
+
+    assert [item.request_id for item in doomed] == ["req-python"]
+
+
+@pytest.mark.asyncio
+async def test_reserve_batch_skips_python_steps_no_worker_can_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A python step over every worker's session cap is not batched with the
+    placeable work of its partition, which still dispatches even when the queue
+    ahead of it holds more unplaceable steps than one quantum."""
+    monkeypatch.setattr(envs, "HARDWARE_MEMORY_REQUIREMENT", "16Gi")
+    manager = PriorityJobManager(
+        optimizer=MagicMock(spec=BaseOptimizer),
+        quantums=_priority_quantums(8),
+        cpu_worker_group_size=1,
+        gpu_worker_group_size=1,
+        worker_meets_hardware=LumilakeServer._worker_meets_hardware,
+    )
+    for index in range(9):
+        await manager.enqueue(
+            _as_python_job(_build_job(f"req-python-{index}", f"graph-{index}"))
+        )
+    await manager.enqueue(
+        _as_python_job(_build_job("req-small", "graph-small"), memory_mb=8192)
+    )
+    capacity = _free_capacity(
+        cpu=("cpu-0",),
+        profiles={
+            "cpu-0": worker_profile(
+                cpu_cores=32,
+                memory_total_bytes=29 * 1024**3,
+                max_session_memory_bytes=12 * 1024**3,
+            )
+        },
+    )
+
+    reservation = await manager.reserve_batch(2, capacity=capacity)
+
+    assert reservation is not None
+    assert [item.request_id for item in reservation.selection.workflows] == [
+        "req-small"
+    ]
+
+
 @pytest.mark.asyncio
 async def test_permanently_unsatisfiable_empty_when_total_capacity_satisfies() -> None:
     """When total cluster capacity can satisfy every partition, nothing is
@@ -1366,11 +1500,11 @@ async def test_capacity_aware_lever_changes_partition_key_shape() -> None:
     on_key = on_manager._partition_of(on_item)
     off_key = off_manager._partition_of(off_item)
 
-    # The on-mode key carries requires_gpu (6 elements); the off-mode key does
-    # not (5 elements), so the two keys differ in shape.
-    assert len(on_key) == 6
-    assert len(off_key) == 5
-    assert on_key[:5] == off_key[:5]
+    # The on-mode key carries requires_gpu (7 elements); the off-mode key does not (6
+    # elements), so the two keys differ in shape.
+    assert len(on_key) == 7
+    assert len(off_key) == 6
+    assert on_key[:6] == off_key[:6]
     assert on_key != off_key
 
 

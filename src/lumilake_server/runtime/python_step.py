@@ -748,6 +748,11 @@ def flowmesh_spec(
     stages = list(dict.fromkeys(entry.node for entry in plan if entry.kind == "stage"))
     if stages:
         spec["inputs"] = [{"stage": stage} for stage in stages]
+    hardware: dict[str, Any] = {}
     if data_spec.memory_mb is not None:
-        spec["resources"] = {"hardware": {"memory": f"{data_spec.memory_mb}Mi"}}
+        hardware["memory"] = f"{data_spec.memory_mb}Mi"
+    if data_spec.gpu is not None:
+        hardware["gpu"] = data_spec.gpu.model_dump(exclude_none=True)
+    if hardware:
+        spec["resources"] = {"hardware": hardware}
     return spec

@@ -3,6 +3,9 @@
 from collections.abc import Mapping
 from typing import Any
 
+from lumilake_server.data_specs import RetrievalParam
+from lumilake_server.utils.retrieval_spec import RetrievalSpec
+
 from .common import EmitContext
 
 
@@ -18,55 +21,33 @@ def emit_data_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
 def emit_data_retrieval_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     entry = ctx.entry
     data_spec = entry.fields.get("data_spec")
-    if not isinstance(data_spec, dict):
+    if data_spec is None:
         raise ValueError(f"DataRetrievalOp '{entry.id}' requires 'data_spec'")
-    op_dict["data_spec"] = _resolve_data_spec(
-        data_spec, entry.id, ctx.user_id_to_internal
+    # DataRetrievalOp._from_json runs the row-order rule.
+    spec = RetrievalSpec.load(
+        data_spec, f"DataRetrievalOp '{entry.id}' data_spec", check_order=False
     )
+    op_dict["data_spec"] = _resolve_param_nodes(spec, entry.id, ctx.user_id_to_internal)
 
 
-def _resolve_data_spec(
-    data_spec: dict[str, Any],
-    entry_id: str,
-    user_id_to_internal: Mapping[str, str],
-    *,
-    op_label: str = "DataRetrievalOp",
-    field_label: str = "data_spec",
+def _resolve_param_nodes(
+    spec: RetrievalSpec, entry_id: str, user_id_to_internal: Mapping[str, str]
 ) -> dict[str, Any]:
-    """Resolve ``params[*].node`` refs in a spec.
-
-    ``op_label`` and ``field_label`` are threaded through every error
-    message so the caller sees the op and field they actually authored.
-    """
-    resolved = dict(data_spec)
-    params = resolved.get("params")
-    if params is None:
-        return resolved
-    if not isinstance(params, list):
-        raise ValueError(f"{op_label} '{entry_id}' {field_label}.params must be a list")
-    new_params: list[dict[str, Any]] = []
-    for i, param in enumerate(params):
-        if not isinstance(param, dict):
+    """Point each param's user-facing node id at its internal op id."""
+    params: list[RetrievalParam] = []
+    for i, param in enumerate(spec.params):
+        if param.node is None:
+            params.append(param)
+            continue
+        if param.node not in user_id_to_internal:
             raise ValueError(
-                f"{op_label} '{entry_id}' {field_label}.params[{i}] must be a mapping"
+                f"DataRetrievalOp '{entry_id}' data_spec.params[{i}].node references "
+                f"unknown input/op id '{param.node}'"
             )
-        resolved_param = dict(param)
-        if "node" in resolved_param:
-            node_ref = resolved_param["node"]
-            if not isinstance(node_ref, str):
-                raise ValueError(
-                    f"{op_label} '{entry_id}' {field_label}.params[{i}].node "
-                    "must be a string"
-                )
-            if node_ref not in user_id_to_internal:
-                raise ValueError(
-                    f"{op_label} '{entry_id}' {field_label}.params[{i}].node "
-                    f"references unknown input/op id '{node_ref}'"
-                )
-            resolved_param["node"] = user_id_to_internal[node_ref]
-        new_params.append(resolved_param)
-    resolved["params"] = new_params
-    return resolved
+        params.append(
+            param.model_copy(update={"node": user_id_to_internal[param.node]})
+        )
+    return spec.model_copy(update={"params": params}).model_dump(exclude_none=True)
 
 
 def emit_message_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
