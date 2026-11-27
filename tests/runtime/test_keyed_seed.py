@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from lumilake_server.data_specs import ColumnPlanEntry
+from lumilake_server.data_specs import ColumnPlanEntry, PythonMode
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
@@ -253,7 +253,7 @@ def _run_fan_out(
         spec["fn_name"],
         spec["code"],
         [ColumnPlanEntry.model_validate(entry) for entry in spec["plan"]],
-        "expand",
+        PythonMode.EXPAND,
     ).replace(python_step.TASK_RUNTIME_MOUNT, str(mount))
     exec(code, namespace)
     return namespace["main"](inputs)["items"]

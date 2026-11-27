@@ -207,8 +207,9 @@ def test_join_refuses_a_format_op_as_an_attach_target() -> None:
 
 
 def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
+    """A repeated first-input key and a further-input row without its key fail."""
     node = _join_node(_merge("State, Route.diagnose"))
-    stray = {"case_id": "z", "text": "not in the first input"}
+    stray = {"text": "no key at all"}
     with pytest.raises(ValueError, match="duplicate key"):
         _run(
             tmp_path,
@@ -216,13 +217,39 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
             {0: [{"output": [_ROWS[1]] * 2}], 1: [{"output": []}]},
             name="duplicate",
         )
-    with pytest.raises(ValueError, match=r'key "z" is not in'):
+    with pytest.raises(ValueError, match="cannot be placed"):
         _run(
             tmp_path,
             node,
-            {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]},
+            {0: [{"output": [_ROWS[1]]}], 1: [{"output": [stray]}]},
             name="stray",
         )
+
+
+def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
+    stray = {"case_id": "z", "text": "not in the first input"}
+    staged = {
+        0: [{"output": [_ROWS[0], _ROWS[1]]}],
+        1: [{"output": [_ROWS[1], stray]}],
+    }
+
+    def run(how: str, name: str) -> list[dict[str, Any]]:
+        node = _join_node(_merge("State, Route.diagnose", f"    how: {how}\n"))
+        return [item["output"] for item in _run(tmp_path, node, staged, name)["items"]]
+
+    left = run("left", "left")
+    assert [row["case_id"] for row in left] == ["a", "b"]
+    assert left[0]["text"] == "hello"
+    assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
+    full = run("full", "full")
+    assert [row["case_id"] for row in full] == ["a", "b", "z"]
+    assert full[2] == stray
+
+
+def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
+    with pytest.raises(ValueError, match=r'key "a" is missing from'):
+        _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
 
 
 def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
