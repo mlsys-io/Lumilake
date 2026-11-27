@@ -422,10 +422,10 @@ def test_one_to_many_needs_a_row_key() -> None:
         _pairs(_CASES, _GIRLS, "cardinality: one_to_many")
 
 
-def test_many_to_many_reads_no_row_key() -> None:
-    """Each pair of a key's rows is one output row, so row_key has nothing to name."""
-    with pytest.raises(ValueError, match="many_to_many reads no row_key"):
-        _pairs(_CASES, _GIRLS, "cardinality: many_to_many, row_key: [unit, q]")
+def test_a_row_key_needs_one_to_many() -> None:
+    """A row_key reads several rows of a by key, which one_to_many declares."""
+    with pytest.raises(ValueError, match="row_key needs cardinality one_to_many"):
+        _pairs(_CASES, _GIRLS, "row_key: [unit, q]")
 
 
 def test_many_to_many_reads_no_attach() -> None:
@@ -512,7 +512,7 @@ def _broadcast(
     second: list[Any] | None = None,
     part: list[Any] | None = None,
     tags: list[Any] | None = None,
-    fields: str = "row_key: [unit, rid]",
+    fields: str = "cardinality: one_to_many, row_key: [unit, rid]",
 ) -> list[Any]:
     swaps = {
         "__ROWS__": _quoted(rows or _UNITS),
@@ -553,7 +553,7 @@ def test_a_broadcast_join_emits_a_stray_key_of_two_inputs_once(tmp_path: Path) -
         tmp_path,
         sizes=sizes,
         second=[{"unit": "u3", "n": 1}],
-        fields="row_key: [unit, rid], how: full",
+        fields="cardinality: one_to_many, row_key: [unit, rid], how: full",
     )
     assert len(rows) == 4
     assert rows[3] == {"unit": "u3", "size": 1, "n": 1}
@@ -561,7 +561,7 @@ def test_a_broadcast_join_emits_a_stray_key_of_two_inputs_once(tmp_path: Path) -
         tmp_path,
         sizes=sizes + [{"unit": "u4", "n": _MARK}],
         second=[{"unit": "u4", "n": 2}],
-        fields="row_key: [unit, rid], how: full",
+        fields="cardinality: one_to_many, row_key: [unit, rid], how: full",
     )
     assert len(marked) == 5
     assert marked[4] == _MARK
@@ -573,7 +573,7 @@ def test_a_broadcast_join_keeps_one_output_row_per_record(tmp_path: Path) -> Non
     with pytest.raises(ValueError, match="duplicate row_key"):
         _broadcast(tmp_path, rows=[_UNITS[0], _UNITS[0]])
     with pytest.raises(ValueError, match="row_key must name every by path"):
-        _broadcast(tmp_path, fields="row_key: rid")
+        _broadcast(tmp_path, fields="cardinality: one_to_many, row_key: rid")
 
 
 def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> None:
@@ -581,7 +581,7 @@ def test_a_broadcast_join_applies_on_missing_per_output_row(tmp_path: Path) -> N
     missing = {**_UNITS[2], "tag": "C"}
     sizes = [_SIZES[0]]
     assert _broadcast(tmp_path, sizes=sizes) == [_JOINED[0], _JOINED[1], missing]
-    fail = "row_key: [unit, rid], on_missing: fail_row"
+    fail = "cardinality: one_to_many, row_key: [unit, rid], on_missing: fail_row"
     assert _broadcast(tmp_path, sizes=sizes, fields=fail) == [
         _JOINED[0],
         _JOINED[1],
@@ -593,7 +593,7 @@ def test_a_broadcast_join_marks_the_rows_an_attach_source_lacks(
     tmp_path: Path,
 ) -> None:
     """on_missing: fail_row marks the rows an attach source has no key for."""
-    fields = "row_key: [unit, rid], on_missing: fail_row"
+    fields = "cardinality: one_to_many, row_key: [unit, rid], on_missing: fail_row"
     part = [{"unit": "u1", "part": "P"}]
     rows = _broadcast(tmp_path, tags=["P"], part=part, fields=fields)
     assert rows[:2] == [
@@ -605,7 +605,7 @@ def test_a_broadcast_join_marks_the_rows_an_attach_source_lacks(
 
 def test_a_broadcast_join_keeps_the_keys_its_how_names(tmp_path: Path) -> None:
     """A row_key join reads how too: inner drops a missing key, full appends it."""
-    fields = "row_key: [unit, rid], how: "
+    fields = "cardinality: one_to_many, row_key: [unit, rid], how: "
     rows = [_UNITS[0], _UNITS[2], _UNITS[1]]
     inner = _broadcast(tmp_path, rows=rows, sizes=_SIZES[:1], fields=fields + "inner")
     assert inner == [
@@ -621,7 +621,7 @@ def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
     tmp_path: Path,
 ) -> None:
     """With require_match, a key one input carries and another lacks fails the job."""
-    fields = "row_key: [unit, rid], require_match: true"
+    fields = "cardinality: one_to_many, row_key: [unit, rid], require_match: true"
     with pytest.raises(ValueError, match=r'key "u3" is not in'):
         _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
 

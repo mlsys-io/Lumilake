@@ -83,18 +83,18 @@ class JoinSpec(BaseModel):
     @model_validator(mode="after")
     def _every_row_of_a_key_is_declared(self) -> Self:
         """A join reads one row per key unless its cardinality names the repeats."""
+        if (
+            self.row_key is not None
+            and self.cardinality is not JoinCardinality.ONE_TO_MANY
+        ):
+            raise ValueError(
+                "row_key needs cardinality one_to_many, the declaration that a first"
+                " input holds several rows of one by key"
+            )
         if self.cardinality is JoinCardinality.ONE_TO_MANY and self.row_key is None:
             raise ValueError(
                 "cardinality one_to_many also needs row_key, the path that tells a"
                 " first input's two rows of one by key apart"
-            )
-        if (
-            self.cardinality is JoinCardinality.MANY_TO_MANY
-            and self.row_key is not None
-        ):
-            raise ValueError(
-                "cardinality many_to_many reads no row_key, since each pair of a key's"
-                " rows is already one output row"
             )
         if self.cardinality is JoinCardinality.MANY_TO_MANY and self.attach:
             raise ValueError(
