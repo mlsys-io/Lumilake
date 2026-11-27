@@ -126,7 +126,10 @@ def _record_payload(record: JobRecord) -> dict[str, Any]:
         "child_job_ids": record.child_job_ids.copy(),
         "lumid_job_id": record.lumid_job_id,
         "inputs": _normalize_payload(record.inputs),
-        "output_location": _normalize_payload(record.output_location),
+        "output_location": {
+            key: location.model_dump()
+            for key, location in record.output_location.items()
+        },
         "progress": record.progress.model_dump(by_alias=True),
         "result": record.result.model_dump() if record.result is not None else None,
     }
