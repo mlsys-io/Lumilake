@@ -5,7 +5,6 @@ import struct
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from httpx2 import TransportError
 from huggingface_hub import get_safetensors_metadata, try_to_load_from_cache
@@ -13,12 +12,18 @@ from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.utils import NotASafetensorsRepoError, SafetensorsParsingError
 
 from lumilake import envs
-from lumilake_hook import WorkerProfile
-from lumilake_server.data_profile_models import (
+from lumilake_hook import (
     DataProfileCostEstimate,
     DataProfileResultRow,
+    WorkerProfile,
 )
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, RetrievalData
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    DataSpecModel,
+    ListData,
+    PythonData,
+    RetrievalData,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
@@ -157,7 +162,7 @@ class HaloOptimizer(BaseOptimizer):
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: (
-            Mapping[str, Sequence[Mapping[str, Any] | DataProfileResultRow]] | None
+            Mapping[str, Sequence[DataProfileResultRow]] | None
         ) = None,
     ) -> Schedule:
         workers_input = [name.strip() for name in worker_names if name and name.strip()]
@@ -197,37 +202,9 @@ class HaloOptimizer(BaseOptimizer):
             halo_edges: list[Edge] = []
             for node_id in graph.node_order:
                 op = graph.nodes[node_id]
-                engine = self._map_engine(op.backend, op.task_type)
                 deps = tuple(op.dependencies)
                 dependencies[node_id] = deps
-
-                db_queries: tuple[DBQuery, ...] = ()
-                if engine == "db":
-                    sql_template = ""
-                    if isinstance(op.data_spec, RetrievalData):
-                        sql_template = op.data_spec.template or ""
-                    db_queries = (
-                        DBQuery(
-                            name=f"{node_id}_query",
-                            sql=sql_template,
-                            parameters={},
-                        ),
-                    )
-
-                raw = self._build_node_raw(op, deps)
-
-                halo_nodes[node_id] = Node(
-                    id=node_id,
-                    type=op.task_type,
-                    engine=engine,
-                    model=op.model,
-                    inputs=deps,
-                    outputs=tuple(),
-                    db_queries=db_queries,
-                    gpu_memory_utilization=op.gpu_memory_utilization,
-                    gpu_request=op.data_spec.gpu_request,
-                    raw=raw,
-                )
+                halo_nodes[node_id] = self._build_node(node_id, op)
                 for dep in deps:
                     halo_edges.append(Edge(source=dep, target=node_id, mapping={}))
 
@@ -382,6 +359,38 @@ class HaloOptimizer(BaseOptimizer):
             return schedule
         except Exception as exc:
             raise RuntimeError("Halo optimizer failed to generate schedule") from exc
+
+    def _build_node(self, node_id: str, op: RuntimeOp) -> Node:
+        """The schedule view of one runtime op, shared with an optimizer that
+        subclasses this one to place nodes differently."""
+        engine = self._map_engine(op.backend, op.task_type)
+        deps = tuple(op.dependencies)
+        db_queries: tuple[DBQuery, ...] = ()
+        if engine == "db":
+            sql_template = ""
+            if isinstance(op.data_spec, RetrievalData):
+                sql_template = op.data_spec.template or ""
+            db_queries = (
+                DBQuery(
+                    name=f"{node_id}_query",
+                    sql=sql_template,
+                    parameters={},
+                ),
+            )
+        return Node(
+            id=node_id,
+            type=op.task_type,
+            engine=engine,
+            model=op.model,
+            inputs=deps,
+            outputs=tuple(),
+            db_queries=db_queries,
+            gpu_memory_utilization=op.gpu_memory_utilization,
+            gpu_request=op.data_spec.gpu_request,
+            data_spec=op.data_spec,
+            inference_spec=op.inference_spec,
+            parent=deps[0] if deps else None,
+        )
 
     def _build_workers(
         self,
@@ -607,46 +616,19 @@ class HaloOptimizer(BaseOptimizer):
             return None
         return normalize_table_name(match.group(1)) or None
 
+    @staticmethod
     def _parse_data_profile_results(
-        self,
-        data_profile_results: (
-            Mapping[str, Sequence[Mapping[str, Any] | DataProfileResultRow]] | None
-        ),
+        data_profile_results: Mapping[str, Sequence[DataProfileResultRow]] | None,
     ) -> dict[str, tuple[DataProfileResultRow, ...]]:
         if not data_profile_results:
             return {}
-        parsed: dict[str, tuple[DataProfileResultRow, ...]] = {}
-        for key, rows in data_profile_results.items():
-            parsed_rows: list[DataProfileResultRow] = []
-            for idx, row in enumerate(rows):
-                if isinstance(row, DataProfileResultRow):
-                    parsed_rows.append(row)
-                    continue
-                try:
-                    parsed_rows.append(DataProfileResultRow.model_validate(row))
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"Invalid data profile result row for key '{key}' at index"
-                        f" {idx}"
-                    ) from exc
-            if parsed_rows:
-                parsed[key] = tuple(parsed_rows)
-        return parsed
+        return {key: tuple(rows) for key, rows in data_profile_results.items() if rows}
 
     def _is_data_profile_candidate(self, op: RuntimeOp) -> bool:
         if self._map_engine(op.backend, op.task_type) != "db":
             return False
         spec = op.data_spec
         return isinstance(spec, RetrievalData) and spec.mode in {"sql", "s3"}
-
-    @staticmethod
-    def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:
-        raw = op.data_spec.model_dump(exclude_none=True)
-        if isinstance(op.inference_spec, dict) and op.inference_spec:
-            raw["_inference_spec"] = dict(op.inference_spec)
-        if deps and "parent" not in raw:
-            raw["parent"] = deps[0]
-        return raw
 
     @staticmethod
     def _safe_positive_float(value: object, default: float) -> float:
@@ -880,9 +862,7 @@ class HaloOptimizer(BaseOptimizer):
     def _resolve_input_query_count(self, graph: RuntimeGraph) -> int:
         inferred_lengths: list[int] = []
         for op in graph.nodes.values():
-            inferred_lengths.extend(
-                self._collect_input_lengths(op.data_spec.model_dump(exclude_none=True))
-            )
+            inferred_lengths.extend(self._collect_input_lengths(op.data_spec))
         inferred = max(inferred_lengths) if inferred_lengths else 0
         resolved = inferred if inferred > 0 else self._input_query_count_default
         self.logger.debug(
@@ -893,20 +873,29 @@ class HaloOptimizer(BaseOptimizer):
         )
         return max(1, int(resolved))
 
-    def _collect_input_lengths(self, value: object) -> list[int]:
+    def _collect_input_lengths(self, spec: DataSpecModel) -> list[int]:
+        """The literal row counts a data spec carries anywhere inside it.
+
+        Only a typed ``ListData`` counts: a list written under a key no model
+        declares is data, not an input read, so it adds no rows."""
+        if isinstance(spec, ListData):
+            if isinstance(spec.items, list):
+                return [len(spec.items)]
+            return []
         lengths: list[int] = []
-        if isinstance(value, dict):
-            value_type = value.get("type")
-            items = value.get("items")
-            if value_type == "list" and isinstance(items, list):
-                lengths.append(len(items))
-            for item in value.values():
-                lengths.extend(self._collect_input_lengths(item))
-            return lengths
-        if isinstance(value, list):
-            for item in value:
-                lengths.extend(self._collect_input_lengths(item))
+        for _, value in spec:
+            lengths.extend(self._collect_nested_input_lengths(value))
         return lengths
+
+    def _collect_nested_input_lengths(self, value: object) -> list[int]:
+        if isinstance(value, DataSpecModel):
+            return self._collect_input_lengths(value)
+        if isinstance(value, list | tuple):
+            lengths: list[int] = []
+            for item in value:
+                lengths.extend(self._collect_nested_input_lengths(item))
+            return lengths
+        return []
 
     def _assert_no_http_nodes(self, graph: RuntimeGraph) -> None:
         http_node_ids: list[str] = []
@@ -1103,7 +1092,7 @@ class HaloOptimizer(BaseOptimizer):
                 coeffs=coeffs,
             )
         if node.engine == "http":
-            return self._http_exec_cost(node)
+            return 0.0
         if node.engine == "python":
             return self._python_exec_cost(node)
         return self._db_input_sec * self._input_query_count
@@ -1115,60 +1104,30 @@ class HaloOptimizer(BaseOptimizer):
         ``expected_runtime_s`` hint, it is seconds per input row of the task,
         so the estimate is that times the number of input rows; the hint is
         used only for HALO's estimate."""
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        expected = raw.get("expected_runtime_s")
-        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-            return float(expected) * self._python_row_count(raw)
-        timeout = raw.get("timeout_s")
-        if not isinstance(timeout, (int, float)):
-            timeout = python_step.DEFAULT_TIMEOUT_SECONDS
-        return 0.05 * float(timeout)
+        spec = node.data_spec
+        if not isinstance(spec, PythonData):
+            return 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS
+        if spec.expected_runtime_s is not None:
+            return spec.expected_runtime_s * self._python_row_count(spec)
+        return 0.05 * float(spec.timeout_s)
 
-    def _python_row_count(self, raw: dict[str, Any]) -> int:
+    def _python_row_count(self, spec: PythonData) -> int:
         """The number of input rows a python step processes: the ``row_count``
         its build recorded (the common row count of a row or aligned step, the
         longest input of a list step) or, when an input's count was unknown at
         build, the largest literal count with each upstream stage taken as the
         graph-wide input count."""
-        row_count = raw.get("row_count")
-        if isinstance(row_count, int) and not isinstance(row_count, bool):
-            return row_count
-        plan = raw.get("plan")
-        if not isinstance(plan, list):
-            return max(1, int(self._input_query_count))
+        if spec.row_count is not None:
+            return spec.row_count
         counts = [
             (
-                len(entry["values"])
-                if entry["kind"] == "literal"
+                len(entry.values or ())
+                if entry.kind == "literal"
                 else int(self._input_query_count)
             )
-            for entry in plan
+            for entry in spec.plan
         ]
         return max([1, *counts])
-
-    def _http_exec_cost(self, node: Node) -> float:
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        for key, scale in (
-            ("sleep_s", 1.0),
-            ("sleep_ms", 0.001),
-            ("latency_s", 1.0),
-            ("latency_ms", 0.001),
-            ("timeout_s", 1.0),
-            ("timeout_ms", 0.001),
-        ):
-            if key not in raw:
-                continue
-            value = raw.get(key)
-            if isinstance(value, str):
-                value = value.strip()
-            if not isinstance(value, (str, int, float)):
-                continue
-            try:
-                seconds = float(value) * scale
-            except (TypeError, ValueError):
-                continue
-            return max(0.0, seconds)
-        return 0.0
 
     def _cache_multiplier(
         self,

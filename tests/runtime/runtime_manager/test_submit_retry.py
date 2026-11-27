@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from flowmesh.exceptions import APIError
+from flowmesh.models.tasks import TaskInfo
 from flowmesh.models.workflows import (
     Workflow,
     WorkflowSubmitResponse,
@@ -15,6 +16,7 @@ from flowmesh.models.workflows import (
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from tests.runtime.runtime_manager.conftest import task_info
 
 
 def _api_error(status_code: int) -> APIError:
@@ -49,20 +51,12 @@ def _workflow(workflow_id: str, task_ids: list[str], submitted_at: str) -> Workf
     )
 
 
-class _TaskInfo:
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def model_dump(self) -> dict[str, Any]:
-        return self._data
-
-
 class _FakeTasks:
-    def __init__(self, descriptions: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, descriptions: dict[str, TaskInfo]) -> None:
         self._descriptions = descriptions
 
-    async def retrieve(self, task_id: str) -> Any:
-        return _TaskInfo(self._descriptions[task_id])
+    async def retrieve(self, task_id: str) -> TaskInfo:
+        return self._descriptions[task_id]
 
 
 class _FakeWorkflows:
@@ -88,14 +82,6 @@ class _FakeFm:
     def __init__(self, workflows: _FakeWorkflows, tasks: _FakeTasks) -> None:
         self.workflows = workflows
         self.tasks = tasks
-
-
-def _description(submit_id: str) -> dict[str, Any]:
-    return {
-        "task": {
-            "metadata": {"annotations": {"custom": {"lumilake_submit_id": submit_id}}}
-        }
-    }
 
 
 def _install_fake(
@@ -162,9 +148,9 @@ async def test_submit_502_adopts_earlier_workflow(
     )
     tasks = _FakeTasks(
         {
-            "t-old": _description("sid-123"),
-            "t-other": {"task": {"metadata": {"annotations": {"custom": None}}}},
-            "t-mine": _description("sid-123"),
+            "t-old": task_info("sid-123"),
+            "t-other": task_info(None, task_id="t-other"),
+            "t-mine": task_info("sid-123"),
         }
     )
     _install_fake(monkeypatch, workflows, tasks)

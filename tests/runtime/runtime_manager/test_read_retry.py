@@ -7,6 +7,7 @@ from flowmesh.exceptions import APIError
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from tests.runtime.runtime_manager.conftest import task_info
 
 
 def _api_error(status_code: int) -> APIError:
@@ -31,14 +32,6 @@ class _FakeTasks:
         return response
 
 
-class _TaskInfo:
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def model_dump(self) -> dict[str, Any]:
-        return self._data
-
-
 class _FakeFm:
     def __init__(self, tasks: _FakeTasks) -> None:
         self.tasks = tasks
@@ -51,9 +44,7 @@ async def test_fetch_task_description_retries_transient_503(
 ) -> None:
     """A 503 twice, then success: the read is retried and the result comes
     back, with the recorded delays [1.0, 2.0]."""
-    tasks = _FakeTasks(
-        [_api_error(503), _api_error(503), _TaskInfo({"graph_node_name": "node-a"})]
-    )
+    tasks = _FakeTasks([_api_error(503), _api_error(503), task_info("submit-1")])
     monkeypatch.setattr(
         FlowmeshRuntimeManager, "fm", property(lambda self: _FakeFm(tasks))
     )
@@ -66,7 +57,7 @@ async def test_fetch_task_description_retries_transient_503(
     monkeypatch.setattr(fm_mod.asyncio, "sleep", _noop_sleep)
 
     result = await flowmesh_manager.fetch_task_description("t1")
-    assert result == {"graph_node_name": "node-a"}
+    assert result == task_info("submit-1")
     assert tasks.calls == 3
     assert delays == [1.0, 2.0]
 
