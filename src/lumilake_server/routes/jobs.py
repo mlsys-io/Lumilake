@@ -2273,10 +2273,8 @@ async def _run_dynamic_job(
                     graph=round_build.graph,
                     symbols=symbols,
                     forwarded_inputs=round_build.forwarded_inputs,
-                    output_location=IO_LOCATION_ADAPTER.validate_python(
-                        round_output_location(
-                            output_location.model_dump(), run_namespace, round_index
-                        )
+                    output_location=round_output_location(
+                        output_location, run_namespace, round_index
                     ),
                     priority=priority,
                     principal=principal,
@@ -2593,10 +2591,8 @@ async def _run_template_job(
                     graph=round_build.graph,
                     symbols=symbols,
                     forwarded_inputs=round_build.forwarded_inputs,
-                    output_location=IO_LOCATION_ADAPTER.validate_python(
-                        round_output_location(
-                            output_location.model_dump(), run_namespace, round_index
-                        )
+                    output_location=round_output_location(
+                        output_location, run_namespace, round_index
                     ),
                     priority=priority,
                     principal=principal,
