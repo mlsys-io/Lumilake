@@ -110,17 +110,3 @@ def sql_has_top_level_order_by(query: str) -> bool:
     return any(
         token.ttype is Keyword and token.normalized == _ORDER_BY for token in tokens
     )
-
-
-def multi_row_item_indexes(items: Any) -> list[int]:
-    """The indexes of the retrieval items that returned more than one row."""
-    if not isinstance(items, list):
-        return []
-    multi: list[int] = []
-    for position, item in enumerate(items):
-        if not isinstance(item, dict):
-            continue
-        rows = item.get("rows", 0)
-        if isinstance(rows, int) and rows > 1:
-            multi.append(item.get("index", position))
-    return multi

@@ -100,10 +100,8 @@ class _RuntimeGraphBuilderBase:
         self,
         logger: Logger | None = None,
         log_level: LogLevel | None = None,
-        schema_cache: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.logger = init_child_logger("RuntimeGraphBuilder", logger, log_level)
-        self._schema_cache = schema_cache if schema_cache is not None else {}
         # Per-row VLMs over a retrieval, flattened to one embedding + one
         # inference + a regroup step; readers bind to the regrouped output.
         self._flattened_vlm_ids: set[str] = set()

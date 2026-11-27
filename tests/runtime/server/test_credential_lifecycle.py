@@ -238,7 +238,6 @@ async def test_process_batch_fills_member_request_ids_from_originating_jobs(
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]],
     ) -> dict[str, Any]:
         seen["member_request_ids"] = set(request_info.member_request_ids)
         seen["request_id"] = request_info.request_id

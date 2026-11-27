@@ -25,7 +25,23 @@ import httpx
 import yaml
 from flowmesh.exceptions import APIError, CursorExpiredError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
-from flowmesh.models.tasks import TaskStatusPage, TaskStatusRow
+from flowmesh.models.result import (
+    AgentResult,
+    AnyExecutorResult,
+    APIResult,
+    ClassificationResult,
+    DataRetrievalResult,
+    EchoResult,
+    EmbeddingResult,
+    InferenceResult,
+    OmniText2AudioResult,
+    OmniText2GeneralResult,
+    OmniText2ImageResult,
+    OmniText2SpeechResult,
+    OmniText2VideoResult,
+    PythonResult,
+)
+from flowmesh.models.tasks import TaskInfo, TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
 from pydantic import BaseModel
 
@@ -59,7 +75,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.runtime.worker_capability import worker_profile
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
+from lumilake_server.utils.retrieval_spec import ROWS_ONE
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
@@ -221,6 +237,55 @@ def _walk_output_path(
     return value
 
 
+_ITEM_RESULTS: Final = (
+    InferenceResult,
+    ClassificationResult,
+    DataRetrievalResult,
+    AgentResult,
+    APIResult,
+    EchoResult,
+    OmniText2ImageResult,
+    OmniText2SpeechResult,
+    OmniText2AudioResult,
+    OmniText2GeneralResult,
+    OmniText2VideoResult,
+)
+
+
+def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
+    """A result's ``items`` as JSON, or ``None`` when its type has no items.
+
+    Every item-bearing result the SDK builds carries a list, so an empty one is
+    an empty output.
+    """
+    if not isinstance(result, _ITEM_RESULTS):
+        return None
+    return [item.model_dump(mode="json") for item in result.items]
+
+
+class _SubmitAnnotation(BaseModel):
+    """Lumilake's submit stamp inside a task's ``annotations.custom`` map."""
+
+    lumilake_submit_id: str | None = None
+
+
+def _submit_id_of(task_info: TaskInfo) -> str | None:
+    """The Lumilake submit id an earlier attempt stamped on a task, if any.
+
+    ``TaskInfo.task`` is the SDK's untyped task document, so its annotation map
+    is read with defaults and validated into the stamp's own model."""
+    metadata = task_info.task.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    annotations = metadata.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return None
+    custom = annotations.get("custom")
+    if not isinstance(custom, Mapping):
+        return None
+    return _SubmitAnnotation.model_validate(custom).lumilake_submit_id
+
+
 def _split_walk_part(part: str) -> tuple[str, int | None]:
     """Split a walk part like ``choices[0]`` into its attribute and index."""
     if "[" not in part:
@@ -326,12 +391,7 @@ class FlowmeshRuntimeManager:
         log_level: LogLevel | None = None,
     ) -> None:
         self.logger = init_child_logger("FlowmeshSubmitter", logger, log_level)
-        self._schema_cache: dict[str, list[dict[str, Any]]] = (
-            {}
-        )  # Cache schema info by table name
-        self._runtime_builder = RuntimeGraphBuilder(
-            logger=self.logger, schema_cache=self._schema_cache
-        )
+        self._runtime_builder = RuntimeGraphBuilder(logger=self.logger)
 
         self._task_status_lock = asyncio.Lock()  # Used when modifying task status maps
         self._data_profile_task_status: dict[tuple[str, str], dict[str, str]] = (
@@ -519,14 +579,13 @@ class FlowmeshRuntimeManager:
     async def fetch_task_description(
         self,
         task_id: str,
-    ) -> dict[str, Any]:
+    ) -> TaskInfo:
         try:
-            task_info = await _retry_transient_read(
+            return await _retry_transient_read(
                 lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        return task_info.model_dump()
 
     async def fetch_workflow_task_statuses(
         self,
@@ -563,8 +622,7 @@ class FlowmeshRuntimeManager:
             if not wf.task_ids or datetime.fromisoformat(wf.submitted_at) < cutoff:
                 continue
             desc = await self.fetch_task_description(wf.task_ids[0])
-            custom = desc["task"]["metadata"]["annotations"].get("custom") or {}
-            if custom.get("lumilake_submit_id") == submit_id:
+            if _submit_id_of(desc) == submit_id:
                 return wf
         return None
 
@@ -1233,40 +1291,29 @@ class FlowmeshRuntimeManager:
 
     def _resolve_output_items(
         self,
-        results_json: dict[str, Any],
+        result: AnyExecutorResult,
         output_op_id: str,
-        task_type: str | None = None,
-        prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Normalize a retrieved result into an item list: inference returns
-        ``items``, embedding a flat one-item batch, and API wraps the assistant
-        ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
-        items = results_json.get("items")
-        if isinstance(items, list):
+        """Normalize a result into an item list: a result carrying ``items``
+        keeps them, a python step takes its value's ``items``, and a flat
+        embedding result is a one-item batch."""
+        items = _result_items(result)
+        if items is not None:
             return items
-        if task_type == "python":
+        if isinstance(result, PythonResult):
             # A python step returns {"items": [...]} as its value
             # (runtime/python_step.py); PythonResult carries it under "value".
-            value = results_json.get("value")
+            value = result.value
             value_items = value.get("items") if isinstance(value, dict) else None
             if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
-        if task_type == "api":
-            text = results_json.get("text")
-            if isinstance(text, str):
-                item: dict[str, Any] = {"output": text}
-                if prompt is not None:
-                    item["metadata"] = {"prompt": prompt}
-                return [item]
-            raise RuntimeError(
-                f"output {output_op_id} produced no API response text; the "
-                "model returned no content (a reasoning model may have spent "
-                "its whole token budget on reasoning — raise max_tokens)"
-            )
-        embedding_file = results_json.get("embedding_file")
-        if isinstance(embedding_file, dict) and embedding_file.get("path"):
-            return [results_json]
+        if (
+            isinstance(result, EmbeddingResult)
+            and result.embedding_file is not None
+            and result.embedding_file.path
+        ):
+            return [result.model_dump(mode="json")]
         raise RuntimeError(f"output {output_op_id} produced no items")
 
     def _embedding_row_count(
@@ -1423,18 +1470,15 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> dict[str, Any]:
-        """Archive a task's redacted FlowMesh response and return a JSON object."""
+    ) -> AnyExecutorResult:
+        """Archive a task's redacted FlowMesh response and return the result."""
         try:
-            response_data = await _retry_transient_read(
+            result = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        if isinstance(response_data, BaseModel):
-            response_data = response_data.model_dump(mode="json")
-        if not isinstance(response_data, dict):
-            response_data = {}
+        response_data = result.model_dump(mode="json")
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1446,13 +1490,13 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return response_data
+        return result
 
     def _assert_rows_one(
         self,
         runtime_graph: RuntimeGraph,
         node_id: str,
-        response_data: dict[str, Any],
+        result: AnyExecutorResult,
     ) -> None:
         """Fail a ``rows: one`` retrieval whose parameter row returned several rows."""
         node = runtime_graph.nodes.get(node_id)
@@ -1460,7 +1504,13 @@ class FlowmeshRuntimeManager:
             return
         if node.data_spec.rows != ROWS_ONE:
             return
-        multi = multi_row_item_indexes(response_data.get("items"))
+        if not isinstance(result, DataRetrievalResult):
+            return
+        multi = [
+            item.index if item.index is not None else position
+            for position, item in enumerate(result.items)
+            if item.rows is not None and item.rows > 1
+        ]
         if not multi:
             return
         raise RuntimeError(
@@ -1475,7 +1525,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch of graphs to Flowmesh with a schedule hint and worker assignment.
@@ -1488,9 +1537,6 @@ class FlowmeshRuntimeManager:
             Worker assignment.
         worker_ids : list[str]
             Workers selected to execute this batch.
-        data_profile_results : dict[str, list[dict[str, Any]]], optional
-            Data profile results, keyed by
-            ``"data_profile::<node_id>::<query_name>"``.
         Returns
         -------
         dict
@@ -1500,7 +1546,7 @@ class FlowmeshRuntimeManager:
         submitted: list[str] = []
         try:
             return await self._process_request(
-                request_info, schedule, worker_ids, data_profile_results, submitted
+                request_info, schedule, worker_ids, submitted
             )
         except Exception:
             for workflow_id in submitted:
@@ -1512,7 +1558,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
         submitted: list[str],
     ) -> dict[str, Any]:
         """``process_request`` body; appends the FlowMesh workflow id to
@@ -1529,14 +1574,6 @@ class FlowmeshRuntimeManager:
             f" ({sum(len(nodes) for nodes in schedule.worker_assignment.values())}"
             f" nodes, workers: {worker_ids})"
         )
-        # Update cache with data_profile results if provided
-        if data_profile_results:
-            self._schema_cache.update(data_profile_results)
-            self.logger.info(
-                f"Updated schema cache with {len(data_profile_results)} data profile"
-                " results"
-            )
-
         self.logger.info(f"Submitting request {request_info.request_id} to Flowmesh.")
 
         # Build task spec from the runtime graph.
@@ -1706,11 +1743,11 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        response_data = await self._archive_task_response(
+                        task_result = await self._archive_task_response(
                             request_info, tid, node_id
                         )
                         self._assert_rows_one(
-                            request_info.runtime_graph, node_id, response_data
+                            request_info.runtime_graph, node_id, task_result
                         )
                         downloaded_tasks.add(tid)
 
@@ -1806,26 +1843,14 @@ class FlowmeshRuntimeManager:
                 )
 
             try:
-                results_json = await _retry_transient_read(
+                output_result = await _retry_transient_read(
                     lambda: self.fm.results.retrieve(output_task_id),
                     f"task {output_task_id}",
                 )
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
-            if isinstance(results_json, BaseModel):
-                results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
-            api_prompt = None
-            if output_node is not None and output_node.task_type == "api":
-                api_messages = output_node.api_spec.get("json", {}).get("messages")
-                if isinstance(api_messages, list):
-                    api_prompt = api_messages
-            items = self._resolve_output_items(
-                results_json,
-                output_op_id,
-                task_type=output_node.task_type if output_node else None,
-                prompt=api_prompt,
-            )
+            items = self._resolve_output_items(output_result, output_op_id)
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
             list_lambda = (

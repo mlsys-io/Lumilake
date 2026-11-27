@@ -28,7 +28,7 @@ from lumilake.log import (
     init_child_logger,
     log_on_exception_async,
 )
-from lumilake_hook import WorkerProfile
+from lumilake_hook import DataProfileResultRow, WorkerProfile
 from lumilake_server.common import InputRef, project_input_values
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -150,7 +150,7 @@ def _column_list_writer(column: LiteralColumn, data: ListData) -> _ListSpecWrite
 
 @dataclass(slots=True)
 class PlanCacheEntry:
-    data_profile_results: dict[str, list[dict[str, Any]]]
+    data_profile_results: dict[str, list[DataProfileResultRow]]
     schedule: Schedule
 
 
@@ -274,7 +274,7 @@ def _optimizer_subprocess_entry(
     runtime_graph: Any,
     selected_workers: list[str],
     worker_profiles: dict[str, WorkerProfile],
-    data_profile_results: dict[str, list[dict[str, Any]]],
+    data_profile_results: dict[str, list[DataProfileResultRow]],
     result_queue: Any,
     bearer_token: str | None = None,
 ) -> None:
@@ -3132,7 +3132,9 @@ class LumilakeServer:
 
         schedule: Schedule | None = None
         cache_key = self._build_plan_cache_key(selected_workers, grouped_workflows)
-        normalized_data_profile_results: dict[str, list[dict[str, Any]]] | None = None
+        normalized_data_profile_results: (
+            dict[str, list[DataProfileResultRow]] | None
+        ) = None
         cache_hit = False
 
         if cache_state is not None:
@@ -3208,7 +3210,10 @@ class LumilakeServer:
                 batch_request_info,
                 "flowmesh_data_profile_result.yaml",
                 yaml.dump(
-                    normalized_data_profile_results,
+                    {
+                        key: [row.model_dump(mode="json") for row in rows]
+                        for key, rows in normalized_data_profile_results.items()
+                    },
                     default_flow_style=False,
                     sort_keys=False,
                 ).encode("utf-8"),
@@ -3294,7 +3299,6 @@ class LumilakeServer:
                 batch_request_info,
                 schedule,
                 selected_workers,
-                normalized_data_profile_results,
             )
         except RequestCancelledError:
             raise
@@ -3577,7 +3581,7 @@ class LumilakeServer:
         runtime_graph: Any,
         selected_workers: list[str],
         worker_profiles: dict[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -3784,7 +3788,7 @@ class LumilakeServer:
         graphs: dict[str, CompiledGraph],
         *,
         request_id: str | None = None,
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: dict[str, list[DataProfileResultRow]] | None = None,
         data_profile_sources: dict[str, list[DataProfileSource]] | None = None,
         config: LumilakeRequestConfig | None = None,
     ) -> SchedulePreview:

@@ -9,6 +9,7 @@ from lumid_hooks import (
 )
 
 from .bindings import BaseBindings, HookBindings
+from .data_profile import DataProfileCostEstimate, DataProfileResultRow
 from .optimizer import (
     OptimizerHandle,
     OptimizerProvider,
@@ -23,6 +24,8 @@ from .worker_profile import GpuDevice, WorkerGpu, WorkerProfile
 
 __all__ = [
     "BaseBindings",
+    "DataProfileCostEstimate",
+    "DataProfileResultRow",
     "GpuDevice",
     "HookBindings",
     "IdentityProvider",
