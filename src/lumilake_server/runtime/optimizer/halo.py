@@ -25,6 +25,7 @@ from lumilake_server.data_specs import (
     PythonData,
     RetrievalData,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
     data_profile_key_for_node_query,
@@ -1107,7 +1108,7 @@ class HaloOptimizer(BaseOptimizer):
         used only for HALO's estimate."""
         spec = node.data_spec
         if not isinstance(spec, PythonData):
-            return 0.0
+            return 0.05 * python_step.DEFAULT_TIMEOUT_SECONDS
         if spec.expected_runtime_s is not None:
             return spec.expected_runtime_s * self._python_row_count(spec)
         return 0.05 * float(spec.timeout_s)

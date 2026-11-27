@@ -358,6 +358,9 @@ def test_python_exec_cost_falls_back_to_timeout_fraction() -> None:
     optimizer = HaloOptimizer()
     assert optimizer._python_exec_cost(_python_node(PythonData(timeout_s=600))) == 30
     assert optimizer._python_exec_cost(_python_node(PythonData())) == 30
+    assert (
+        optimizer._python_exec_cost(Node(id="p1", type="python", engine="python")) == 30
+    )
     optimizer._input_query_count = 10
     assert optimizer._python_exec_cost(_python_node(PythonData(timeout_s=600))) == 30
 
