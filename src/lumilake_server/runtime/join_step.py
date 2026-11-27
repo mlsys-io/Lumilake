@@ -167,7 +167,10 @@ def _keyed(rows, where):
             )
         held = keyed.setdefault(key, [])
         if held and _CARDINALITY == "one_to_one":
-            raise ValueError("%s: duplicate key %s" % (where, key))
+            raise ValueError(
+                "%s: duplicate key %s; declare many_to_many to read every row of it"
+                % (where, key)
+            )
         held.append(row)
         carried = carried_marker((row,))
         if carried is not None:
@@ -248,7 +251,10 @@ def _attach(keyed, marked, name, source_index, values, rows, where):
             marked[key] = carried
             continue
         if len(hits) > 1 and _CARDINALITY == "one_to_one":
-            raise ValueError("%s: duplicate key %s" % (where, key))
+            raise ValueError(
+                "%s: duplicate key %s; declare many_to_many to read every value of it"
+                % (where, key)
+            )
         for held_row in keyed.get(key, []):
             for hit in hits:
                 _merged(held_row, name, hit.value, where)
@@ -275,7 +281,10 @@ def main(inputs):
             continue
         held = keyed.setdefault(key, [])
         if held and not _emits_a_product():
-            raise ValueError("%s: duplicate key %s" % (first, key))
+            raise ValueError(
+                "%s: duplicate key %s in the first input; declare one_to_many or"
+                " many_to_many" % (first, key)
+            )
         held.append(row)
         if carried is not None:
             marked[key] = carried
@@ -457,7 +466,10 @@ def _attach_broadcast(
     covered = set()
     for key, group in hits.items():
         if len(group) > 1 and _CARDINALITY == "one_to_one":
-            raise ValueError("%s: duplicate key %s" % (where, key))
+            raise ValueError(
+                "%s: duplicate key %s; declare many_to_many to read every value of it"
+                % (where, key)
+            )
         _required(by_key, (key,), where)
     for value, source_row, key, position in pairs:
         carried = failure_of(value)
