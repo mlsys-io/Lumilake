@@ -90,12 +90,24 @@ class _Worker:
         done: dict[str, list[Any]] = {}
         for node in nodes:
             op = graph.nodes[node]
-            response = (
-                _answer(op, done) if op.task_type != "python" else _step(op, done)
-            )
+            if op.task_type == "data_retrieval":
+                response = {"items": _retrieved(op)}
+            elif op.task_type == "python":
+                response = _step(op, done)
+            else:
+                response = _answer(op, done)
             self.responses[f"task-{node}"] = response
             done[node] = response["items"]
         return f"wf-{len(self.submissions)}", [f"task-{node}" for node in nodes]
+
+
+def _retrieved(op: Any) -> list[dict[str, Any]]:
+    """A keyed retrieval's items, one per row of the ``_ROWS`` table."""
+    items = []
+    for row in _ROWS:
+        columns = {name: {"0": value} for name, value in row.items()}
+        items.append({"table": {"df": json.dumps(columns)}})
+    return items
 
 
 def _step(op: Any, done: dict[str, list[Any]]) -> dict[str, Any]:
@@ -508,6 +520,43 @@ async def test_a_chat_over_an_expand_never_reads_a_count_row(
     assert len(worker.responses[f"task-{over}"]["items"]) == 4
     await run(changed, "req-3")
     assert len(worker.responses[f"task-{over}"]["items"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_re_ran_read_that_is_an_output_survives_a_level(
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
+) -> None:
+    """A retrieval the phase re-runs is a workflow output beside a keyed chat
+    two levels down, and a level's write keeps that read's response, so the
+    rerun returns the read's rows as a fresh run does."""
+    read = {
+        "id": "Read",
+        "op": "DataRetrievalOp",
+        "data_spec": {
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT id, t FROM rows",
+            "key": {"column": "id"},
+        },
+    }
+    chat = {
+        **_CHAT,
+        "inputs": ["Tag"],
+        "rowwise_columns": [{"label": "v", "node": "Tag", "path": "items.output.t"}],
+        "key": {"node": "Tag", "path": "id"},
+    }
+    workflow = {
+        "name": "read-out",
+        "inputs": {"Rows": [json.dumps(row) for row in _ROWS]},
+        "ops": [read, _TAG, chat],
+        "outputs": [{"name": "rows", "ref": "Read"}, {"name": "ask", "ref": "Ask"}],
+    }
+    graph = _runtime_graph(workflow)
+    read_node = next(n for n, name in graph.op_names.items() if name == "Read")
+    await run(graph, "req-1")
+    fresh = await run(_runtime_graph(workflow), "req-full", reuse=False)
+    again = await run(_runtime_graph(workflow), "req-2")
+    assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
 
 
 @pytest.mark.asyncio

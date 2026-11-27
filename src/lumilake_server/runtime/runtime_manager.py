@@ -2499,16 +2499,24 @@ class FlowmeshRuntimeManager:
         results: Mapping[str, Any],
         node_task_map: Mapping[str, str],
     ) -> None:
-        """Check each re-ran read's key and keep the responses its outputs need."""
+        """Check each re-ran read's key and keep the responses its outputs need.
+
+        A phase's reads and a later level's add to the same map, so a level
+        never drops a read the phase re-ran, and only a content-addressed read
+        is kept: a level's own output nodes are not reads."""
         for node_id, task_id in node_task_map.items():
             response = results[task_id]
             if isinstance(response, dict):
                 self._assert_retrieval_key(read_graph, [node_id], response)
-        self._reuse_read_responses[request_info.request_id] = {
-            node_id: (results[task_id], read_graph.output_paths.get(node_id))
-            for node_id, task_id in node_task_map.items()
-            if node_id in read_graph.output_node_map
-        }
+        responses = self._reuse_read_responses.setdefault(request_info.request_id, {})
+        responses.update(
+            {
+                node_id: (results[task_id], read_graph.output_paths.get(node_id))
+                for node_id, task_id in node_task_map.items()
+                if node_id in read_graph.output_node_map
+                and content_addressed(read_graph.nodes[node_id])
+            }
+        )
 
     async def _submit_sub_run(
         self,
