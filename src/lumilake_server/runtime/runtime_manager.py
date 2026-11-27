@@ -2382,8 +2382,12 @@ class FlowmeshRuntimeManager:
     async def _plan_reuse(
         self, request_info: RequestInfo, schedule: Schedule, worker_ids: Sequence[str]
     ) -> ReusePlan | None:
-        """Answer the batch from the store and dispatch only what it missed; a
-        failure keeps the job's full run."""
+        """Answer the batch from the store and dispatch only what it missed.
+
+        An archive or value error leaves the job its full run. When the error
+        comes after a level already dispatched, that run dispatches the level
+        again: the levels' records are the only witness to what ran, and the
+        plan has no way to serve the rest without them."""
         if not _batch_reuses_as_one(request_info):
             return None
         try:
