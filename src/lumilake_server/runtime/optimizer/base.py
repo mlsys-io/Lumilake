@@ -1,14 +1,13 @@
 """Base optimizer class for Lumilake runtime supporting multiple implementations."""
 
 import json
-import re
 from abc import ABC, abstractmethod
 from dataclasses import replace
 from typing import Any, cast
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule
-from lumilake_server.data_specs import remap_data_spec
+from lumilake_server.data_specs import remap_data_spec, remap_node_refs
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
     chunk_group_parent,
@@ -161,40 +160,8 @@ def _dedupe_ordered(items: list[str]) -> list[str]:
     return ordered
 
 
-_PLACEHOLDER_RE = re.compile(r"\$\{([^}.]+)\.([^}]+)\}")
-
-
-def _remap_placeholder(text: str, mapping: dict[str, str]) -> str:
-    def _sub(match: re.Match[str]) -> str:
-        node = match.group(1)
-        remapped = mapping.get(node)
-        if remapped is None:
-            return match.group(0)
-        return f"${{{remapped}.{match.group(2)}}}"
-
-    return _PLACEHOLDER_RE.sub(_sub, text)
-
-
-def _remap_node_refs(value: object, mapping: dict[str, str]) -> object:
-    if isinstance(value, dict):
-        updated: dict[str, object] = {}
-        for key, item in value.items():
-            if key == "node" and isinstance(item, str) and item in mapping:
-                updated[key] = mapping[item]
-            else:
-                updated[key] = _remap_node_refs(item, mapping)
-        return updated
-    if isinstance(value, list):
-        return [_remap_node_refs(item, mapping) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_remap_node_refs(item, mapping) for item in value)
-    if isinstance(value, str):
-        return _remap_placeholder(value, mapping)
-    return value
-
-
 def _remap_node_spec(spec: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
-    remapped = _remap_node_refs(spec, mapping)
+    remapped = remap_node_refs(spec, mapping)
     if not isinstance(remapped, dict):
         raise TypeError("Expected dict after remapping runtime spec")
     return cast(dict[str, Any], remapped)

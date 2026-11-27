@@ -49,7 +49,7 @@ def test_unknown_data_spec_key_is_refused() -> None:
 
 def test_remap_data_spec_renames_refs_placeholders_and_extras() -> None:
     """A remap renames mapped node refs, ``${node.path}`` placeholders and the
-    ``node`` keys inside literal items, and keeps a model's extra keys."""
+    ``node`` keys inside literal items, including inside a model's extra key."""
     spec = parse_data_spec(
         "data_retrieval",
         {
@@ -60,7 +60,7 @@ def test_remap_data_spec_renames_refs_placeholders_and_extras() -> None:
                 {
                     "label": "p",
                     "data": {"type": "list", "items": [{"node": "src"}]},
-                    "worker_key": "keep",
+                    "worker_key": {"node": "src", "path": "items.id"},
                 },
                 {"label": "q", "node": "src", "path": "items.id"},
             ],
@@ -72,6 +72,6 @@ def test_remap_data_spec_renames_refs_placeholders_and_extras() -> None:
     assert isinstance(remapped, RetrievalData)
     first, second = remapped.params
     assert first.data is not None and first.data.items == [{"node": "src_1"}]
-    assert first.model_extra == {"worker_key": "keep"}
+    assert first.model_extra == {"worker_key": {"node": "src_1", "path": "items.id"}}
     assert second.node == "src_1"
     assert remapped.template == "SELECT ${src_1.col} FROM t"
