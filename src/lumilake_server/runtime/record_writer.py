@@ -130,6 +130,7 @@ class NodeRecords:
         keys: list[str | None] | None,
         items: list[Any] | None = None,
         entries: list[RecordEntry] | None = None,
+        content: bool = False,
     ) -> None:
         self.keyed = keyed
         self.values = values
@@ -138,6 +139,9 @@ class NodeRecords:
         self.digests: dict[tuple[str | None, int], tuple[str, str | None]] = {}
         self.entries: list[RecordEntry] = entries if entries is not None else []
         """The entries a reuse plan served, listed in the job's index."""
+        self.content = content
+        """A content-addressed read names each row by the value it returned, the
+        identity a reusing plan names it by, rather than by its stored entry."""
 
     def value_at(self, position: int) -> Any:
         """The value of the record at ``position``; a node's unkeyed record is
@@ -156,6 +160,9 @@ class NodeRecords:
         """The record at ``position`` as a consumer at ``round_number`` names
         it: its two digests, or ``None`` when the row has no record. A node
         stored only at another round is read at the lowest round it has."""
+        if self.content:
+            value = content_value(self.value_at(position))
+            return digest_of({"value": value}), digest_of(value)
         if not self.keyed:
             found = self._digest_at(None, round_number)
             if found is not None:
@@ -1906,6 +1913,7 @@ def _collect_node_records(
             values=values,
             keys=None,
             items=items_of.get(node_id) or [],
+            content=content_addressed(plan.op),
         )
     # A partially served op keeps the store's groups or children beside the ones it
     # computes, and a reader names every one of them by its record, so the store's own
