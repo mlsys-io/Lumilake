@@ -995,35 +995,15 @@ class DPSolver:
         return total_cost, plan_map
 
     def _http_sleep_cost(self, node: Node) -> float:
+        """An ``api`` node costs its declared request timeout."""
         if self._http_latency_s:
             profiled = self._http_latency_s.get(node.id)
             if profiled is not None:
-                try:
-                    return max(0.0, float(profiled))
-                except (TypeError, ValueError):
-                    pass
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        for key, scale in (
-            ("sleep_s", 1.0),
-            ("sleep_ms", 0.001),
-            ("latency_s", 1.0),
-            ("latency_ms", 0.001),
-            ("timeout_s", 1.0),
-            ("timeout_ms", 0.001),
-        ):
-            if key not in raw:
-                continue
-            value = raw.get(key)
-            if isinstance(value, str):
-                value = value.strip()
-            if not isinstance(value, (str, int, float)):
-                continue
-            try:
-                seconds = float(value) * scale
-            except (TypeError, ValueError):
-                continue
-            return max(0.0, seconds)
-        return 0.0
+                return max(0.0, float(profiled))
+        timeout_sec = node.api_spec.get("timeout_sec")
+        if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool):
+            return 0.0
+        return max(0.0, float(timeout_sec))
 
     def _order_cpu_nodes_by_parent_depth(
         self, cpu_nodes: Sequence[str], gpu_depths: Mapping[str, int]
@@ -1033,9 +1013,7 @@ class DPSolver:
 
         def key(node_id: str) -> tuple[bool, int]:
             node = self.graph.nodes.get(node_id)
-            parent = None
-            if node is not None and isinstance(node.raw, dict):
-                parent = node.raw.get("parent")
+            parent = node.parent if node is not None else None
             depth = gpu_depths.get(parent) if parent is not None else None
             return (depth is None, depth or 0)
 

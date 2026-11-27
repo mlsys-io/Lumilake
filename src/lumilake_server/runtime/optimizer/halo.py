@@ -18,8 +18,13 @@ from lumilake_server.data_profile_models import (
     DataProfileCostEstimate,
     DataProfileResultRow,
 )
-from lumilake_server.data_specs import PYTHON_TASK_TYPE, RetrievalData
-from lumilake_server.runtime import python_step
+from lumilake_server.data_specs import (
+    PYTHON_TASK_TYPE,
+    DataSpecModel,
+    ListData,
+    PythonData,
+    RetrievalData,
+)
 from lumilake_server.runtime.data_profile_utils import (
     coerce_data_profile_footprints,
     data_profile_key_for_node_query,
@@ -214,8 +219,6 @@ class HaloOptimizer(BaseOptimizer):
                         ),
                     )
 
-                raw = self._build_node_raw(op, deps)
-
                 halo_nodes[node_id] = Node(
                     id=node_id,
                     type=op.task_type,
@@ -226,7 +229,10 @@ class HaloOptimizer(BaseOptimizer):
                     db_queries=db_queries,
                     gpu_memory_utilization=op.gpu_memory_utilization,
                     gpu_request=op.data_spec.gpu_request,
-                    raw=raw,
+                    data_spec=op.data_spec,
+                    inference_spec=op.inference_spec,
+                    api_spec=op.api_spec,
+                    parent=deps[0] if deps else None,
                 )
                 for dep in deps:
                     halo_edges.append(Edge(source=dep, target=node_id, mapping={}))
@@ -640,15 +646,6 @@ class HaloOptimizer(BaseOptimizer):
         return isinstance(spec, RetrievalData) and spec.mode in {"sql", "s3"}
 
     @staticmethod
-    def _build_node_raw(op: RuntimeOp, deps: Sequence[str]) -> dict[str, Any]:
-        raw = op.data_spec.model_dump(exclude_none=True)
-        if isinstance(op.inference_spec, dict) and op.inference_spec:
-            raw["_inference_spec"] = dict(op.inference_spec)
-        if deps and "parent" not in raw:
-            raw["parent"] = deps[0]
-        return raw
-
-    @staticmethod
     def _safe_positive_float(value: object, default: float) -> float:
         if not isinstance(value, (int, float, str)):
             return default
@@ -880,9 +877,7 @@ class HaloOptimizer(BaseOptimizer):
     def _resolve_input_query_count(self, graph: RuntimeGraph) -> int:
         inferred_lengths: list[int] = []
         for op in graph.nodes.values():
-            inferred_lengths.extend(
-                self._collect_input_lengths(op.data_spec.model_dump(exclude_none=True))
-            )
+            inferred_lengths.extend(self._collect_input_lengths(op.data_spec))
         inferred = max(inferred_lengths) if inferred_lengths else 0
         resolved = inferred if inferred > 0 else self._input_query_count_default
         self.logger.debug(
@@ -893,20 +888,33 @@ class HaloOptimizer(BaseOptimizer):
         )
         return max(1, int(resolved))
 
-    def _collect_input_lengths(self, value: object) -> list[int]:
+    def _collect_input_lengths(self, spec: DataSpecModel) -> list[int]:
+        """The literal row counts a data spec carries anywhere inside it."""
+        if isinstance(spec, ListData):
+            if isinstance(spec.items, list):
+                return [len(spec.items)]
+            return []
         lengths: list[int] = []
-        if isinstance(value, dict):
-            value_type = value.get("type")
-            items = value.get("items")
-            if value_type == "list" and isinstance(items, list):
-                lengths.append(len(items))
-            for item in value.values():
-                lengths.extend(self._collect_input_lengths(item))
-            return lengths
-        if isinstance(value, list):
-            for item in value:
-                lengths.extend(self._collect_input_lengths(item))
+        for field_name in type(spec).model_fields:
+            lengths.extend(
+                self._collect_nested_input_lengths(getattr(spec, field_name))
+            )
         return lengths
+
+    def _collect_nested_input_lengths(self, value: object) -> list[int]:
+        if isinstance(value, DataSpecModel):
+            return self._collect_input_lengths(value)
+        if isinstance(value, list | tuple):
+            lengths: list[int] = []
+            for item in value:
+                lengths.extend(self._collect_nested_input_lengths(item))
+            return lengths
+        if isinstance(value, dict):
+            lengths = []
+            for item in value.values():
+                lengths.extend(self._collect_nested_input_lengths(item))
+            return lengths
+        return []
 
     def _assert_no_http_nodes(self, graph: RuntimeGraph) -> None:
         http_node_ids: list[str] = []
@@ -1115,60 +1123,37 @@ class HaloOptimizer(BaseOptimizer):
         ``expected_runtime_s`` hint, it is seconds per input row of the task,
         so the estimate is that times the number of input rows; the hint is
         used only for HALO's estimate."""
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        expected = raw.get("expected_runtime_s")
-        if isinstance(expected, (int, float)) and not isinstance(expected, bool):
-            return float(expected) * self._python_row_count(raw)
-        timeout = raw.get("timeout_s")
-        if not isinstance(timeout, (int, float)):
-            timeout = python_step.DEFAULT_TIMEOUT_SECONDS
-        return 0.05 * float(timeout)
+        spec = node.data_spec
+        if not isinstance(spec, PythonData):
+            return 0.0
+        if spec.expected_runtime_s is not None:
+            return spec.expected_runtime_s * self._python_row_count(spec)
+        return 0.05 * float(spec.timeout_s)
 
-    def _python_row_count(self, raw: dict[str, Any]) -> int:
+    def _python_row_count(self, spec: PythonData) -> int:
         """The number of input rows a python step processes: the ``row_count``
         its build recorded (the common row count of a row or aligned step, the
         longest input of a list step) or, when an input's count was unknown at
         build, the largest literal count with each upstream stage taken as the
         graph-wide input count."""
-        row_count = raw.get("row_count")
-        if isinstance(row_count, int) and not isinstance(row_count, bool):
-            return row_count
-        plan = raw.get("plan")
-        if not isinstance(plan, list):
-            return max(1, int(self._input_query_count))
+        if spec.row_count is not None:
+            return spec.row_count
         counts = [
             (
-                len(entry["values"])
-                if entry["kind"] == "literal"
+                len(entry.values or ())
+                if entry.kind == "literal"
                 else int(self._input_query_count)
             )
-            for entry in plan
+            for entry in spec.plan
         ]
         return max([1, *counts])
 
     def _http_exec_cost(self, node: Node) -> float:
-        raw = node.raw if isinstance(node.raw, dict) else {}
-        for key, scale in (
-            ("sleep_s", 1.0),
-            ("sleep_ms", 0.001),
-            ("latency_s", 1.0),
-            ("latency_ms", 0.001),
-            ("timeout_s", 1.0),
-            ("timeout_ms", 0.001),
-        ):
-            if key not in raw:
-                continue
-            value = raw.get(key)
-            if isinstance(value, str):
-                value = value.strip()
-            if not isinstance(value, (str, int, float)):
-                continue
-            try:
-                seconds = float(value) * scale
-            except (TypeError, ValueError):
-                continue
-            return max(0.0, seconds)
-        return 0.0
+        """An ``api`` node costs its declared request timeout."""
+        timeout_sec = node.api_spec.get("timeout_sec")
+        if not isinstance(timeout_sec, (int, float)) or isinstance(timeout_sec, bool):
+            return 0.0
+        return max(0.0, float(timeout_sec))
 
     def _cache_multiplier(
         self,
