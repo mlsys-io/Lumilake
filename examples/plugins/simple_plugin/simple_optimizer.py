@@ -1,7 +1,8 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from lumilake_hook import WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.runtime.optimizer import OPTIMIZER_TYPES
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
@@ -13,7 +14,9 @@ class SimpleRoundRobinOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         if not worker_names:
             raise ValueError("SimpleRoundRobinOptimizer requires at least one worker")

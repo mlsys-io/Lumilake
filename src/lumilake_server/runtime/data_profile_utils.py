@@ -18,8 +18,8 @@ from lumilake_server.data_specs import S3ProfileData, SqlProfileData
 from lumilake_server.runtime.protocol import RequestCancelledError
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.utils.data_profile_offload import (
+    DataProfileTaskResult,
     data_profile_registry,
-    normalize_data_profile_result,
     project_data_profile_results_to_runtime_graph,
 )
 from lumilake_server.utils.lumid_data_client import list_blobs as lumid_list_blobs
@@ -314,9 +314,9 @@ def _derive_s3_profile_for_graph(
     projected_sql: Mapping[str, Sequence[DataProfileResultRow]],
     listing_sizes: Mapping[str, int | None],
     listing_folders: Sequence[str],
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, list[DataProfileResultRow]]:
     runtime_to_raw = _runtime_to_raw_node_map(graph)
-    derived: dict[str, list[dict[str, Any]]] = {}
+    derived: dict[str, list[DataProfileResultRow]] = {}
     per_file = envs.LUMILAKE_S3_PROFILE_COST_PER_FILE
     per_mib = envs.LUMILAKE_S3_PROFILE_COST_PER_MIB
 
@@ -461,17 +461,22 @@ def _derive_s3_profile_for_graph(
                 )
             ],
         )
-        derived[cache_key] = [row.model_dump(mode="json")]
+        derived[cache_key] = [row]
     return derived
 
 
 def dump_data_profile_yaml(
-    data_profile: dict[str, list[dict[str, Any]]],
+    data_profile: dict[str, list[DataProfileResultRow]],
     output_path: Path,
 ) -> None:
+    """Write a profile YAML artifact, dumping the rows at the archive boundary."""
+    dumped = {
+        key: [row.model_dump(mode="json") for row in rows]
+        for key, rows in data_profile.items()
+    }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        yaml.dump(data_profile, default_flow_style=False, sort_keys=False),
+        yaml.dump(dumped, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -558,11 +563,11 @@ async def collect_data_profile(
     cancellation_callback: CancellationCallback | None = None,
     output_path: Path | None = None,
     logger: logging.Logger | None = None,
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, list[DataProfileResultRow]]:
     if await _is_cancelled(cancellation_callback):
         raise RequestCancelledError(request_id)
 
-    result_data: dict[str, list[dict[str, Any]]] = {}
+    result_data: dict[str, list[DataProfileResultRow]] = {}
     # Pre-collect every S3 folder this batch's data-profile graphs reference
     # so a single set of /blobs calls (one per distinct folder) covers them
     # all. The listing is keyed on absolute blob paths — same shape the
@@ -594,7 +599,7 @@ async def collect_data_profile(
             candidates = [DataProfileSource(task_key=graph_key, org_id="default")]
 
         selected: DataProfileSource | None = None
-        completed_payload: dict[str, Any] | None = None
+        completed_payload: DataProfileTaskResult | None = None
         if has_sql:
             # ``routes/jobs.py`` runs the profile inline at submit time and
             # stashes the result in ``data_profile_registry`` keyed by
@@ -616,17 +621,11 @@ async def collect_data_profile(
 
         projected_sql: dict[str, list[DataProfileResultRow]] = {}
         if completed_payload is not None:
-            normalized = normalize_data_profile_result(completed_payload)
             projected_sql = project_data_profile_results_to_runtime_graph(
-                data_profile_results=normalized,
+                data_profile_results=completed_payload.data_profile_results,
                 target_graph=graph,
             )
-            result_data.update(
-                {
-                    key: [row.model_dump(mode="json") for row in rows]
-                    for key, rows in projected_sql.items()
-                }
-            )
+            result_data.update(projected_sql)
 
         s3_entries = 0
         if has_s3:

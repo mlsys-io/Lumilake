@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from lumilake_hook import WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.runtime.runtime_graph import RuntimeGraphSchema
 
 
@@ -18,7 +19,7 @@ class ScheduleRequest(BaseModel):
     graph: RuntimeGraphSchema
     worker_names: list[str]
     worker_profiles: Mapping[str, WorkerProfile]
-    data_profile_results: dict[str, list[Any]] | None = None
+    data_profile_results: dict[str, list[DataProfileResultRow]] | None = None
     optimizer_type: str = "halo"
 
 

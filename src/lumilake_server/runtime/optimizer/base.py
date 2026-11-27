@@ -2,12 +2,13 @@
 
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import Schedule, WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.data_specs import remap_model, remap_node_dict
 from lumilake_server.runtime.runtime_graph import (
     RuntimeGraph,
@@ -268,7 +269,9 @@ class BaseOptimizer(ABC):
         graph: RuntimeGraph,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         """Generate execution schedule for operations in the batch.
 
@@ -278,9 +281,9 @@ class BaseOptimizer(ABC):
             Runtime graph in the batch
         worker_names : list[str]
             Workers selected for this batch.
-        worker_profiles : dict[str, WorkerProfile]
+        worker_profiles : Mapping[str, WorkerProfile]
             Worker placement facts keyed by worker id.
-        data_profile_results : dict[str, list[dict[str, Any]]] | None, optional
+        data_profile_results : Mapping[str, Sequence[DataProfileResultRow]], optional
             Data profile outputs keyed by "data_profile::<node_id>::<query_name>".
 
         Returns

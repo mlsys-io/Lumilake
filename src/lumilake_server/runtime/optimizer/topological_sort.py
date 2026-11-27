@@ -7,10 +7,11 @@ request: a CPU worker, or a GPU worker for a python step that requests GPUs. It
 uses no cost model.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from lumilake_hook import WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.runtime.optimizer.base import BaseOptimizer, Schedule
 from lumilake_server.runtime.runtime_graph import RuntimeGraph
 from lumilake_server.runtime.worker_capability import (
@@ -27,7 +28,9 @@ class TopologicalSortOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         gpu_workers = [
             w

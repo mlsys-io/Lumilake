@@ -162,7 +162,7 @@ class HaloOptimizer(BaseOptimizer):
         worker_names: Sequence[str],
         worker_profiles: Mapping[str, WorkerProfile],
         data_profile_results: (
-            Mapping[str, Sequence[Mapping[str, Any] | DataProfileResultRow]] | None
+            Mapping[str, Sequence[DataProfileResultRow]] | None
         ) = None,
     ) -> Schedule:
         workers_input = [name.strip() for name in worker_names if name and name.strip()]
@@ -613,31 +613,13 @@ class HaloOptimizer(BaseOptimizer):
             return None
         return normalize_table_name(match.group(1)) or None
 
+    @staticmethod
     def _parse_data_profile_results(
-        self,
-        data_profile_results: (
-            Mapping[str, Sequence[Mapping[str, Any] | DataProfileResultRow]] | None
-        ),
+        data_profile_results: Mapping[str, Sequence[DataProfileResultRow]] | None,
     ) -> dict[str, tuple[DataProfileResultRow, ...]]:
         if not data_profile_results:
             return {}
-        parsed: dict[str, tuple[DataProfileResultRow, ...]] = {}
-        for key, rows in data_profile_results.items():
-            parsed_rows: list[DataProfileResultRow] = []
-            for idx, row in enumerate(rows):
-                if isinstance(row, DataProfileResultRow):
-                    parsed_rows.append(row)
-                    continue
-                try:
-                    parsed_rows.append(DataProfileResultRow.model_validate(row))
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"Invalid data profile result row for key '{key}' at index"
-                        f" {idx}"
-                    ) from exc
-            if parsed_rows:
-                parsed[key] = tuple(parsed_rows)
-        return parsed
+        return {key: tuple(rows) for key, rows in data_profile_results.items() if rows}
 
     def _is_data_profile_candidate(self, op: RuntimeOp) -> bool:
         if self._map_engine(op.backend, op.task_type) != "db":

@@ -25,11 +25,3 @@ class DataProfileResultRow(BaseModel):
     cost_estimates: list[DataProfileCostEstimate]
 
     model_config = ConfigDict(extra="ignore")
-
-
-class DataProfileResultsPayload(BaseModel):
-    data_profile_results: dict[str, list[DataProfileResultRow]] = Field(
-        default_factory=dict
-    )
-
-    model_config = ConfigDict(extra="forbid")

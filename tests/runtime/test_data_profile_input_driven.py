@@ -99,7 +99,7 @@ class TestInputDrivenProfile:
         (estimate,) = derived[key]
         # Exactly one row emitted, with file_count==1 (input-driven
         # fallback).
-        assert estimate["cost_estimates"][0]["estimated_files"] == 1
+        assert estimate.cost_estimates[0].estimated_files == 1
 
     def test_sql_driven_placeholder_still_uses_sql_estimated_rows(self) -> None:
         """Regression guard: SQL placeholders still honor the SQL
@@ -157,7 +157,7 @@ class TestInputDrivenProfile:
         s3_key = next(k for k in derived if s3.node_id in k)
         (s3_estimate,) = derived[s3_key]
         # SQL path: file_count == SQL estimated_rows (37).
-        assert s3_estimate["cost_estimates"][0]["estimated_files"] == 37
+        assert s3_estimate.cost_estimates[0].estimated_files == 37
 
     def test_non_sql_runtime_ref_is_rejected(self) -> None:
         """A placeholder that points at a concrete non-SQL runtime node

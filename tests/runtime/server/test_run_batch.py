@@ -19,6 +19,7 @@ from support.runtime_server import (
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.data_specs import Column, DataFrame, ListData
 from lumilake_server.hooks.security import runtime_token_var
 from lumilake_server.runtime.job_manager.base import BatchSelection
@@ -534,7 +535,7 @@ async def test_process_batch_uses_parent_workflow_grouping_and_relocates_artifac
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -575,13 +576,13 @@ async def test_process_batch_uses_server_data_profile_collection(
     class StrictRuntimeManager(RecordingRuntimeManager):
         def __init__(self) -> None:
             super().__init__()
-            self.last_data_profile_results: dict[str, list[dict[str, Any]]] | None = (
-                None
-            )
+            self.last_data_profile_results: (
+                dict[str, list[DataProfileResultRow]] | None
+            ) = None
 
         async def profile_data(
             self, request_info: Any
-        ) -> dict[str, list[dict[str, Any]]]:
+        ) -> dict[str, list[DataProfileResultRow]]:
             raise AssertionError("runtime_manager.profile_data must not be called")
 
         async def process_request(
@@ -589,7 +590,7 @@ async def test_process_batch_uses_server_data_profile_collection(
             request_info: Any,
             schedule: Schedule,
             worker_ids: list[str],
-            data_profile_results: dict[str, list[dict[str, Any]]] | None,
+            data_profile_results: dict[str, list[DataProfileResultRow]] | None,
         ) -> dict[str, Any]:
             self.last_data_profile_results = data_profile_results
             flat_outputs = {
@@ -649,7 +650,7 @@ async def test_process_batch_uses_server_data_profile_collection(
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -659,14 +660,22 @@ async def test_process_batch_uses_server_data_profile_collection(
 
     server._generate_schedule_in_subprocess = _fake_schedule  # type: ignore[method-assign]
 
-    expected_profile: dict[str, list[dict[str, Any]]] = {
-        "data_profile::node::node_query": [{"cost_estimates": []}]
+    expected_profile: dict[str, list[DataProfileResultRow]] = {
+        "data_profile::node::node_query": [
+            DataProfileResultRow(
+                node_id="node",
+                raw_node_id="node",
+                query_name="node_query",
+                table="public.t",
+                cost_estimates=[],
+            )
+        ]
     }
     observed_sources: dict[str, list[Any]] = {}
 
     async def _fake_collect_data_profile(
         **kwargs: Any,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, list[DataProfileResultRow]]:
         observed_sources.update(kwargs.get("data_profile_sources", {}))
         return expected_profile
 
@@ -740,7 +749,7 @@ async def test_run_batch_skips_data_profile_when_disabled(
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -754,7 +763,7 @@ async def test_run_batch_skips_data_profile_when_disabled(
 
     async def _fake_collect_data_profile(
         **kwargs: Any,
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> dict[str, list[DataProfileResultRow]]:
         nonlocal collect_called
         collect_called = True
         return {}
@@ -945,7 +954,7 @@ def _install_fake_build_and_schedule(server: Any, output_name: str) -> None:
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1272,7 +1281,7 @@ def _install_rowwise_api_list_lambda_build_and_schedule(
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1321,7 +1330,7 @@ def _install_rowwise_api_build_and_schedule(server: Any, output_name: str) -> No
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1369,7 +1378,7 @@ def _install_list_lambda_build_and_schedule(server: Any, output_name: str) -> No
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1434,7 +1443,7 @@ def _install_list_lambda_downstream_build_and_schedule(
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1518,7 +1527,7 @@ def _install_rowwise_python_downstream_build_and_schedule(
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
@@ -1736,7 +1745,7 @@ def _install_aligned_build_and_schedule(server: Any, output_name: str) -> None:
         runtime_graph: RuntimeGraph,
         selected_workers: list[str],
         worker_profiles: dict[str, dict[str, Any]],
-        data_profile_results: dict[str, list[dict[str, Any]]],
+        data_profile_results: dict[str, list[DataProfileResultRow]],
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:

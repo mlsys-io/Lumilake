@@ -48,6 +48,7 @@ from pydantic import BaseModel
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
 from lumilake_hook import WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
@@ -391,7 +392,7 @@ class FlowmeshRuntimeManager:
         log_level: LogLevel | None = None,
     ) -> None:
         self.logger = init_child_logger("FlowmeshSubmitter", logger, log_level)
-        self._schema_cache: dict[str, list[dict[str, Any]]] = (
+        self._schema_cache: dict[str, list[DataProfileResultRow]] = (
             {}
         )  # Cache schema info by table name
         self._runtime_builder = RuntimeGraphBuilder(
@@ -1530,7 +1531,7 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: dict[str, list[DataProfileResultRow]] | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch of graphs to Flowmesh with a schedule hint and worker assignment.
@@ -1543,7 +1544,7 @@ class FlowmeshRuntimeManager:
             Worker assignment.
         worker_ids : list[str]
             Workers selected to execute this batch.
-        data_profile_results : dict[str, list[dict[str, Any]]], optional
+        data_profile_results : dict[str, list[DataProfileResultRow]], optional
             Data profile results, keyed by
             ``"data_profile::<node_id>::<query_name>"``.
         Returns
@@ -1567,7 +1568,7 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
+        data_profile_results: dict[str, list[DataProfileResultRow]] | None,
         submitted: list[str],
     ) -> dict[str, Any]:
         """``process_request`` body; appends the FlowMesh workflow id to

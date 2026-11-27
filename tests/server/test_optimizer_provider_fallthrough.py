@@ -1,11 +1,12 @@
 """Tests for create_optimizer fall-through to registered OptimizerProviders."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import pytest
 
 from lumilake_hook import WorkerProfile
+from lumilake_server.data_profile_models import DataProfileResultRow
 from lumilake_server.runtime.optimizer import (
     OPTIMIZER_PROVIDERS,
     OPTIMIZER_TYPES,
@@ -21,7 +22,9 @@ class _StubOptimizer(BaseOptimizer):
         graph: RuntimeGraph,
         worker_names: list[str],
         worker_profiles: Mapping[str, WorkerProfile],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None = None,
+        data_profile_results: (
+            Mapping[str, Sequence[DataProfileResultRow]] | None
+        ) = None,
     ) -> Schedule:
         return Schedule(worker_assignment={})
 
