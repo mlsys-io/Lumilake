@@ -4,13 +4,15 @@ import pytest
 from flowmesh.exceptions import CursorExpiredError
 from flowmesh.models.result import AnyExecutorResult
 from flowmesh.models.tasks import TaskInfo, TaskStatusPage
-from flowmesh.resources.results import _RESULT_ADAPTER
+from pydantic import TypeAdapter
 
 from lumilake import envs
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 API_URL = "https://api.example.com/v1/chat"
+
+_RESULT_ADAPTER: TypeAdapter[AnyExecutorResult] = TypeAdapter(AnyExecutorResult)
 
 
 def api_result(**payload: Any) -> AnyExecutorResult:

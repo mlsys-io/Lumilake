@@ -12,7 +12,6 @@ from typing import Any
 
 import pytest
 import yaml
-from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -28,8 +27,7 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
 )
-from tests.runtime.runtime_manager.conftest import API_URL as _API_URL
-from tests.runtime.runtime_manager.conftest import serve
+from tests.runtime.runtime_manager.conftest import API_URL, api_result, serve
 
 _TRUSTED_URL = "https://lum.id/llm/v1/chat/completions"
 _UNTRUSTED_URL = "https://api.example.com/v1/chat/completions"
@@ -112,26 +110,19 @@ async def test_dispatched_request_carries_resolved_caller_credential(
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:
-            return _RESULT_ADAPTER.validate_python(
-                {
-                    "task_type": "api",
-                    "executor": "api",
-                    "method": "POST",
-                    "url": "https://api.example.com/v1/chat",
-                    "status_code": 200,
-                    "items": [
-                        {
-                            "index": 0,
-                            "url": _API_URL,
-                            "status_code": 200,
-                            "json": {
-                                "choices": [{"message": {"content": "assistant reply"}}]
-                            },
-                            "text": "assistant reply",
-                            "prompt": "{{prompt}}",
-                        }
-                    ],
-                }
+            return api_result(
+                items=[
+                    {
+                        "index": 0,
+                        "url": API_URL,
+                        "status_code": 200,
+                        "json": {
+                            "choices": [{"message": {"content": "assistant reply"}}]
+                        },
+                        "text": "assistant reply",
+                        "prompt": "{{prompt}}",
+                    }
+                ]
             )
 
     class _FakeFm:

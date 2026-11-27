@@ -34,10 +34,16 @@ from flowmesh.models.result import (
     EchoResult,
     EmbeddingResult,
     InferenceResult,
+    OmniText2AudioResult,
+    OmniText2GeneralResult,
+    OmniText2ImageResult,
+    OmniText2SpeechResult,
+    OmniText2VideoResult,
     PythonResult,
 )
 from flowmesh.models.tasks import TaskInfo, TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
+from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -232,43 +238,52 @@ def _walk_output_path(
 
 
 def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
-    """A result's ``items`` as JSON, or ``None`` when the result carries no
-    ``items`` field; an explicit empty list is an empty output."""
-    if not isinstance(
-        result,
-        (
-            InferenceResult,
-            ClassificationResult,
-            DataRetrievalResult,
-            AgentResult,
-            APIResult,
-            EchoResult,
-        ),
-    ):
-        return None
-    if "items" not in result.model_fields_set:
+    """A result's ``items`` as JSON, or ``None`` when its type has no items.
+
+    Every item-bearing result the SDK builds carries a list, so an empty one is
+    an empty output.
+    """
+    if not isinstance(result, _ITEM_RESULTS):
         return None
     return [item.model_dump(mode="json") for item in result.items]
 
 
-def _task_annotations(task_info: TaskInfo) -> Mapping[str, Any]:
-    """A task's Kubernetes metadata annotations, empty when it carries none.
+_ITEM_RESULTS: Final = (
+    InferenceResult,
+    ClassificationResult,
+    DataRetrievalResult,
+    AgentResult,
+    APIResult,
+    EchoResult,
+    OmniText2ImageResult,
+    OmniText2SpeechResult,
+    OmniText2AudioResult,
+    OmniText2GeneralResult,
+    OmniText2VideoResult,
+)
 
-    ``TaskInfo.task`` is the SDK's untyped task document."""
-    metadata = task_info.task.get("metadata")
-    if not isinstance(metadata, Mapping):
-        return {}
-    annotations = metadata.get("annotations")
-    return annotations if isinstance(annotations, Mapping) else {}
+
+class _SubmitAnnotation(BaseModel):
+    """Lumilake's submit stamp inside a task's ``annotations.custom`` map."""
+
+    lumilake_submit_id: str | None = None
 
 
 def _submit_id_of(task_info: TaskInfo) -> str | None:
-    """The Lumilake submit id an earlier attempt stamped on a task, if any."""
-    custom = _task_annotations(task_info).get("custom")
-    submit_id = (
-        custom.get("lumilake_submit_id") if isinstance(custom, Mapping) else None
-    )
-    return submit_id if isinstance(submit_id, str) else None
+    """The Lumilake submit id an earlier attempt stamped on a task, if any.
+
+    ``TaskInfo.task`` is the SDK's untyped task document, so its annotation map
+    is read with defaults and validated into the stamp's own model."""
+    metadata = task_info.task.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    annotations = metadata.get("annotations")
+    if not isinstance(annotations, Mapping):
+        return None
+    custom = annotations.get("custom")
+    if not isinstance(custom, Mapping):
+        return None
+    return _SubmitAnnotation.model_validate(custom).lumilake_submit_id
 
 
 def _split_walk_part(part: str) -> tuple[str, int | None]:
@@ -1283,13 +1298,10 @@ class FlowmeshRuntimeManager:
         self,
         result: AnyExecutorResult,
         output_op_id: str,
-        prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Normalize a result into an item list: a result carrying ``items``
-        keeps them, a python step takes its value's ``items``, a flat embedding
-        result is a one-item batch, and an API result without ``items`` wraps
-        its ``text`` as a single ``items[].output`` carrying
-        ``metadata.prompt``."""
+        keeps them, a python step takes its value's ``items``, and a flat
+        embedding result is a one-item batch."""
         items = _result_items(result)
         if items is not None:
             return items
@@ -1301,21 +1313,9 @@ class FlowmeshRuntimeManager:
             if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
-        if isinstance(result, APIResult):
-            if isinstance(result.text, str):
-                item: dict[str, Any] = {"output": result.text}
-                if prompt is not None:
-                    item["metadata"] = {"prompt": prompt}
-                return [item]
-            raise RuntimeError(
-                f"output {output_op_id} produced no API response text; the "
-                "model returned no content (a reasoning model may have spent "
-                "its whole token budget on reasoning — raise max_tokens)"
-            )
-        if isinstance(result, EmbeddingResult):
-            if result.embedding_file is not None and result.embedding_file.path:
+        if isinstance(result, EmbeddingResult) and result.embedding_file is not None:
+            if result.embedding_file.path:
                 return [result.model_dump(mode="json")]
-            raise RuntimeError(f"output {output_op_id} produced no items")
         raise RuntimeError(f"output {output_op_id} produced no items")
 
     def _embedding_row_count(
@@ -1865,16 +1865,7 @@ class FlowmeshRuntimeManager:
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
-            api_prompt = None
-            if output_node is not None and output_node.task_type == "api":
-                api_messages = output_node.api_spec.get("json", {}).get("messages")
-                if isinstance(api_messages, list):
-                    api_prompt = api_messages
-            items = self._resolve_output_items(
-                output_result,
-                output_op_id,
-                prompt=api_prompt,
-            )
+            items = self._resolve_output_items(output_result, output_op_id)
 
             output_path = request_info.runtime_graph.output_paths.get(output_op_id)
             list_lambda = (

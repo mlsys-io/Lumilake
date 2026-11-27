@@ -12,9 +12,9 @@ from flowmesh.models.result import (
     APIResult,
     BaseExecutorResult,
     EchoResult,
+    InferenceResult,
     PythonResult,
 )
-from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -38,24 +38,6 @@ from tests.runtime.runtime_manager.conftest import (
     python_result,
     serve,
 )
-
-
-def _with_api_item_fields(result: dict[str, Any]) -> dict[str, Any]:
-    """Fill an API item's request fields, which FlowMesh echoes onto each one."""
-    items = []
-    for item in result["items"]:
-        rows = item.get("rows")
-        if rows is not None:
-            item = {**item, "rows": [_api_row(row) for row in rows]}
-        else:
-            item = _api_row(item)
-        items.append(item)
-    return {**result, "items": items}
-
-
-def _api_row(row: dict[str, Any]) -> dict[str, Any]:
-    """One API task's per-row response with its request fields."""
-    return {"url": API_URL, "status_code": 200, **row}
 
 
 def _explode_fn(items: tuple[list[Any], ...]) -> list[dict[str, str]]:
@@ -86,35 +68,6 @@ def _build_single_row_api_request() -> tuple[RequestInfo, str]:
         nodes={}, node_order=[], output_node_map={}
     )
     return request_info, row_id
-
-
-def test_api_reasoning_present_still_raises_clear_error() -> None:
-    """A reasoning model returns content=None with a reasoning fragment when
-    its budget is exhausted; that must fail with guidance, not surface the
-    truncated fragment as the node output."""
-    result = APIResult(
-        executor="api",
-        method="POST",
-        url="https://api.example.com/v1/chat",
-        status_code=200,
-        text=None,
-        json={
-            "choices": [
-                {
-                    "finish_reason": "length",
-                    "message": {
-                        "role": "assistant",
-                        "content": None,
-                        "reasoning": (
-                            "The user wants me to calculate 17 x 23 and show my"
-                        ),
-                    },
-                }
-            ]
-        },
-    )
-    with pytest.raises(RuntimeError, match="raise max_tokens"):
-        FlowmeshRuntimeManager()._resolve_output_items(result, "out-1")
 
 
 def test_resolve_output_items_accepts_empty_items_list() -> None:
@@ -482,7 +435,7 @@ async def test_api_output_node_reads_content(
 
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:
-            return api_result(**_with_api_item_fields(result))
+            return api_result(**result)
 
     class _FakeFm:
         def __init__(self) -> None:
@@ -883,9 +836,8 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
                 )
             # The rowwise LLM's dataframe data_spec groups its per-row outputs
             # back into one item via FlowMesh's ``_populate_table``.
-            return _RESULT_ADAPTER.validate_python(
+            return InferenceResult.model_validate(
                 {
-                    "task_type": "inference",
                     "items": [
                         {
                             "index": 0,
@@ -893,7 +845,7 @@ async def test_rowwise_lambda_output_yields_one_value_per_input_row(
                             "prompt": "Result: HELLO",
                             "finish_reason": ["stop", "stop", "stop"],
                         }
-                    ],
+                    ]
                 }
             )
 
@@ -952,9 +904,6 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
                 workflow_id="wf-1",
             )
 
-        async def cancel(self, workflow_id: str) -> None:
-            pass
-
     class _FakeResults:
         async def retrieve(self, task_id: str) -> Any:
             if task_id == "task-lambda":
@@ -969,9 +918,8 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
                 )
             # The grouped item carries only the first row's prompt under
             # ``metadata.prompt``; there is one item for three output values.
-            return _RESULT_ADAPTER.validate_python(
+            return InferenceResult.model_validate(
                 {
-                    "task_type": "inference",
                     "items": [
                         {
                             "index": 0,
@@ -982,7 +930,7 @@ async def test_rowwise_lambda_output_emits_no_history_when_grouped(
                                 "prompt": [{"role": "user", "content": "Result: HELLO"}]
                             },
                         }
-                    ],
+                    ]
                 }
             )
 

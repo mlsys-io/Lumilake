@@ -16,7 +16,6 @@ import yaml
 from flowmesh.exceptions import APIError
 from flowmesh.models.result import APIResult
 from flowmesh.models.result.catalog import APIResult as CatalogAPIResult
-from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.common import ApiConfig, GenerationConfig
@@ -30,8 +29,12 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
-from tests.runtime.runtime_manager.conftest import API_URL as _API_URL
-from tests.runtime.runtime_manager.conftest import serve
+from tests.runtime.runtime_manager.conftest import (
+    _RESULT_ADAPTER,
+    API_URL,
+    api_result,
+    serve,
+)
 
 
 def test_sanitize_flowmesh_api_error_redacts_authorization_header_in_body() -> None:
@@ -254,28 +257,19 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return _RESULT_ADAPTER.validate_python(
-                    {
-                        "task_type": "api",
-                        "executor": "api",
-                        "method": "POST",
-                        "url": "https://api.example.com/v1/chat",
-                        "status_code": 200,
-                        "items": [
-                            {
-                                "index": 0,
-                                "url": _API_URL,
-                                "status_code": 200,
-                                "json": {
-                                    "choices": [
-                                        {"message": {"content": "assistant reply"}}
-                                    ]
-                                },
-                                "text": "assistant reply",
-                                "prompt": "{{prompt}}",
-                            }
-                        ],
-                    }
+                return api_result(
+                    items=[
+                        {
+                            "index": 0,
+                            "url": API_URL,
+                            "status_code": 200,
+                            "json": {
+                                "choices": [{"message": {"content": "assistant reply"}}]
+                            },
+                            "text": "assistant reply",
+                            "prompt": "{{prompt}}",
+                        }
+                    ]
                 )
             raise APIError(
                 "task spec invalid",
