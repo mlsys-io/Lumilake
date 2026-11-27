@@ -25,9 +25,19 @@ import httpx
 import yaml
 from flowmesh.exceptions import APIError, CursorExpiredError, FlowMeshConnectionError
 from flowmesh.models import WorkerStatus
+from flowmesh.models.result import (
+    AgentResult,
+    AnyExecutorResult,
+    APIResult,
+    ClassificationResult,
+    DataRetrievalResult,
+    EchoResult,
+    EmbeddingResult,
+    InferenceResult,
+    PythonResult,
+)
 from flowmesh.models.tasks import TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
-from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
@@ -59,7 +69,7 @@ from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.runtime.worker_capability import worker_profile
 from lumilake_server.utils.job_storage import get_job_storage
-from lumilake_server.utils.retrieval_spec import ROWS_ONE, multi_row_item_indexes
+from lumilake_server.utils.retrieval_spec import ROWS_ONE
 
 TERMINAL_STATUSES = {"DONE", "FAILED"}
 _STATUS_POLL_FIELDS: Final = ["status", "error", "last_error"]
@@ -219,6 +229,26 @@ def _walk_output_path(
             else:
                 value = value[index]
     return value
+
+
+def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
+    """A result's ``items`` as JSON, or ``None`` when the result carries no
+    ``items`` field; an explicit empty list is an empty output."""
+    if not isinstance(
+        result,
+        (
+            InferenceResult,
+            ClassificationResult,
+            DataRetrievalResult,
+            AgentResult,
+            APIResult,
+            EchoResult,
+        ),
+    ):
+        return None
+    if "items" not in result.model_fields_set:
+        return None
+    return [item.model_dump(mode="json") for item in result.items]
 
 
 def _split_walk_part(part: str) -> tuple[str, int | None]:
@@ -1233,29 +1263,29 @@ class FlowmeshRuntimeManager:
 
     def _resolve_output_items(
         self,
-        results_json: dict[str, Any],
+        result: AnyExecutorResult,
         output_op_id: str,
-        task_type: str | None = None,
         prompt: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Normalize a retrieved result into an item list: inference returns
-        ``items``, embedding a flat one-item batch, and API wraps the assistant
-        ``text`` as a single ``items[].output`` carrying ``metadata.prompt``."""
-        items = results_json.get("items")
-        if isinstance(items, list):
+        """Normalize a result into an item list: a result carrying ``items``
+        keeps them, a python step takes its value's ``items``, a flat embedding
+        result is a one-item batch, and an API result without ``items`` wraps
+        its ``text`` as a single ``items[].output`` carrying
+        ``metadata.prompt``."""
+        items = _result_items(result)
+        if items is not None:
             return items
-        if task_type == "python":
+        if isinstance(result, PythonResult):
             # A python step returns {"items": [...]} as its value
             # (runtime/python_step.py); PythonResult carries it under "value".
-            value = results_json.get("value")
+            value = result.value
             value_items = value.get("items") if isinstance(value, dict) else None
             if isinstance(value_items, list):
                 return value_items
             raise RuntimeError(f"python step {output_op_id} returned no items")
-        if task_type == "api":
-            text = results_json.get("text")
-            if isinstance(text, str):
-                item: dict[str, Any] = {"output": text}
+        if isinstance(result, APIResult):
+            if isinstance(result.text, str):
+                item: dict[str, Any] = {"output": result.text}
                 if prompt is not None:
                     item["metadata"] = {"prompt": prompt}
                 return [item]
@@ -1264,9 +1294,10 @@ class FlowmeshRuntimeManager:
                 "model returned no content (a reasoning model may have spent "
                 "its whole token budget on reasoning — raise max_tokens)"
             )
-        embedding_file = results_json.get("embedding_file")
-        if isinstance(embedding_file, dict) and embedding_file.get("path"):
-            return [results_json]
+        if isinstance(result, EmbeddingResult):
+            if result.embedding_file is not None and result.embedding_file.path:
+                return [result.model_dump(mode="json")]
+            raise RuntimeError(f"output {output_op_id} produced no items")
         raise RuntimeError(f"output {output_op_id} produced no items")
 
     def _embedding_row_count(
@@ -1423,18 +1454,15 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         tid: str,
         node_id: str,
-    ) -> dict[str, Any]:
-        """Archive a task's redacted FlowMesh response and return a JSON object."""
+    ) -> AnyExecutorResult:
+        """Archive a task's redacted FlowMesh response and return the result."""
         try:
-            response_data = await _retry_transient_read(
+            result = await _retry_transient_read(
                 lambda: self.fm.results.retrieve(tid), f"task {tid}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        if isinstance(response_data, BaseModel):
-            response_data = response_data.model_dump(mode="json")
-        if not isinstance(response_data, dict):
-            response_data = {}
+        response_data = result.model_dump(mode="json")
         response_uri = await self._save_json_artifact(
             request_info,
             f"per-task-response/{tid}.json",
@@ -1446,13 +1474,13 @@ class FlowmeshRuntimeManager:
             node_id,
             response_uri,
         )
-        return response_data
+        return result
 
     def _assert_rows_one(
         self,
         runtime_graph: RuntimeGraph,
         node_id: str,
-        response_data: dict[str, Any],
+        result: AnyExecutorResult,
     ) -> None:
         """Fail a ``rows: one`` retrieval whose parameter row returned several rows."""
         node = runtime_graph.nodes.get(node_id)
@@ -1460,7 +1488,13 @@ class FlowmeshRuntimeManager:
             return
         if node.data_spec.rows != ROWS_ONE:
             return
-        multi = multi_row_item_indexes(response_data.get("items"))
+        if not isinstance(result, DataRetrievalResult):
+            return
+        multi = [
+            item.index if item.index is not None else position
+            for position, item in enumerate(result.items)
+            if item.rows is not None and item.rows > 1
+        ]
         if not multi:
             return
         raise RuntimeError(
@@ -1706,11 +1740,11 @@ class FlowmeshRuntimeManager:
                                 "Missing task->node mapping for task "
                                 f"{tid}. Known task ids={sorted(task_node_map.keys())}"
                             )
-                        response_data = await self._archive_task_response(
+                        task_result = await self._archive_task_response(
                             request_info, tid, node_id
                         )
                         self._assert_rows_one(
-                            request_info.runtime_graph, node_id, response_data
+                            request_info.runtime_graph, node_id, task_result
                         )
                         downloaded_tasks.add(tid)
 
@@ -1806,14 +1840,12 @@ class FlowmeshRuntimeManager:
                 )
 
             try:
-                results_json = await _retry_transient_read(
+                output_result = await _retry_transient_read(
                     lambda: self.fm.results.retrieve(output_task_id),
                     f"task {output_task_id}",
                 )
             except APIError as e:
                 raise _sanitize_flowmesh_api_error(e) from None
-            if isinstance(results_json, BaseModel):
-                results_json = results_json.model_dump(mode="json")
             output_node = request_info.runtime_graph.nodes.get(output_op_id)
             api_prompt = None
             if output_node is not None and output_node.task_type == "api":
@@ -1821,9 +1853,8 @@ class FlowmeshRuntimeManager:
                 if isinstance(api_messages, list):
                     api_prompt = api_messages
             items = self._resolve_output_items(
-                results_json,
+                output_result,
                 output_op_id,
-                task_type=output_node.task_type if output_node else None,
                 prompt=api_prompt,
             )
 

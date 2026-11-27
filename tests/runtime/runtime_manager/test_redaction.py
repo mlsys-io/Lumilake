@@ -30,6 +30,7 @@ from lumilake_server.runtime.runtime_manager import (
     FlowmeshRuntimeManager,
     _sanitize_flowmesh_api_error,
 )
+from tests.runtime.runtime_manager.conftest import API_URL as _API_URL
 from tests.runtime.runtime_manager.conftest import serve
 
 
@@ -253,18 +254,29 @@ async def test_output_result_retrieval_sanitizes_api_error_before_reraising(
         async def retrieve(self, task_id: str) -> Any:
             self.calls += 1
             if self.calls == 1:
-                return {
-                    "items": [
-                        {
-                            "index": 0,
-                            "json": {
-                                "choices": [{"message": {"content": "assistant reply"}}]
-                            },
-                            "text": "assistant reply",
-                            "prompt": "{{prompt}}",
-                        }
-                    ]
-                }
+                return _RESULT_ADAPTER.validate_python(
+                    {
+                        "task_type": "api",
+                        "executor": "api",
+                        "method": "POST",
+                        "url": "https://api.example.com/v1/chat",
+                        "status_code": 200,
+                        "items": [
+                            {
+                                "index": 0,
+                                "url": _API_URL,
+                                "status_code": 200,
+                                "json": {
+                                    "choices": [
+                                        {"message": {"content": "assistant reply"}}
+                                    ]
+                                },
+                                "text": "assistant reply",
+                                "prompt": "{{prompt}}",
+                            }
+                        ],
+                    }
+                )
             raise APIError(
                 "task spec invalid",
                 status_code=422,

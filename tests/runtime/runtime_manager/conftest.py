@@ -1,10 +1,65 @@
+from typing import Any
+
 import pytest
 from flowmesh.exceptions import CursorExpiredError
-from flowmesh.models.tasks import TaskStatusPage
+from flowmesh.models.result import AnyExecutorResult
+from flowmesh.models.tasks import TaskInfo, TaskStatusPage
+from flowmesh.resources.results import _RESULT_ADAPTER
 
 from lumilake import envs
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.utils.job_storage import InMemoryJobStorage
+
+API_URL = "https://api.example.com/v1/chat"
+
+
+def api_result(**payload: Any) -> AnyExecutorResult:
+    """An SDK API result as a task wrote it; ``payload`` carries its fields."""
+    return _RESULT_ADAPTER.validate_python(
+        {
+            "task_type": "api",
+            "executor": "api",
+            "method": "POST",
+            "url": API_URL,
+            "status_code": 200,
+            **payload,
+        }
+    )
+
+
+def python_result(value: Any) -> AnyExecutorResult:
+    """An SDK python result carrying ``value`` as a step's return value."""
+    return _RESULT_ADAPTER.validate_python(
+        {"task_type": "python", "exit_code": 0, "value": value}
+    )
+
+
+def task_info(submit_id: str | None = None, *, task_id: str = "t1") -> TaskInfo:
+    """A FlowMesh task document, its annotation carrying ``submit_id``."""
+    annotations = {"custom": {"lumilake_submit_id": submit_id}}
+    return TaskInfo.model_validate(
+        {
+            "task_id": task_id,
+            "workflow_id": "wf-1",
+            "owner_id": "owner",
+            "org_id": "org",
+            "supplier_id": "supplier",
+            "source": "kind: Task",
+            "task": {"metadata": {"annotations": annotations}},
+            "status": "DONE",
+            "submitted_at": "2026-11-27T00:00:00Z",
+            "submitted_ts": 0.0,
+            "usages": [],
+            "attempts": 0,
+            "max_attempts": 1,
+            "load": 0,
+            "depends_on": [],
+            "pending_dependencies": [],
+            "dependents": [],
+            "completed": True,
+            "failed": False,
+        }
+    )
 
 
 @pytest.fixture

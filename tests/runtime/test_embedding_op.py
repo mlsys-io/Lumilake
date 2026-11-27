@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from flowmesh.models.result import APIResult, EmbeddingResult, InferenceResult
 
 import lumilake_server.runtime.runtime_manager as fm_mod
 from lumilake import envs
@@ -383,59 +384,112 @@ async def test_aggregation_fails_fast_on_missing_embedding_path(
         )
 
 
+def _usage(**payload: Any) -> dict[str, Any]:
+    """A pooling usage block with the SDK's required token and latency fields."""
+    return {
+        "prompt_tokens": 0,
+        "total_tokens": 0,
+        "latency_sec": 0.0,
+        **payload,
+    }
+
+
+def _embedding_item(**payload: Any) -> EmbeddingResult:
+    """An embedding result carrying ``payload`` as its own flat result."""
+    return EmbeddingResult.model_validate(payload)
+
+
+def _api_result(items: list[dict[str, Any]] | None = None, **payload: Any) -> APIResult:
+    """An API result carrying ``items``; without items the result's own
+    ``payload`` fields are all it has."""
+    return APIResult.model_validate(
+        {
+            "executor": "api",
+            "method": "POST",
+            "url": "https://api.example.com/v1/chat",
+            "status_code": 200,
+            **payload,
+            **({"items": items} if items is not None else {}),
+        }
+    )
+
+
+def _api_item(**payload: Any) -> dict[str, Any]:
+    """One API item with the URL and status a task echoes onto each item."""
+    return {
+        "index": 0,
+        "url": "https://api.example.com/v1/chat",
+        "status_code": 200,
+        **payload,
+    }
+
+
+def _full_api_item(**payload: Any) -> dict[str, Any]:
+    """An item as the archive carries it, its unset default fields included."""
+    return {**_api_item(), "truncated": False, **payload}
+
+
 def test_resolve_output_items_accepts_flat_embedding_result() -> None:
     # Live FlowMesh embedding tasks return a flat result with no `items`
     # list: {"ok": true, "embedding_file": {...}, "usage": {...}}.
     manager = FlowmeshRuntimeManager()
-    results_json = {
-        "ok": True,
-        "embedding_file": {"path": "embeddings.safetensors"},
-        "usage": {"num_requests": 3, "embedding_dim": 384},
-    }
-    items = manager._resolve_output_items(results_json, "Embed")
-    assert items == [results_json]
+    result = _embedding_item(
+        ok=True,
+        embedding_file={"path": "embeddings.safetensors"},
+        usage=_usage(num_requests=3, embedding_dim=384),
+    )
+    assert manager._resolve_output_items(result, "Embed") == [
+        result.model_dump(mode="json")
+    ]
 
 
 def test_resolve_output_items_prefers_items_list_when_present() -> None:
+    """A result that carries its own ``items`` returns them as they are."""
     manager = FlowmeshRuntimeManager()
-    results_json = {"items": _embedding_items()}
-    assert manager._resolve_output_items(results_json, "Embed") == _embedding_items()
+    item = {
+        "index": 0,
+        "prompt": "p",
+        "output": "o",
+        "finish_reason": "stop",
+        "metadata": {"prompt": [{"role": "user", "content": "q"}]},
+    }
+    result = InferenceResult.model_validate({"items": [item]})
+    assert manager._resolve_output_items(result, "Chat") == [item]
 
 
 def test_resolve_output_items_fails_fast_without_items_or_embedding_file() -> None:
     manager = FlowmeshRuntimeManager()
     with pytest.raises(RuntimeError, match="produced no items"):
-        manager._resolve_output_items({"ok": True}, "Embed")
+        manager._resolve_output_items(_embedding_item(ok=True), "Embed")
 
 
 def test_resolve_output_items_accepts_api_text_result() -> None:
     manager = FlowmeshRuntimeManager()
-    results_json = {"text": "Hello from the API", "status_code": 200}
-    items = manager._resolve_output_items(results_json, "Chat", task_type="api")
-    assert items == [{"output": "Hello from the API"}]
+    result = _api_result(items=[_api_item(text="Hello from the API")])
+    assert manager._resolve_output_items(result, "Chat") == [
+        _full_api_item(text="Hello from the API")
+    ]
 
 
 def test_resolve_output_items_accepts_empty_api_text() -> None:
     """An empty assistant response is valid locally (``_coerce_output_value``
     preserves ``""``); API mode must not turn it into an execution failure."""
     manager = FlowmeshRuntimeManager()
-    results_json = {"text": "", "status_code": 200}
-    items = manager._resolve_output_items(results_json, "Chat", task_type="api")
-    assert items == [{"output": ""}]
+    result = _api_result(items=[_api_item(text="")])
+    assert manager._resolve_output_items(result, "Chat") == [_full_api_item(text="")]
 
 
 def test_resolve_output_items_api_prefers_items_when_present() -> None:
     manager = FlowmeshRuntimeManager()
-    results_json = {"items": [{"output": "x"}], "text": "y"}
-    assert manager._resolve_output_items(results_json, "Chat", task_type="api") == [
-        {"output": "x"}
-    ]
+    result = _api_result(items=[_api_item(text="x")], text="y")
+    assert manager._resolve_output_items(result, "Chat") == [_full_api_item(text="x")]
 
 
 def test_resolve_output_items_api_fails_without_text() -> None:
     manager = FlowmeshRuntimeManager()
+    result = _api_result(status_code=500)
     with pytest.raises(RuntimeError, match="no API response text"):
-        manager._resolve_output_items({"status_code": 500}, "Chat", task_type="api")
+        manager._resolve_output_items(result, "Chat")
 
 
 @pytest.mark.asyncio
@@ -447,12 +501,12 @@ async def test_flat_embedding_result_aggregates_to_artifact_ref(
     per-row `vectors` output items, not 1 — the bug that produced
     "Output length mismatch ... expected=3 got=1" downstream."""
     manager = FlowmeshRuntimeManager()
-    results_json = {
-        "ok": True,
-        "embedding_file": {"path": "embeddings.safetensors"},
-        "usage": {"num_requests": 3, "embedding_dim": 384},
-    }
-    items = manager._resolve_output_items(results_json, "Embed")
+    result = _embedding_item(
+        ok=True,
+        embedding_file={"path": "embeddings.safetensors"},
+        usage=_usage(num_requests=3, embedding_dim=384),
+    )
+    items = manager._resolve_output_items(result, "Embed")
     outputs = await manager._aggregate_output_node(
         output_op_id="Embed",
         output_task_id="task-1",
@@ -477,12 +531,12 @@ async def test_embedding_row_count_mismatch_fails_fast(
     """If the artifact's vector count doesn't match the expected slice
     length, fail fast instead of silently padding/truncating the output."""
     manager = FlowmeshRuntimeManager()
-    results_json = {
-        "ok": True,
-        "embedding_file": {"path": "embeddings.safetensors"},
-        "usage": {"num_requests": 3, "embedding_dim": 384},
-    }
-    items = manager._resolve_output_items(results_json, "Embed")
+    result = _embedding_item(
+        ok=True,
+        embedding_file={"path": "embeddings.safetensors"},
+        usage=_usage(num_requests=3, embedding_dim=384),
+    )
+    items = manager._resolve_output_items(result, "Embed")
     with pytest.raises(RuntimeError, match="row count mismatch"):
         await manager._aggregate_output_node(
             output_op_id="Embed",
