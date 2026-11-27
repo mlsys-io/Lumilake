@@ -481,10 +481,12 @@ def _attach_broadcast(
         hits.setdefault(key, []).append(position)
     covered = set()
     for key, group in hits.items():
-        if len(group) > 1 and _CARDINALITY == "one_to_one":
+        if len(group) > 1:
+            # An attach source pins one value to each key, since many_to_many cannot
+            # reach this path.
             raise ValueError(
-                "%s: duplicate key %s; declare many_to_many to read every value of it"
-                % (where, key)
+                "%s: duplicate key %s in an attach source, which pairs one value per"
+                " key" % (where, key)
             )
         if key not in by_key and _REQUIRE_MATCH:
             raise ValueError("%s: key %s is not in %r" % (_NODE, key, where))

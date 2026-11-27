@@ -444,6 +444,15 @@ def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None
         _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {})
 
 
+def test_a_broadcast_join_refuses_a_repeated_key_without_naming_many_to_many(
+    tmp_path: Path,
+) -> None:
+    """A row_key join pairs one further row per key, so a repeat says just that."""
+    with pytest.raises(ValueError, match="repeats in a further input") as caught:
+        _broadcast(tmp_path, sizes=_SIZES + [_SIZES[0]])
+    assert "many_to_many" not in str(caught.value)
+
+
 def test_one_to_many_keeps_every_row_of_a_repeated_key(tmp_path: Path) -> None:
     """Each first-input row of a key keeps its own output row, in its order."""
     node = _pairs(
