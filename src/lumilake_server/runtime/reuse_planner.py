@@ -1359,16 +1359,19 @@ def _group_inputs(
 
 def _content_input(records: ContentRecords) -> _Input:
     """An unversioned read the plan re-ran, named by the writer's own rule: each
-    row by the value the read returned, so the two sides share one identity."""
+    row by the value the read returned, so the two sides share one identity. A
+    read that hands one item for several records keys nothing: its reader reads
+    that item whole, so its rows have no key to take by position."""
     named = content_input(
         NodeRecords(keyed=records.keyed, values=records.values, keys=records.keys)
     )
     positions = range(len(records.values)) if records.keyed else range(1)
+    line_up = len(records.items) == len(records.values)
     return _Input(
         named=named,
         keys=(
             [records.keys[position] for position in positions]
-            if records.keyed
+            if records.keyed and line_up
             else [None]
         ),
     )

@@ -880,16 +880,23 @@ def _keyed_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _keyed_content(read: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """A keyed read re-run, as the plan reads one reread row per key."""
+    """A keyed read re-run that hands one item per record, as its reader reads it."""
     return {
-        read: NodeRecords(keyed=True, values=rows, keys=[r["case_id"] for r in rows])
+        read: NodeRecords(
+            keyed=True,
+            values=rows,
+            keys=[r["case_id"] for r in rows],
+            items=[_read_item([row])[0] for row in rows],
+        )
     }
 
 
 @pytest.mark.asyncio
 async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
     """A keyed retrieval is versioned per row, so a changed row's consumer
-    misses on that key alone while every other key's record still hits."""
+    misses on that key alone while every other key's record still hits. A read
+    that hands one item holding every record keys none of them, so its reader is
+    computed whole rather than served from one row's identity."""
     rows = [{"case_id": "c1", "t": "x"}, {"case_id": "c2", "t": "y"}]
     changed = [rows[0], {"case_id": "c2", "t": "y!"}]
     graph = _runtime_graph(_KEYED_TAG)
@@ -906,6 +913,10 @@ async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
     assert _decisions(plan)["Tag"] == ("hit", None), _decisions(plan)
     plan, _ = _planned(storage, graph, content_values=_keyed_content(read, changed))
     assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
+    whole = _keyed_content(read, changed)
+    whole[read].items = _keyed_table(changed)["items"]
+    plan, _ = _planned(storage, graph, content_values=whole)
+    assert _decisions(plan)["Tag"] == ("miss", "unkeyed row"), _decisions(plan)
 
 
 @pytest.mark.asyncio
@@ -1723,13 +1734,13 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     assert parents == ({0, 1} if per_row else {0}), parents
     plan = await once(rows, "req-2", True)
     assert decisions(plan)["Split"] == (
-        ("hit", None) if per_row else ("miss", "no entry")
+        ("hit", None) if per_row else ("miss", "unkeyed row")
     )
     changed = [rows[0], {"id": "a2", "t": "z"}]
     plan = await once(changed, "req-3", True)
     assert state["column"] == _read_items(changed, per_row), state["column"]
     assert decisions(plan)["Split"] == (
-        ("miss", "partial children") if per_row else ("miss", "no entry")
+        ("miss", "partial children") if per_row else ("miss", "unkeyed row")
     ), decisions(plan)
     assert {item["parent"] for item in computed(split)} == ({1} if per_row else {0})
     assert [item["output"]["t"] for item in computed(split)] == (
