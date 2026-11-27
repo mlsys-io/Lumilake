@@ -879,14 +879,20 @@ def _keyed_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"items": [{"table": {"df": json.dumps(columns)}}]}
 
 
-def _keyed_content(read: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """A keyed read re-run that hands one item per record, as its reader reads it."""
+def _keyed_content(
+    read: str, rows: list[dict[str, Any]], *, per_row: bool = True
+) -> dict[str, Any]:
+    """A keyed read re-run, handing one item per record or one holding every one."""
     return {
         read: NodeRecords(
             keyed=True,
             values=rows,
             keys=[r["case_id"] for r in rows],
-            items=[_keyed_table([row])["items"][0] for row in rows],
+            items=(
+                [_keyed_table([row])["items"][0] for row in rows]
+                if per_row
+                else _keyed_table(rows)["items"]
+            ),
         )
     }
 
@@ -913,8 +919,7 @@ async def test_a_keyed_read_versions_its_consumer_per_row() -> None:
     assert _decisions(plan)["Tag"] == ("hit", None), _decisions(plan)
     plan, _ = _planned(storage, graph, content_values=_keyed_content(read, changed))
     assert _decisions(plan)["Tag"] == ("miss", "partial records"), _decisions(plan)
-    whole = _keyed_content(read, changed)
-    whole[read].items = _keyed_table(changed)["items"]
+    whole = _keyed_content(read, changed, per_row=False)
     plan, _ = _planned(storage, graph, content_values=whole)
     assert _decisions(plan)["Tag"] == ("miss", "unkeyed row"), _decisions(plan)
 

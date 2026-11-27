@@ -136,6 +136,13 @@ class ContentRecords(BaseModel):
     def value_at(self, position: int) -> Any:
         return self.values[position] if self.keyed else self.values
 
+    @property
+    def lines_up(self) -> bool:
+        """Whether the read hands one item per record, so its rows and the items
+        its readers take stand at the same positions; one item for several
+        records leaves them unkeyed."""
+        return len(self.items) == len(self.values)
+
 
 class GroupSlot(BaseModel):
     """One live group of a partially served reduce: its key, its live member
@@ -750,19 +757,15 @@ def _expand_parent_keys(
 def _content_parent_keys(plan: RecordPlan, decision: ReusePlan) -> list[str] | None:
     """A live parent key per row an expand reads, from an unversioned read the
     plan re-ran and its rows read keyed; ``None`` when that read is not its one
-    keyed input, or hands one item for several records, so its records and the
-    items an expand expands no longer line up."""
+    keyed input."""
     keyed = [
         node
         for node in input_nodes(plan)
         if node in decision.content and decision.content[node].keyed
     ]
-    if len(keyed) != 1:
+    if len(keyed) != 1 or not decision.content[keyed[0]].lines_up:
         return None
-    content = decision.content[keyed[0]]
-    if len(content.items) != len(content.values):
-        return None
-    keys = content.keys
+    keys = decision.content[keyed[0]].keys
     if not keys or any(key is None for key in keys):
         return None
     return [str(key) for key in keys]
@@ -1359,19 +1362,16 @@ def _group_inputs(
 
 def _content_input(records: ContentRecords) -> _Input:
     """An unversioned read the plan re-ran, named by the writer's own rule: each
-    row by the value the read returned, so the two sides share one identity. A
-    read that hands one item for several records keys nothing: its reader reads
-    that item whole, so its rows have no key to take by position."""
+    row by the value the read returned, so the two sides share one identity."""
     named = content_input(
         NodeRecords(keyed=records.keyed, values=records.values, keys=records.keys)
     )
     positions = range(len(records.values)) if records.keyed else range(1)
-    line_up = len(records.items) == len(records.values)
     return _Input(
         named=named,
         keys=(
             [records.keys[position] for position in positions]
-            if records.keyed and line_up
+            if records.keyed and records.lines_up
             else [None]
         ),
     )
