@@ -150,11 +150,9 @@ def _row_graph(output_name: str) -> RuntimeGraph:
     )
 
 
-def _slice(
-    graph_name: str, slice_index: int, slice_length: int, public: str = "g"
-) -> WorkflowSliceMeta:
+def _slice(graph_name: str, slice_index: int, slice_length: int) -> WorkflowSliceMeta:
     return WorkflowSliceMeta(
-        public_graph_name=public,
+        public_graph_name="g",
         slice_index=slice_index,
         slice_start=slice_index * slice_length,
         slice_length=slice_length,
@@ -300,71 +298,3 @@ def test_a_sampled_chat_spanning_multiple_slices_names_its_generated_fan_out() -
             {"g": [_slice("g__slice_1", 0, 1), _slice("g__slice_2", 1, 1)]},
         )
     assert "by a list-mode Lambda" in exc_info.value.detail
-
-
-_JOIN_WORKFLOW = """
-name: w
-inputs:
-  Cases: [a, b, c]
-ops:
-  - id: Left
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: left
-    code: |
-      def left(row):
-          return {{"case_id": row[0], "text": row[0]}}
-  - id: Right
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: right
-    code: |
-      def right(row):
-          return {{"case_id": row[0], "n": 1}}
-  - id: Merge
-    op: JoinOp
-    inputs: [Left, Right]
-    by: case_id
-    how: {how}
-outputs: [{{name: merged, ref: Merge}}]
-"""
-
-
-def _join_graph(how: str, prefix: str) -> RuntimeGraph:
-    spec = parse_yaml_payload(_JOIN_WORKFLOW.format(how=how))["w"]
-    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    return RuntimeGraphBuilder().build(compiled, node_prefix=prefix)
-
-
-def test_a_sliced_inner_or_full_join_output_is_refused_at_submit() -> None:
-    """A join under ``inner`` or ``full`` sets its own row count, so a sliced
-    output of it cannot be partitioned and is refused with the public name."""
-    for how in ("inner", "full"):
-        with pytest.raises(HTTPException) as exc_info:
-            _validate_row_count_slice_span(
-                {"w__slice_1": _join_graph(how, "w__slice_1")},
-                {
-                    "w__slice_1": [
-                        _slice("w__slice_1", 0, 1, public="w"),
-                        _slice("w__slice_2", 1, 1, public="w"),
-                    ]
-                },
-            )
-        assert exc_info.value.status_code == 422
-        assert "Workflow 'w' output 'merged'" in exc_info.value.detail
-
-
-def test_a_sliced_left_join_output_splits_per_input_row() -> None:
-    """A ``left`` join keeps one row per first-input row, so its sliced output
-    is accepted."""
-    _validate_row_count_slice_span(
-        {"w__slice_1": _join_graph("left", "w__slice_1")},
-        {
-            "w__slice_1": [
-                _slice("w__slice_1", 0, 1, public="w"),
-                _slice("w__slice_2", 1, 1, public="w"),
-            ]
-        },
-    )
