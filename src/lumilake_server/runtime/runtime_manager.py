@@ -47,7 +47,7 @@ from pydantic import BaseModel
 
 from lumilake import envs
 from lumilake.log import Logger, LogLevel, init_child_logger
-from lumilake_hook import DataProfileResultRow, WorkerProfile
+from lumilake_hook import WorkerProfile
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
@@ -1525,7 +1525,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[DataProfileResultRow]] | None = None,
     ) -> dict[str, Any]:
         """
         Submit a batch of graphs to Flowmesh with a schedule hint and worker assignment.
@@ -1538,9 +1537,6 @@ class FlowmeshRuntimeManager:
             Worker assignment.
         worker_ids : list[str]
             Workers selected to execute this batch.
-        data_profile_results : dict[str, list[DataProfileResultRow]], optional
-            Data profile results, keyed by
-            ``"data_profile::<node_id>::<query_name>"``.
         Returns
         -------
         dict
@@ -1550,7 +1546,7 @@ class FlowmeshRuntimeManager:
         submitted: list[str] = []
         try:
             return await self._process_request(
-                request_info, schedule, worker_ids, data_profile_results, submitted
+                request_info, schedule, worker_ids, submitted
             )
         except Exception:
             for workflow_id in submitted:
@@ -1562,7 +1558,6 @@ class FlowmeshRuntimeManager:
         request_info: RequestInfo,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[DataProfileResultRow]] | None,
         submitted: list[str],
     ) -> dict[str, Any]:
         """``process_request`` body; appends the FlowMesh workflow id to

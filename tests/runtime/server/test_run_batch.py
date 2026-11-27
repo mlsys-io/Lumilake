@@ -574,12 +574,6 @@ async def test_process_batch_uses_server_data_profile_collection(
     server = server_factory()
 
     class StrictRuntimeManager(RecordingRuntimeManager):
-        def __init__(self) -> None:
-            super().__init__()
-            self.last_data_profile_results: (
-                dict[str, list[DataProfileResultRow]] | None
-            ) = None
-
         async def profile_data(
             self, request_info: Any
         ) -> dict[str, list[DataProfileResultRow]]:
@@ -590,9 +584,7 @@ async def test_process_batch_uses_server_data_profile_collection(
             request_info: Any,
             schedule: Schedule,
             worker_ids: list[str],
-            data_profile_results: dict[str, list[DataProfileResultRow]] | None,
         ) -> dict[str, Any]:
-            self.last_data_profile_results = data_profile_results
             flat_outputs = {
                 node_id: [f"out-{node_id}"] for node_id in request_info.output_node_map
             }
@@ -654,6 +646,7 @@ async def test_process_batch_uses_server_data_profile_collection(
         member_request_ids: set[str] | None = None,
         bearer_token: str | None = None,
     ) -> Schedule:
+        observed_optimizer_profile.update(data_profile_results)
         return Schedule(
             worker_assignment={selected_workers[0]: list(runtime_graph.node_order)}
         )
@@ -672,6 +665,7 @@ async def test_process_batch_uses_server_data_profile_collection(
         ]
     }
     observed_sources: dict[str, list[Any]] = {}
+    observed_optimizer_profile: dict[str, list[DataProfileResultRow]] = {}
 
     async def _fake_collect_data_profile(
         **kwargs: Any,
@@ -686,7 +680,7 @@ async def test_process_batch_uses_server_data_profile_collection(
 
     await server._run_batch(["worker-1"], batch)
 
-    assert runtime_manager.last_data_profile_results == expected_profile
+    assert observed_optimizer_profile == expected_profile
     assert len(observed_sources) == 1
     only_group_sources = next(iter(observed_sources.values()))
     assert only_group_sources
@@ -884,7 +878,6 @@ class _EmbeddingRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         items = [
@@ -918,7 +911,6 @@ class _StaleSingleItemRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flat_outputs = {
             node_id: ["single-collapsed-item"]
@@ -1106,7 +1098,6 @@ class _ListLambdaRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
@@ -1143,7 +1134,6 @@ class _RowwiseApiRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
@@ -1175,7 +1165,6 @@ class _RowwiseApiListLambdaRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
@@ -1208,7 +1197,6 @@ class _RowwisePythonDownstreamListLambdaRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
@@ -1691,7 +1679,6 @@ class _AlignedRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         flowmesh_manager = FlowmeshRuntimeManager()
         flat_outputs: dict[str, list[str]] = {}
@@ -1925,7 +1912,6 @@ async def test_list_lambda_output_two_values_for_one_row_slice_fails_closed(
             request_info: Any,
             schedule: Schedule,
             worker_ids: list[str],
-            data_profile_results: dict[str, list[dict[str, Any]]] | None,
         ) -> dict[str, Any]:
             flat_outputs: dict[str, list[str]] = {}
             for node_id in request_info.output_node_map:
@@ -2254,7 +2240,6 @@ class _OutputRuntimeManager(RecordingRuntimeManager):
         request_info: Any,
         schedule: Schedule,
         worker_ids: list[str],
-        data_profile_results: dict[str, list[dict[str, Any]]] | None,
     ) -> dict[str, Any]:
         members = set(request_info.member_request_ids)
         self.submissions.append(members)

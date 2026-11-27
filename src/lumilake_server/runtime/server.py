@@ -3299,7 +3299,6 @@ class LumilakeServer:
                 batch_request_info,
                 schedule,
                 selected_workers,
-                normalized_data_profile_results,
             )
         except RequestCancelledError:
             raise
