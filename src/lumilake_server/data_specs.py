@@ -2,6 +2,7 @@
 
 import re
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -43,6 +44,14 @@ PythonMode = Literal[
     "reduce",
     "join",
 ]
+
+
+class JoinHow(StrEnum):
+    """Which keys a lowered join keeps."""
+
+    INNER = "inner"
+    LEFT = "left"
+    FULL = "full"
 
 
 class _StrictModel(BaseModel):
@@ -245,13 +254,14 @@ class ColumnPlanEntry(DataSpecModel):
 
 
 class JoinDescription(DataSpecModel):
-    """A lowered join: key path, row-column plan indexes, attach values and sources."""
+    """A lowered join: key path, how, match rule, row columns and attach values."""
 
     node: str
     by: list[str]
     inputs: list[int]
     attach: list[tuple[str, int, int]]
-    missing: Literal["null", "error"]
+    how: JoinHow
+    require_match: bool
 
 
 class PythonData(DataSpecModel):

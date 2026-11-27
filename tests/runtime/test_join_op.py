@@ -206,8 +206,10 @@ def test_join_refuses_a_format_op_as_an_attach_target() -> None:
         _join_node(ops)
 
 
-def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
-    node = _join_node(_merge("State, Route.diagnose", "    missing: error\n"))
+def test_join_refuses_a_duplicate_key_and_a_stray_row_under_require_match(
+    tmp_path: Path,
+) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
     with pytest.raises(ValueError, match="duplicate key"):
         _run(
             tmp_path,
@@ -225,6 +227,26 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
             {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]},
             name="stray",
         )
+
+
+def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
+    stray = {"case_id": "z", "text": "not in the first input"}
+    staged = {
+        0: [{"output": [_ROWS[0], _ROWS[1]]}],
+        1: [{"output": [_ROWS[1], stray]}],
+    }
+
+    def run(how: str, name: str) -> list[dict[str, Any]]:
+        node = _join_node(_merge("State, Route.diagnose", f"    how: {how}\n"))
+        return [item["output"] for item in _run(tmp_path, node, staged, name)["items"]]
+
+    left = run("left", "left")
+    assert [row["case_id"] for row in left] == ["a", "b"]
+    assert left[0]["text"] == "hello"
+    assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
+    full = run("full", "full")
+    assert [row["case_id"] for row in full] == ["a", "b", "z"]
+    assert full[2] == stray
 
 
 def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(

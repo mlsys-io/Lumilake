@@ -43,7 +43,8 @@ _JOIN = json.loads({join!r})
 
 _NODE = _JOIN["node"]
 _BY = _JOIN["by"]
-_MISSING = _JOIN["missing"]
+_HOW = _JOIN["how"]
+_REQUIRE_MATCH = _JOIN["require_match"]
 
 
 def _named(entry):
@@ -86,8 +87,8 @@ def _keyed(rows, where):
 
 
 def _required(output, keys, where):
-    """Fail on a key only one side carries, so a stray row never loses its fields."""
-    if _MISSING != "error":
+    """With require_match, fail on a key one input carries and another lacks."""
+    if not _REQUIRE_MATCH:
         return
     for key in output:
         if key not in keys:
@@ -115,10 +116,15 @@ def main(inputs):
         where = _where(_PLAN[index])
         keyed = _keyed(_rows(column, where), where)
         _required(output, keyed, where)
+        if _HOW == "inner":
+            for key in [key for key in output if key not in keyed]:
+                del output[key]
         for key, row in keyed.items():
             if key in output:
                 for name, value in row.items():
                     _merged(output[key], name, value, where)
+            elif _HOW == "full":
+                output[key] = row.copy()
     for name, value_index, source_index in _JOIN["attach"]:
         where = "%s attach field %r" % (_NODE, name)
         values = [

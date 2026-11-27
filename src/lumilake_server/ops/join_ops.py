@@ -1,16 +1,18 @@
 """``JoinOp``: merge keyed row columns and 1:1 outputs onto the rows they came from."""
 
 import re
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictStr,
     field_validator,
 )
 
+from lumilake_server.data_specs import JoinHow
 from lumilake_server.ops.ops import Op
 from lumilake_server.ops.spec_validation import validate_fields
 
@@ -26,8 +28,9 @@ class JoinSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     by: list[StrictStr]
+    how: JoinHow = JoinHow.LEFT
+    require_match: StrictBool = False
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
-    missing: Literal["null", "error"] = "null"
 
     @field_validator("by", mode="before")
     @classmethod
@@ -96,8 +99,12 @@ class JoinOp(Op):
         return self.spec.by
 
     @property
-    def missing(self) -> Literal["null", "error"]:
-        return self.spec.missing
+    def how(self) -> JoinHow:
+        return self.spec.how
+
+    @property
+    def require_match(self) -> bool:
+        return self.spec.require_match
 
     @property
     def columns(self) -> list[Op]:
@@ -128,7 +135,8 @@ class JoinOp(Op):
                 field: self.inputs[index].id
                 for field, index in self.attach_indices.items()
             },
-            "missing": self.missing,
+            "how": self.how,
+            "require_match": self.require_match,
         }
 
     @classmethod
