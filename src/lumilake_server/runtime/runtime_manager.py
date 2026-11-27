@@ -36,7 +36,7 @@ from flowmesh.models.result import (
     InferenceResult,
     PythonResult,
 )
-from flowmesh.models.tasks import TaskStatusPage, TaskStatusRow
+from flowmesh.models.tasks import TaskInfo, TaskStatusPage, TaskStatusRow
 from flowmesh.models.workflows import Workflow
 
 from lumilake import envs
@@ -249,6 +249,26 @@ def _result_items(result: AnyExecutorResult) -> list[dict[str, Any]] | None:
     if "items" not in result.model_fields_set:
         return None
     return [item.model_dump(mode="json") for item in result.items]
+
+
+def _task_annotations(task_info: TaskInfo) -> Mapping[str, Any]:
+    """A task's Kubernetes metadata annotations, empty when it carries none.
+
+    ``TaskInfo.task`` is the SDK's untyped task document."""
+    metadata = task_info.task.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return {}
+    annotations = metadata.get("annotations")
+    return annotations if isinstance(annotations, Mapping) else {}
+
+
+def _submit_id_of(task_info: TaskInfo) -> str | None:
+    """The Lumilake submit id an earlier attempt stamped on a task, if any."""
+    custom = _task_annotations(task_info).get("custom")
+    submit_id = (
+        custom.get("lumilake_submit_id") if isinstance(custom, Mapping) else None
+    )
+    return submit_id if isinstance(submit_id, str) else None
 
 
 def _split_walk_part(part: str) -> tuple[str, int | None]:
@@ -549,14 +569,13 @@ class FlowmeshRuntimeManager:
     async def fetch_task_description(
         self,
         task_id: str,
-    ) -> dict[str, Any]:
+    ) -> TaskInfo:
         try:
-            task_info = await _retry_transient_read(
+            return await _retry_transient_read(
                 lambda: self.fm.tasks.retrieve(task_id), f"task {task_id}"
             )
         except APIError as e:
             raise _sanitize_flowmesh_api_error(e) from None
-        return task_info.model_dump()
 
     async def fetch_workflow_task_statuses(
         self,
@@ -593,8 +612,7 @@ class FlowmeshRuntimeManager:
             if not wf.task_ids or datetime.fromisoformat(wf.submitted_at) < cutoff:
                 continue
             desc = await self.fetch_task_description(wf.task_ids[0])
-            custom = desc["task"]["metadata"]["annotations"].get("custom") or {}
-            if custom.get("lumilake_submit_id") == submit_id:
+            if _submit_id_of(desc) == submit_id:
                 return wf
         return None
 
