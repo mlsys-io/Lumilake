@@ -234,7 +234,6 @@ async def _write(
         round_number=0,
         runtime_graph=graph,
         node_task_map={node_of[op]: f"task-{node_of[op]}-{run}" for op in tasks},
-        task_worker={},
         results={f"task-{node_of[op]}-{run}": value for op, value in tasks.items()},
     )
     return storage

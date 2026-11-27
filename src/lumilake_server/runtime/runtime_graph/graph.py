@@ -1,6 +1,6 @@
 import hashlib
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self
@@ -156,7 +156,11 @@ class RuntimeGraph:
             exported.append(node_payload)
         return exported
 
-    def topological_order(self) -> list[str]:
+    def topological_order(
+        self, extra_edges: Mapping[str, Iterable[str]] | None = None
+    ) -> list[str]:
+        """Node ids in dependency order, with each ``extra_edges`` source ordered
+        ahead of every node it names."""
         # A runtime node's ``dependencies`` may reference DSL-layer op ids
         # that never materialized as runtime nodes (e.g. an ``InputOp``
         # consumed as a retrieval param). We include those in the
@@ -170,6 +174,11 @@ class RuntimeGraph:
                 if dep not in graph:
                     graph[dep] = set()
                 graph[dep].add(node_id)
+        for source, dependents in (extra_edges or {}).items():
+            if source not in graph:
+                graph[source] = set()
+            for dependent in dependents:
+                graph[source].add(dependent)
         order_index = {node_id: idx for idx, node_id in enumerate(self.node_order)}
         return [
             node_id

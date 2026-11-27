@@ -174,7 +174,6 @@ async def _write(
         round_number=0,
         runtime_graph=graph,
         node_task_map={node_of[name]: f"task-{name}" for name in items},
-        task_worker={},
         results={f"task-{name}": {"items": rows} for name, rows in items.items()},
     )
 

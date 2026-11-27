@@ -30,7 +30,13 @@ from lumilake_server.data_specs import (
     parse_data_spec,
 )
 from lumilake_server.graphs import Graph
-from lumilake_server.ops import LLMChatOp, OpMessage, as_output, input_placeholder
+from lumilake_server.ops import (
+    LLMChatOp,
+    OpMessage,
+    RecordKey,
+    as_output,
+    input_placeholder,
+)
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.protocol import RequestCancelledError
@@ -113,6 +119,15 @@ def _stored(value: Any, op: str, record: str | None = None) -> RecordEntry:
     )
 
 
+def _read_at(graph: Any, node: str, path: str) -> Any:
+    """The op reading its first served column at ``path``."""
+    assert isinstance(spec := graph.nodes[node].data_spec, PythonData)
+    entry = spec.plan[0].model_copy(update={"path": path})
+    return replace(
+        graph.nodes[node], data_spec=spec.model_copy(update={"plan": [entry]})
+    )
+
+
 def _node(graph: Any, name: str) -> str:
     return next(node for node in graph.nodes if graph.op_names.get(node) == name)
 
@@ -178,7 +193,6 @@ async def _run(
             for node, name in names.items()
             if name in {**results, **raw}
         },
-        task_worker={},
         results=tasks,
         served=served,
         content_nodes=content_nodes,
@@ -426,6 +440,52 @@ async def test_a_chat_op_hits_on_its_record_keys(
 
 
 @pytest.mark.asyncio
+async def test_a_served_local_chat_keeps_its_grouped_item_shape() -> None:
+    """A served local rowwise chat answers its reader with the live grouped
+    item, one ``output`` list holding every row's reply, not one item per row."""
+    graph = _chat_graph(_BASE_ROWS)
+    join = _node(graph, "Join")
+    replies = [row["id"] for row in _BASE_ROWS]
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-1",
+        graph=graph,
+        items={"Join": [{"output": replies}]},
+    )
+    plan, dispatched = _planned(storage, graph)
+    assert _decisions(plan)["Join"] == ("hit", None)
+    assert not any(n == join for n in dispatched.nodes)
+    final = dispatched.nodes[_node(graph, "Final")]
+    assert isinstance(final.data_spec, PythonData)
+    (entry,) = final.data_spec.plan
+    assert entry.values == [["a", "b"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "value",
+    [7, True, None, '{"a": 1}', {"a": 1}, ["a"], "plain", 0.5],
+    ids=["int", "bool", "null", "json-text", "dict", "list", "text", "float"],
+)
+async def test_a_row_steps_served_item_equals_its_live_item(value: Any) -> None:
+    """A served row step's item is the live one, typed ``value`` under it."""
+    graph = _runtime_graph(_WORKFLOW)
+    join = _node(graph, "Join")
+    text = value if isinstance(value, str) else json.dumps(value)
+    graph.nodes[join] = _read_at(graph, join, "value")
+    items = {"Mark": [{"output": text, "value": value}] * 2}
+    storage = InMemoryJobStorage()
+    await _run(storage, _WORKFLOW, {"Mark": [value] * 2}, "req-1", items=items)
+    plan, sent = _planned(storage, graph)
+    served = sent.nodes[join].data_spec
+    assert _decisions(plan)["Mark"] == ("hit", None)
+    assert isinstance(served, PythonData) and served.plan[0].values == [value, value]
+
+
+@pytest.mark.asyncio
 async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
     """A row step's served item keeps a typed ``value`` under it."""
     graph = _runtime_graph(_WORKFLOW)
@@ -446,29 +506,62 @@ async def test_a_row_steps_served_item_carries_its_typed_value() -> None:
     assert isinstance(served, PythonData) and served.plan[0].values == ["ONE", "TWO"]
 
 
+_MARK_OP: dict[str, Any] = {
+    "id": "Mark",
+    "op": "LambdaOp",
+    "inputs": ["Rows"],
+    "mode": "row",
+    "fn_name": "mark",
+    "code": "lambda c: json.loads(c[0][0])",
+    "key": {"node": "Rows", "path": "id"},
+}
+_PARSE_OP = {"id": "Parsed", "op": "ParseOp", "inputs": ["Mark"]}
+_CHANGED_PARSE = {**_PARSE_OP, "on_fail": "raw"}
+_CODE_OUT = "def out(c):\n    return [str(v) + '!' for v in c[0]]\n"
+
+
+def _parse_workflow(rows: list[dict[str, Any]], *more: dict[str, Any]) -> Any:
+    """A keyed mark step, a parse step and further ops, over ``rows`` as rows."""
+    ops = [_MARK_OP, _PARSE_OP, *more]
+    ref = ops[-1]["id"]
+    return {
+        "name": "parse",
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": ops,
+        "outputs": [{"name": "o", "ref": ref}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_parse_steps_field_is_served_under_reuse() -> None:
+    """A parse step's stored record serves a reader of ``items.output.<field>``."""
+    rows = [{"id": "a", "text": "one"}]
+    grade = {
+        "id": "Grade",
+        "op": "LambdaOp",
+        "inputs": ["Parsed"],
+        "mode": "row",
+        "fn_name": "grade",
+        "key": {"node": "Parsed", "path": "id"},
+        "code": "lambda c: ['ok' for v in c[0]]",
+    }
+    graph = _runtime_graph(_parse_workflow(rows, grade))
+    node = _node(graph, "Grade")
+    graph.nodes[node] = _read_at(graph, node, "value.text")
+    storage = InMemoryJobStorage()
+    await _run(storage, {}, {"Mark": rows, "Parsed": rows}, "req-1", graph=graph)
+    plan, _ = _planned(storage, graph)
+    assert _decisions(plan)["Parsed"] == ("hit", None), _decisions(plan)
+
+
 @pytest.mark.asyncio
 async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     """A parse step rerun while its keyed input is served stores under that
     input's keys, so the next run hits it."""
     rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
     parsed = [{"text": row["text"]} for row in rows]
-    mark = {
-        "id": "Mark",
-        "op": "LambdaOp",
-        "inputs": ["Rows"],
-        "mode": "row",
-        "fn_name": "mark",
-        "code": "lambda c: json.loads(c[0][0])",
-        "key": {"node": "Rows", "path": "id"},
-    }
-    parse = {"id": "Parsed", "op": "ParseOp", "inputs": ["Mark"]}
-    workflow: dict[str, Any] = {
-        "name": "parse",
-        "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": [mark, parse],
-        "outputs": [{"name": "p", "ref": "Parsed"}],
-    }
-    changed = {**workflow, "ops": [mark, {**parse, "on_fail": "raw"}]}
+    workflow = _parse_workflow(rows)
+    changed = {**workflow, "ops": [_MARK_OP, _CHANGED_PARSE]}
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
     planner, graph = _planner(storage), _runtime_graph(changed)
@@ -483,6 +576,43 @@ async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
     assert {e.record for e in entries.entries if e.op == "Parsed"} == {"a", "b"}
     again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
     assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
+
+
+@pytest.mark.asyncio
+async def test_a_second_redispatched_row_step_keeps_inheriting_keys() -> None:
+    """An undeclared row step after a re-dispatched parse stores under the served
+    keys, so a third run hits it instead of missing with no entry."""
+    rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
+    parsed, out = [{"text": row["text"]} for row in rows], ["one", "two"]
+    out_op = {
+        "id": "Out",
+        "op": "LambdaOp",
+        "inputs": ["Parsed"],
+        "mode": "row",
+        "fn_name": "out",
+        "code": _CODE_OUT,
+    }
+    workflow = _parse_workflow(rows, out_op)
+    changed = {**workflow, "ops": [_MARK_OP, _CHANGED_PARSE, out_op]}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Mark": rows, "Parsed": parsed, "Out": out}, "req-1")
+    planner, graph = _planner(storage), _runtime_graph(changed)
+    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
+    assert _decisions(plan)["Parsed"] == ("miss", "spec changed"), _decisions(plan)
+    served = served_records(plan)
+    await _run(
+        storage,
+        changed,
+        {"Parsed": parsed, "Out": out},
+        "req-2",
+        graph=dispatched,
+        served=served,
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == "Out"} == {"a", "b"}
+    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
+    assert _decisions(again)["Out"] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio
@@ -614,7 +744,7 @@ async def test_a_whole_op_hit_feeds_its_consumer_the_same_column() -> None:
     assert isinstance(consumer.data_spec, PythonData)
     (entry,), (hit,) = consumer.data_spec.plan, plan.hits.values()
     staged = ColumnPlanEntry(kind="stage", node="x")
-    assert entry.values == served_column(hit, staged, "output") == ["ab", 3]
+    assert entry.values == served_column(hit, staged, "output", False) == ["ab", 3]
     run = PythonData(plan=[entry], code="", fn_name="", timeout_s=60)
     blob = python_step.runtime_blob()
     assert "inputs" not in python_step.flowmesh_spec("Consume", run, {blob.key: blob})
@@ -625,13 +755,13 @@ def test_a_served_output_item_is_wrapped_as_a_live_read_sees_it() -> None:
     staged, row = ColumnPlanEntry(kind="stage", node="x"), {"output": 1, "x": 2}
     entry = [_stored(row, "Final", "a")]
     output = staged.model_copy(update={"path": "output"})
-    assert served_column(entry, output, "output") == [row]
-    assert served_column(entry, staged, "output") == [row]
+    assert served_column(entry, output, "output", False) == [row]
+    assert served_column(entry, staged, "output", False) == [row]
     flat = [_stored([["x", "y"]], "Expand")]
     flatten = staged.model_copy(update={"flatten": True})
-    assert served_column(flat, flatten, "output") == ["x", "y"]
+    assert served_column(flat, flatten, "output", False) == ["x", "y"]
     scored, score = [_stored({"index": 0, "score": 0.5}, "E", "a")], {"path": "score"}
-    assert served_column(scored, staged.model_copy(update=score), None) == [0.5]
+    assert served_column(scored, staged.model_copy(update=score), None, False) == [0.5]
 
 
 @pytest.mark.asyncio
@@ -1831,3 +1961,107 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
     )
     assert computed(split) == (["z"] if per_row else ["x", "z"])
     assert sorted(i["output"] for i in state[f"task-{tag}"]["items"]) == ["X", "Z"]
+
+
+@pytest.mark.asyncio
+async def test_a_reuse_run_stores_the_seeded_chat_it_redispatched() -> None:
+    """Keyed Cases served and a seeded keyed chat re-dispatched: the reuse write
+    holds the chat's per-row records, so a third run serves the chat."""
+    graph = _chat_graph(_BASE_ROWS)
+    join, mark = _node(graph, "Join"), _node(graph, "Mark")
+    seeds = "lambda_keyed_Seeds_1"
+    graph = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            seeds: replace(
+                graph.nodes[mark],
+                node_id=seeds,
+                dependencies=(),
+                data_spec=PythonData(
+                    mode="list", fn_name="seeds", code="lambda c: [7, 9]"
+                ),
+            ),
+        },
+        node_order=[*graph.node_order, seeds],
+    )
+    graph.op_names[seeds] = "Seeds"
+    assert isinstance(spec := graph.nodes[join].data_spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(
+            update={"seeds": NodeRead(node=seeds, path="value.items.output")}
+        ),
+    )
+    graph.record_keys[join] = RecordKey(node=mark, path="id")
+    replies = ["A", "B"]
+    items: dict[str, list[Any]] = {
+        "Seeds": [{"output": 7}, {"output": 9}],
+        "Join": [{"output": replies}],
+    }
+    storage = InMemoryJobStorage()
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Mark": _BASE_ROWS, "Join": replies},
+        "req-1",
+        graph=graph,
+        items=items,
+    )
+    changed = replace(
+        graph,
+        nodes={
+            **graph.nodes,
+            join: replace(
+                graph.nodes[join],
+                data_spec=graph.nodes[join].data_spec.model_copy(
+                    update={"messages": [{"role": "user", "content": "{q}?"}]}
+                ),
+            ),
+        },
+    )
+    plan, dispatched = _planned(storage, changed)
+    assert _decisions(plan)["Mark"] == ("hit", None), _decisions(plan)
+    assert _decisions(plan)["Join"] == ("miss", "spec changed"), _decisions(plan)
+    await _run(
+        storage,
+        _FOUR_OPS,
+        {"Join": replies},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+        items=items,
+    )
+    chat = graph.op_names[join]
+    index = read_index(storage, "req-2")
+    assert index is not None
+    stored = [e for e in index.entries if e.op == chat]
+    assert {e.record for e in stored} == {"a", "b"}
+    again, _ = _planned(storage, changed, job_id="req-3")
+    assert _decisions(again)["Join"] == ("hit", None), _decisions(again)
+
+
+def test_a_seed_node_that_depends_on_a_later_node_stays_after_it() -> None:
+    """A seed node ordered after its chat but reading a node between them keeps
+    that node ahead of it, so the plan order stays topological."""
+    base = _chat_graph(_BASE_ROWS)
+    mark, join = _node(base, "Mark"), _node(base, "Join")
+    between = replace(base.nodes[mark], node_id="b", dependencies=(mark,))
+    seed = replace(base.nodes[mark], node_id="s", dependencies=("b",))
+    graph = replace(
+        base,
+        nodes={**base.nodes, "b": between, "s": seed},
+        node_order=[mark, join, "b", "s"],
+    )
+    graph.op_names["s"] = "Seed"
+    spec = graph.nodes[join].data_spec
+    assert isinstance(spec, DataFrame)
+    graph.nodes[join] = replace(
+        graph.nodes[join],
+        data_spec=spec.model_copy(update={"seeds": NodeRead(node="s")}),
+    )
+    plan, _ = _planned(InMemoryJobStorage(), graph)
+    order = [decision.node for decision in plan.decisions]
+    assert order.index(mark) < order.index(join)
+    assert order.index("b") < order.index("s")
+    assert order.index("s") < order.index(join)
