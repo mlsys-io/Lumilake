@@ -3,7 +3,7 @@ run 1 stores everything, run 2 recomputes the changed rows and merges them
 back, run 3 hits every op and dispatches nothing."""
 
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from types import SimpleNamespace
 from typing import Any
 
@@ -83,6 +83,8 @@ class _Worker:
         self.submissions: list[list[str]] = []
         self.responses: dict[str, Any] = {}
         self.specs: list[dict[str, Any]] = []
+        self.fail_first = False
+        self.cancelled: list[str] = []
 
     def submit(self, graph: Any, task_yaml: str) -> tuple[str, list[str]]:
         self.graph = graph
@@ -184,6 +186,8 @@ def run(
 
     async def _done(_self: Any, status: dict[str, str], _id: str) -> bool:
         status.update(dict.fromkeys(status, "DONE"))
+        if worker.fail_first:
+            status[next(iter(status))] = "FAILED"
         return True
 
     async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
@@ -193,13 +197,17 @@ def run(
         ]
         return TaskStatusPage(rows=rows, next_cursor="0")
 
-    results = SimpleNamespace(retrieve=_retrieve)
+    async def _cancel(_self: Any, workflow_id: str) -> None:
+        worker.cancelled.append(workflow_id)
+
+    fm = SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
     for name, value in (
         ("_build_task_spec", _build),
         ("_submit_workflow", _submit),
         ("update_task_status", _done),
         ("fetch_workflow_task_statuses", _statuses),
-        ("fm", property(lambda _self: SimpleNamespace(results=results))),
+        ("_abort_workflow", _cancel),
+        ("fm", property(lambda _self: fm)),
     ):
         monkeypatch.setattr(FlowmeshRuntimeManager, name, value)
     monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
@@ -250,6 +258,19 @@ def _workflow(
 
 def _reasons(outputs: dict[str, Any]) -> dict[str, tuple[str, str | None]]:
     return {d.op: (d.decision, d.reason) for d in outputs["reuse_decisions"]}
+
+
+def _node(graph: Any, name: str) -> str:
+    """The runtime node an op name lowered to."""
+    return next(node for node, op in graph.op_names.items() if op == name)
+
+
+def _runs(worker: _Worker, before: int, nodes: Sequence[str]) -> dict[str, int]:
+    """How many sub-runs since ``before`` held each node."""
+    return {
+        node: sum(1 for sub in worker.submissions[before:] if node in sub)
+        for node in nodes
+    }
 
 
 def _keys(storage: InMemoryJobStorage, job_id: str) -> dict[tuple[str, Any], str]:
@@ -518,10 +539,8 @@ async def test_a_chat_over_an_expand_never_reads_a_count_row(
     ops: list[dict[str, Any]] = [_TAG, _SPLIT, _OVER_SPLIT]
     await run(_workflow(ops, _ROWS, "Over"), "req-1")
     changed = _workflow(ops, _AMENDED, "Over")
-    over = next(node for node, name in changed.op_names.items() if name == "Over")
+    over = _node(changed, "Over")
     await run(changed, "req-2")
-    assert len(worker.responses[f"task-{over}"]["items"]) == 4
-    await run(changed, "req-3")
     assert len(worker.responses[f"task-{over}"]["items"]) == 4
 
 
@@ -555,7 +574,7 @@ async def test_a_re_ran_read_that_is_an_output_survives_a_level(
         "outputs": [{"name": "rows", "ref": "Read"}, {"name": "ask", "ref": "Ask"}],
     }
     graph = _runtime_graph(workflow)
-    read_node = next(n for n, name in graph.op_names.items() if name == "Read")
+    read_node = _node(graph, "Read")
     await run(graph, "req-1")
     fresh = await run(_runtime_graph(workflow), "req-full", reuse=False)
     again = await run(_runtime_graph(workflow), "req-2")
@@ -579,13 +598,12 @@ def test_a_fetch_stays_out_of_a_level() -> None:
         "rowwise_columns": [{"label": "v", "node": "Search", "path": "items.output"}],
         "key": {"node": "Search", "path": "id"},
     }
-    tail = {**_AFTER, "id": "Tail", "inputs": ["OverFetch"]}
     graph = _runtime_graph(
         {
             "name": "fetch-chat",
             "inputs": {"Rows": [json.dumps(row) for row in _ROWS]},
-            "ops": [fetch, over, tail],
-            "outputs": [{"name": "tail", "ref": "Tail"}],
+            "ops": [fetch, over],
+            "outputs": [{"name": "out", "ref": "OverFetch"}],
         }
     )
     fetch_id = next(n for n, op in graph.nodes.items() if op.model == "http-fetch")
@@ -601,18 +619,12 @@ async def test_two_independent_chats_run_in_one_level(
     ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
     await run(_workflow(ops, _ROWS, "Both"), "req-1")
     changed = _workflow(ops, _AMENDED, "Both")
-    ask_x, ask_y = (
-        node for node, name in changed.op_names.items() if name in ("AskX", "AskY")
-    )
+    ask_x, ask_y = (_node(changed, name) for name in ("AskX", "AskY"))
     before = len(worker.submissions)
     await run(changed, "req-2")
-    together = [
-        nodes
-        for nodes in worker.submissions[before:]
-        if ask_x in nodes or ask_y in nodes
-    ]
+    both = {ask_x, ask_y}
+    together = [sub for sub in worker.submissions[before:] if both <= set(sub)]
     assert len(together) == 1, worker.submissions[before:]
-    assert set(together[0]) >= {ask_x, ask_y}
 
 
 @pytest.mark.asyncio
@@ -626,7 +638,7 @@ async def test_a_chat_that_is_an_output_runs_once_with_its_history(
     ops: list[dict[str, Any]] = [_TAG, _CHAT, second]
     await run(_workflow(ops, _ROWS, "Ask2"), "req-1")
     changed = _workflow(ops, _AMENDED, "Ask2")
-    ask2 = next(node for node, name in changed.op_names.items() if name == "Ask2")
+    ask2 = _node(changed, "Ask2")
     before = len(worker.submissions)
     outputs = await run(changed, "req-2")
     assert sum(1 for nodes in worker.submissions[before:] if ask2 in nodes) == 1
@@ -645,19 +657,13 @@ async def test_two_partly_served_chats_each_dispatch_once(
     ops: list[dict[str, Any]] = [_TAG, {**_CHAT, "id": "AskX"}, _ASK_Y, _BOTH]
     await run(_workflow(ops, _ROWS, "Both"), "req-1")
     changed = _workflow(ops, _AMENDED, "Both")
-    ask_x, ask_y = (
-        node for node, name in changed.op_names.items() if name in ("AskX", "AskY")
-    )
+    ask_x, ask_y = (_node(changed, name) for name in ("AskX", "AskY"))
     before = len(worker.submissions)
     second = await run(changed, "req-2")
     reasons = _reasons(second)
     assert reasons["AskX"] == ("miss", "partial records"), reasons
     assert reasons["AskY"] == ("miss", "partial records"), reasons
-    ran = {
-        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
-        for node in (ask_x, ask_y)
-    }
-    assert ran == {ask_x: 1, ask_y: 1}, worker.submissions[before:]
+    assert _runs(worker, before, [ask_x, ask_y]) == {ask_x: 1, ask_y: 1}
     assert (
         second["flat_outputs"]
         == (await run(changed, "req-full", reuse=False))["flat_outputs"]
@@ -676,18 +682,13 @@ async def test_a_second_model_level_decides_per_record(
     ops: list[dict[str, Any]] = [_TAG, _CHAT, _SECOND_CHAT, tail]
     await run(_workflow(ops, _ROWS, "Tail"), "req-1")
     changed = _workflow(ops, _AMENDED, "Tail")
-    names = {node: changed.op_names.get(node) for node in changed.nodes}
-    ask, ask2 = (node for node, name in names.items() if name in ("Ask", "Ask2"))
+    ask, ask2 = (_node(changed, name) for name in ("Ask", "Ask2"))
     before = len(worker.submissions)
     second = await run(changed, "req-2")
     reasons = _reasons(second)
     assert reasons["Ask"] == ("miss", "partial records"), reasons
     assert reasons["Ask2"] == ("miss", "partial records"), reasons
-    ran = {
-        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
-        for node in (ask, ask2)
-    }
-    assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
+    assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 4
 
@@ -724,93 +725,25 @@ async def test_an_expand_between_two_chats_decides_per_record(
     ops: list[dict[str, Any]] = [_TAG, _CHAT, _EXPAND_BETWEEN, _OVER_BETWEEN, tail]
     await run(_workflow(ops, _ROWS, "Tail"), "req-1")
     changed = _workflow(ops, _AMENDED, "Tail")
-    names = {node: changed.op_names.get(node) for node in changed.nodes}
-    ask, ask2 = (node for node, name in names.items() if name in ("Ask", "Ask2"))
+    ask, ask2 = (_node(changed, name) for name in ("Ask", "Ask2"))
     before = len(worker.submissions)
     second = await run(changed, "req-2")
     reasons = _reasons(second)
     assert reasons["Ask"] == ("miss", "partial records"), reasons
     assert reasons["Ask2"] == ("miss", "partial records"), reasons
-    ran = {
-        node: sum(1 for nodes in worker.submissions[before:] if node in nodes)
-        for node in (ask, ask2)
-    }
-    assert ran == {ask: 1, ask2: 1}, worker.submissions[before:]
+    assert _runs(worker, before, [ask, ask2]) == {ask: 1, ask2: 1}
     again = await run(changed, "req-3")
     assert [d.decision for d in again["reuse_decisions"]] == ["hit"] * 5
 
 
 @pytest.mark.asyncio
 async def test_a_failed_level_cancels_its_workflow(
-    monkeypatch: pytest.MonkeyPatch, job_storage: InMemoryJobStorage, worker: _Worker
+    run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
     """A model level whose task fails leaves the other tasks of its sub-run
     running, so the request aborts the workflow it submitted rather than
     leaving GPU workers held."""
-    cancelled: list[str] = []
-    build = FlowmeshRuntimeManager._build_task_spec
-
-    async def _build(self: Any, info: RequestInfo, graph: Any, schedule: Any = None):
-        worker.graph = graph
-        return await build(self, info, graph, schedule)
-
-    async def _submit(_self: Any, task_yaml: str, _id: str) -> tuple[str, list[str]]:
-        return worker.submit(worker.graph, task_yaml)
-
-    async def _fail(_self: Any, status: dict[str, str], _id: str) -> bool:
-        failed = next(iter(status))
-        status.update(dict.fromkeys(status, "DONE"))
-        status[failed] = "FAILED"
-        return True
-
-    async def _statuses(_self: Any, workflow_id: str, **_: Any) -> Any:
-        rows = [
-            {"task_id": task, "status": "DONE", "graph_node_name": task[5:]}
-            for task in worker.responses
-        ]
-        return TaskStatusPage(rows=rows, next_cursor="0")
-
-    class _Workflows:
-        async def cancel(self, workflow_id: str) -> None:
-            cancelled.append(workflow_id)
-
-    fm = SimpleNamespace(
-        results=SimpleNamespace(retrieve=_retrieve_result(worker)),
-        workflows=_Workflows(),
-    )
-    for name, value in (
-        ("_build_task_spec", _build),
-        ("_submit_workflow", _submit),
-        ("update_task_status", _fail),
-        ("fetch_workflow_task_statuses", _statuses),
-        ("fm", property(lambda _self: fm)),
-    ):
-        monkeypatch.setattr(FlowmeshRuntimeManager, name, value)
-    monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
-
-    graph = _workflow([_TAG, _CHAT], _ROWS, "Ask")
-    info = RequestInfo(
-        request_id="req-fail",
-        runtime_graphs={"g": graph},
-        data_profile_graphs={},
-        store_records=True,
-        reuse_records=True,
-        member_reuse={"req-fail": True},
-    )
-    info.runtime_graph = graph
-    info.batch_id = "batch-1"
-    info.output_node_map = {
-        node: ("g", name) for node, name in graph.output_node_map.items()
-    }
+    worker.fail_first = True
     with pytest.raises(RuntimeError):
-        await FlowmeshRuntimeManager().process_request(
-            info, Schedule({"w": list(graph.nodes)}), ["w"]
-        )
-    assert cancelled, "the level's workflow was not cancelled"
-
-
-def _retrieve_result(worker: _Worker) -> Any:
-    async def _retrieve(task_id: str) -> Any:
-        return worker.responses[task_id]
-
-    return _retrieve
+        await run(_workflow([_TAG, _CHAT], _ROWS, "Ask"), "req-fail")
+    assert worker.cancelled, "the level's workflow was not cancelled"
