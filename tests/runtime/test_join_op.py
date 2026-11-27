@@ -390,17 +390,28 @@ def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
     ]
 
 
-def test_one_to_many_reads_one_further_row_per_key(tmp_path: Path) -> None:
-    """A first-input repeat takes the key's further row, one output row per row."""
-    node = _pairs(_CASES[:2], _GIRLS[:1], "cardinality: one_to_many")
-    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
-    assert [(row["q"], row["g"]) for row in rows] == [("a", "x"), ("b", "x")]
+def test_one_to_many_needs_a_row_key() -> None:
+    """A first input that repeats a key needs the row_key that tells its rows apart."""
+    with pytest.raises(ValueError, match="one_to_many also needs row_key"):
+        _pairs(_CASES, _GIRLS, "cardinality: one_to_many")
 
 
 def test_a_repeated_key_names_the_cardinality_to_declare(tmp_path: Path) -> None:
     """An undeclared repeat fails the job, naming the cardinality that reads it."""
     with pytest.raises(ValueError, match="declare one_to_many or many_to_many"):
         _run(tmp_path, _pairs(_CASES, _GIRLS, ""), {})
+
+
+def test_one_to_many_keeps_every_row_of_a_repeated_key(tmp_path: Path) -> None:
+    """Each first-input row of a key keeps its own output row, in its order."""
+    node = _pairs(
+        _CASES[:2], _GIRLS[:1], "cardinality: one_to_many, row_key: [unit, q]"
+    )
+    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
+    assert [(row["unit"], row["q"], row["g"]) for row in rows] == [
+        ("u1", "a", "x"),
+        ("u1", "b", "x"),
+    ]
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:
