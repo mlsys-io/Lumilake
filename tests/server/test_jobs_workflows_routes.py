@@ -23,12 +23,7 @@ from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import LogEventPayload
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
-from lumilake_server.schemas.progress import (
-    BatchProgress,
-    OverallProgress,
-    ProgressStep,
-    RuntimeStatus,
-)
+from lumilake_server.schemas.progress import ProgressStep, RuntimeStatus
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEMO_PRINCIPAL = PrincipalContext(
@@ -739,15 +734,8 @@ async def test_list_workflows_upstream_error_returns_502(
     assert resp.json()["detail"] == "upstream workflow enumeration failed"
 
 
-def _running_status() -> RuntimeStatus:
-    return RuntimeStatus(
-        execution=ProgressStep(completed=True),
-        batch_progress=BatchProgress(
-            total=1,
-            completed=1,
-            overall_progress=OverallProgress(total_nodes=1, completed_nodes=1),
-        ),
-    )
+def _completed_status() -> RuntimeStatus:
+    return RuntimeStatus(execution=ProgressStep(completed=True))
 
 
 class _FakeProgressServer:
@@ -802,7 +790,7 @@ async def test_progress_sums_usage_over_workflows(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -864,7 +852,7 @@ async def test_progress_merged_inference_parent_not_double_counted(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -950,7 +938,7 @@ async def test_progress_usage_restricted_to_owned_tasks_in_shared_workflow(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1037,7 +1025,7 @@ async def test_progress_usage_reads_ownership_from_runtime_manager_while_running
         "get_started_instance",
         classmethod(
             lambda cls: _FakeProgressServer(
-                _running_status(),
+                _completed_status(),
                 task_ids_by_request={
                     "j-a": {"wf-1": ["tsk-a"]},
                     "j-b": {"wf-1": ["tsk-b"]},
@@ -1112,7 +1100,7 @@ async def test_progress_skipped_task_contributes_nothing(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1165,7 +1153,7 @@ async def test_progress_no_model_task_contributes_nothing(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1217,7 +1205,7 @@ async def test_progress_usage_null_when_task_unmappable(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1372,7 +1360,7 @@ async def test_progress_live_null_when_task_result_vanished(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1415,7 +1403,7 @@ async def test_progress_live_null_when_api_task_usage_missing(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1492,7 +1480,7 @@ async def test_progress_live_no_stale_value_when_usage_now_null(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1541,7 +1529,7 @@ async def test_progress_all_zero_tasks_give_zero_total(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1587,7 +1575,7 @@ async def test_progress_malformed_result_returns_502(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1645,7 +1633,7 @@ async def test_progress_live_connection_error_returns_502(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1703,7 +1691,7 @@ async def test_progress_live_read_timeout_returns_502(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
@@ -1733,7 +1721,7 @@ async def test_progress_live_empty_job_gives_zero_total(
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
-        classmethod(lambda cls: _FakeProgressServer(_running_status())),
+        classmethod(lambda cls: _FakeProgressServer(_completed_status())),
     )
 
     transport = httpx.ASGITransport(app=app)
