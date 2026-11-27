@@ -1632,12 +1632,25 @@ def _served_rows(plan: ReusePlan, source: RuntimeOp) -> list[Mapping[str, Any]] 
     entries = plan.hits.get(source.node_id)
     if not entries:
         return None
+    bare = _emits_bare_value(source)
     wrapped = _wrap(source)
     return [
-        _served_item(item, wrapped)
+        _served_item(item, None if bare else wrapped)
         for entries_of_row in served_lists(entries, grouped_local_chat(source))
         for item in entries_of_row
     ]
+
+
+def _emits_bare_value(source: RuntimeOp) -> bool:
+    """Whether the producer's step puts its value under ``output`` as it stands: an
+    aligned or list step emits the value itself, where a row or parse step emits
+    its JSON text."""
+    spec = source.data_spec
+    return (
+        source.task_type == PYTHON_TASK_TYPE
+        and isinstance(spec, PythonData)
+        and spec.mode in ("aligned", "list")
+    )
 
 
 def _positions(

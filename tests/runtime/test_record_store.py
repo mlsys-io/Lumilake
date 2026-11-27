@@ -353,6 +353,39 @@ async def test_a_1_to_1_node_takes_its_input_keys_only_when_it_declares_none() -
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_parse_step_keys_from_its_chat_s_one_grouped_item() -> None:
+    """A parse step after a local chat inherits both rows' keys from the chat's
+    one grouped item, so its own records are stored under those keys."""
+    workflow = yaml.safe_load(yaml.safe_dump(_PATHS_WORKFLOW))
+    workflow["ops"] = [
+        workflow["ops"][0],
+        workflow["ops"][1],
+        _op("P", "ParseOp", inputs=["AskX"], format="json"),
+    ]
+    workflow["outputs"] = [{"name": "x", "ref": "P"}]
+    graph = _runtime_graph(workflow)
+    graph.nodes[_node_id(graph, "AskX")] = replace(
+        graph.nodes[_node_id(graph, "AskX")],
+        task_type="inference",
+        model_spec={},
+        inference_spec={},
+    )
+    graph.record_keys[_node_id(graph, "AskX")] = RecordKey(
+        node=_node_id(graph, "Mark"), path="id"
+    )
+    storage, _ = await _write(
+        graph,
+        {"Mark": _TWO_ROWS, "AskX": ["LEFT", "RIGHT"], "P": ["l", "r"]},
+        raw={"AskX": _LOCAL},
+    )
+    parse = _declared_name(graph, "P")
+    assert [(k, d) for k, d in _indexed(storage, "req-1") if k[0] == parse] == [
+        (parse, "a"),
+        (parse, "b"),
+    ]
+
+
 def test_an_unlisted_workflow_input_keys_from_any_position() -> None:
     """A workflow input the keyed op does not list still keys it, read last."""
     payload = _payload()
