@@ -7,12 +7,12 @@ import threading
 import time
 from abc import abstractmethod
 from collections.abc import Iterable
-from dataclasses import asdict
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ValidationError
 
 from lumilake import envs
+from lumilake_server.records import JobRecord, JobSummary
 from lumilake_server.utils import lumid_data_client
 
 
@@ -28,23 +28,6 @@ def _normalize_payload(value: Any) -> Any:
     if isinstance(value, list):
         return [_normalize_payload(val) for val in value]
     return value
-
-
-class JobSummary(BaseModel):
-    job_id: str
-    org_id: str
-    user_id: str
-    status: Literal["pending", "running", "completed", "failed", "cancelled"]
-    submitted_at: dt.datetime
-    started_at: dt.datetime | None = None
-    finished_at: dt.datetime | None = None
-    optimization_seconds: float | None = None
-    selection_seconds: float | None = None
-    clustering_seconds: float | None = None
-    error: str | None = None
-    parent_job_id: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
 
 
 class JobStorage:
@@ -69,7 +52,7 @@ class JobStorage:
                     self._save_locks[job_id] = lock
         return lock
 
-    def save(self, record: Any) -> None:
+    def save(self, record: JobRecord) -> None:
         """Persist ``record`` under its per-job write lock.
 
         Backends implement :meth:`_save_locked`; holding the lock here means
@@ -80,7 +63,7 @@ class JobStorage:
             self._save_locked(record)
 
     @abstractmethod
-    def _save_locked(self, record: Any) -> None:
+    def _save_locked(self, record: JobRecord) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -120,22 +103,53 @@ class JobStorage:
         raise NotImplementedError
 
 
-def _summary_from_payload(data: dict[str, Any]) -> JobSummary:
-    payload = {
-        "job_id": data["job_id"],
-        "org_id": data["org_id"],
-        "user_id": data["user_id"],
-        "status": data["status"],
-        "submitted_at": data["submitted_at"],
-        "started_at": data["started_at"] if "started_at" in data else None,
-        "finished_at": data["finished_at"] if "finished_at" in data else None,
-        "optimization_seconds": data.get("optimization_seconds"),
-        "selection_seconds": data.get("selection_seconds"),
-        "clustering_seconds": data.get("clustering_seconds"),
-        "error": data["error"] if "error" in data else None,
-        "parent_job_id": data.get("parent_job_id"),
+def _record_payload(record: JobRecord) -> dict[str, Any]:
+    """The record's stored fields, its typed members dumped for the archive."""
+    return {
+        "job_id": record.job_id,
+        "status": record.status,
+        "submitted_at": record.submitted_at,
+        "org_id": record.org_id,
+        "user_id": record.user_id,
+        "started_at": record.started_at,
+        "finished_at": record.finished_at,
+        "optimization_seconds": record.optimization_seconds,
+        "selection_seconds": record.selection_seconds,
+        "clustering_seconds": record.clustering_seconds,
+        "error": record.error,
+        "terminal_usage_finalized": record.terminal_usage_finalized,
+        "folder_inputs": dict(record.folder_inputs),
+        "trace_ids": list(record.trace_ids),
+        "job_task_ids": _normalize_payload(record.job_task_ids),
+        "workflow_dispatches": [row.model_dump() for row in record.workflow_dispatches],
+        "parent_job_id": record.parent_job_id,
+        "child_job_ids": list(record.child_job_ids),
+        "lumid_job_id": record.lumid_job_id,
+        "inputs": _normalize_payload(record.inputs),
+        "output_location": _normalize_payload(record.output_location),
+        "progress": record.progress.model_dump(by_alias=True),
+        "result": record.result.model_dump() if record.result is not None else None,
     }
-    return JobSummary.model_validate(payload)
+
+
+def summary_of(record: JobRecord) -> JobSummary:
+    """The listing row of a record, built from its typed fields."""
+    return JobSummary.model_validate(
+        {
+            "job_id": record.job_id,
+            "org_id": record.org_id,
+            "user_id": record.user_id,
+            "status": record.status,
+            "submitted_at": record.submitted_at,
+            "started_at": record.started_at,
+            "finished_at": record.finished_at,
+            "optimization_seconds": record.optimization_seconds,
+            "selection_seconds": record.selection_seconds,
+            "clustering_seconds": record.clustering_seconds,
+            "error": record.error,
+            "parent_job_id": record.parent_job_id,
+        }
+    )
 
 
 def _sort_summaries(summaries: list[JobSummary]) -> list[JobSummary]:
@@ -185,18 +199,17 @@ class InMemoryJobStorage(JobStorage):
         self._blobs: dict[str, tuple[bytes, str]] = {}
         self._summaries: dict[str, JobSummary] = {}
 
-    def _save_locked(self, record: Any) -> None:
-        data = _normalize_payload(asdict(record))
-        record_data = dict(data)
-        record_data.pop("inputs", None)
-        record_data.pop("progress", None)
-        record_data.pop("result", None)
-        self._storage[record.job_id] = record_data
-        self._inputs[record.job_id] = data.get("inputs", {})
-        self._progress[record.job_id] = data.get("progress", {})
-        if data.get("result") is not None:
-            self._result[record.job_id] = data.get("result", {})
-        self._summaries[record.job_id] = _summary_from_payload(data)
+    def _save_locked(self, record: JobRecord) -> None:
+        data = _record_payload(record)
+        data.pop("inputs")
+        data.pop("progress")
+        data.pop("result")
+        self._storage[record.job_id] = data
+        self._inputs[record.job_id] = _normalize_payload(record.inputs)
+        self._progress[record.job_id] = record.progress.model_dump(by_alias=True)
+        if record.result is not None:
+            self._result[record.job_id] = record.result.model_dump()
+        self._summaries[record.job_id] = summary_of(record)
         self.logger.info("Saved job %s to in-memory storage", record.job_id)
 
     def load(self, job_id: str) -> dict[str, Any] | None:
@@ -311,7 +324,7 @@ class PersistentJobStorage(JobStorage):
             return f"{self.key_prefix}/jobs_index.json"
         return "jobs_index.json"
 
-    def _save_record_blobs(self, record: Any) -> tuple[JobSummary, str]:
+    def _save_record_blobs(self, record: JobRecord) -> tuple[JobSummary, str]:
         """Write the per-job blobs and return ``(summary, record_object_name)``.
 
         Split out of :meth:`save` so an alternative index backend can reuse the
@@ -319,34 +332,33 @@ class PersistentJobStorage(JobStorage):
         and are NOT what overflows the blob quota -- only the monolithic
         ``jobs_index.json`` is (see :class:`SqliteJobStorage`).
         """
-        data = _normalize_payload(asdict(record))
-        record_data = dict(data)
-        record_data.pop("inputs", None)
-        record_data.pop("progress", None)
-        record_data.pop("result", None)
+        record_data = _record_payload(record)
+        record_data.pop("inputs")
+        record_data.pop("progress")
+        record_data.pop("result")
         record_body = json.dumps(record_data, ensure_ascii=False).encode("utf-8")
         obj_name = self._object_name(record.job_id)
         self._put_json(obj_name, record_body)
-        inputs_body = json.dumps(data.get("inputs", {}), ensure_ascii=False).encode(
-            "utf-8"
-        )
-        progress_body = json.dumps(data.get("progress", {}), ensure_ascii=False).encode(
-            "utf-8"
-        )
+        inputs_body = json.dumps(
+            _normalize_payload(record.inputs), ensure_ascii=False
+        ).encode("utf-8")
+        progress_body = json.dumps(
+            record.progress.model_dump(by_alias=True), ensure_ascii=False
+        ).encode("utf-8")
         self._put_json(self._job_object_name(record.job_id, "inputs.json"), inputs_body)
         self._put_json(
             self._job_object_name(record.job_id, "progress.json"), progress_body
         )
-        if data.get("result") is not None:
-            result_body = json.dumps(data.get("result", {}), ensure_ascii=False).encode(
-                "utf-8"
-            )
+        if record.result is not None:
+            result_body = json.dumps(
+                record.result.model_dump(), ensure_ascii=False
+            ).encode("utf-8")
             self._put_json(
                 self._job_object_name(record.job_id, "result.json"), result_body
             )
-        return _summary_from_payload(data), obj_name
+        return summary_of(record), obj_name
 
-    def _save_locked(self, record: Any) -> None:
+    def _save_locked(self, record: JobRecord) -> None:
         summary, obj_name = self._save_record_blobs(record)
         index_name = self._jobs_index_name()
         with self._index_lock:
@@ -603,7 +615,7 @@ class SqliteJobStorage(PersistentJobStorage):
 
     # ---- index writes -------------------------------------------------
 
-    def _save_locked(self, record: Any) -> None:
+    def _save_locked(self, record: JobRecord) -> None:
         summary, obj_name = self._save_record_blobs(record)
         row = summary.model_dump(mode="json")
         with self._index_lock:

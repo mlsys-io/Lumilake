@@ -18,8 +18,9 @@ from lumid_hooks import PrincipalContext, ResourceRef
 import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
+from lumilake_server.records import JobRecord
 from lumilake_server.routes import jobs as job_routes_module
-from lumilake_server.routes.jobs import JobRecord, LogEventPayload
+from lumilake_server.routes.jobs import LogEventPayload
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
 from lumilake_server.schemas.progress import (
