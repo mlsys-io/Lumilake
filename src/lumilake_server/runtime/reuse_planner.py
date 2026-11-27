@@ -325,7 +325,7 @@ class _Decision:
     outcomes: list[RecordOutcome] = field(default_factory=list)
 
 
-_NO_WRITTEN: Mapping[str, list[RecordEntry]] = {}
+_NO_WRITTEN: dict[str, list[RecordEntry]] = {}
 """No entries written yet, so a plan with no phase seeds nothing."""
 
 
@@ -343,7 +343,7 @@ class ReusePlanner:
         round_number: int,
         job_id: str,
         content_values: Mapping[str, NodeRecords] | None = None,
-        written: Mapping[str, list[RecordEntry]] = _NO_WRITTEN,
+        written: dict[str, list[RecordEntry]] = _NO_WRITTEN,
     ) -> tuple[ReusePlan, RuntimeGraph]:
         """Decide every op in topological order and return the graph to dispatch.
 
@@ -355,7 +355,7 @@ class ReusePlanner:
         missing: dict[str, str] = {}
         """Each missed node's own first reason, so what it feeds names that."""
         order = runtime_graph.topological_order()
-        stored: dict[str, list[RecordEntry]] = dict(written)
+        stored: dict[str, list[RecordEntry]] = written.copy()
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)

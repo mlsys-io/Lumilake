@@ -412,6 +412,7 @@ def _first_level(
     planned: RuntimeGraph,
     outputs: Collection[str],
     refused: Collection[str] = (),
+    content: Collection[str] = (),
 ) -> list[str]:
     """The first model level a plan still dispatches: every model op this round
     can run, the python steps that read into them, and their own python
@@ -421,11 +422,12 @@ def _first_level(
     two chats over the same served rows run in one sub-run rather than two.
     A model op that is a workflow output stays out, so the main run dispatches
     it in full and keeps its chat history. So does one that reads an
-    unversioned source, which a level would dispatch without its read. A step
-    that only feeds a later model op stays out, so the round that plans that
-    op runs it exactly once and no step is dispatched in two levels. So does a
-    plan's ``refused`` op, whose records a reader rejects, so the main run
-    dispatches it once with every reader it has."""
+    unversioned source, which a level would dispatch without its read, and one
+    that reads a read the phase re-ran (``content``), which a level would read
+    a second time. A step that only feeds a later model op stays out, so the
+    round that plans that op runs it exactly once and no step is dispatched in
+    two levels. So does a plan's ``refused`` op, whose records a reader
+    rejects, so the main run dispatches it once with every reader it has."""
     nodes = planned.nodes
     below_model: dict[str, bool] = {}
     for node_id in planned.topological_order():
@@ -442,6 +444,7 @@ def _first_level(
         and node_id not in refused
         and not reads_unversioned(nodes[node_id])
         and not below_model[node_id]
+        and not any(dep in content for dep in nodes[node_id].dependencies)
     }
     stack = [dep for node_id in wave for dep in nodes[node_id].dependencies]
     while stack:
@@ -466,7 +469,7 @@ def _feeds_only_model(runtime_graph: RuntimeGraph, node_id: str) -> bool:
     ]
     if not readers:
         return False
-    stack = list(readers)
+    stack = readers
     seen: set[str] = set()
     while stack:
         reader = stack.pop()
@@ -2483,7 +2486,7 @@ class FlowmeshRuntimeManager:
             wave = [
                 node_id
                 for node_id in _first_level(
-                    planned, source.output_node_map, plan.refused
+                    planned, source.output_node_map, plan.refused, content_values
                 )
                 if node_id not in ran
             ]
