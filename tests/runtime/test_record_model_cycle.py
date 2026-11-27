@@ -15,7 +15,10 @@ from lumilake import envs
 from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.record_writer import read_index
 from lumilake_server.runtime.request import RequestInfo
-from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.runtime.runtime_manager import (
+    FlowmeshRuntimeManager,
+    _first_level,
+)
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 from tests.runtime.runtime_manager.conftest import job_storage as job_storage
 from tests.runtime.test_record_reuse import (  # noqa: F401
@@ -557,6 +560,36 @@ async def test_a_re_ran_read_that_is_an_output_survives_a_level(
     fresh = await run(_runtime_graph(workflow), "req-full", reuse=False)
     again = await run(_runtime_graph(workflow), "req-2")
     assert again["flat_outputs"][read_node] == fresh["flat_outputs"][read_node]
+
+
+def test_a_fetch_stays_out_of_a_level() -> None:
+    """A fetch reads a URL no snapshot versions, so a level leaves it to the
+    main run rather than dispatching it with the source it could not hold."""
+    fetch = {
+        "id": "Search",
+        "op": "HttpFetchOp",
+        "inputs": ["Rows"],
+        "query": "Rows",
+        "url": "http://fixture.test/s?q={query}",
+    }
+    over = {
+        **_CHAT,
+        "id": "OverFetch",
+        "inputs": ["Search"],
+        "rowwise_columns": [{"label": "v", "node": "Search", "path": "items.output"}],
+        "key": {"node": "Search", "path": "id"},
+    }
+    tail = {**_AFTER, "id": "Tail", "inputs": ["OverFetch"]}
+    graph = _runtime_graph(
+        {
+            "name": "fetch-chat",
+            "inputs": {"Rows": [json.dumps(row) for row in _ROWS]},
+            "ops": [fetch, over, tail],
+            "outputs": [{"name": "tail", "ref": "Tail"}],
+        }
+    )
+    fetch_id = next(n for n, op in graph.nodes.items() if op.model == "http-fetch")
+    assert fetch_id not in _first_level(graph, graph.output_node_map)
 
 
 @pytest.mark.asyncio

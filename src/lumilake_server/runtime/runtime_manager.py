@@ -416,9 +416,10 @@ def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
     A model op joins the level once no model op below it is left to run, so
     two chats over the same served rows run in one sub-run rather than two.
     A model op that is a workflow output stays out, so the main run dispatches
-    it in full and keeps its chat history. A step that only feeds a later
-    model op stays out, so the round that plans that op runs it exactly once
-    and no step is dispatched in two levels."""
+    it in full and keeps its chat history. So does one that reads an
+    unversioned source, which a level would dispatch without its read. A step
+    that only feeds a later model op stays out, so the round that plans that
+    op runs it exactly once and no step is dispatched in two levels."""
     nodes = planned.nodes
     below_model: dict[str, bool] = {}
     for node_id in planned.topological_order():
@@ -432,6 +433,7 @@ def _first_level(planned: RuntimeGraph, outputs: Collection[str]) -> list[str]:
         for node_id in planned.node_order
         if nodes[node_id].task_type in _MODEL_TASK_TYPES
         and node_id not in outputs
+        and not reads_unversioned(nodes[node_id])
         and not below_model[node_id]
     }
     stack = [dep for node_id in wave for dep in nodes[node_id].dependencies]
