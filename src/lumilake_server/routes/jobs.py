@@ -4077,10 +4077,10 @@ async def get_job_progress(
         }
 
     server = LumilakeServer.get_started_instance()
-    progress_payload = await server.get_request_status(job_id)
-    if "error" not in progress_payload:
+    runtime_status = await server.get_request_status(job_id)
+    if runtime_status is not None:
         progress_model = record.progress.model_copy(deep=True)
-        progress_model.apply_status(progress_payload)
+        progress_model.apply_status(runtime_status)
         needs_save = False
         async with jobs_lock:
             if record.progress != progress_model:
