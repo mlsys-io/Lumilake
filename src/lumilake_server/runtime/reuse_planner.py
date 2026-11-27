@@ -263,6 +263,9 @@ class _Input:
 
     named: RecordInput
     keys: list[str | None]
+    """The record keys a reader may take by position; blank for a read that
+    hands one item for several records, whose rows carry no positional
+    identity."""
     declared_node: str | None = None
     """The runtime node the op declares this input as, so a join can tell its
     first input from a literal column or a further one."""
@@ -271,6 +274,12 @@ class _Input:
     group its rows before it runs."""
     plan_entry: int | None = None
     """The plan index of a literal input, so a join can tell its column apart."""
+    record_keys: list[str | None] | None = None
+    """The key of each record the input read, whatever its positional keys say,
+    so a join names a whole-table read's rows as its writer does."""
+    content: bool = False
+    """Whether the input is a re-ran read, which names a row by the value it
+    returned rather than by a stored entry."""
 
 
 @dataclass(frozen=True)
@@ -1604,10 +1613,11 @@ def _content_input(
     )
     positions = range(len(records.values)) if records.keyed else range(1)
     contents = [content_value(records.value_at(position)) for position in positions]
+    record_keys: list[str | None] = (
+        [records.keys[position] for position in positions] if records.keyed else [None]
+    )
     keys: list[str | None] = (
-        [records.keys[position] for position in positions]
-        if records.keyed and records.lines_up
-        else [None]
+        record_keys if records.lines_up else [None] * len(record_keys)
     )
     return _Input(
         named=RecordInput(
@@ -1616,6 +1626,8 @@ def _content_input(
         keys=keys,
         declared_node=declared,
         values=contents if records.keyed else None,
+        record_keys=record_keys,
+        content=True,
     )
 
 
@@ -1774,15 +1786,17 @@ def _planned_records(
             continue
         named = item.named
         keys = item.keys if item.keys is not None else [None] * len(named.records)
+        stored_keys = item.record_keys if item.record_keys is not None else keys
         node_records = NodeRecords(
             keyed=named.keyed,
             values=[] if item.values is None else list(item.values),
-            keys=None if not named.keyed else keys,
+            keys=stored_keys,
+            content=item.content,
         )
         for at, found in enumerate(named.records):
             if found is None:
                 continue
-            key = keys[at] if at < len(keys) else None
+            key = stored_keys[at] if at < len(stored_keys) else None
             node_records.digests[key, round_number] = found
         records[node] = node_records
     return records
