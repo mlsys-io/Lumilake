@@ -398,6 +398,19 @@ def test_a_many_to_many_join_emits_the_key_product(tmp_path: Path) -> None:
     ]
 
 
+def test_a_full_join_merges_a_key_two_later_inputs_carry(tmp_path: Path) -> None:
+    """A key only two later inputs carry is one output row, with both their fields."""
+    node = _join_node(
+        f"  - {{id: Cases, op: DataOp, data: {_quoted(_CASES[:1])}}}\n"
+        f"  - {{id: Girls, op: DataOp, data: {_quoted([{'unit': 'u3', 'g': 'x'}])}}}\n"
+        f"  - {{id: Sizes, op: DataOp, data: {_quoted([{'unit': 'u3', 's': 2}])}}}\n"
+        "  - {id: Merge, op: JoinOp, inputs: [Cases, Girls, Sizes], by: unit, how:"
+        " full}\n"
+    )
+    rows = [item["output"] for item in _run(tmp_path, node, {})["items"]]
+    assert rows == [{"unit": "u1", "q": "a"}, {"unit": "u3", "g": "x", "s": 2}]
+
+
 def test_a_many_to_many_join_emits_a_stray_key_of_one_input_once(
     tmp_path: Path,
 ) -> None:
