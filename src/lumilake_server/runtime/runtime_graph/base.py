@@ -82,8 +82,11 @@ def _iter_data_spec_refs(spec: DataSpecModel) -> Iterator[str]:
         for param in spec.params:
             if param.node is not None:
                 yield param.node
-            elif param.data is not None and param.data.node is not None:
-                yield param.data.node
+            data = param.data
+            if data is not None:
+                if data.node is not None:
+                    yield data.node
+                yield from _iter_literal_item_refs(data.items)
     elif isinstance(spec, PythonData):
         for entry in spec.plan:
             if entry.kind == "stage" and entry.node is not None:

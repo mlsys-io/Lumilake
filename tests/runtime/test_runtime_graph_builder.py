@@ -2765,7 +2765,8 @@ def test_graph_template_dependencies_walk_a_nested_dataframe() -> None:
 
 def test_runtime_refs_come_from_typed_reads_not_literal_payload_keys() -> None:
     """The ref scan reads a spec's own fields: a ``node`` key nested in a
-    literal payload is data, a plan stage and a condition node are reads."""
+    python literal payload is data, while a plan stage, a retrieval
+    parameter's ``node`` + ``path`` item and a condition node are reads."""
     node = runtime_op(
         node_id="n",
         task_type="python",
@@ -2774,14 +2775,38 @@ def test_runtime_refs_come_from_typed_reads_not_literal_payload_keys() -> None:
         data_spec={
             "plan": [
                 {"kind": "stage", "node": "upstream"},
-                {"kind": "literal", "values": [{"node": "in-values"}]},
+                {"kind": "literal", "values": [{"node": "in-values", "path": "x"}]},
             ]
         },
         model_spec={},
         inference_spec={},
         condition={"node": "guarded", "when": "always"},
     )
+    retrieval = runtime_op(
+        node_id="r",
+        task_type="data_retrieval",
+        backend="data_retrieval",
+        model="data_retrieval",
+        data_spec={
+            "type": "lumid",
+            "mode": "sql",
+            "template": "SELECT {p}",
+            "params": [
+                {
+                    "label": "p",
+                    "data": {
+                        "type": "list",
+                        "items": [{"node": "sampled", "path": "items.output"}],
+                    },
+                }
+            ],
+        },
+        model_spec={},
+        inference_spec={},
+    )
 
-    refs = list(RuntimeGraphBuilder._iter_runtime_refs(node))
-
-    assert refs == ["upstream", "guarded"]
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(node)) == [
+        "upstream",
+        "guarded",
+    ]
+    assert list(RuntimeGraphBuilder._iter_runtime_refs(retrieval)) == ["sampled"]
