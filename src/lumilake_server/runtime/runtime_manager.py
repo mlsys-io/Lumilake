@@ -64,8 +64,8 @@ from lumilake_server.runtime.reuse_planner import (
     ReusePlan,
     ReusePlanner,
     _partially_servable,
-    _without_hits,
     rebuilt_output,
+    without_hits,
     writer_records,
 )
 from lumilake_server.runtime.runtime_graph import (
@@ -555,16 +555,13 @@ def _with_between_steps(
 
 def _report_level_runs(
     plan: ReusePlan, level_runs: Mapping[str, RecordDecision]
-) -> ReusePlan:
-    """The plan's decisions with every dispatched level's miss put back, so a run
+) -> None:
+    """Put every dispatched level's miss back into the plan's decisions, so a run
     that computed a level reports why instead of the hit its own records answer
     on the next round."""
-    if not level_runs:
-        return plan
     plan.decisions = [
         level_runs.get(decision.node, decision) for decision in plan.decisions
     ]
-    return plan
 
 
 def _generated_steps(plan: ReusePlan) -> dict[str, str]:
@@ -2416,7 +2413,7 @@ class FlowmeshRuntimeManager:
                 exc,
             )
             return None
-        plan = _report_level_runs(plan, level_runs)
+        _report_level_runs(plan, level_runs)
         request_info.runtime_graph = planned_graph
         _follow_generated_steps(request_info, plan)
         self._reuse_content_reads[request_info.request_id] = content_values
@@ -2526,7 +2523,7 @@ class FlowmeshRuntimeManager:
         later model op, so the plan after them probes the next level on their
         stored rows: a join or expand between two levels is not partly
         servable, and a plan before this sub-run would miss the next level."""
-        graph = _without_hits(source, plan)
+        graph = without_hits(source, plan)
         nodes = _with_generated(graph, plan, wave)
         nodes = _with_between_steps(graph, nodes, wave)
         graph = _sub_graph(graph, nodes)

@@ -322,6 +322,10 @@ class _Decision:
     outcomes: list[RecordOutcome] = field(default_factory=list)
 
 
+_NO_WRITTEN: Mapping[str, list[RecordEntry]] = {}
+"""No entries written yet, so a plan with no phase seeds nothing."""
+
+
 class ReusePlanner:
     """Decides, before dispatch, which ops of a reusing job the store answers."""
 
@@ -336,7 +340,7 @@ class ReusePlanner:
         round_number: int,
         job_id: str,
         content_values: Mapping[str, NodeRecords] | None = None,
-        written: dict[str, list[RecordEntry]] | None = None,
+        written: Mapping[str, list[RecordEntry]] = _NO_WRITTEN,
     ) -> tuple[ReusePlan, RuntimeGraph]:
         """Decide every op in topological order and return the graph to dispatch.
 
@@ -348,7 +352,7 @@ class ReusePlanner:
         missing: dict[str, str] = {}
         """Each missed node's own first reason, so what it feeds names that."""
         order = runtime_graph.topological_order()
-        stored: dict[str, list[RecordEntry]] = {} if written is None else written.copy()
+        stored: dict[str, list[RecordEntry]] = dict(written)
         plans = resolve_plans(runtime_graph, order)
         content = {} if content_values is None else content_values
         content_keys = set(content)
@@ -578,7 +582,7 @@ class ReusePlanner:
             len(decision.hits),
             len(decision.decisions) - len(decision.hits),
         )
-        return decision, _without_hits(runtime_graph, decision)
+        return decision, without_hits(runtime_graph, decision)
 
     def _accept_hit(
         self,
@@ -1513,7 +1517,7 @@ def _dispatched_seed_readers(
     return {node_id: readers[node_id] for node_id in plan.hits if node_id in readers}
 
 
-def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
+def without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
     """The graph to dispatch, with every served node reading its value instead
     and every partial op carrying the slots its run has to fill."""
     nodes: dict[str, RuntimeOp] = {}
