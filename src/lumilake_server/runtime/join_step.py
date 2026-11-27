@@ -381,8 +381,8 @@ def _broadcast(inputs):
     first = _where(_PLAN[indexes[0]])
     rows = _rows(columns[0], first)
     keyed, marked = _row_keys(rows, first)
-    # Only a live row's key is matched: a marked row's output is its marker.
-    first_keys = {{key for record, key, _ in keyed if record not in marked}}
+    # A row whose key cannot be read has no key to be matched by.
+    first_keys = {{key for _, key, _ in keyed if key is not None}}
     dropped = set()
     appended = []
     for index, column in zip(indexes[1:], columns[1:]):
@@ -390,12 +390,13 @@ def _broadcast(inputs):
         more, more_marked = _keyed(_rows(column, where), where)
         _matched(first_keys, more, where)
         if _HOW == "inner":
-            # A live row this input lacks a key for is not emitted, and keeps its slot
-            # so an attach over the first input still pairs each value with its own row.
+            # A row this input lacks a key for is not emitted, and keeps its slot so an
+            # attach over the first input still pairs each value with its own row. A
+            # marked row whose key cannot be read has no key to drop it by.
             dropped.update(
                 record
                 for record, key, _ in keyed
-                if record not in marked and key not in more
+                if key is not None and key not in more
             )
         added = set()
         for key in more:

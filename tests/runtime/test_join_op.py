@@ -657,12 +657,19 @@ def test_a_broadcast_join_with_require_match_refuses_a_stray_key(
         _broadcast(tmp_path, sizes=_SIZES + [{"unit": "u3", "size": 1}], fields=fields)
 
 
-def test_a_marked_broadcast_row_leaves_require_match_alone(tmp_path: Path) -> None:
-    """A marked first-input row passes through, so require_match skips its key."""
+def test_a_marked_broadcast_row_keeps_a_readable_key(tmp_path: Path) -> None:
+    """A marked first row whose key a field leaves readable is placed by that key, so
+    require_match sees it and full emits it in its place."""
     fields = "cardinality: one_to_many, row_key: [unit, rid], require_match: true"
-    rows = [_UNITS[0], _MARK, _UNITS[2]]
+    rows = [_UNITS[0], {**_UNITS[2], "text": _MARK}]
     out = _broadcast(tmp_path, rows=rows, sizes=_SIZES, tags=["A", "C"], fields=fields)
-    assert out == [_JOINED[0], _MARK, _JOINED[2]]
+    assert out == [_JOINED[0], _MARK]
+    fields = "cardinality: one_to_many, row_key: [unit, rid], how: full"
+    stray = {"unit": "u3", "size": 1}
+    out = _broadcast(
+        tmp_path, rows=rows, sizes=_SIZES + [stray], tags=["A", "C"], fields=fields
+    )
+    assert out == [_JOINED[0], _MARK, stray]
 
 
 def test_a_marked_broadcast_row_marks_every_row_of_its_key(tmp_path: Path) -> None:
