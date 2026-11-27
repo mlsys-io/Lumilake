@@ -35,10 +35,12 @@ def value_at(row: Any, path: str) -> Any:
     return None if is_marker(current) else current
 
 
-def composite_key(row: Any, paths: Sequence[str]) -> str | None:
-    """The key a row carries at a composite of paths, or ``None`` when any of
-    them does not resolve: one path's value, or the list of their values."""
-    values = [value_at(row, path) for path in paths]
+def composite_key(row: Any, paths: str | Sequence[str]) -> str | None:
+    """The key a row carries at one path or a composite of paths, or ``None``
+    when any of them does not resolve: one path's value, or the list of their
+    values."""
+    named = [paths] if isinstance(paths, str) else paths
+    values = [value_at(row, path) for path in named]
     if not values or any(found is None for found in values):
         return None
     return key_text(values[0] if len(values) == 1 else values)
