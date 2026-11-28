@@ -100,6 +100,10 @@ _LOG = logging.getLogger("t")
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
 
 
+def _rows(rows: list[Any]) -> dict[str, list[str]]:
+    return {"Rows": [json.dumps(row) for row in rows]}
+
+
 def _changed(workflow: dict[str, Any]) -> dict[str, Any]:
     """The workflow with its last op's code changed."""
     ops = [*workflow["ops"][:-1], {**workflow["ops"][-1], "code": _CHANGED_CODE}]
@@ -531,6 +535,15 @@ def _parse_workflow(rows: list[dict[str, Any]], *more: dict[str, Any]) -> Any:
     }
 
 
+def _two_step(mark: dict[str, Any], step: dict[str, Any], rows: list[Any]) -> Any:
+    """A ``mark`` step and one ``step`` over it, over ``rows`` as rows."""
+    return {
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": [mark, step],
+        "outputs": [{"name": "o", "ref": step["id"]}],
+    }
+
+
 @pytest.mark.asyncio
 async def test_a_parse_steps_field_is_served_under_reuse() -> None:
     """A parse step's stored record serves a reader of ``items.output.<field>``."""
@@ -554,27 +567,105 @@ async def test_a_parse_steps_field_is_served_under_reuse() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
-    """A parse step rerun while its keyed input is served stores under that
-    input's keys, so the next run hits it."""
-    rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
-    parsed = [{"text": row["text"]} for row in rows]
-    workflow = _parse_workflow(rows)
-    changed = {**workflow, "ops": [_MARK_OP, _CHANGED_PARSE]}
+async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
+    """A reader declaring one path of a several-path keyed input stores under
+    that path's value both when it runs and when that input is served."""
+    rows = [{"pid": f"p{n}", "nctid": f"N{n}", "note": f"n{n}"} for n in (1, 2)]
+    out = [{"name": "o", "ref": "Ask"}]
+    workflow = {"inputs": _rows(rows), "ops": [_NOTES, _ASK], "outputs": out}
+    changed = {**workflow, "ops": [_NOTES, {**_ASK, "code": "lambda c: ['?']"}]}
+    replies = [row["note"] + "!" for row in rows]
     storage = InMemoryJobStorage()
-    await _run(storage, workflow, {"Mark": rows, "Parsed": parsed}, "req-1")
-    planner, graph = _planner(storage), _runtime_graph(changed)
-    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
-    assert _decisions(plan)["Parsed"] == ("miss", "spec changed"), _decisions(plan)
-    served = served_records(plan)
+    await _run(storage, workflow, {"Notes": rows, "Ask": replies}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)["Notes"] == ("hit", None), _decisions(plan)
     await _run(
-        storage, changed, {"Parsed": parsed}, "req-2", graph=dispatched, served=served
+        storage,
+        changed,
+        {"Ask": replies},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    produced, served = read_index(storage, "req-1"), read_index(storage, "req-2")
+    assert produced is not None and served is not None
+    for index in (produced, served):
+        assert [e.record for e in index.entries if e.op == "Ask"] == ["N1", "N2"]
+
+
+@pytest.mark.asyncio
+async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
+    """A parse step re-dispatched over a served keyed input stores under that
+    input's keys, though its values carry no id, so the next run hits it."""
+    rows = [{"id": f"n{n}", "doc": json.dumps({"text": f"t{n}"})} for n in (1, 2)]
+    docs, parsed = [row["doc"] for row in rows], [{"text": f"t{n}"} for n in (1, 2)]
+    workflow = {**_parse_workflow(rows), "ops": [_DOC_MARK, _PARSE_OP]}
+    changed = {**workflow, "ops": [_DOC_MARK, _CHANGED_PARSE]}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Mark": docs, "Parsed": parsed}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)["Parsed"][0] == "miss", _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {"Parsed": parsed},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
     )
     entries = read_index(storage, "req-2")
     assert entries is not None
-    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"a", "b"}
-    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"n1", "n2"}
+    again, _ = _planned(storage, _runtime_graph(changed))
     assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
+
+
+_DOC_MARK = {**_MARK_OP, "code": "lambda c: [json.loads(v)['doc'] for v in c[0]]"}
+_TEXT_MARK = {**_MARK_OP, "code": "lambda c: [json.loads(v)['text'] for v in c[0]]"}
+_STEP_ON = {**_MARK_OP, "id": "Step", "inputs": ["Mark"], "fn_name": "step"}
+_STEP_ON |= {"key": {"node": "Mark", "path": "id"}}
+_STEP_ON |= {"code": "def step(c):\n    return c[0] + '!'\n"}
+_SERVED_CASES = [
+    (_MARK_OP, _PARSE_OP, _CHANGED_PARSE, "row", {"a", "b"}),
+    (_DOC_MARK, _PARSE_OP, _CHANGED_PARSE, "doc", {"n1", "n2"}),
+    (_TEXT_MARK, _STEP_ON, {"code": "def step(c):\n    return c[0]\n"}, "text",
+     {"a", "b"}),
+]
+
+
+@pytest.mark.parametrize("mark, step, miss, kind, expected", _SERVED_CASES)
+@pytest.mark.asyncio
+async def test_a_redispatched_step_takes_a_served_inputs_keys(
+    mark: dict[str, Any],
+    step: dict[str, Any],
+    miss: dict[str, Any],
+    kind: str,
+    expected: set[str],
+) -> None:
+    """A step rerun over a served keyed input stores under that input's keys,
+    though its values carry no key, so the next run hits it."""
+    parsed = [{"id": k, "text": f"t{n}"} for n, k in enumerate(sorted(expected))]
+    marks = {"row": parsed, "doc": [json.dumps({"text": p["text"]}) for p in parsed]}
+    marks["text"] = [p["text"] for p in parsed]
+    workflow = _two_step(mark, step, parsed)
+    changed = _two_step(mark, {**step, **miss}, parsed)
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Mark": marks[kind], step["id"]: parsed}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)[step["id"]][0] == "miss", _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {step["id"]: parsed},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == step["id"]} == expected
+    again, _ = _planned(storage, _runtime_graph(changed))
+    assert _decisions(again)[step["id"]] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio
@@ -849,6 +940,14 @@ def _pipeline(
         "ops": ops,
         "outputs": [{"name": name, "ref": output}],
     }
+
+
+_DECODE = "lambda c: [json.loads(v) for v in c[0]]"
+_NOTES = {**_op("Notes", ["Rows"], "notes", _DECODE, "row")}
+_NOTES |= {"key": {"node": "Rows", "path": ["pid", "nctid"]}}
+_NOTE = "lambda c: [r['note'] for r in c[0]]"
+_ASK = {**_op("Ask", ["Notes"], "ask", _NOTE, "row")}
+_ASK |= {"key": {"node": "Notes", "path": "nctid"}}
 
 
 def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
@@ -1918,7 +2017,6 @@ async def test_a_read_a_reusing_job_reruns_feeds_an_expand(
         return TaskStatusPage(rows=rows, next_cursor="0")
 
     fm = SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
-
     build = FlowmeshRuntimeManager._build_task_spec
 
     async def _build(self: Any, info: Any, planned: Any, schedule: Any = None):

@@ -22,7 +22,7 @@ from lumilake_server.data_specs import (
     PythonData,
     parse_data_spec,
 )
-from lumilake_server.ops import KeyPathList, RecordKey
+from lumilake_server.ops import KeyPaths, RecordKey
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_keys import (
@@ -259,7 +259,7 @@ class ReusePlan(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
     """Node id -> its output name, so a fully answered request rebuilds every
     hit output without the graph it planned from."""
-    key_paths: dict[str, str | Sequence[str]] = Field(default_factory=dict)
+    key_paths: dict[str, str | KeyPaths] = Field(default_factory=dict)
     """Node id -> the record-key path or paths it plans with, so a dispatched op
     keeps the key it inherited from a served input even after that input left
     the graph."""
@@ -283,6 +283,9 @@ class ReusePlan(BaseModel):
     refused: set[str] = Field(default_factory=set)
     """The ops whose stored records a reader refuses, so the plan misses them
     though the store answers them; a level leaves each to the main run."""
+    inherited: set[str] = Field(default_factory=set)
+    """Node ids whose key the plan gives a dispatched op in place of its own
+    declaration, so the key is positional and takes the served input's keys."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -969,7 +972,9 @@ class ReusePlanner:
         entries: list[RecordEntry] = []
         outcomes: list[RecordOutcome] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
-        seeded = _seeded_records(plan, stored, runtime_graph)
+        seeded = _seeded_records(
+            plan, stored, runtime_graph, decision.key_paths
+        )
         versions = effect_versions(plan.op)
         served = _partially_servable(plan)
         first_reason: str | None = None
@@ -1125,6 +1130,7 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
                 [entry.value for entry in entries] if keyed else entries[0].value.copy()
             ),
             keys=[entry.address.record for entry in entries],
+            paths=plan.key_paths.get(node_id),
             entries=entries.copy(),
         )
         for entry in entries:
@@ -1559,6 +1565,7 @@ def without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
         if node_id in plan.served_nodes():
             continue
         nodes[node_id] = _rewritten(runtime_graph.nodes[node_id], plan, runtime_graph)
+    record_keys = _dispatch_record_keys(runtime_graph, plan, nodes)
     output_node_map = runtime_graph.output_node_map.copy()
     before, after = _plumbing_nodes(plan, nodes, output_node_map, runtime_graph)
     op_names = runtime_graph.op_names.copy()
@@ -1591,7 +1598,7 @@ def without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
             if node_id in nodes
         },
         dsl_to_runtime=runtime_graph.dsl_to_runtime.copy(),
-        record_keys=_dispatch_record_keys(runtime_graph, plan, nodes),
+        record_keys=record_keys,
         op_names=op_names,
     )
 
@@ -1815,15 +1822,11 @@ def _rename_refs(value: Any, old: str, new: str) -> None:
             _rename_refs(item, old, new)
 
 
-def _declared_path(path: str | Sequence[str]) -> str | KeyPathList:
-    """A key path as ``RecordKey`` holds it: one string, or the paths in a tuple."""
-    return path if isinstance(path, str) else tuple(path)
-
-
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
-    """Each dispatched op's declared key, plus one inherited from a served input."""
+    """Each dispatched op's declared key, plus one inherited from a served input,
+    whose op the plan then lists as inherited."""
     keys = {
         node_id: key
         for node_id, key in runtime_graph.record_keys.items()
@@ -1841,7 +1844,8 @@ def _dispatch_record_keys(
             if node not in nodes and plan.key_paths.get(node)
         ]
         if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=_declared_path(inherited))
+            keys[node_id] = RecordKey(node=sources[0], path=inherited)
+            plan.inherited.add(node_id)
     return keys
 
 
@@ -1995,9 +1999,7 @@ def _content_input(
     )
 
 
-def _literal_input(
-    values: Sequence[Any], key_path: str | Sequence[str] | None
-) -> _Input:
+def _literal_input(values: Sequence[Any], key_path: str | KeyPaths | None) -> _Input:
     """One literal rows list, named per value and keyed by the op's key path."""
     return _Input(
         named=RecordInput(
@@ -2182,6 +2184,7 @@ def _seeded_records(
     plan: RecordPlan,
     stored: Mapping[str, list[RecordEntry]],
     runtime_graph: RuntimeGraph,
+    key_paths: Mapping[str, str | Sequence[str]],
 ) -> dict[str, NodeRecords]:
     """The planned records a node-bound seed column reads, in the seed node's items."""
     spec = plan.op.data_spec
@@ -2209,6 +2212,7 @@ def _seeded_records(
             keyed=True,
             values=[entry.value for entry in entries],
             keys=[entry.address.record for entry in entries],
+            paths=key_paths.get(node),
             items=[_seed_item(entry.value, wrapping) for entry in entries],
         )
     }

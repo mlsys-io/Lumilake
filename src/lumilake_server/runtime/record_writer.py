@@ -22,7 +22,7 @@ from lumilake_server.data_specs import (
     JoinDescription,
     PythonData,
 )
-from lumilake_server.ops import RecordKey
+from lumilake_server.ops import KeyPaths, RecordKey
 from lumilake_server.ops.http_fetch_ops import FETCH_MODEL
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import (
@@ -41,6 +41,7 @@ from lumilake_server.runtime.record_store import (
     RecordRealization,
     RecordSource,
     address_object_name,
+    canonical_json,
     data_spec_dict,
     declared_seed,
     digest_of,
@@ -120,8 +121,9 @@ class RecordInput:
 
 
 class NodeRecords:
-    """One node's records: its values, the key of each, and (once written)
-    each one's digest and value digest, per round it was stored at."""
+    """One node's records: its values, the key of each, the path each key is at,
+    and (once written) each one's digest and value digest, per round it was
+    stored at."""
 
     def __init__(
         self,
@@ -129,6 +131,7 @@ class NodeRecords:
         keyed: bool,
         values: list[Any],
         keys: list[str | None] | None,
+        paths: str | Sequence[str] | None = None,
         items: list[Any] | None = None,
         entries: list[RecordEntry] | None = None,
         content: bool = False,
@@ -136,6 +139,7 @@ class NodeRecords:
         self.keyed = keyed
         self.values = values
         self.keys = keys
+        self.paths = paths
         self.items: list[Any] = [] if items is None else items
         self.digests: dict[tuple[str | None, int], tuple[str, str | None]] = {}
         self.entries: list[RecordEntry] = entries if entries is not None else []
@@ -249,7 +253,7 @@ class RecordPlan:
         *,
         op: RuntimeOp,
         op_name: str,
-        key_path: str | Sequence[str] | None,
+        key_path: str | KeyPaths | None,
         key_paths: list[str],
         row_key_paths: list[str],
         join_inputs: list[str | None],
@@ -323,6 +327,7 @@ class RecordWriter:
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
         alias: Mapping[str, str] | None = None,
+        inherited: Collection[str] = frozenset(),
     ) -> dict[str, list[RecordEntry]]:
         """Write the records of every node this batch produced and return the
         entries written for each producing node, by node id.
@@ -330,14 +335,15 @@ class RecordWriter:
         ``served`` holds the records a reuse plan answered without a task; they
         enter each storing member's index too. ``alias`` maps every generated step a
         partial run inserted to what it stands for: a merge step to its partially
-        served op, a pass-through to its producer."""
+        served op, a pass-through to its producer. ``inherited`` holds the node ids
+        whose key the plan inherited from a served input."""
         if not self._enabled:
             return {}
         aliases = {} if alias is None else alias
         order = runtime_graph.topological_order()
         plans = _resolve_plans(runtime_graph, order, served)
         records, items_of = _collect_node_records(
-            runtime_graph, plans, order, node_task_map, results, served
+            runtime_graph, plans, order, node_task_map, results, served, inherited
         )
         _rebuild_aliased_ops(order, aliases, records)
         merged_ops = set(aliases.values())
@@ -1125,7 +1131,7 @@ def logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | Sequence[str] | None:
+) -> str | KeyPaths | None:
     """A node's record-key path or paths."""
     return _key_path(runtime_graph, node_id, plans)
 
@@ -1816,7 +1822,7 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def _key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | Sequence[str] | None:
+) -> str | KeyPaths | None:
     """A node's record-key path or paths: the ones its op declares, else the
     path of the single keyed input a 1:1 node reads by position, else ``None``
     (whole-op). An input keyed by a mode passes no path: its consumer takes
@@ -1912,6 +1918,7 @@ def _collect_node_records(
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
     served: Mapping[str, NodeRecords] | None,
+    inherited: Collection[str] = frozenset(),
 ) -> tuple[dict[str, NodeRecords], dict[str, list[Mapping[str, Any]]]]:
     """Read every finished node's records and items in the order it produced
     them, and the records a reuse plan served, so a keyed node reads a served
@@ -1940,6 +1947,7 @@ def _collect_node_records(
             keyed=plan.keyed,
             values=values,
             keys=None,
+            paths=plan.key_path,
             items=items_of.get(node_id) or [],
             content=content_addressed(plan.op),
         )
@@ -1955,7 +1963,9 @@ def _collect_node_records(
                 entry.digest,
                 entry.value_digest,
             )
-    _keyed_mode_records(runtime_graph, plans, order, items_of, produced, records)
+    _keyed_mode_records(
+        runtime_graph, plans, order, items_of, produced, records, inherited
+    )
     _inherit_input_keys(order, plans, runtime_graph, records)
     return records, items_of
 
@@ -1967,6 +1977,7 @@ def _keyed_mode_records(
     items_of: Mapping[str, list[Mapping[str, Any]]],
     produced: Mapping[str, Sequence[Any]],
     records: dict[str, NodeRecords],
+    inherited: Collection[str],
 ) -> None:
     """Key every node's records in dependency order: a whole-op or 1:1 node from
     its rows, an expand child from its parent, a reduce group from its ``by``
@@ -2000,7 +2011,13 @@ def _keyed_mode_records(
             node_records.keys = [_group_key(item, groups) for item in items_of[node_id]]
             continue
         node_records.keys = _reuse_keys(items_of.get(node_id, [])) or _node_keys(
-            runtime_graph, plans, plan, node_records.values, produced, records
+            runtime_graph,
+            plans,
+            plan,
+            node_records.values,
+            produced,
+            records,
+            inherited,
         )
     _key_marked_join_rows(records, plans)
 
@@ -2099,6 +2116,7 @@ def _node_keys(
     values: Sequence[Any],
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
+    inherited_set: Collection[str],
 ) -> list[str | None] | None:
     """The key of each record of one node, in row order: its own, else its
     declared input's, else its one keyed input's at the same position."""
@@ -2115,7 +2133,10 @@ def _node_keys(
     declared = runtime_graph.record_keys.get(plan.op.node_id)
     if declared is not None and declared.node != plan.op.node_id:
         if _one_to_one(plan.op):
-            source = _declared_keys(plan, declared, len(values), produced, records)
+            positional = plan.op.node_id in inherited_set
+            source = _declared_keys(
+                plan, declared, positional, len(values), produced, records
+            )
             if source is not None:
                 return [
                     source[position] if key is None and position < len(source) else key
@@ -2151,18 +2172,33 @@ def _own_keys(
 def _declared_keys(
     plan: RecordPlan,
     declared: RecordKey,
+    inherited: bool,
     count: int,
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
 ) -> Sequence[str | None] | None:
-    """The key each row of a declared input carries: its produced rows' keys, the
-    keys a reuse plan served for it, or its literal rows' keys."""
+    """The key each row of a declared input carries, read from its rows: the
+    value at the declared path in the rows it produced, in the values a reuse
+    plan served for it, or in its literal rows. A served node answers with its
+    own key where the declared path is that key's path, and with one component
+    of each key where it names one of a several-path key's paths; an inherited
+    key is positional and takes those keys whole, whatever path it names."""
     rows = produced.get(declared.node)
     if rows is not None:
         return [composite_key(row, declared.path) for row in rows]
     served = records.get(declared.node)
-    if served is not None and served.keys is not None and served.lines_up:
-        return served.keys
+    if served is not None and served.lines_up:
+        paths = served.paths
+        parts = (paths,) if isinstance(paths, str) else (paths or ())
+        if inherited or not declared.path or parts[:1] == (declared.path,):
+            return served.keys
+        if declared.path in parts:
+            part = parts.index(declared.path)
+            return [
+                key if key is None else _key_part(key, part)
+                for key in served.keys or []
+            ]
+        return [composite_key(value, declared.path) for value in served.values]
     literal = _declared_rows(plan, declared.path, count)
     return (
         None
@@ -2171,8 +2207,14 @@ def _declared_keys(
     )
 
 
+def _key_part(key: str, position: int) -> str:
+    """One component of a several-path key, spelled as ``composite_key`` does."""
+    part = json.loads(key)[position]
+    return part if isinstance(part, str) else canonical_json(part)
+
+
 def _declared_rows(
-    plan: RecordPlan, path: str | Sequence[str], count: int
+    plan: RecordPlan, path: str | KeyPaths, count: int
 ) -> Sequence[Any] | None:
     """The literal list the op carries for a declared input, when exactly one of
     its lists holds ``count`` rows that all carry a key at ``path``."""

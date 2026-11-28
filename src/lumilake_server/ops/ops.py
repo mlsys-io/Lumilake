@@ -12,7 +12,7 @@ from lumilake_server.utils.utils import unique_id
 T = TypeVar("T")
 SingleDtype = str | list[Message]
 type AnyOp = Op
-KeyPathList = Annotated[
+KeyPaths = Annotated[
     tuple[Annotated[StrictStr, Field(min_length=1)], ...], Field(min_length=1)
 ]
 
@@ -24,7 +24,7 @@ class RecordKey(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     node: StrictStr = Field(min_length=1)
-    path: StrictStr | KeyPathList = ""
+    path: StrictStr | KeyPaths = ""
 
 
 def record_key(key: Any, op_id: str) -> RecordKey:

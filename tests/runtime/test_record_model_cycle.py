@@ -400,18 +400,7 @@ async def test_a_changed_chat_reads_a_served_row_as_its_dict(
     """An aligned or expand step emits its row under ``output`` as it stands, so
     the pass-through that replays its stored rows to a chat whose config changed
     hands them over as those dicts, not as their JSON text."""
-    producer = _reader_chain(kind)
-    ops = [
-        *producer,
-        {
-            **_CHAT,
-            "inputs": ["Provider"],
-            "rowwise_columns": [
-                {"label": "v", "node": "Provider", "path": "items.output.s"}
-            ],
-            "key": {"node": "Provider", "path": "id"},
-        },
-    ]
+    ops = [*_reader_chain(kind), _chat_over()]
     await run(_workflow(ops, _ROWS, "Ask"), "req-1")
     changed = {**ops[-1], "config": {"model": "m", "temperature": 0.5}}
     await run(_workflow([*ops[:-1], changed], _ROWS, "Ask"), "req-2")
@@ -429,6 +418,17 @@ def _reader_chain(kind: str) -> list[dict[str, Any]]:
     producer = _lambda("Provider", ["Rows"], "provider", code)
     producer |= {"mode": kind, "key": {"node": "Rows", "path": "id"}}
     return [producer]
+
+
+def _chat_over() -> dict[str, Any]:
+    """A keyed chat reading a field of ``Provider``'s row."""
+    field = {"label": "v", "node": "Provider", "path": "items.output.s"}
+    return {
+        **_CHAT,
+        "inputs": ["Provider"],
+        "rowwise_columns": [field],
+        "key": {"node": "Provider", "path": "id"},
+    }
 
 
 @pytest.mark.asyncio
@@ -612,7 +612,6 @@ _PARSE_BETWEEN = {
     **_AFTER,
     "id": "Parse",
     "inputs": ["Ask"],
-    "code": "def after(c):\n    return c[0] + '!'\n",
     "key": {"node": "Ask", "path": "id"},
 }
 _EXPAND_BETWEEN = {
@@ -641,8 +640,7 @@ _OVER_BETWEEN = {
 async def test_two_steps_between_two_chats_land_in_the_first_level(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A row step, an expand and a step over it between two chats join the
-    first level whole, so the chat over the expand still decides per record."""
+    """A row step, an expand and a step over it between two chats join the first level."""
     tail = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
     ops: list[dict[str, Any]] = [
         _TAG,
