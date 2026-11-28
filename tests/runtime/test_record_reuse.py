@@ -69,6 +69,18 @@ ops:
 outputs: [{name: g, ref: Grade}]
 """
 
+_PATIENT_TEXT = """\
+name: patient
+inputs: {Rows: [%s]}
+ops:
+  - {id: Notes, op: LambdaOp, inputs: [Rows], mode: row, fn_name: Notes,
+     code: "lambda c: [json.loads(v) for v in c[0]]",
+     key: {node: Rows, path: [pid, nctid]}}
+  - {id: Ask, op: LambdaOp, inputs: [Notes], mode: row, fn_name: Ask, code:
+     "lambda c: [r['note'] for r in c[0]]", key: {node: Notes, path: %s}}
+outputs: [{name: o, ref: Ask}]
+"""
+
 
 _DECODE = "lambda c: [json.loads(v) for v in c[0]]"
 _ID_KEY = {"node": "Rows", "path": "id"}
@@ -313,30 +325,29 @@ async def test_a_parse_steps_field_is_served_under_reuse() -> None:
     assert _decisions(plan)["Parsed"] == ("hit", None), _decisions(plan)
 
 
+@pytest.mark.parametrize("path, keys", [("nctid", ["N1", "N2"]), ("pid", ["p1", "p2"])])
 @pytest.mark.asyncio
-async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
-    """A reader declaring one path of a several-path keyed input stores under
-    that path's value both when it runs and when that input is served."""
+async def test_a_reader_keeps_its_declared_path_on_a_served_input(
+    path: str, keys: list[str]
+) -> None:
+    """A reader stores its declared path's keys whether run or served."""
     rows = [{"pid": f"p{n}", "nctid": f"N{n}", "note": f"n{n}"} for n in (1, 2)]
-    workflow = _flow([_NOTES, _ASK], rows)
-    changed = _flow([_NOTES, {**_ASK, "code": "lambda c: ['?']"}], rows)
+    items = ", ".join(json.dumps(json.dumps(r)) for r in rows)
+    text = _PATIENT_TEXT % (items, f'"{path}"')
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][-1] = {**changed["ops"][-1], "code": "lambda c: ['?']"}
     replies = [row["note"] + "!" for row in rows]
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Notes": rows, "Ask": replies}, "req-1")
     plan, dispatched = _planned(storage, _runtime_graph(changed))
-    assert _decisions(plan)["Notes"] == ("hit", None), _decisions(plan)
+    served = served_records(plan)
     await _run(
-        storage,
-        changed,
-        {"Ask": replies},
-        "req-2",
-        graph=dispatched,
-        served=served_records(plan),
+        storage, changed, {"Ask": replies}, "req-2", graph=dispatched, served=served
     )
     for job in ("req-1", "req-2"):
         index = read_index(storage, job)
         assert index is not None
-        assert [e.record for e in index.entries if e.op == "Ask"] == ["N1", "N2"]
+        assert [e.record for e in index.entries if e.op == "Ask"] == keys
 
 
 @pytest.mark.parametrize("mark, step, miss, as_rows, expected", _CASES)

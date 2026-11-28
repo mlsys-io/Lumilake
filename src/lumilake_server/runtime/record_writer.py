@@ -812,7 +812,8 @@ def _declared_keys(
     if served is not None:
         paths = served.paths
         parts = (paths,) if isinstance(paths, str) else (paths or ())
-        if inherited or not declared.path or parts[:1] == (declared.path,):
+        wanted = (declared.path,) if isinstance(declared.path, str) else declared.path
+        if inherited or not declared.path or tuple(wanted) == tuple(parts):
             return served.keys
         if declared.path in parts:
             part = parts.index(declared.path)
