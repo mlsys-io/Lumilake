@@ -63,6 +63,7 @@ from pydantic import (
 from lumilake import envs
 from lumilake.log import Logger, init_child_logger, set_trace_id
 from lumilake_hook import DataProfileResultRow, ResourceAction, ResourceKind, UsageRow
+from lumilake_server.data_specs import PYTHON_TASK_TYPE, PythonData
 from lumilake_server.dynamic.blocks import INPUT_NODE_ID
 from lumilake_server.dynamic.driver import (
     STOP,
@@ -105,7 +106,7 @@ from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.ops.util_ops import CLEARS_KEY
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.common import read_workflow_seed
-from lumilake_server.parser.keyed_seed import rewrite_native_keys
+from lumilake_server.parser.keyed_seed import SAMPLE_FN_NAME, rewrite_native_keys
 from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
 from lumilake_server.records import (
     IO_LOCATION_ADAPTER,
@@ -115,6 +116,7 @@ from lumilake_server.records import (
     JobRecord,
     JobStatus,
 )
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -1274,6 +1276,12 @@ def _validate_row_count_slice_span(
                 produced = "below a list-mode Lambda whose fan-out sets its row count"
             else:
                 continue
+            if _reads_a_sample_fan_out(graph, node_id, list_lambda_dependent):
+                produced = (
+                    "by the per-sample fan-out the parser generates for a keyed chat"
+                    " op whose config.n is greater than one, which emits one item per"
+                    " (row, sample) over the whole input set"
+                )
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
@@ -1283,6 +1291,31 @@ def _validate_row_count_slice_span(
                     "larger input_batch_size so the whole input set runs in one slice."
                 ),
             )
+
+
+def _reads_a_sample_fan_out(
+    graph: RuntimeGraph, node_id: str, whole_result: set[str]
+) -> bool:
+    """Whether the whole-result node behind ``node_id`` is the per-sample fan-out."""
+    seen: set[str] = set()
+    pending = [node_id]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        node = graph.nodes.get(current)
+        if node is None:
+            continue
+        if node.task_type == PYTHON_TASK_TYPE and isinstance(
+            node.data_spec, PythonData
+        ):
+            if node.data_spec.mode in python_step.WHOLE_RESULT_MODES:
+                return node.data_spec.mode == "expand" and (
+                    node.data_spec.fn_name == SAMPLE_FN_NAME
+                )
+        pending.extend(dep for dep in node.dependencies if dep in whole_result)
+    return False
 
 
 _GPU_ZERO_CONFLICT = (

@@ -42,6 +42,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         plan: list[ColumnPlanEntry] = []
         row_counts: list[tuple[str, int | None]] = []
         inputs_dict = ctx.inputs_dict
+        undecoded = set(op.undecoded_columns)
         for inp in op.inputs:
             if isinstance(inp, LambdaOp):
                 nodes.extend(self._build_python_step(inp, ctx))
@@ -61,13 +62,23 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             elif isinstance(inp, InputOp):
                 ctx.visited.add(inp.id)
                 plan.append(
-                    ColumnPlanEntry(kind="literal", values=inputs_dict[inp.name])
+                    ColumnPlanEntry(
+                        kind="literal",
+                        values=inputs_dict[inp.name],
+                        whole=True if inp.id in undecoded else None,
+                    )
                 )
                 row_counts.append((inp.id, len(inputs_dict[inp.name])))
                 continue
             elif isinstance(inp, DataOp):
                 ctx.visited.add(inp.id)
-                plan.append(ColumnPlanEntry(kind="literal", values=list(inp.data)))
+                plan.append(
+                    ColumnPlanEntry(
+                        kind="literal",
+                        values=list(inp.data),
+                        whole=True if inp.id in undecoded else None,
+                    )
+                )
                 row_counts.append((inp.id, len(inp.data)))
                 continue
             else:
@@ -91,7 +102,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dependencies.append(dep)
 
         row_count = self._python_step_row_count(op.id, row_counts, combines_rows=True)
-        nodes.append(self._python_step(op, plan, row_count, dependencies, ctx))
+        nodes.append(
+            self._python_step(op, plan, undecoded, row_count, dependencies, ctx)
+        )
         return nodes
 
     def _tag_seed_entry(
@@ -127,10 +140,31 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             dependencies.append(seed_node)
         return [*plan[:index], seeded, *plan[index + 1 :]]
 
+    def _tag_undecoded_columns(
+        self, op: LambdaOp, plan: list[ColumnPlanEntry], undecoded: set[str]
+    ) -> list[ColumnPlanEntry]:
+        """Mark the plan entries a generated fan-out reads as they stand."""
+        marked = [
+            (
+                entry.model_copy(update={"whole": True})
+                if entry.kind == "stage" and entry.node in undecoded
+                else entry
+            )
+            for entry in plan
+        ]
+        bound = {i.id for i in op.inputs}
+        if undecoded - bound:
+            raise ValueError(
+                f"LambdaOp '{op.id}' reads {sorted(undecoded - bound)} undecoded, which"
+                " are not its inputs"
+            )
+        return marked
+
     def _python_step(
         self,
         op: LambdaOp,
         plan: list[ColumnPlanEntry],
+        undecoded: set[str],
         row_count: int | None,
         dependencies: list[str],
         ctx: LoweringContext,
@@ -139,7 +173,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         data_spec = PythonData(
             code=op.code,
             fn_name=op.fn.__name__,
-            plan=self._tag_seed_entry(op, plan, ctx, dependencies),
+            plan=self._tag_undecoded_columns(
+                op, self._tag_seed_entry(op, plan, ctx, dependencies), undecoded
+            ),
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None

@@ -267,6 +267,7 @@ class ColumnPlanEntry(DataSpecModel):
     label: str | None = None
     grouped: bool | None = None
     file: str | None = None
+    whole: bool | None = None
 
 
 class JoinDescription(DataSpecModel):

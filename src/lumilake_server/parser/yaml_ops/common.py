@@ -97,7 +97,7 @@ def emit_keyed_seed(
 ) -> None:
     """Queue a row function over the key column and bind the op to it."""
     entry = ctx.entry
-    node_ref, path, pairing = keyed_seed.key_target(
+    node_ref, path, pairing, samples = keyed_seed.key_target(
         entry.id,
         seed,
         op_kind,
@@ -114,6 +114,25 @@ def emit_keyed_seed(
         else:
             repeat_id = ctx.template_ids.get(copy.repeat_id, copy.repeat_id)
             template_id = f"{repeat_id}.{copy.iteration}.{copy.body_id}"
+    if samples > 1:
+        seed_dict = keyed_seed.rewire_sample_fan_out(
+            op_dict,
+            keyed_seed.FanOut(
+                op_id=entry.id,
+                op_kind=op_kind,
+                key_node=node_id,
+                key_path=path,
+                samples=samples,
+                job_seed=ctx.job_seed,
+                round_number=round_number,
+                template_id=template_id,
+                scope=ctx.scope,
+                pairing=pairing,
+            ),
+            field,
+        )
+        op_dict.setdefault("__implicit_ops__", []).append(seed_dict)
+        return
     seed_dict = keyed_seed.seed_op(
         entry.id,
         node_id,

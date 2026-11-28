@@ -113,6 +113,11 @@ def text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def _identity(value: Any) -> Any:
+    """A column read that hands the value on as it stands."""
+    return value
+
+
 def _raw_seed(value: Any, op_id: str, index: int) -> int:
     """One row's seed: an integer or JSON integer text, refused otherwise."""
     decoded = value
@@ -280,6 +285,10 @@ def _rows(
 def _column(
     entry: dict[str, Any], inputs: dict[str, str], read: Callable[[Any], Any]
 ) -> list[Any]:
+    if entry.get("whole"):
+        # A whole-cell column keeps each upstream value as it stands, so the function
+        # renders the same text a rowwise chat renders for it.
+        read = _identity
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:

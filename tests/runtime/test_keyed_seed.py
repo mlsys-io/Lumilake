@@ -2,16 +2,26 @@
 
 import copy
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from lumilake_server.data_specs import ColumnPlanEntry, PythonMode
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
 from lumilake_server.parser import keyed_seed, parse_yaml_payload, yaml_parser
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
+from lumilake_server.parser.keyed_seed import (
+    SAMPLE_FN_NAME,
+    SAMPLE_SEED_LABEL,
+    SAMPLE_SUFFIX,
+    SEED_FN_NAME,
+    rewrite_native_keys,
+    seed_op,
+)
+from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.utils import lambda_runtime
@@ -210,3 +220,204 @@ def test_a_row_lambda_takes_a_seeded_key_form() -> None:
     built = next(iter(parse_yaml_payload(payload).values()))["graph"]
     assert built[make_id("yaml_workflow", "seed", "Answer")]["fn_name"] == SEED_FN_NAME
     assert built[make_id("yaml_workflow", "lambda", "Answer__seed")]["fn_name"] == "p"
+
+
+def _sampled(samples: int, **config: Any) -> dict[str, Any]:
+    answer = copy.deepcopy(_ANSWER)
+    answer["config"] = {"model": "m", "n": samples, **config}
+    answer["rowwise_columns"].append(
+        {"label": "case_id", "node": "Cases", "path": "items.output.case_id"}
+    )
+    cases = {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN}
+    return {"seed": 7, "ops": [cases, answer]}
+
+
+def _whole_cell(samples: int) -> dict[str, Any]:
+    """The sampled chat, with one column that reads its row's whole cell."""
+    payload = _sampled(samples)
+    payload["ops"][1]["rowwise_columns"][0] = {"label": "whole", "node": "Cases"}
+    return payload
+
+
+def _fan_out(payload: dict[str, Any]) -> Any:
+    spec = next(iter(parse_yaml_payload(payload).values()))["graph"]
+    op = next(v for v in spec.values() if v.get("fn_name") == SAMPLE_FN_NAME)
+    return lambda_runtime.materialize(op["_code"], op["fn_name"]), op
+
+
+def _run_fan_out(
+    spec: dict[str, Any], inputs: dict[str, str], mount: Path
+) -> list[Any]:
+    """Run the fan-out through the wrapper a worker runs, and return its items."""
+    namespace: dict[str, Any] = {}
+    code = python_step.wrapper_source(
+        "fan-out",
+        spec["fn_name"],
+        spec["code"],
+        [ColumnPlanEntry.model_validate(entry) for entry in spec["plan"]],
+        PythonMode.EXPAND,
+    ).replace(python_step.TASK_RUNTIME_MOUNT, str(mount))
+    exec(code, namespace)
+    return namespace["main"](inputs)["items"]
+
+
+def _sample_cells(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    fn, _ = _fan_out(payload)
+    return [item for cell in _COLUMN for item in fn((cell,))]
+
+
+def test_a_sample_per_row_draws_the_documented_pair() -> None:
+    """Two parses of one payload give sample j of every key the same seed."""
+    cells = _sample_cells(_sampled(2))
+    keys = [row["case_id"] for row in _ROWS]
+    assert [item["__seed"] for item in cells] == documented_seed(keys, samples=2)
+    assert [item["__seed"] for item in cells] == [
+        item["__seed"] for item in _sample_cells(_sampled(2))
+    ]
+
+
+def test_raising_the_sample_count_keeps_the_earlier_seeds() -> None:
+    """Samples 0 and 1 of every key keep their seeds when n goes from 2 to 3."""
+    keys = [row["case_id"] for row in _ROWS]
+    two = [item["__seed"] for item in _sample_cells(_sampled(2))]
+    three = [item["__seed"] for item in _sample_cells(_sampled(3))]
+    assert three[::3] + three[1::3] == two[::2] + two[1::2]
+    assert three == documented_seed(keys, samples=3)
+
+
+def test_two_keys_never_share_a_sample_seed() -> None:
+    """Two distinct keys draw disjoint seeds across all their samples."""
+    cells = _sample_cells(_sampled(3))
+    first_key = [item["__seed"] for item in cells[0:3]]
+    second_key = [item["__seed"] for item in cells[3:6]]
+    assert len(set(first_key + second_key)) == 6
+
+
+def test_a_sample_chat_reads_every_column_from_the_fan_out() -> None:
+    """n > 1 rewires the chat op's columns and seed to the fan-out node."""
+    spec = next(iter(parse_yaml_payload(_sampled(3)).values()))["graph"]
+    fan_out = next(
+        op_id for op_id, v in spec.items() if v.get("fn_name") == SAMPLE_FN_NAME
+    )
+    answer = next(
+        v for k, v in spec.items() if k.startswith("llm_yaml_workflow_Answer")
+    )
+    assert answer["rowwise_seed"] == {
+        "node": fan_out,
+        "path": f"items.output.{SAMPLE_SEED_LABEL}",
+    }
+    assert {column["node"] for column in answer["rowwise_columns"]} == {fan_out}
+    assert "n" not in answer["config"]
+
+
+def test_a_native_sample_count_keys_each_sample() -> None:
+    """A native key form with n > 1 builds the fan-out and drops the request's n."""
+    native = next(iter(parse_yaml_payload(_payload()).values()))["graph"]
+    chat_id = next(k for k, v in native.items() if v["_op"] == "LLMChatOp")
+    cases_id = next(k for k, v in native.items() if v["_op"] == "DataOp")
+    sampled = {
+        **native[chat_id],
+        "config": {"model": "m", "n": 3},
+        "rowwise_columns": [
+            {"label": "question", "node": cases_id, "path": "items.output.question"},
+            {"label": "case_id", "node": cases_id, "path": "items.output.case_id"},
+        ],
+        "rowwise_seed": {"key": {**_KEY, "node": cases_id}, "pairing": "shared"},
+    }
+    out = rewrite_native_keys({**native, chat_id: sampled}, job_seed=7)
+    fan_out = out[f"{chat_id}{SAMPLE_SUFFIX}"]
+    assert fan_out["mode"] == "expand"
+    assert out[chat_id]["config"] == {"model": "m"}
+    assert out[chat_id]["rowwise_seed"] == {
+        "node": f"{chat_id}{SAMPLE_SUFFIX}",
+        "path": f"items.output.{SAMPLE_SEED_LABEL}",
+    }
+    assert {column["node"] for column in out[chat_id]["rowwise_columns"]} == {
+        f"{chat_id}{SAMPLE_SUFFIX}"
+    }
+    fn = lambda_runtime.materialize(fan_out["_code"], fan_out["fn_name"])
+    keys = [row["case_id"] for row in _ROWS]
+    cells = [item for cell in _COLUMN for item in fn((cell,))]
+    assert [item[SAMPLE_SEED_LABEL] for item in cells] == documented_seed(
+        keys, op_id=chat_id, samples=3
+    )
+
+
+def test_a_whole_cell_column_keeps_the_raw_cell(tmp_path: Path) -> None:
+    """The task's own read path hands the fan-out a whole-cell column as it stands,
+    so the chat renders the cell's text, as n = 1 does."""
+    loaded = copy.deepcopy(_ANSWER)
+    loaded["inputs"] = ["Load"]
+    loaded["rowwise_template"] = "{whole}"
+    loaded["rowwise_columns"] = [{"label": "whole", "node": "Load", "path": ""}]
+    loaded["rowwise_seed"] = {
+        "key": {"node": "Load", "path": "items.output.case_id"},
+        "pairing": "shared",
+    }
+    loaded["config"] = {"model": "m", "n": 3}
+    payload = {
+        "seed": 7,
+        "ops": [
+            {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN},
+            {
+                "id": "Load",
+                "op": "LambdaOp",
+                "inputs": ["Cases"],
+                "fn_name": "load",
+                "code": "def load(row):\n    return row[0]\n",
+            },
+            loaded,
+        ],
+    }
+    mount = tmp_path / "lumilake-runtime.py"
+    mount.write_bytes(python_step.runtime_blob().body)
+    for source, upstream in ((_whole_cell(3), False), (payload, True)):
+        spec = next(
+            _wire(node)
+            for node in _graph(source).nodes.values()
+            if _wire(node).get("fn_name") == SAMPLE_FN_NAME
+        )
+        inputs: dict[str, str] = {}
+        if upstream:
+            (node_id,) = (
+                entry["node"] for entry in spec["plan"] if entry["kind"] == "stage"
+            )
+            stage = tmp_path / node_id
+            stage.mkdir()
+            (stage / "results.json").write_text(
+                json.dumps({"result": {"items": [{"output": c} for c in _COLUMN]}})
+            )
+            inputs[node_id] = str(stage)
+        items = _run_fan_out(spec, inputs, mount)
+        # Each whole-cell item carries the cell's own JSON text, not the decoded value.
+        rendered = [item["output"]["whole"] for item in items]
+        assert len(rendered) == len(_COLUMN) * 3
+        assert rendered[::3] == _COLUMN
+
+
+def test_a_sample_count_needs_local_columns() -> None:
+    """n > 1 with API mode or a literal column is refused, naming the op."""
+    api = _sampled(2)
+    api["ops"][1]["config"]["api"] = {"url": "https://x/v1"}
+    literal = _sampled(2)
+    literal["ops"][1]["rowwise_columns"].append(
+        {"label": "tone", "data": {"type": "list", "items": ["a"]}}
+    )
+    for payload, match in (
+        (api, "Answer' rowwise_seed is available only for local vLLM"),
+        (literal, "Answer' config.n > 1 needs node columns"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            parse_yaml_payload(payload)
+
+
+def test_a_column_labelled_like_the_sample_seed_is_refused() -> None:
+    """A user column under the fan-out's seed label is refused, naming the op."""
+    sampled = _sampled(2)
+    sampled["ops"][1]["rowwise_columns"].append(
+        {"label": SAMPLE_SEED_LABEL, "node": "Cases", "path": "items.output.case_id"}
+    )
+    with pytest.raises(
+        ValueError, match="Answer' config.n > 1 labels a rowwise column"
+    ):
+        parse_yaml_payload(sampled)

@@ -241,6 +241,11 @@ class GenerationConfig:
                 raise ValueError("num_beams must be an integer")
             if self.num_beams < 1:
                 raise ValueError("num_beams must be at least 1")
+        if self.n is not None:
+            if isinstance(self.n, bool) or not isinstance(self.n, int):
+                raise ValueError("n must be an integer")
+            if self.n < 1:
+                raise ValueError("n must be at least 1")
         if not self.model:
             raise ValueError(
                 "GenerationConfig.model is required in both local and API mode."

@@ -1,15 +1,17 @@
+import json
 from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
 
-from lumilake_server.graphs import CompiledGraph
+from lumilake_server.graphs import CompiledGraph, Graph
+from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.routes.jobs import (
     _validate_row_count_slice_span,
     _validate_runtime_graphs,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
-from lumilake_server.runtime.runtime_graph import RuntimeGraph
+from lumilake_server.runtime.runtime_graph import RuntimeGraph, RuntimeGraphBuilder
 from lumilake_server.runtime.server import LumilakeServer
 from tests.support.data_specs import runtime_op
 
@@ -97,6 +99,19 @@ def test_no_graphs_is_not_an_error() -> None:
     builder = _AcceptingBuilder()
     _validate_runtime_graphs(_server(builder), {})
     assert builder.calls == []
+
+
+_COLUMN = [
+    json.dumps({"case_id": case_id, "question": question})
+    for case_id, question in [("c1", "q1"), ("c2", "q2")]
+]
+
+
+def _runtime_graph(payload: dict[str, Any]) -> RuntimeGraph:
+    """The runtime graph the submit path builds for one YAML payload."""
+    spec = next(iter(parse_yaml_payload(payload).values()))
+    compiled = Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    return RuntimeGraphBuilder().build(compiled, node_prefix="g")
 
 
 def _list_lambda_graph(output_name: str) -> RuntimeGraph:
@@ -217,3 +232,69 @@ def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> 
         )
     assert exc_info.value.status_code == 422
     assert "fan-out" in exc_info.value.detail
+
+
+def test_a_sampled_chat_spanning_multiple_slices_names_its_generated_fan_out() -> None:
+    """A keyed chat op's n > 1 fan-out puts it in the whole-result class, so a
+    multi-slice job is refused; the message names that fan-out, not the
+    list-mode Lambda a user writes themselves."""
+    payload: dict[str, Any] = {
+        "seed": 7,
+        "ops": [
+            {"id": "Cases", "op": "DataOp", "inputs": [], "data": _COLUMN},
+            {
+                "id": "Answer",
+                "op": "LLMChatOp",
+                "inputs": ["Cases"],
+                "config": {"model": "m", "n": 3},
+                "messages": [{"role": "user", "content": "placeholder"}],
+                "rowwise_template": "{question}",
+                "rowwise_columns": [
+                    {"label": "q", "node": "Cases", "path": "items.output.question"},
+                    {"label": "k", "node": "Cases", "path": "items.output.case_id"},
+                ],
+                "rowwise_seed": {
+                    "key": {"node": "Cases", "path": "items.output.case_id"},
+                    "pairing": "shared",
+                },
+            },
+        ],
+        "outputs": [{"name": "answers", "ref": "Answer"}],
+    }
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_row_count_slice_span(
+            {"g": _runtime_graph(payload)},
+            {"g": [_slice("g__slice_1", 0, 1), _slice("g__slice_2", 1, 1)]},
+        )
+    detail = exc_info.value.detail
+    assert "per-sample fan-out" in detail
+    assert "list-mode Lambda" not in detail
+    # A row-mode step over the samples ends the class, so a list Lambda above it
+    # is the cause: the message names that Lambda.
+    ops = payload["ops"]
+    ops.extend(
+        [
+            {
+                "id": "Rows",
+                "op": "LambdaOp",
+                "inputs": ["Answer"],
+                "fn_name": "rows",
+                "code": "def rows(row):\n    return row[0]\n",
+            },
+            {
+                "id": "Gather",
+                "op": "LambdaOp",
+                "inputs": ["Rows"],
+                "mode": "list",
+                "fn_name": "gather",
+                "code": "def gather(values):\n    return '|'.join(values)\n",
+            },
+        ]
+    )
+    payload["outputs"] = [{"name": "gathered", "ref": "Gather"}]
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_row_count_slice_span(
+            {"g": _runtime_graph(payload)},
+            {"g": [_slice("g__slice_1", 0, 1), _slice("g__slice_2", 1, 1)]},
+        )
+    assert "by a list-mode Lambda" in exc_info.value.detail
