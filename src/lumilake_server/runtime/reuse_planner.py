@@ -94,9 +94,6 @@ class ReusePlan(BaseModel):
     """Node id -> the record-key path or paths it plans with, so a dispatched op
     keeps the key it inherited from a served input even after that input left
     the graph."""
-    inherited: set[str] = Field(default_factory=set)
-    """Node ids whose key the plan gives a dispatched op in place of its own
-    declaration, so the key is positional and takes the served input's keys."""
 
 
 @dataclass(frozen=True)
@@ -450,16 +447,15 @@ def _declared_path(path: str | Sequence[str]) -> str | KeyPathList:
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
-    """Each dispatched op's declared key, plus one inherited from a served input,
-    whose op the plan then lists as inherited."""
+    """Each dispatched op's declared key, plus one inherited from a served input."""
     keys = {
         node_id: key
         for node_id, key in runtime_graph.record_keys.items()
         if node_id in nodes
     }
     for node_id, op in nodes.items():
-        inherited = plan.key_paths.get(node_id)
-        if node_id in keys or inherited is None:
+        path = plan.key_paths.get(node_id)
+        if node_id in keys or path is None:
             continue
         served = [
             node
@@ -467,8 +463,7 @@ def _dispatch_record_keys(
             if node in plan.hits and plan.key_paths.get(node) is not None
         ]
         if len(served) == 1:
-            keys[node_id] = RecordKey(node=served[0], path=_declared_path(inherited))
-            plan.inherited.add(node_id)
+            keys[node_id] = RecordKey(node=served[0], path=_declared_path(path))
     return keys
 
 

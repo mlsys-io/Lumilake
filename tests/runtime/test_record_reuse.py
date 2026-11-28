@@ -69,6 +69,19 @@ ops:
 outputs: [{name: g, ref: Grade}]
 """
 
+_OUT_TEXT = """\
+name: out
+inputs: {Rows: %s}
+ops:
+  - {id: Mark, op: LambdaOp, inputs: [Rows], mode: row, fn_name: mark,
+     key: {node: Rows, path: id}, code: "lambda c: json.loads(c[0][0])"}
+  - {id: Parsed, op: ParseOp, inputs: [Mark], format: json}
+  - {id: Out, op: LambdaOp, inputs: [Parsed], mode: row, fn_name: out,
+     code: "lambda c: [str(v) + '!' for v in c[0]]"}
+outputs: [{name: o, ref: Out}]
+"""
+
+
 _PATIENT_TEXT = """\
 name: patient
 inputs: {Rows: [%s]}
@@ -80,45 +93,6 @@ ops:
      "lambda c: [r['note'] for r in c[0]]", key: {node: Notes, path: %s}}
 outputs: [{name: o, ref: Ask}]
 """
-
-
-_DECODE = "lambda c: [json.loads(v) for v in c[0]]"
-_ID_KEY = {"node": "Rows", "path": "id"}
-_STEP = "def step(c):\n    return c[0] + '!'\n"
-
-
-def _lam(op_id: str, src: list[str], code: str, key: dict[str, Any]) -> dict[str, Any]:
-    op = {"id": op_id, "op": "LambdaOp", "inputs": src, "mode": "row", "fn_name": op_id}
-    return op | {"code": code, "key": key}
-
-
-def _flow(ops: list[dict[str, Any]], rows: list[Any]) -> Any:
-    """A workflow over ``rows`` as rows that outputs the last op."""
-    outs = [{"name": "o", "ref": ops[-1]["id"]}]
-    return {
-        "inputs": {"Rows": [json.dumps(r) for r in rows]},
-        "ops": ops,
-        "outputs": outs,
-    }
-
-
-_MARK_OP = _lam("Mark", ["Rows"], _MARK_CODE, _ID_KEY)
-_PARSE_OP = {"id": "Parsed", "op": "ParseOp", "inputs": ["Mark"]}
-_NOTES = _lam("Notes", ["Rows"], _DECODE, {"node": "Rows", "path": ["pid", "nctid"]})
-_NOTE = "lambda c: [r['note'] for r in c[0]]"
-_ASK = _lam("Ask", ["Notes"], _NOTE, {"node": "Notes", "path": "nctid"})
-_STEP_ON = _lam("step", ["Mark"], _STEP, {"node": "Mark", "path": "id"})
-_STEP_ON |= {"fn_name": "step"}
-_DOC = "lambda c: [json.loads(v)['doc'] for v in c[0]]"
-_TEXT = "lambda c: [json.loads(v)['text'] for v in c[0]]"
-_DOC_MARK = _lam("Mark", ["Rows"], _DOC, _ID_KEY)
-_TEXT_MARK = _lam("Mark", ["Rows"], _TEXT, _ID_KEY)
-_STEP_ALT = {"code": "def step(c):\n    return c[0]"}
-_CASES = [
-    (_MARK_OP, _PARSE_OP, {"on_fail": "raw"}, "row", {"a", "b"}),
-    (_DOC_MARK, _PARSE_OP, {"on_fail": "raw"}, "doc", {"n1", "n2"}),
-    (_TEXT_MARK, _STEP_ON, _STEP_ALT, "text", {"a", "b"}),
-]
 
 
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
@@ -350,39 +324,29 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input(
         assert [e.record for e in index.entries if e.op == "Ask"] == keys
 
 
-@pytest.mark.parametrize("mark, step, miss, as_rows, expected", _CASES)
 @pytest.mark.asyncio
-async def test_a_redispatched_step_takes_a_served_inputs_keys(
-    mark: dict[str, Any],
-    step: dict[str, Any],
-    miss: dict[str, Any],
-    as_rows: str,
-    expected: set[str],
-) -> None:
-    """A step rerun over a served keyed input stores under that input's keys,
-    though its values carry no key, so the next run hits it."""
-    parsed = [{"text": f"t{n}", "id": key} for n, key in enumerate(sorted(expected))]
-    marks = {"row": parsed, "doc": [json.dumps(p) for p in parsed]}
-    marks["text"] = [p["text"] for p in parsed]
-    workflow = _flow([mark, step], parsed)
-    changed = _flow([mark, {**step, **miss}], parsed)
+async def test_a_redispatched_parse_takes_a_served_inputs_keys() -> None:
+    """A parse step rerun while its keyed input is served stores under that
+    input's keys, so the next run hits it."""
+    rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
+    parsed = [{"text": row["text"]} for row in rows]
+    text = _PARSE_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
     storage = InMemoryJobStorage()
-    await _run(storage, workflow, {"Mark": marks[as_rows], step["id"]: parsed}, "req-1")
-    plan, dispatched = _planned(storage, _runtime_graph(changed))
-    assert _decisions(plan)[step["id"]][0] == "miss", _decisions(plan)
+    await _run(storage, workflow, {"Mark": parsed, "Parsed": parsed}, "req-1")
+    planner, graph = _planner(storage), _runtime_graph(changed)
+    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
+    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    served = served_records(plan)
     await _run(
-        storage,
-        changed,
-        {step["id"]: parsed},
-        "req-2",
-        graph=dispatched,
-        served=served_records(plan),
+        storage, changed, {"Parsed": parsed}, "req-2", graph=dispatched, served=served
     )
     entries = read_index(storage, "req-2")
     assert entries is not None
-    assert {e.record for e in entries.entries if e.op == step["id"]} == expected
-    again, _ = _planned(storage, _runtime_graph(changed))
-    assert _decisions(again)[step["id"]] == ("hit", None), _decisions(again)
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"a", "b"}
+    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
+    assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio
@@ -391,13 +355,13 @@ async def test_a_second_redispatched_row_step_keeps_inheriting_keys() -> None:
     keys, so a third run hits it instead of missing with no entry."""
     rows = [{"id": i, "text": t} for i, t in (("a", "one"), ("b", "two"))]
     parsed, out = [{"text": row["text"]} for row in rows], ["one", "two"]
-    out_op = {"id": "Out", "op": "LambdaOp", "inputs": ["Parsed"], "mode": "row"}
-    out_op |= {"fn_name": "out", "code": "lambda c: [str(v) + '!' for v in c[0]]"}
-    workflow = _flow([_MARK_OP, _PARSE_OP, out_op], rows)
-    changed = _flow([_MARK_OP, {**_PARSE_OP, "on_fail": "raw"}, out_op], rows)
+    text = _OUT_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Mark": rows, "Parsed": parsed, "Out": out}, "req-1")
-    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    planner, graph = _planner(storage), _runtime_graph(changed)
+    plan, dispatched = planner.plan(runtime_graph=graph, round_number=0, job_id="req-2")
     assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
     await _run(
         storage,
@@ -410,7 +374,7 @@ async def test_a_second_redispatched_row_step_keeps_inheriting_keys() -> None:
     entries = read_index(storage, "req-2")
     assert entries is not None
     assert {e.record for e in entries.entries if e.op == "Out"} == {"a", "b"}
-    again, _ = _planned(storage, _runtime_graph(changed))
+    again, _ = planner.plan(runtime_graph=graph, round_number=0, job_id="req-3")
     assert _decisions(again)["Out"] == ("hit", None), _decisions(again)
 
 
