@@ -768,16 +768,16 @@ def _declared_keys(
     records: Mapping[str, NodeRecords],
     logger: Logger,
 ) -> Sequence[str | None] | None:
-    """The key each row of a declared input carries at the path the op declares,
-    read from its rows: the ones it produced, the values a reuse plan served for
-    it, or its literal rows. A served node answers with its own keys only when
-    the op declares no path, so a node keyed by several paths keeps its keys."""
+    """The key each row of a declared input carries, read from its rows: the
+    value at the declared path in the rows it produced, in the values a reuse
+    plan served for it, or in its literal rows. An inherited key is positional:
+    it takes the served node's own keys, whatever path it names."""
     rows = produced.get(declared.node)
     if rows is not None:
         return [row_key(row, declared.path) for row in rows]
     served = records.get(declared.node)
     if served is not None:
-        if not declared.path:
+        if declared.inherited or not declared.path:
             return served.keys
         return [row_key(value, declared.path) for value in served.values]
     literal = _declared_rows(plan, declared.path, count, logger)

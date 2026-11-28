@@ -94,6 +94,17 @@ ops:
 outputs: [{name: asked, ref: Ask}]
 """
 
+_NOTED_TEXT = """\
+name: noted
+inputs: {Rows: %s}
+ops:
+  - {id: Notes, op: LambdaOp, inputs: [Rows], mode: row, fn_name: notes,
+     key: {node: Rows, path: pid},
+     code: "lambda c: [json.dumps(json.loads(v)['note']) for v in c[0]]"}
+  - {id: Parsed, op: ParseOp, inputs: [Notes], format: json}
+outputs: [{name: parsed, ref: Parsed}]
+"""
+
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
 
 
@@ -323,6 +334,35 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
     assert produced is not None and served is not None
     for index in (produced, served):
         assert [e.record for e in index.entries if e.op == "Ask"] == ["N1", "N2"]
+
+
+@pytest.mark.asyncio
+async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
+    """A parse step re-dispatched over a served keyed input stores under that
+    input's keys, though its own values carry no pid, so the next run hits it."""
+    rows = [{"pid": f"p{n}", "note": f"n{n}"} for n in (1, 2)]
+    notes = [json.dumps({"note": row["note"]}) for row in rows]
+    parsed = [json.loads(note) for note in notes]
+    text = _NOTED_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    changed["ops"][1] = {**changed["ops"][1], "on_fail": "raw"}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Notes": notes, "Parsed": parsed}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {"Parsed": parsed},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"p1", "p2"}
+    again, _ = _planned(storage, _runtime_graph(changed))
+    assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio
