@@ -81,6 +81,19 @@ outputs: [{name: o, ref: Out}]
 """
 
 
+_PATIENT_TEXT = """\
+name: patients
+inputs: {Rows: %s}
+ops:
+  - {id: Notes, op: LambdaOp, inputs: [Rows], mode: row, fn_name: notes,
+     key: {node: Rows, path: [pid, nctid]},
+     code: "lambda c: [json.loads(v) for v in c[0]]"}
+  - {id: Ask, op: LambdaOp, inputs: [Notes], mode: row, fn_name: ask,
+     key: {node: Notes, path: nctid},
+     code: "lambda c: [r['note'] for r in c[0]]"}
+outputs: [{name: asked, ref: Ask}]
+"""
+
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
 
 
@@ -283,6 +296,33 @@ async def test_a_parse_steps_field_is_served_under_reuse() -> None:
     await _run(storage, {}, {"Mark": rows, "Parsed": rows}, "req-1", graph=graph)
     plan, _ = _planned(storage, graph)
     assert _decisions(plan)["Parsed"] == ("hit", None), _decisions(plan)
+
+
+@pytest.mark.asyncio
+async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
+    """A reader declaring one path of a several-path keyed input stores under
+    that path's value both when it runs and when that input is served."""
+    rows = [{"pid": f"p{n}", "nctid": f"N{n}", "note": f"n{n}"} for n in (1, 2)]
+    text = _PATIENT_TEXT % [json.dumps(row) for row in rows]
+    workflow, changed = yaml.safe_load(text), yaml.safe_load(text)
+    replies = [row["note"] + "!" for row in rows]
+    changed["ops"][1] = {**changed["ops"][1], "code": "lambda c: ['?']"}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Notes": rows, "Ask": replies}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)["Notes"] == ("hit", None), _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {"Ask": replies},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    produced, served = read_index(storage, "req-1"), read_index(storage, "req-2")
+    assert produced is not None and served is not None
+    for index in (produced, served):
+        assert [e.record for e in index.entries if e.op == "Ask"] == ["N1", "N2"]
 
 
 @pytest.mark.asyncio
