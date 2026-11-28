@@ -38,6 +38,7 @@ def item_relative_path(path: str) -> str:
 
 _WHOLE = "items.output"
 _VALUE_ROOT = "value.items.output"
+_OUTPUT = "output"
 _API_ROW_PATH = "items.rows.json.choices[0].message.content"
 _API_ITEM_PATH = "items.json.choices[0].message.content"
 
@@ -109,6 +110,13 @@ class OpOutput:
                 return "value.items.value." + declared[len(_WHOLE) + 1 :]
             return "value." + declared
         raise ValueError(self._unreadable_message(declared, consumer))
+
+    def read_value(self, declared: str, consumer: str) -> str:
+        """``read`` for a consumer that needs the value unchanged."""
+        full = self.read(declared, consumer)
+        if self.kind is OutputKind.ROW_LAMBDA and full == self.path:
+            return self.path[: -len(_OUTPUT)] + "value"
+        return full
 
     def _unreadable_message(self, declared: str, consumer: str) -> str:
         head = f"{consumer} reads '{declared}' from"

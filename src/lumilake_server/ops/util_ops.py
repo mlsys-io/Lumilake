@@ -19,6 +19,7 @@ from pydantic import (
 from lumilake_server.data_specs import ExpandOnEmpty, GpuRequest, ReduceOnFail
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
+from lumilake_server.ops.seed_spec import ColumnSeed
 from lumilake_server.ops.spec_validation import validate_fields
 from lumilake_server.utils.lambda_runtime import validate_source
 
@@ -44,6 +45,9 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
+# A seeded function takes each row's seed as its second argument, so only a mode that
+# calls it once per row carries one.
+SEED_MODES = ("row", "expand")
 CLEARS_KEY = "_clears_markers"
 """The private serialized key for ``LambdaOp.clears_markers``."""
 
@@ -67,6 +71,7 @@ class LambdaSpec(BaseModel):
     cache: StrictBool | None = None
     on_fail: ReduceOnFail | None = None
     on_empty: ExpandOnEmpty | None = None
+    seed: ColumnSeed | None = None
     clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
 
     @field_validator("image")
@@ -105,6 +110,12 @@ class LambdaSpec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _seed_needs_a_per_row_mode(self) -> Self:
+        if self.seed is not None:
+            check_seed_mode(self.mode)
+        return self
+
+    @model_validator(mode="after")
     def _runtime_within_timeout(self) -> Self:
         cap = MAX_IMAGE_TIMEOUT_S if self.image else MAX_TIMEOUT_S
         if self.timeout_s is not None and self.timeout_s > cap:
@@ -128,6 +139,17 @@ def build_lambda_spec(
 ) -> LambdaSpec:
     """Validate one `LambdaOp` entry, naming the op and field in the error."""
     return validate_fields(LambdaSpec, fields, where, names)
+
+
+def check_seed_mode(mode: LambdaMode, where: str = "") -> None:
+    """Refuse a seed on a mode whose function does not run once per row."""
+    if mode in SEED_MODES:
+        return
+    detail = (
+        f"seed is available in modes {SEED_MODES}, where the function runs once per row"
+        f" (got mode {mode!r})"
+    )
+    raise ValueError(f"{where}: {detail}" if where else detail)
 
 
 def _serialize_fn(fn: Callable[..., Any]) -> str:
@@ -169,8 +191,8 @@ class SubmittedFunction:
     (``runtime/python_step.py``).
     """
 
-    def __init__(self, code: str, fn_name: str) -> None:
-        validate_source(code, fn_name)
+    def __init__(self, code: str, fn_name: str, params: int = 1) -> None:
+        validate_source(code, fn_name, params)
         self.code = code
         self.__name__ = fn_name
 
@@ -272,6 +294,7 @@ class LambdaOp(Op):
         by: str | None = None,
         on_fail: ReduceOnFail | None = None,
         on_empty: ExpandOnEmpty | None = None,
+        seed: ColumnSeed | None = None,
         clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
@@ -295,6 +318,7 @@ class LambdaOp(Op):
                 "cache": cache,
                 "on_fail": on_fail,
                 "on_empty": on_empty,
+                "seed": seed,
                 CLEARS_KEY: clears_markers or None,
             },
             "LambdaOp",
@@ -344,6 +368,11 @@ class LambdaOp(Op):
         return self.spec.on_empty or self.ON_EMPTY_DROP
 
     @property
+    def seed(self) -> ColumnSeed | None:
+        """The column a row or expand step draws each row's seed from."""
+        return self.spec.seed
+
+    @property
     def clears_markers(self) -> bool:
         """Parser-owned: set on generated router branches, never a workflow field."""
         return bool(self.spec.clears_markers)
@@ -364,7 +393,9 @@ class LambdaOp(Op):
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
         spec = build_lambda_spec(data, f"LambdaOp '{data['_id']}'")
         try:
-            fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
+            fn: Callable[..., Any] = SubmittedFunction(
+                spec.code, spec.fn_name, 1 if spec.seed is None else 2
+            )
         except ValueError as exc:
             raise ValueError(
                 f"Invalid LambdaOp function '{spec.fn_name}': {exc}"
@@ -384,6 +415,7 @@ class LambdaOp(Op):
             sample_value=data.get("sample_value"),
             on_fail=spec.on_fail,
             on_empty=spec.on_empty,
+            seed=spec.seed,
             clears_markers=bool(spec.clears_markers),
         )
         return op

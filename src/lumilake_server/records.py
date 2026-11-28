@@ -41,6 +41,7 @@ class JobRecord:
     output_location: dict[str, IOLocation]
     org_id: str = "default"
     user_id: str = "local"
+    seed: int = 0
     started_at: str | None = None
     finished_at: str | None = None
     optimization_seconds: float | None = None

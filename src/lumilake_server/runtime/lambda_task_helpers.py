@@ -113,6 +113,21 @@ def text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
+def _raw_seed(value: Any, op_id: str, index: int) -> int:
+    """One row's seed: an integer or JSON integer text, refused otherwise."""
+    decoded = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            decoded = value
+    if isinstance(decoded, bool) or not isinstance(decoded, int):
+        raise ValueError(
+            f"{op_id}: seed row {index} is {value!r}; a seed must be an integer"
+        )
+    return decoded
+
+
 def _walk_path(value: Any, parts: list[str], where: str) -> Any:
     for idx, part in enumerate(parts):
         if isinstance(value, str):

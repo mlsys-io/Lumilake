@@ -71,6 +71,7 @@ _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
 carried_marker = _RUNTIME.carried_marker
 reject_reserved_key = _RUNTIME.reject_reserved_key
+_raw_seed = _RUNTIME._raw_seed
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
@@ -178,26 +179,46 @@ def main(inputs):
 _ROW_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, decode) for entry in _PLAN]
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    columns = [_column(entry, inputs, decode) for entry in data]
     n = max((len(c) for c in columns), default=1)
-    for entry, col in zip(_PLAN, columns):
+    for entry, col in zip(data, columns):
         if len(col) not in (1, n):
             raise ValueError(
                 "input %r has %d rows; expected 1 or %d"
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
+    cells = None
+    seeds = None
+    if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # A marked seed cell marks its row and is never read as a draw.
+        seeds = [
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
+        ]
+        if len(seeds) != n:
+            raise ValueError(
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), n)
+            )
     items = []
-    for row in rows:
+    for i, row in enumerate(rows):
         marked = next(
             (value for value in map(failure_of, row) if value is not None), None
         )
+        if marked is None and seeds is not None and seeds[i] is None:
+            marked = failure_of(cells[i])
         if marked is not None:
             # A marked row keeps its position and passes the marker on.
             items.append({{"output": marked, "value": marked}})
             continue
-        value = fn(row)
+        value = fn(row) if seeds is None else fn(row, seeds[i])
         reject_reserved_key(value, _NODE)
         items.append({{"output": text(value), "value": value}})
     return {{"items": items}}
@@ -268,16 +289,37 @@ _EXPAND_MAIN = """\
 _ON_EMPTY = {on_empty!r}
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, decode) for entry in _PLAN]
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    columns = [_column(entry, inputs, decode) for entry in data]
+    rows = _rows(columns, data, {op_id!r})
+    cells = None
+    seeds = None
+    if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # A marked seed cell marks its row and is never read as a draw.
+        seeds = [
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
+        ]
+        if len(seeds) != len(rows):
+            raise ValueError(
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), len(rows))
+            )
     items = []
-    for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+    for index, row in enumerate(rows):
         marked = carried_marker(row)
+        if marked is None and seeds is not None and seeds[index] is None:
+            marked = failure_of(cells[index])
         if marked is not None:
-            # A marked row keeps one defined slot, so no child is run or lost.
+            # A marked row keeps its slot and carries the marker onward.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
-        values = fn(row)
+        values = fn(row) if seeds is None else fn(row, seeds[index])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
@@ -301,6 +343,7 @@ def main(inputs):
         )
     return {{"items": items}}
 """
+
 
 _REDUCE_MAIN = """\
 
@@ -620,7 +663,7 @@ def wrapper_source(
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
-    """The python-task code for one standalone LambdaOp."""
+    """The python-task code for one standalone LambdaOp, seeded or not."""
     if mode is PythonMode.LIST:
         main = _LIST_MAIN
     elif mode is PythonMode.ALIGNED:

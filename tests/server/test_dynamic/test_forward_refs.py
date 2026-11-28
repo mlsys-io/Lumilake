@@ -20,6 +20,7 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
+from lumilake_server.parser.keyed_seed import SEED_FN_NAME
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import (
@@ -28,6 +29,14 @@ from lumilake_server.routes.jobs import (
 )
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+from lumilake_server.runtime.runtime_ops import RuntimeOp
+from lumilake_server.utils import lambda_runtime
+from tests.support.seeds import documented_seed
+
+
+def _wire(node: RuntimeOp) -> dict[str, Any]:
+    """The data spec as the dict a worker receives."""
+    return node.data_spec.model_dump(exclude_none=True)
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -342,7 +351,7 @@ def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
         )
         return graph_specs
 
-    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}}}
+    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}, "seed": 0}}
     with pytest.raises(HTTPException, match="clears_markers"):
         specs()
 
@@ -854,6 +863,32 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
     assert node.data_spec.model_dump(exclude_none=True)["seeds"] == [7, 9]
+
+    # A Lambda's keyed seed binds the same way: the earlier round's key column becomes a
+    # flat input, and the generated row function reads it per row.
+    draw = {"id": "d1", "op": "LambdaOp", "inputs": [seed_id]}
+    draw["fn_name"] = "draw"
+    draw["code"] = "def draw(row, seed):\n    return '%d' % seed\n"
+    draw["seed"] = {"key": {"node": seed_id, "path": "items.output"}}
+    configs["d1"] = {key: draw[key] for key in ("id", "op", "inputs")}
+    ops, inputs = forward_refs([draw], results, configs, rows=2)
+    assert ops[0]["seed"]["key"] == {"node": f"{seed_id} | items.output", "path": ""}
+    payload = {"inputs": inputs, "ops": ops, "outputs": [{"name": "o", "ref": "d1"}]}
+    spec = next(iter(parse_yaml_payload(payload).values()))
+    graph = RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+    seed_fn = next(
+        n for n in graph.nodes.values() if _wire(n).get("fn_name") == SEED_FN_NAME
+    )
+    fn = lambda_runtime.materialize(_wire(seed_fn)["code"], SEED_FN_NAME)
+    keys = inputs[f"{seed_id} | items.output"]
+    assert [fn((v,)) for v in keys] == documented_seed(["7", "9"], seed=0, op_id="d1")
+    draw_node = next(
+        n for n in graph.nodes.values() if _wire(n).get("fn_name") == "draw"
+    )
+    seeded = [e["node"] for e in _wire(draw_node)["plan"] if e.get("role") == "seed"]
+    assert seeded == [seed_fn.node_id]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():

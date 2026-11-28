@@ -38,7 +38,7 @@ def test_rowwise_seed_lowers_to_task_seeds() -> None:
     node = _build(lambda payload: None)
     assert node.data_spec.model_dump(exclude_none=True)["seeds"] == {
         "node": next(dep for dep in node.dependencies if "Seeds" in dep),
-        "path": "value.items.output",
+        "path": "value.items.value",
     }
 
 

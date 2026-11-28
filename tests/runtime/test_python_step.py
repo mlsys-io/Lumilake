@@ -417,9 +417,11 @@ def _run_wrapper(
     fn_name: str | None = None,
     mode: PythonMode = PythonMode.ROW,
     by: str | None = None,
+    seeded: bool = False,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
-    declared = fn_name or lambda_runtime.validate_source(code)
+    params = 2 if seeded else 1
+    declared = fn_name or lambda_runtime.validate_source(code, params=params)
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     exec(
@@ -492,6 +494,59 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
         [{"kind": "literal", "file": str(mounted)}],
         {},
     ) == {"items": [{"output": "mounted", "value": "mounted"}]}
+
+
+def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
+    """A seeded wrapper calls the function with each row's seed second."""
+    llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
+    seed = {"kind": "literal", "values": ["11", "22"], "role": "seed"}
+    out = _run_wrapper(
+        "def seeded(inputs, seed):\n    return '%s-%d' % (inputs[0], seed)\n",
+        [{"kind": "stage", "node": "llm"}, seed],
+        {"llm": llm_dir},
+        seeded=True,
+    )
+    assert [item["output"] for item in out["items"]] == ["a-11", "b-22"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "values", "message"),
+    [
+        (PythonMode.ROW, ["7"], "op-1: seed column has 1 rows; expected one per row"),
+        (
+            PythonMode.EXPAND,
+            ["1.5"],
+            "op-1: seed row 0 is '1.5'; a seed must be an int",
+        ),
+    ],
+)
+def test_wrapper_refuses_a_seed_it_cannot_use(
+    mode: PythonMode, values: list[str], message: str
+) -> None:
+    """One seed for several rows, or a seed that is not an integer, fails."""
+    code = "def draw(i, seed):\n    return ['%d' % seed]\n"
+    if mode is PythonMode.ROW:
+        code = "def draw(i, seed):\n    return '%d' % seed\n"
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a", "b"]}]
+    plan.append({"kind": "literal", "values": values, "role": "seed"})
+    with pytest.raises(ValueError, match=message):
+        _run_wrapper(code, plan, {}, mode=mode, seeded=True)
+
+
+@pytest.mark.parametrize("mode", [PythonMode.ROW, PythonMode.EXPAND])
+def test_wrapper_passes_a_marked_row_through_unseeded(mode: PythonMode) -> None:
+    """A marked row keeps its slot unseeded instead of failing the task."""
+    marker = {"_fail": {"op": "Parse"}}
+    code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
+    if mode is PythonMode.EXPAND:
+        code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
+    plan: list[dict[str, Any]] = [
+        {"kind": "literal", "values": ["a", json.dumps(marker)]},
+        {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
+    ]
+    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
+    # A row arrives as its tuple of decoded cells; the drawing is one element.
+    assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
