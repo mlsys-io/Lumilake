@@ -356,5 +356,6 @@ async def test_a_sliced_join_output_follows_its_own_row_count(
     assert resp.status_code == status
     if status == 422:
         assert "Workflow 'w' output 'merged'" in resp.json()["detail"]
+        assert "inner or full join" in resp.json()["detail"]
     for task in list(app.state.background_tasks):
         await task
