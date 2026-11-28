@@ -74,6 +74,16 @@ from lumilake_server.runtime.runtime_graph import (
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 from lumilake_server.runtime.sensitive import redact_secrets_in_text, redact_sensitive
 from lumilake_server.runtime.worker_capability import worker_profile
+from lumilake_server.schemas.progress import (
+    BatchNodeStats,
+    BatchProgress,
+    BatchProgressEntry,
+    BatchStatus,
+    OverallProgress,
+    ProgressDetails,
+    ProgressStep,
+    RuntimeStatus,
+)
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.retrieval_spec import ROWS_ONE
 
@@ -414,7 +424,7 @@ class FlowmeshRuntimeManager:
         )  # (request_id, batch_id) -> task_id -> node_id
 
         # Batch-level tracking
-        self._batch_status: dict[tuple[str, str], str] = (
+        self._batch_status: dict[tuple[str, str], BatchStatus] = (
             {}
         )  # (request_id, batch_id) -> "PENDING" | "RUNNING" | "COMPLETED" | "FAILED"
         self._batch_metadata: dict[tuple[str, str], dict[str, Any]] = (
@@ -845,13 +855,13 @@ class FlowmeshRuntimeManager:
     def _formulate_details(
         self,
         task_status: dict[str, str],
-    ) -> dict[str, int]:
-        return {
-            "succeeded": len([t for t in task_status.values() if t == "DONE"]),
-            "failed": len([t for t in task_status.values() if t == "FAILED"]),
-            "pending": len([t for t in task_status.values() if t == "PENDING"]),
-            "dispatched": len([t for t in task_status.values() if t == "DISPATCHED"]),
-        }
+    ) -> ProgressDetails:
+        return ProgressDetails(
+            succeeded=len([t for t in task_status.values() if t == "DONE"]),
+            failed=len([t for t in task_status.values() if t == "FAILED"]),
+            pending=len([t for t in task_status.values() if t == "PENDING"]),
+            dispatched=len([t for t in task_status.values() if t == "DISPATCHED"]),
+        )
 
     def _output_task_status_aggregated(
         self, execution_batch_keys: list[tuple[str, str]]
@@ -956,9 +966,7 @@ class FlowmeshRuntimeManager:
             if member_id == request_id
         }
 
-    def _build_batch_progress(
-        self, batch_keys: list[tuple[str, str]]
-    ) -> dict[str, Any]:
+    def _build_batch_progress(self, batch_keys: list[tuple[str, str]]) -> BatchProgress:
         """Build detailed batch progress information with ETA."""
 
         def _as_non_negative_int(value: Any) -> int:
@@ -966,8 +974,7 @@ class FlowmeshRuntimeManager:
                 return max(0, int(value))
             return 0
 
-        batches = []
-        total_batches = len(batch_keys)
+        batches: list[BatchProgressEntry] = []
         completed_count = 0
         running_count = 0
         pending_count = 0
@@ -980,7 +987,6 @@ class FlowmeshRuntimeManager:
         completed_batches_elapsed = 0.0
 
         for batch_key in batch_keys:
-            batch_id = batch_key[1]
             status = self._batch_status.get(batch_key, "PENDING")
             metadata = self._batch_metadata.get(batch_key, {})
 
@@ -1001,13 +1007,7 @@ class FlowmeshRuntimeManager:
             else:  # PENDING
                 pending_count += 1
 
-            # Build batch info
-            batch_info: dict[str, Any] = {
-                "batch_id": batch_id,
-                "status": status,
-                "nodes": {},
-            }
-
+            elapsed_time = None
             # Add elapsed time if batch has started
             if start_time is not None:
                 if isinstance(end_time, (int, float)) and status in {
@@ -1019,7 +1019,7 @@ class FlowmeshRuntimeManager:
                     elapsed = time.time() - start_time
                 if elapsed < 0:
                     elapsed = 0.0
-                batch_info["elapsed_time"] = round(elapsed, 1)
+                elapsed_time = round(elapsed, 1)
                 if status == "COMPLETED":
                     completed_batches_elapsed += elapsed
 
@@ -1027,19 +1027,34 @@ class FlowmeshRuntimeManager:
             if batch_key in self._execution_task_status:
                 task_status = self._execution_task_status[batch_key]
                 node_details = self._formulate_details(task_status)
-                batch_info["nodes"].update(node_details)
-                batch_info["nodes"]["total"] = sum(node_details.values())
+                nodes = BatchNodeStats(
+                    succeeded=node_details.succeeded,
+                    failed=node_details.failed,
+                    pending=node_details.pending,
+                    dispatched=node_details.dispatched,
+                    total=(
+                        node_details.succeeded
+                        + node_details.failed
+                        + node_details.pending
+                        + node_details.dispatched
+                    ),
+                )
 
                 # Track overall progress using displayed total
-                total_nodes_overall += sum(node_details.values())
-                completed_nodes_overall += (
-                    node_details["succeeded"] + node_details["failed"]
-                )
+                total_nodes_overall += nodes.total
+                completed_nodes_overall += nodes.succeeded + nodes.failed
             else:
-                batch_info["nodes"]["total"] = flowmesh_nodes
+                nodes = BatchNodeStats(total=flowmesh_nodes)
                 total_nodes_overall += flowmesh_nodes
 
-            batches.append(batch_info)
+            batches.append(
+                BatchProgressEntry(
+                    batch_id=batch_key[1],
+                    status=status,
+                    nodes=nodes,
+                    elapsed_time=elapsed_time,
+                )
+            )
 
         # Calculate ETA based on completed batches' average time
         eta = None
@@ -1048,26 +1063,26 @@ class FlowmeshRuntimeManager:
             remaining_batches = running_count + pending_count
             eta = round(avg_batch_time * remaining_batches, 1)
 
-        return {
-            "total": total_batches,
-            "completed": completed_count,
-            "running": running_count,
-            "pending": pending_count,
-            "failed": failed_count,
-            "batches": batches,
-            "overall_progress": {
-                "total_nodes": total_nodes_overall,
-                "completed_nodes": completed_nodes_overall,
-                "percentage": (
+        return BatchProgress(
+            total=len(batch_keys),
+            completed=completed_count,
+            running=running_count,
+            pending=pending_count,
+            failed=failed_count,
+            batches=batches,
+            overall_progress=OverallProgress(
+                total_nodes=total_nodes_overall,
+                completed_nodes=completed_nodes_overall,
+                percentage=(
                     round(completed_nodes_overall / total_nodes_overall * 100, 1)
                     if total_nodes_overall > 0
                     else 0
                 ),
-                "raw_nodes": raw_nodes_overall,
-                "flowmesh_nodes": flowmesh_nodes_overall,
-            },
-            "eta_seconds": eta,
-        }
+                raw_nodes=raw_nodes_overall,
+                flowmesh_nodes=flowmesh_nodes_overall,
+            ),
+            eta_seconds=eta,
+        )
 
     async def get_workers(self) -> list[str]:
         """
@@ -1134,8 +1149,8 @@ class FlowmeshRuntimeManager:
     async def get_request_status(
         self,
         request_id: str,
-    ) -> dict[str, Any]:
-        """Return the request status from FlowMesh."""
+    ) -> RuntimeStatus | None:
+        """Return the request status from FlowMesh, ``None`` when it has no batch."""
         # Find all batch keys for this request_id from all tracking dictionaries
         data_profile_batch_keys = [
             k for k in self._data_profile_task_status.keys() if k[0] == request_id
@@ -1151,11 +1166,9 @@ class FlowmeshRuntimeManager:
             key=lambda x: x[1],
         )
 
-        # If request_id not found in any batch, return error
+        # If request_id not found in any batch, report no status
         if not all_batch_keys:
-            return {"error": "Request ID not found"}
-
-        aggregated_status: dict[str, Any] = {}
+            return None
 
         # Aggregate data_profile tasks status across all batches
         if data_profile_batch_keys:
@@ -1167,13 +1180,15 @@ class FlowmeshRuntimeManager:
             all_data_profile_tasks = self._merged_batch_status(
                 self._data_profile_task_status, data_profile_batch_keys
             )
-            aggregated_status["data probing"] = {
-                "completed": data_profile_completed,
-                "details": self._formulate_details(all_data_profile_tasks),
-            }
+            data_probing = ProgressStep(
+                completed=data_profile_completed,
+                details=self._formulate_details(all_data_profile_tasks),
+            )
         else:  # data_profile is skipped
-            aggregated_status["data probing"] = {"completed": True}
+            data_probing = ProgressStep(completed=True)
 
+        execution: ProgressStep | None = None
+        outputs: ProgressStep | None = None
         # Aggregate execution tasks status across all batches
         if execution_batch_keys:
             execution_completed = await self._update_batch_task_statuses(
@@ -1184,10 +1199,10 @@ class FlowmeshRuntimeManager:
             all_execution_tasks = self._merged_batch_status(
                 self._execution_task_status, execution_batch_keys
             )
-            aggregated_status["execution"] = {
-                "completed": execution_completed,
-                "details": self._formulate_details(all_execution_tasks),
-            }
+            execution = ProgressStep(
+                completed=execution_completed,
+                details=self._formulate_details(all_execution_tasks),
+            )
 
             output_task_status = self._output_task_status_aggregated(
                 execution_batch_keys
@@ -1195,17 +1210,17 @@ class FlowmeshRuntimeManager:
             output_completed = all(
                 status in TERMINAL_STATUSES for status in output_task_status.values()
             )
-            aggregated_status["outputs"] = {
-                "completed": output_completed,
-                "details": self._formulate_details(output_task_status),
-            }
+            outputs = ProgressStep(
+                completed=output_completed,
+                details=self._formulate_details(output_task_status),
+            )
 
-        # Add batch-level progress information (using all_batch_keys found earlier)
-        if all_batch_keys:
-            batch_progress = self._build_batch_progress(all_batch_keys)
-            aggregated_status["batch_progress"] = batch_progress
-
-        return aggregated_status
+        return RuntimeStatus(
+            data_probing=data_probing,
+            execution=execution,
+            outputs=outputs,
+            batch_progress=self._build_batch_progress(all_batch_keys),
+        )
 
     async def _archive_artifact_items(
         self,

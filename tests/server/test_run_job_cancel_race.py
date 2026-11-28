@@ -15,10 +15,8 @@ import pytest
 from lumid_hooks import PrincipalContext
 
 import lumilake_server.routes.jobs as job_routes_module
-from lumilake_server.routes.jobs import (
-    JobRecord,
-    _run_job,
-)
+from lumilake_server.records import JobRecord
+from lumilake_server.routes.jobs import _run_job
 from lumilake_server.runtime.protocol import Priority
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location

@@ -315,7 +315,9 @@ async def test_one_failed_row_aborts_the_whole_workflow_before_collecting_others
     reported = await manager.get_request_status("req-failfast")
 
     assert sorted(polled) == ["wf-1", "wf-2"]
-    assert reported["execution"]["completed"]
+    assert reported is not None
+    assert reported.execution is not None
+    assert reported.execution.completed
     assert manager._workflow_status_cursors == {}
 
 

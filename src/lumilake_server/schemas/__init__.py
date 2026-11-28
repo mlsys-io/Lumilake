@@ -4,6 +4,7 @@ from lumilake_server.schemas.progress import (
     JobProgress,
     ProgressDetails,
     ProgressStep,
+    RuntimeStatus,
 )
 from lumilake_server.schemas.worker import WorkerInfo, WorkerStatus
 
@@ -14,6 +15,7 @@ __all__ = [
     "JobProgress",
     "ProgressDetails",
     "ProgressStep",
+    "RuntimeStatus",
     "S3Location",
     "WorkerInfo",
     "WorkerStatus",

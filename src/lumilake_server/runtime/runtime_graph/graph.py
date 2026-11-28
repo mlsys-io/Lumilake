@@ -1,6 +1,6 @@
 import hashlib
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Self
@@ -119,10 +119,6 @@ class RuntimeGraph:
             output_paths=schema.output_paths,
             dsl_to_runtime=schema.dsl_to_runtime,
         )
-
-    @classmethod
-    def deserialize(cls, payload: Mapping[str, Any]) -> Self:
-        return cls.from_schema(RuntimeGraphSchema.model_validate(payload))
 
     def to_flowmesh_nodes(self) -> list[dict[str, Any]]:
         # ``RuntimeOp.dependencies`` may reference DSL op ids that aren't

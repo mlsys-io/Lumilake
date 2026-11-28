@@ -11,8 +11,8 @@ import tarfile
 import tempfile
 import uuid
 from collections.abc import AsyncIterator, Collection
-from dataclasses import asdict, dataclass, field
-from typing import Any, Literal, Self
+from dataclasses import asdict
+from typing import Any, Self
 from urllib.parse import quote as urlquote
 from urllib.parse import urlparse
 
@@ -56,7 +56,6 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    TypeAdapter,
     ValidationError,
     model_validator,
 )
@@ -108,6 +107,14 @@ from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.parser.common import read_workflow_seed
 from lumilake_server.parser.keyed_seed import rewrite_native_keys
 from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
+from lumilake_server.records import (
+    IO_LOCATION_ADAPTER,
+    JOB_STATUS_DESCRIPTION,
+    JOB_STATUS_VALUES,
+    TERMINAL_JOB_STATUSES,
+    JobRecord,
+    JobStatus,
+)
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -151,24 +158,6 @@ from lumilake_server.utils.lumid_data_client import (
 )
 from lumilake_server.utils.parsing import split_bucket_prefix
 from lumilake_server.utils.utils import unique_id
-
-JobStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-JOB_STATUS_VALUES: tuple[JobStatus, ...] = (
-    "pending",
-    "running",
-    "completed",
-    "failed",
-    "cancelled",
-)
-JOB_STATUS_DESCRIPTION = (
-    "Job lifecycle status: `pending` (queued), `running` (executing), "
-    "`completed` (finished successfully), `failed` (finished with error), "
-    "`cancelled` (cancelled before completion)."
-)
-
-TERMINAL_JOB_STATUSES: frozenset[JobStatus] = frozenset(
-    {"completed", "failed", "cancelled"}
-)
 
 
 def _chunk_inputs(
@@ -344,7 +333,7 @@ def _effective_dynamic_output_location(
     if dynamic_output_location is not None:
         try:
             location = _resolve_output_location(
-                _IO_LOCATION_ADAPTER.validate_python(dynamic_output_location)
+                IO_LOCATION_ADAPTER.validate_python(dynamic_output_location)
             )
         except ValueError as exc:
             raise HTTPException(
@@ -681,48 +670,6 @@ def _submitted_job_seed(
             " its own job",
         )
     return seeds.pop() if seeds else 0
-
-
-@dataclass
-class JobRecord:
-    job_id: str
-    status: JobStatus
-    submitted_at: str
-    inputs: dict[str, dict[str, list[str]]]
-    output_location: dict[str, IOLocation]
-    org_id: str = "default"
-    user_id: str = "local"
-    seed: int = 0
-    started_at: str | None = None
-    finished_at: str | None = None
-    optimization_seconds: float | None = None
-    selection_seconds: float | None = None
-    clustering_seconds: float | None = None
-    error: str | None = None
-    progress: JobProgress = field(default_factory=JobProgress)
-    terminal_usage_finalized: bool = False
-    result: LumilakeResponse | None = None
-    folder_inputs: dict[str, str] = field(default_factory=dict)
-    trace_ids: list[str] = field(default_factory=list)
-    job_task_ids: dict[str, list[str]] = field(default_factory=dict)
-    workflow_dispatches: list[WorkflowDispatch] = field(default_factory=list)
-    parent_job_id: str | None = None
-    child_job_ids: list[str] = field(default_factory=list)
-    lumid_job_id: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.output_location:
-            raise ValueError("output_location is required")
-        self.progress = JobProgress.model_validate(self.progress)
-        if self.result is not None:
-            self.result = LumilakeResponse.model_validate(self.result)
-        self.workflow_dispatches = [
-            WorkflowDispatch.model_validate(row) for row in self.workflow_dispatches
-        ]
-        normalized: dict[str, IOLocation] = {}
-        for key, loc in self.output_location.items():
-            normalized[key] = _IO_LOCATION_ADAPTER.validate_python(loc)
-        self.output_location = normalized
 
 
 class JobSubmitPayload(BaseModel):
@@ -1197,7 +1144,6 @@ router = APIRouter(tags=["Jobs"])
 _job_storage: JobStorage = get_job_storage()
 
 logger = init_child_logger("JobRoutes")
-_IO_LOCATION_ADAPTER: TypeAdapter[IOLocation] = TypeAdapter(IOLocation)
 
 _DATA_URL_RE = re.compile(r"^data:(image/[^;]+);base64,(.+)$", re.DOTALL)
 _ARTIFACT_PATH_TOKEN = "/artifacts/"
@@ -1927,7 +1873,7 @@ async def _resolve_input_values_raw(
 ) -> list[str]:
     if isinstance(raw, list):
         return raw
-    location = _IO_LOCATION_ADAPTER.validate_python(raw)
+    location = IO_LOCATION_ADAPTER.validate_python(raw)
     location = _resolve_input_location(location)
     await _require_location_permission(
         location,
@@ -2416,10 +2362,8 @@ async def _run_dynamic_job(
                     graph=round_build.graph,
                     symbols=symbols,
                     forwarded_inputs=round_build.forwarded_inputs,
-                    output_location=_IO_LOCATION_ADAPTER.validate_python(
-                        round_output_location(
-                            output_location.model_dump(), run_namespace, round_index
-                        )
+                    output_location=round_output_location(
+                        output_location, run_namespace, round_index
                     ),
                     priority=priority,
                     principal=principal,
@@ -2741,10 +2685,8 @@ async def _run_template_job(
                     graph=round_build.graph,
                     symbols=symbols,
                     forwarded_inputs=round_build.forwarded_inputs,
-                    output_location=_IO_LOCATION_ADAPTER.validate_python(
-                        round_output_location(
-                            output_location.model_dump(), run_namespace, round_index
-                        )
+                    output_location=round_output_location(
+                        output_location, run_namespace, round_index
                     ),
                     priority=priority,
                     principal=principal,
@@ -4015,7 +3957,7 @@ async def list_jobs(
     return {
         "ok": True,
         "data": {
-            "items": items,
+            "items": [item.model_dump(mode="json") for item in items],
             "page": page,
             "page_size": page_size,
             "total": total,
@@ -4178,10 +4120,10 @@ async def get_job_progress(
         }
 
     server = LumilakeServer.get_started_instance()
-    progress_payload = await server.get_request_status(job_id)
-    if "error" not in progress_payload:
+    runtime_status = await server.get_request_status(job_id)
+    if runtime_status is not None:
         progress_model = record.progress.model_copy(deep=True)
-        progress_model.apply_status(progress_payload)
+        progress_model.apply_status(runtime_status)
         needs_save = False
         async with jobs_lock:
             if record.progress != progress_model:
