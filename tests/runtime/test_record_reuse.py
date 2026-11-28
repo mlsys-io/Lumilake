@@ -82,29 +82,17 @@ _ROWS = {
 }
 
 _LOG = logging.getLogger("t")
-_PATIENT_OPS: list[dict[str, Any]] = [
-    {
-        "id": "Notes",
-        "op": "LambdaOp",
-        "inputs": ["Rows"],
-        "mode": "row",
-        "fn_name": "notes",
-        "key": {"node": "Rows", "path": ["pid", "nctid"]},
-        "code": "lambda c: [json.loads(v) for v in c[0]]",
-    },
-    {
-        "id": "Ask",
-        "op": "LambdaOp",
-        "inputs": ["Notes"],
-        "mode": "row",
-        "fn_name": "ask",
-        "key": {"node": "Notes", "path": "nctid"},
-        "code": "lambda c: [r['note'] for r in c[0]]",
-    },
-]
-
-
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
+
+
+def _patient_workflow(ops: list[dict[str, Any]], output: str, rows: list[Any]) -> Any:
+    """A workflow over ``rows`` that outputs ``output``."""
+    return {
+        "name": "patients",
+        "inputs": {"Rows": [json.dumps(row) for row in rows]},
+        "ops": ops,
+        "outputs": [{"name": "o", "ref": output}],
+    }
 
 
 def _changed(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -409,16 +397,8 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
     """A reader declaring one path of a several-path keyed input stores under
     that path's value both when it runs and when that input is served."""
     rows = [{"pid": f"p{n}", "nctid": f"N{n}", "note": f"n{n}"} for n in (1, 2)]
-    workflow = {
-        "name": "patients",
-        "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": _PATIENT_OPS,
-        "outputs": [{"name": "asked", "ref": "Ask"}],
-    }
-    changed = {
-        **workflow,
-        "ops": [_PATIENT_OPS[0], {**_PATIENT_OPS[1], "code": "lambda c: c[1]"}],
-    }
+    workflow = _patient_workflow([_NOTES, _ASK], "Ask", rows)
+    changed = {**workflow, "ops": [_NOTES, {**_ASK, "code": "lambda c: ['?']"}]}
     replies = [row["note"] + "!" for row in rows]
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Notes": rows, "Ask": replies}, "req-1")
@@ -436,6 +416,34 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
     assert produced is not None and served is not None
     for index in (produced, served):
         assert [e.record for e in index.entries if e.op == "Ask"] == ["N1", "N2"]
+
+
+@pytest.mark.asyncio
+async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
+    """A parse step re-dispatched over a served keyed input stores under that
+    input's keys, though its own values carry no pid, so the next run hits it."""
+    rows = [{"pid": f"p{n}", "note": f"n{n}"} for n in (1, 2)]
+    notes = [json.dumps({"note": row["note"]}) for row in rows]
+    parsed = [json.loads(note) for note in notes]
+    workflow = _patient_workflow([_NOTED, _PARSE], "Parsed", rows)
+    changed = {**workflow, "ops": [_NOTED, {**_PARSE, "on_fail": "raw"}]}
+    storage = InMemoryJobStorage()
+    await _run(storage, workflow, {"Notes": notes, "Parsed": parsed}, "req-1")
+    plan, dispatched = _planned(storage, _runtime_graph(changed))
+    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    await _run(
+        storage,
+        changed,
+        {"Parsed": parsed},
+        "req-2",
+        graph=dispatched,
+        served=served_records(plan),
+    )
+    entries = read_index(storage, "req-2")
+    assert entries is not None
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"p1", "p2"}
+    again, _ = _planned(storage, _runtime_graph(changed))
+    assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
 
 
 @pytest.mark.asyncio
@@ -714,6 +722,18 @@ _READER, _ONE = {"role": "user", "content": "Read"}, [{"id": "a", "q": "/one"}]
 def _lambda(op_id: str, src: list[str], fn: str, code: str) -> dict[str, Any]:
     """One row Lambda op as YAML names it."""
     return {"id": op_id, "op": "LambdaOp", "inputs": src, "fn_name": fn, "code": code}
+
+
+_PATIENT_CODE = "lambda c: [json.loads(v) for v in c[0]]"
+_PATIENT_ASK = "lambda c: [r['note'] for r in c[0]]"
+_NOTED_CODE = "lambda c: [json.dumps(json.loads(v)['note']) for v in c[0]]"
+_NOTES = {**_lambda("Notes", ["Rows"], "notes", _PATIENT_CODE), "mode": "row"}
+_NOTES |= {"key": {"node": "Rows", "path": ["pid", "nctid"]}}
+_NOTED = {**_lambda("Notes", ["Rows"], "notes", _NOTED_CODE), "mode": "row"}
+_NOTED |= {"key": {"node": "Rows", "path": "pid"}}
+_ASK = {**_lambda("Ask", ["Notes"], "ask", _PATIENT_ASK), "mode": "row"}
+_ASK |= {"key": {"node": "Notes", "path": "nctid"}}
+_PARSE = {"id": "Parsed", "op": "ParseOp", "inputs": ["Notes"]}
 
 
 def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
