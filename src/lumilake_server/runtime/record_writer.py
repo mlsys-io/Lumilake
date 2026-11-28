@@ -22,7 +22,7 @@ from lumilake_server.data_specs import (
     JoinDescription,
     PythonData,
 )
-from lumilake_server.ops import RecordKey
+from lumilake_server.ops import KeyPaths, RecordKey
 from lumilake_server.runtime.lambda_task_helpers import serialized_table, table_rows
 from lumilake_server.runtime.record_keys import (
     child_count_key,
@@ -245,7 +245,7 @@ class RecordPlan:
         *,
         op: RuntimeOp,
         op_name: str,
-        key_path: str | Sequence[str] | None,
+        key_path: str | KeyPaths | None,
         key_paths: list[str],
         row_key_paths: list[str],
         join_inputs: list[str | None],
@@ -1087,7 +1087,7 @@ def logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | Sequence[str] | None:
+) -> str | KeyPaths | None:
     """A node's record-key path or paths."""
     return _key_path(runtime_graph, node_id, plans)
 
@@ -1770,7 +1770,7 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def _key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | Sequence[str] | None:
+) -> str | KeyPaths | None:
     """A node's record-key path or paths: the ones its op declares, else the
     path of the single keyed input a 1:1 node reads by position, else ``None``
     (whole-op). An input keyed by a mode passes no path: its consumer takes
@@ -2107,7 +2107,7 @@ def _declared_keys(
 
 
 def _declared_rows(
-    plan: RecordPlan, path: str | Sequence[str], count: int
+    plan: RecordPlan, path: str | KeyPaths, count: int
 ) -> Sequence[Any] | None:
     """The literal list the op carries for a declared input, when exactly one of
     its lists holds ``count`` rows that all carry a key at ``path``."""

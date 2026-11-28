@@ -38,7 +38,7 @@ from lumilake_server.ops.llm_ops import (
 )
 from lumilake_server.ops.ops import (
     FunctionalOp,
-    KeyPathList,
+    KeyPaths,
     Op,
     RecordKey,
     RowShape,
@@ -68,7 +68,7 @@ __all__ = [
     "ImageGenerationOp",
     "InputOp",
     "JoinOp",
-    "KeyPathList",
+    "KeyPaths",
     "LLMChatOp",
     "LLMCompletionOp",
     "LLMOp",
