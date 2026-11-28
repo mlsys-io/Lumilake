@@ -14,7 +14,7 @@ from lumilake_server.dynamic.template import (
     stop_export,
     validate_template,
 )
-from lumilake_server.ops.router_ops import RouterOp, expand_routers
+from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.utils.lambda_runtime import materialize
 
@@ -45,18 +45,22 @@ def _branch_rows(
     entry: dict[str, Any], branch_id: str, column: list[str]
 ) -> list[dict[str, Any]]:
     """Run one expanded branch's generated source over ``column``."""
-    op = next(item for item in expand_routers([entry]) if item["id"] == branch_id)
+    op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
     return materialize(op["code"], op["fn_name"])((column,))
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
-    for op in expand_routers([_router()]):
+    ops, cleared = expand_routers([_router()])
+    for op in ops:
         assert (op["op"], op["mode"], op["inputs"]) == ("LambdaOp", "list", ["norm"])
-    assert [op["id"] for op in expand_routers([_router()])] == [
+    assert [op["id"] for op in ops] == [
         "route.patient",
         "route.diagnose",
         "route.test",
     ]
+    assert cleared == frozenset(op["id"] for op in ops)
+    error, error_cleared = expand_routers([_router(error_branch=True)])
+    assert [op["id"] in error_cleared for op in error] == [True, True, True, False]
 
 
 def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
@@ -73,14 +77,59 @@ def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
         assert [row["case_id"] for row in got] == expected
 
 
+def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
+    # Only an object whose sole key is `_fail` is a marker, and `error` is a branch name
+    # only when the op declares the branch.
+    rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
+    field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
+    for row in (*rows, *field):
+        assert _branch_rows(_router(), "route.patient", [json.dumps(row)]) == [row]
+    rule = [{"branch": "error", "match": "equals", "value": "1"}]
+    expand_routers([_router(rules=rule)])
+    with pytest.raises(ValueError, match="error"):
+        expand_routers([_router(rules=rule, error_branch=True)])
+
+
+_EMPTY_RULE: list[dict[str, Any]] = [{"branch": "no_ret", "match": "empty"}]
+_EMPTY_ROWS: list[tuple[str, Any]] = [
+    ("null", None),
+    ("blank", ""),
+    ("list", []),
+    ("map", {}),
+    ("null-text", "null"),
+    ("full", "q"),
+]
+
+
+def test_an_empty_rule_refuses_a_value() -> None:
+    rule = {"branch": "no_ret", "match": "empty", "value": "x"}
+    with pytest.raises(ValueError, match="branch 'no_ret'.*takes no value"):
+        expand_routers([_router(rules=[rule])])
+
+
+def test_an_empty_rule_routes_null_blank_and_empty_containers_only() -> None:
+    router = _router(rules=_EMPTY_RULE, default_branch="ret")
+    column = [json.dumps({"case_id": n, "text": t}) for n, t in _EMPTY_ROWS]
+    got = _branch_rows(router, "route.no_ret", column)
+    assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
+    rest = _branch_rows(router, "route.ret", column)
+    assert [row["case_id"] for row in rest] == ["null-text", "full"]
+
+
+def test_a_row_missing_an_empty_rule_path_fails_naming_the_part() -> None:
+    router = _router(path="ctx.question", rules=_EMPTY_RULE, default_branch="ret")
+    with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
+        _branch_rows(router, "route.no_ret", [json.dumps({"ctx": {}})])
+
+
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:
     with pytest.raises(ValueError, match="default branch"):
-        RouterOp.from_entry(_router(default_branch="diagnose"))
+        expand_routers([_router(default_branch="diagnose")])
     with pytest.raises(ValueError, match="exactly one input"):
-        RouterOp.from_entry(_router(inputs=[]))
+        expand_routers([_router(inputs=[])])
     twin = [{"branch": "x", "match": "equals", "value": "1"}] * 2
     with pytest.raises(ValueError, match="branches must be unique"):
-        RouterOp.from_entry(_router(rules=twin))
+        expand_routers([_router(rules=twin)])
 
 
 def test_router_expands_before_the_graph_is_built() -> None:
@@ -208,7 +257,7 @@ def test_template_refuses_a_body_at_submit(
 ) -> None:
     template = _spec(first, next_ops).driver.template
     assert template is not None
-    with pytest.raises(DriverProtocolError, match=message):
+    with pytest.raises((DriverProtocolError, ValueError), match=message):
         validate_template(template, None, max_nodes_per_round=8)
 
 

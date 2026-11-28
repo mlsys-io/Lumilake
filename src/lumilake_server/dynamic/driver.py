@@ -9,7 +9,7 @@ import ast
 import copy
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +147,7 @@ class RoundBuild(BaseModel):
     export_output_names: list[str] = []
     export_user_ids: list[str] = []
     forwarded_inputs: dict[str, list[str]] = {}
+    cleared_native_ids: list[str] = []
 
 
 def round_output_location(
@@ -399,12 +400,20 @@ def _walk_values_per_row(
         if isinstance(walked, list) and len(walked) == 1:
             walked = walked[0]
         values.append(walked)
+    values = _explode_one_list(values, rows)
     if len(values) != rows:
         raise DriverProtocolError(
             f"op {consumer!r} references {ref!r}: its result has "
             f"{len(values)} items for a {rows}-row run, so its items cannot "
             "be matched to rows"
         )
+    return values
+
+
+def _explode_one_list(values: list[Any], rows: int) -> list[Any]:
+    """Split a single stored item holding the run's whole list into its rows."""
+    if rows > 1 and len(values) == 1 and isinstance(values[0], list):
+        return values[0]
     return values
 
 
@@ -450,12 +459,15 @@ def forward_refs(
     materializers: list[dict[str, Any]] = []
     materialized: set[str] = set()
 
+    def bind_input(input_id: str, walked: list[Any]) -> None:
+        inputs[input_id] = [_coerce_output_value(v) for v in walked]
+
     def add_materializer(ref: str, path: str, walked: list[Any]) -> str:
         """Bind a JSON input per row plus a LambdaOp that decodes each row's
         JSON back to its list; returns the materializer id."""
         input_id = f"{ref} | {path}"
         if input_id not in materialized:
-            inputs[input_id] = [_coerce_output_value(v) for v in walked]
+            bind_input(input_id, walked)
             materializers.append(
                 {
                     "id": f"{input_id} | rows",
@@ -498,9 +510,10 @@ def forward_refs(
                         "row and cannot be forwarded as JSON"
                     )
                 return add_materializer(ref, default_path, walked)
-            inputs[ref] = [_coerce_output_value(v) for v in walked]
+            bind_input(ref, walked)
         else:
-            inputs[ref] = _forward_values(results[ref], parts, ref)
+            walked = _forward_values(results[ref], parts, ref)
+            bind_input(ref, walked)
         return None
 
     def bind_explicit(ref: str, path: str, consumer: str) -> tuple[str, str]:
@@ -523,10 +536,12 @@ def forward_refs(
                             "a list and some a scalar at "
                             f"{'.'.join(parts)!r}, which cannot be forwarded"
                         )
-                    return add_materializer(ref, path, walked), "items.output"
-                inputs[input_id] = [_coerce_output_value(v) for v in walked]
+                    materializer = add_materializer(ref, path, walked)
+                    return materializer, "items.output"
+                bind_input(input_id, walked)
             else:
-                inputs[input_id] = _forward_values_flattened(results[ref], parts, ref)
+                walked = _forward_values_flattened(results[ref], parts, ref)
+                bind_input(input_id, walked)
         return input_id, ""
 
     for op in subgraph:
@@ -576,12 +591,7 @@ def forward_refs(
                     column["node"], column["path"] = bind_explicit(node, path, consumer)
         rowwise_seed = op.get("rowwise_seed")
         if isinstance(rowwise_seed, dict):
-            node = rowwise_seed.get("node")
-            path = rowwise_seed.get("path")
-            if isinstance(node, str) and isinstance(path, str) and node in results:
-                rowwise_seed["node"], rowwise_seed["path"] = bind_explicit(
-                    node, path, consumer
-                )
+            _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
@@ -602,6 +612,19 @@ def forward_refs(
         ops.append(op)
     ops.extend(materializers)
     return ops, inputs
+
+
+def _bind_seed_ref(
+    ref: dict[str, Any],
+    consumer: str,
+    results: dict[str, list[dict[str, Any]]],
+    bind_explicit: Callable[[str, str, str], tuple[str, str]],
+) -> None:
+    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place."""
+    node = ref.get("node")
+    path = ref.get("path")
+    if isinstance(node, str) and isinstance(path, str) and node in results:
+        ref["node"], ref["path"] = bind_explicit(node, path, consumer)
 
 
 def _validate_declared_inputs(
@@ -1102,6 +1125,7 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
+    cleared_ids: Collection[str] = (),
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
@@ -1120,7 +1144,7 @@ def build_round(
         "ops": forwarded,
         "outputs": [],
     }
-    parsed = parse_yaml_payload(workflow)
+    parsed = parse_yaml_payload(workflow, cleared_ids=cleared_ids)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
     leaves = _current_leaves(subgraph)
@@ -1138,6 +1162,9 @@ def build_round(
     )
     export_ids = [internal for internal, _ in export_pairs]
     export_user_ids = [user for _, user in export_pairs]
+    cleared_native_ids = [
+        _internal_id(graph_name, "LambdaOp", user_id) for user_id in sorted(cleared_ids)
+    ]
     system, user = planner_messages(
         goal=goal,
         observations=observations,
@@ -1170,6 +1197,7 @@ def build_round(
         export_output_names=[f"export_{export_id}" for export_id in export_ids],
         export_user_ids=export_user_ids,
         forwarded_inputs=inputs,
+        cleared_native_ids=cleared_native_ids,
     )
 
 

@@ -93,6 +93,11 @@ class _VisionBuilder(_RetrievalBuilder):
                         f" node '{column.node}' without a path; only InputOp and DataOp"
                         " refs may omit it."
                     )
+                self._guard_marked_column(
+                    consumer_id=llm_op_id,
+                    label=column.label,
+                    upstream=upstream,
+                )
                 columns.append(
                     self._node_ref_column(
                         consumer_id=llm_op_id,

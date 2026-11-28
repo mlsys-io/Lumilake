@@ -286,7 +286,7 @@ def test_invalid_source_is_rejected(code: str, message: str) -> None:
 def test_deserialized_lambda_op_never_runs_its_code() -> None:
     code = "def f(a):\n    return a[0]\n1/0"
     op = LambdaOp._from_json(
-        {"fn_name": "f", "_code": code, "_inputs": [], "timeout_s": 5}, {}
+        {"_id": "f", "fn_name": "f", "_code": code, "_inputs": [], "timeout_s": 5}, {}
     )
     assert isinstance(op.fn, SubmittedFunction)
     assert op.timeout_s == 5
@@ -297,9 +297,12 @@ def test_deserialized_lambda_op_never_runs_its_code() -> None:
 
 def test_deserialize_rejects_a_fn_name_the_code_does_not_define() -> None:
     with pytest.raises(ValueError, match="no top-level function named 'other'"):
-        LambdaOp._from_json({"fn_name": "other", "_code": _SHOUT, "_inputs": []}, {})
+        LambdaOp._from_json(
+            {"_id": "other", "fn_name": "other", "_code": _SHOUT, "_inputs": []}, {}
+        )
     op = LambdaOp._from_json(
-        {"fn_name": "label", "_code": "lambda a: a[0]", "_inputs": []}, {}
+        {"_id": "label", "fn_name": "label", "_code": "lambda a: a[0]", "_inputs": []},
+        {},
     )
     assert op._serialize()["fn_name"] == "label"
 
@@ -313,7 +316,13 @@ def test_yaml_fn_name_that_the_code_does_not_define_is_rejected() -> None:
 def test_deserialize_rejects_bad_source_and_limits() -> None:
     with pytest.raises(ValueError, match="Invalid LambdaOp function"):
         LambdaOp._from_json(
-            {"fn_name": "f", "_code": "def f(a, b):\n    return a", "_inputs": []}, {}
+            {
+                "_id": "f",
+                "fn_name": "f",
+                "_code": "def f(a, b):\n    return a",
+                "_inputs": [],
+            },
+            {},
         )
     with pytest.raises(ValueError, match="lambda_shout': memory_mb"):
         LambdaOp._from_json(
@@ -470,6 +479,7 @@ def test_yaml_rejects_a_bad_expected_runtime() -> None:
 def test_native_graph_expected_runtime_round_trip() -> None:
     op = LambdaOp._from_json(
         {
+            "_id": "lambda_shout",
             "fn_name": "shout",
             "_code": _SHOUT,
             "_inputs": [],
@@ -509,6 +519,7 @@ def test_yaml_rejects_a_non_bool_cache() -> None:
 def test_native_graph_cache_round_trip() -> None:
     op = LambdaOp._from_json(
         {
+            "_id": "lambda_shout",
             "fn_name": "shout",
             "_code": _SHOUT,
             "_inputs": [],

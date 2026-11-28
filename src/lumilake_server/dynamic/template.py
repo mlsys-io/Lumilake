@@ -193,7 +193,7 @@ def validate_template(
     registry: dict[str, dict[str, Any]] = {}
     for number in (1, 2, 3):
         plan = plans[number]
-        ops = expand_routers(plan.ops)
+        ops, _ = expand_routers(plan.ops)
         validate_emitted_subgraph(
             ops,
             registry,

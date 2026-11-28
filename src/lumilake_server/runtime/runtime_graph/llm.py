@@ -30,6 +30,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
+    ParseOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.llm_ops import (
@@ -612,6 +613,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                     f" '{column.node}' without a path; only InputOp and DataOp refs may"
                     " omit it."
                 )
+            self._guard_marked_column(
+                consumer_id=llm_op_id,
+                label=column.label,
+                upstream=upstream,
+            )
             columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,
@@ -662,6 +668,11 @@ class _LLMBuilder(_EmbeddingBuilder):
         # The seed's producer feeds no chat message, so the graph traversal
         # never reaches it on its own.
         visited_node_ids.add(node_ref)
+        self._guard_marked_column(
+            consumer_id=llm_op_id,
+            label="rowwise_seed",
+            upstream=upstream,
+        )
         if isinstance(upstream, InputOp):
             self._inline_seed_values(
                 data_spec,
@@ -741,6 +752,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                     f" '{column.node}' without a path; only InputOp and DataOp refs may"
                     " omit it."
                 )
+            self._guard_marked_column(
+                consumer_id=llm_op_id,
+                label=column.label,
+                upstream=upstream,
+            )
             table_columns.append(
                 self._node_ref_column(
                     consumer_id=llm_op_id,
@@ -1011,6 +1027,11 @@ class _LLMBuilder(_EmbeddingBuilder):
                     columns[op.id] = Column(data=ListData(items=inputs_dict[op.name]))
                     if len(inputs_dict[op.name]) > 1:
                         ancestor_row_counts[op.id] = len(inputs_dict[op.name])
+                self._guard_marked_column(
+                    consumer_id=llm_op_id,
+                    label=op.name,
+                    upstream=op,
+                )
                 ancestor_buffer[op.id] = [(Roles.USER, op.id)]
 
             elif isinstance(op, DataOp):
@@ -1240,6 +1261,14 @@ class _LLMBuilder(_EmbeddingBuilder):
                     label = f"lambda_{op.id}"
                     steps[label] = (op.code, fn_args_serialized, True)
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
+
+            elif isinstance(op, ParseOp):
+                raise ValueError(
+                    f"LLMOp '{llm_op_id}' consumes ParseOp '{op.id}' through its"
+                    " message chain; a parsed record must be read through a router's"
+                    " rule or default branch, so a failed record never reaches the"
+                    " model."
+                )
 
             else:
                 raise NotImplementedError(

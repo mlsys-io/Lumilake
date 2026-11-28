@@ -85,7 +85,7 @@ Users with an existing n8n workflow should submit it as
 YAML equivalent of the n8n wire format exists in this parser.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Self
 
@@ -102,6 +102,7 @@ from pydantic import (
 
 from ..ops.router_ops import expand_routers
 from ..ops.spec_validation import validate_fields
+from ..ops.util_ops import CLEARS_KEY
 from .common import make_id as _make_id
 from .repeat import unroll_repeats
 from .yaml_functions import WorkflowFunctions, parse_functions
@@ -172,11 +173,17 @@ class _OutputEntry:
     path: str | None = None
 
 
-def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
+def parse_yaml_payload(
+    payload: dict | str,
+    *,
+    cleared_ids: Collection[str] = (),
+) -> dict[str, dict[str, Any]]:
     """Parse a Lumilake YAML workflow spec into graph_specs.
 
     Args:
         payload: Either the raw YAML text, or an already-parsed dict.
+        cleared_ids: The ids ``expand_routers`` returned as cleared, so a round that
+            re-parses its own expansion keeps the flag on those branches.
 
     Returns:
         ``{graph_name: {"graph": ops_dict, "inputs": inputs_dict}}``,
@@ -191,7 +198,7 @@ def parse_yaml_payload(payload: dict | str) -> dict[str, dict[str, Any]]:
     if "ops" not in spec_dict:
         raise ValueError("YAML workflow must declare an 'ops:' list at the top level")
 
-    compiled_ops = _compile_workflow(spec_dict, graph_name)
+    compiled_ops = _compile_workflow(spec_dict, graph_name, cleared_ids=cleared_ids)
     return {
         graph_name: {
             "graph": compiled_ops.graph,
@@ -251,7 +258,12 @@ def _get_graph_name(spec: dict[str, Any]) -> str:
     return name.strip()
 
 
-def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
+def _compile_workflow(
+    spec: dict[str, Any],
+    scope: str,
+    *,
+    cleared_ids: Collection[str] = (),
+) -> _YamlGraphSpec:
     inputs_block = spec.get("inputs", {}) or {}
     ops_block = spec.get("ops", []) or []
     outputs_block = spec.get("outputs", []) or []
@@ -266,9 +278,10 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
     inputs = _validate_inputs(inputs_block)
     functions = parse_functions(spec.get("functions"))
     ops_block, unroll = unroll_repeats(ops_block, set(inputs))
-    ops_block = expand_routers(ops_block)
+    expanded, cleared = expand_routers(ops_block)
+    cleared = cleared | frozenset(cleared_ids)
     op_entries = [
-        _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(ops_block)
+        _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(expanded)
     ]
     output_entries = [
         _parse_output_entry(entry, idx) for idx, entry in enumerate(outputs_block)
@@ -318,7 +331,14 @@ def _compile_workflow(spec: dict[str, Any], scope: str) -> _YamlGraphSpec:
             unresolved = [ref for ref in entry.inputs if refs.target(ref) in pending]
             if unresolved:
                 continue
-            op_dict = _build_op_dict(entry, refs, scope, graph_ops)
+            op_dict = _build_op_dict(
+                entry,
+                refs,
+                scope,
+                graph_ops,
+            )
+            if user_id in cleared:
+                op_dict[CLEARS_KEY] = True
             for implicit in op_dict.pop("__implicit_ops__", []):
                 graph_ops[implicit["_id"]] = implicit
             graph_ops[op_dict["_id"]] = op_dict

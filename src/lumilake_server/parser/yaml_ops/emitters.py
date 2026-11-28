@@ -9,6 +9,7 @@ from .image import emit_image_generation_op
 from .joins import emit_join_op
 from .lambdas import emit_lambda_op
 from .llm import emit_llm_chat_op, emit_llm_completion_op, emit_llm_vision_op
+from .parse import emit_parse_op
 
 EMITTERS: dict[str, OpEmitter] = {
     "ClassificationOp": OpEmitter("classification", emit_classification_op),
@@ -24,6 +25,7 @@ EMITTERS: dict[str, OpEmitter] = {
     "LLMVisionOp": OpEmitter("llmvision", emit_llm_vision_op),
     "LambdaOp": OpEmitter("lambda", emit_lambda_op),
     "MessageOp": OpEmitter("message", emit_message_op),
+    "ParseOp": OpEmitter("parse", emit_parse_op),
 }
 
 

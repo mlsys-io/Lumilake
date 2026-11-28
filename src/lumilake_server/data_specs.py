@@ -46,6 +46,7 @@ class PythonMode(StrEnum):
     EXPAND = "expand"
     REDUCE = "reduce"
     JOIN = "join"
+    PARSE = "parse"
 
 
 class JoinHow(StrEnum):
@@ -54,6 +55,10 @@ class JoinHow(StrEnum):
     INNER = "inner"
     LEFT = "left"
     FULL = "full"
+
+
+ReduceOnFail = Literal["drop_failed", "fail_group"]
+ExpandOnEmpty = Literal["drop", "fail"]
 
 
 class _StrictModel(BaseModel):
@@ -256,7 +261,7 @@ class ColumnPlanEntry(DataSpecModel):
 
 
 class JoinDescription(DataSpecModel):
-    """A lowered join: key path, how, match rule, row columns and attach values."""
+    """A lowered join: key paths, row-column plan indexes, attach values and sources."""
 
     node: str
     by: list[str]
@@ -264,6 +269,17 @@ class JoinDescription(DataSpecModel):
     attach: list[tuple[str, int, int]]
     how: JoinHow
     require_match: bool
+    on_missing: Literal["null_fill", "fail_row"]
+
+
+class ParseDescription(DataSpecModel):
+    """A parse step's format, pattern, required keys, flags and failure policy."""
+
+    format: Literal["json", "regex"]
+    on_fail: Literal["marker", "raw"]
+    pattern: str | None = None
+    require: list[str] | None = None
+    flags: str | None = None
 
 
 class PythonData(DataSpecModel):
@@ -274,7 +290,10 @@ class PythonData(DataSpecModel):
     plan: list[ColumnPlanEntry] = Field(default_factory=list)
     mode: PythonMode | None = None
     by: str | None = None
+    on_fail: ReduceOnFail | None = None
+    on_empty: ExpandOnEmpty | None = None
     join: JoinDescription | None = None
+    parse: ParseDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
     memory_mb: int | None = None

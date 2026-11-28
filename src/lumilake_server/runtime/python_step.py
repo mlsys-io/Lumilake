@@ -16,9 +16,11 @@ from lumilake import envs
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     ColumnPlanEntry,
+    ParseDescription,
     PythonData,
     PythonMode,
 )
+from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.runtime import join_step, lambda_task_helpers
 from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.lumid_data_client import encode_blob_key
@@ -66,10 +68,14 @@ _column = _RUNTIME._column
 _decode = _RUNTIME._decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
+failure_of = _RUNTIME.failure_of
+carried_marker = _RUNTIME.carried_marker
+reject_reserved_key = _RUNTIME.reject_reserved_key
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
 _FN_NAME = {fn_name!r}
+_NODE = {op_id!r}
 _PLAN = json.loads({plan!r})
 """
 
@@ -83,6 +89,7 @@ _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
 _text = _RUNTIME._text
 _column = _RUNTIME._column
+failure_of = _RUNTIME.failure_of
 _NODE = {op_id!r}
 _PLAN = json.loads({plan!r})
 """
@@ -181,12 +188,19 @@ def main(inputs):
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
-    return {{
-        "items": [
-            {{"output": _text(r), "value": r}}
-            for r in (fn(row) for row in rows)
-        ]
-    }}
+    items = []
+    for row in rows:
+        marked = next(
+            (value for value in map(failure_of, row) if value is not None), None
+        )
+        if marked is not None:
+            # A marked row keeps its position and passes the marker on.
+            items.append({{"output": marked, "value": marked}})
+            continue
+        value = fn(row)
+        reject_reserved_key(value, _NODE)
+        items.append({{"output": _text(value), "value": value}})
+    return {{"items": items}}
 """
 
 _LIST_MAIN = """\
@@ -195,7 +209,16 @@ def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
     columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
     values = fn(tuple(columns))
-    return {{"items": [{{"output": v}} for v in values]}}
+    # A received marker may come back decoded, so it counts as received too.
+    received = tuple(value for column in columns for value in column)
+    originals = received + tuple(
+        marker for marker in map(failure_of, received) if marker is not None
+    )
+    items = []
+    for value in values:
+        reject_reserved_key(value, _NODE, originals=originals)
+        items.append({{"output": value}})
+    return {{"items": items}}
 """
 
 _ALIGNED_MAIN = """\
@@ -210,17 +233,39 @@ def main(inputs):
                 "input %r has %d rows; expected 1 or %d"
                 % (entry.get("node", "literal"), len(col), n)
             )
-    values = fn(tuple(columns))
-    if len(values) != n:
+    rows = (
+        tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)
+    )
+    marked = [
+        next((value for value in map(failure_of, row) if value is not None), None)
+        for row in rows
+    ]
+    live = [i for i, marker in enumerate(marked) if marker is None]
+    if not live:
+        # Every row is marked, so the function has no live row.
+        return {{"items": [{{"output": marker}} for marker in marked]}}
+    live_columns = tuple(
+        col if len(col) == 1 and n > 1 else [col[i] for i in live]
+        for col in columns
+    )
+    values = fn(live_columns)
+    if len(values) != len(live):
         raise ValueError(
             "aligned lambda {op_id!r} returned %d values for %d rows"
-            % (len(values), n)
+            % (len(values), len(live))
         )
-    return {{"items": [{{"output": v}} for v in values]}}
+    merged = marked.copy()
+    originals = tuple(value for column in columns for value in column)
+    for i, value in zip(live, values):
+        reject_reserved_key(value, _NODE, i, originals)
+        merged[i] = value
+    return {{"items": [{{"output": v}} for v in merged]}}
 """
 
 
 _EXPAND_MAIN = """\
+
+_ON_EMPTY = {on_empty!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
@@ -229,14 +274,34 @@ def main(inputs):
         for entry in _PLAN
     ]
     items = []
-    for row in _rows(columns, _PLAN, {op_id!r}):
+    for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+        marked = carried_marker(row)
+        if marked is not None:
+            # A marked row keeps one defined slot, so no child is run or lost.
+            items.append({{"output": marked, "parent": index, "child": 0}})
+            continue
         values = fn(row)
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
                 % ({op_id!r}, _FN_NAME, type(values).__name__)
             )
-        items.extend({{"output": v}} for v in values)
+        if not values and _ON_EMPTY == "fail":
+            # An empty expansion emits a marker, not nothing at all.
+            items.append(
+                {{
+                    "output": {{
+                        "_fail": {{"op": {op_id!r}, "reason": "empty expansion"}}
+                    }},
+                    "parent": index,
+                    "child": 0,
+                }}
+            )
+            continue
+        items.extend(
+            {{"output": v, "parent": index, "child": child}}
+            for child, v in enumerate(values)
+        )
     return {{"items": items}}
 """
 
@@ -244,6 +309,7 @@ _REDUCE_MAIN = """\
 
 _BY = {by!r}
 _BY_PATH = _BY.split(".")
+_ON_FAIL = {on_fail!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
@@ -251,19 +317,56 @@ def main(inputs):
         [_decode(v) for v in _column(entry, inputs, lambda v: v)]
         for entry in _PLAN
     ]
-    groups = {{}}
+    entries = []
+    by_key = {{}}
     for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
         try:
-            key = json.dumps(
-                _walk_path(row[0], _BY_PATH, "row %d" % i), sort_keys=True
-            )
+            value = _walk_path(row[0], _BY_PATH, "row %d" % i)
         except ValueError as exc:
-            raise ValueError(
-                "%s: reduce lambda cannot group row %d by %r: %s"
-                % ({op_id!r}, i, _BY, exc)
-            ) from exc
-        groups.setdefault(key, []).append(row)
-    return {{"items": [{{"output": fn(rows)}} for rows in groups.values()]}}
+            marker = carried_marker(row)
+            if marker is None:
+                raise ValueError(
+                    "%s: reduce lambda cannot group row %d by %r: %s"
+                    % ({op_id!r}, i, _BY, exc)
+                ) from exc
+            # Only a row whose key cannot be read has no key: it is the marker itself,
+            # or the key path reaches one. Its group is itself, and it emits that
+            # marker.
+            entries.append((None, [row], marker))
+            continue
+        marker = failure_of(value)
+        if marker is not None:
+            entries.append((None, [row], marker))
+            continue
+        key = json.dumps(value, sort_keys=True)
+        if key not in by_key:
+            by_key[key] = len(entries)
+            entries.append((key, [], None))
+        entries[by_key[key]][1].append(row)
+    items = []
+    for key, rows, own in entries:
+        if own is not None:
+            # The group is the one row without a key, and it emits its marker, which
+            # names the op that failed rather than this one.
+            items.append({{"output": own}})
+            continue
+        markers = [m for m in map(carried_marker, rows) if m is not None]
+        if markers:
+            if _ON_FAIL == "fail_group":
+                items.append({{"output": markers[0]}})
+                continue
+            rows = [row for row in rows if carried_marker(row) is None]
+            if not rows:
+                items.append(
+                    {{
+                        "output": {{
+                            "_fail": {{"op": {op_id!r}, "reason": "empty group"}}
+                        }}
+                    }}
+                )
+                continue
+        items.append({{"output": fn(rows)}})
+    return {{"items": items}}
 """
 
 
@@ -449,6 +552,70 @@ def _blob_entry(blob: PublishedBlob) -> dict[str, Any]:
     }
 
 
+_PARSE_PRELUDE = """\
+# Generated by Lumilake for ParseOp {op_id!r}.
+import importlib.util
+import json
+
+_SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
+_RUNTIME = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_RUNTIME)
+_text = _RUNTIME._text
+_column = _RUNTIME._column
+failure_of = _RUNTIME.failure_of
+parse_row = _RUNTIME.parse_row
+FAIL_KEY = _RUNTIME.FAIL_KEY
+_NODE = {op_id!r}
+_PLAN = json.loads({plan!r})
+_PARSER = json.loads({parser!r})
+"""
+
+_PARSE_MAIN = """\
+
+def main(inputs):
+    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    items = []
+    for value in columns[0]:
+        marked = failure_of(value)
+        if marked is not None:
+            # A marker leaves as the decoded object, as the row step does.
+            items.append({{"output": marked, "value": marked}})
+            continue
+        try:
+            parsed = parse_row(_PARSER, value)
+        except ValueError as exc:
+            if _PARSER["on_fail"] == "raw":
+                # The row keeps its text as an ordinary value.
+                items.append({{"output": value, "value": value}})
+                continue
+            reason = exc.args[0] if exc.args else str(exc)
+            failed = {{FAIL_KEY: {{"op": _NODE, "reason": reason}}}}
+            items.append({{"output": failed, "value": failed}})
+            continue
+        if isinstance(parsed, dict) and FAIL_KEY in parsed:
+            # Model output cannot forge a marker with its own _fail key.
+            if _PARSER["on_fail"] == "raw":
+                items.append({{"output": value, "value": value}})
+                continue
+            failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
+            items.append({{"output": failed, "value": failed}})
+            continue
+        items.append({{"output": _text(parsed), "value": parsed}})
+    return {{"items": items}}
+"""
+
+
+def parse_source(op_id: str, plan: ColumnPlan, parse_spec: ParseDescription) -> str:
+    """The python-task code for a ParseOp: one parsed record per row."""
+    return (_PARSE_PRELUDE + _PARSE_MAIN).format(
+        op_id=op_id,
+        module=TASK_RUNTIME_MODULE,
+        mount=TASK_RUNTIME_MOUNT,
+        plan=plan_json(plan),
+        parser=json.dumps({"op": op_id, **parse_spec.model_dump(exclude_none=True)}),
+    )
+
+
 def wrapper_source(
     op_id: str,
     fn_name: str,
@@ -456,6 +623,8 @@ def wrapper_source(
     plan: ColumnPlan,
     mode: PythonMode = PythonMode.ROW,
     by: str | None = None,
+    on_fail: str = "fail_group",
+    on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
     """The python-task code for one standalone LambdaOp."""
     if mode is PythonMode.LIST:
@@ -476,6 +645,8 @@ def wrapper_source(
         fn_name=fn_name,
         plan=plan_json(plan),
         by=by,
+        on_fail=on_fail,
+        on_empty=on_empty,
     )
 
 
@@ -511,6 +682,8 @@ def flowmesh_spec(
         code = pairs_source(node_id, plan)
     elif mode is PythonMode.FLATTEN_STEP:
         code = flatten_step_source(node_id, plan)
+    elif mode is PythonMode.PARSE:
+        code = parse_source(node_id, plan, _required(data_spec.parse, "parse", mode))
     else:
         code = wrapper_source(
             node_id,
@@ -519,6 +692,8 @@ def flowmesh_spec(
             plan,
             mode,
             data_spec.by,
+            data_spec.on_fail or "fail_group",
+            data_spec.on_empty or LambdaOp.ON_EMPTY_DROP,
         )
     spec: dict[str, Any] = {
         "taskType": PYTHON_TASK_TYPE,

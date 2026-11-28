@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
@@ -19,7 +20,10 @@ from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
-from lumilake_server.routes.jobs import _admit_subgraph
+from lumilake_server.routes.jobs import (
+    _admit_subgraph,
+    _dispatch_workflow_to_graph_specs,
+)
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 
 
@@ -301,8 +305,43 @@ def test_admit_subgraph_forwards_export_to_validation():
     }
     with pytest.raises(DriverProtocolError, match="exported op id 'nope'"):
         _admit_subgraph(SubgraphPlan(ops=[op], export=["nope"]), {}, 4, None, {})
-    resolved = _admit_subgraph(SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {})
+    resolved, _ = _admit_subgraph(
+        SubgraphPlan(ops=[op], export=["q1"]), {}, 4, None, {}
+    )
     assert [r["id"] for r in resolved] == ["q1"]
+
+
+def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
+    # A round names the clearing ops from its own expansion; another graph declaring the
+    # key is refused.
+    native = {
+        "L": {
+            "_id": "L",
+            "_op": "LambdaOp",
+            "_max_iter": None,
+            "_inputs": [],
+            "fn_name": "f",
+            "_code": "def f(row):\n    return row[0]\n",
+            "_clears_markers": True,
+        }
+    }
+
+    def specs(**kwargs: Any) -> dict[str, Any]:
+        graph_specs: dict[str, Any] = {}
+        _dispatch_workflow_to_graph_specs(
+            workflow_format="native",
+            workflow_payload={"graph": native},
+            batch_inputs={},
+            graph_name="g",
+            graph_specs=graph_specs,
+            idx=0,
+            **kwargs,
+        )
+        return graph_specs
+
+    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}}}
+    with pytest.raises(HTTPException, match="clears_markers"):
+        specs()
 
 
 def test_build_round_round2_graph_has_no_round1_op():
@@ -439,6 +478,22 @@ def test_forward_per_row_explicit_reference_aligns_items_to_rows():
     assert inputs[f"{sql_id} | items.table.close"] == [
         json.dumps({"0": float(i)}) for i in range(3)
     ]
+
+
+def test_forward_per_row_splits_one_item_holding_the_whole_list():
+    # A template round forwards its export as one item whose output is the list the
+    # list-mode export returned, so a later round reads its rows one each; a one-row run
+    # keeps a one-element list as that row's value.
+    lister_id = "l1"
+    configs = {lister_id: {"id": lister_id, "op": "LambdaOp", "inputs": []}}
+    subgraph = _three_row_subgraph(lister_id)
+    results = {lister_id: [{"output": ["a", "b", "c"]}]}
+    _, inputs = forward_refs(subgraph, results, configs, rows=3)
+    assert inputs == {lister_id: ["a", "b", "c"]}
+    _, inputs = forward_refs(
+        _three_row_subgraph(lister_id), {lister_id: [{"output": ["a"]}]}, configs
+    )
+    assert inputs == {lister_id: ['["a"]']}
 
 
 def test_forward_per_row_rejects_item_count_that_is_not_the_row_count():

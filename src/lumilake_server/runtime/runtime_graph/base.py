@@ -23,14 +23,53 @@ from lumilake_server.data_specs import (
 from lumilake_server.ops import (
     DataOp,
     InputOp,
+    LambdaOp,
     LLMOp,
     Op,
+    ParseOp,
 )
+from lumilake_server.runtime.lambda_task_helpers import FAIL_KEY, failure_of
 from lumilake_server.runtime.runtime_graph.outputs import (
     OpOutput,
     op_output,
 )
 from lumilake_server.runtime.runtime_ops import RuntimeOp
+
+
+def _holds_marker(value: Any) -> bool:
+    """Whether a literal value is a marker, or decodes to a list holding one."""
+    if not isinstance(value, str):
+        return failure_of(value) is not None
+    if FAIL_KEY not in value:
+        return False
+    try:
+        decoded = json.loads(value)
+    except ValueError:
+        return False
+    if isinstance(decoded, list):
+        return any(failure_of(item) is not None for item in decoded)
+    return failure_of(decoded) is not None
+
+
+def _carries_markers(
+    op: Op, inputs_dict: dict[str, list[str]], cache: dict[str, bool]
+) -> bool:
+    """Whether an op's output can hold a failed-record marker."""
+    if op.id in cache:
+        return cache[op.id]
+    if isinstance(op, ParseOp) and op.emits_markers:
+        carries = True
+    elif isinstance(op, LambdaOp) and op.mode == "expand" and op.on_empty == "fail":
+        # Such an expand is a marker source whatever it reads.
+        carries = True
+    elif isinstance(op, InputOp):
+        carries = any(_holds_marker(value) for value in inputs_dict.get(op.name, []))
+    elif isinstance(op, LambdaOp) and op.clears_markers:
+        carries = False
+    else:
+        carries = any(_carries_markers(inp, inputs_dict, cache) for inp in op.inputs)
+    cache[op.id] = carries
+    return carries
 
 
 def _default_output_destination() -> dict[str, Any]:
@@ -108,6 +147,8 @@ class _RuntimeGraphBuilderBase:
         # The workflow being built, so every read site describes the same one.
         self._inputs_dict: dict[str, list[str]] = {}
         self._graph_dict: dict[str, Op] = {}
+        # Marker answers for one build, so a shared ancestor is walked once.
+        self._marker_cache: dict[str, bool] = {}
 
     def _create_runtime_op(
         self,
@@ -374,6 +415,25 @@ class _RuntimeGraphBuilderBase:
                 " only carry one row, so wiring this to the single unsuffixed"
                 " output would silently drop every row but the first."
             )
+
+    def _guard_marked_column(
+        self,
+        *,
+        consumer_id: str,
+        label: str,
+        upstream: Op | None,
+    ) -> None:
+        """Refuse a model-op column that reads a marker source."""
+        if upstream is None or not _carries_markers(
+            upstream, self._inputs_dict, self._marker_cache
+        ):
+            return
+        raise ValueError(
+            f"Column '{label}' of model op '{consumer_id}' reads '{upstream.id}', which"
+            " carries failed-record markers; a model op would render a marker as an"
+            " ordinary value. Read a router's rule or default branch, so failed records"
+            " never reach the model."
+        )
 
     def _op_output(self, op: Op) -> OpOutput:
         """How a consumer reads the op's values."""

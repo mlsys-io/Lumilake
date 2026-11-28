@@ -30,6 +30,8 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
             "gpu": gpu,
             "expected_runtime_s": entry.fields.get("expected_runtime_s"),
             "cache": entry.fields.get("cache"),
+            "on_fail": entry.fields.get("on_fail"),
+            "on_empty": entry.fields.get("on_empty"),
         },
         f"LambdaOp '{entry.id}'",
     )

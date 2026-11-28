@@ -42,6 +42,7 @@ from lumilake_server.ops.ops import (
     RowShape,
     SingleDtype,
 )
+from lumilake_server.ops.parse_ops import ParseOp, parse_op
 from lumilake_server.ops.util_ops import (
     FormatOp,
     LambdaMode,
@@ -75,6 +76,7 @@ __all__ = [
     "Op",
     "OpMessage",
     "OutputOp",
+    "ParseOp",
     "RowShape",
     "RowwiseMessages",
     "RowwiseSeed",
@@ -92,4 +94,5 @@ __all__ = [
     "llm_completion",
     "llm_vision",
     "message_data",
+    "parse_op",
 ]

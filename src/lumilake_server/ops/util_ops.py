@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from lumilake_server.data_specs import GpuRequest
+from lumilake_server.data_specs import ExpandOnEmpty, GpuRequest, ReduceOnFail
 from lumilake_server.ops.data_ops import DataOp
 from lumilake_server.ops.ops import FunctionalOp, Op, SingleDtype
 from lumilake_server.ops.spec_validation import validate_fields
@@ -44,6 +44,8 @@ RowLambdaFn = Callable[[tuple[SingleDtype, ...]], str]
 ListLambdaFn = Callable[[tuple[list[Any], ...]], list[Any]]
 ExpandLambdaFn = Callable[[tuple[Any, ...]], list[Any]]
 ReduceLambdaFn = Callable[[list[tuple[Any, ...]]], Any]
+CLEARS_KEY = "_clears_markers"
+"""The private serialized key for ``LambdaOp.clears_markers``."""
 
 
 class LambdaSpec(BaseModel):
@@ -63,6 +65,9 @@ class LambdaSpec(BaseModel):
     gpu: GpuRequest | None = None
     expected_runtime_s: StrictFloat | None = Field(default=None, gt=0)
     cache: StrictBool | None = None
+    on_fail: ReduceOnFail | None = None
+    on_empty: ExpandOnEmpty | None = None
+    clears_markers: StrictBool | None = Field(default=None, alias="_clears_markers")
 
     @field_validator("image")
     @classmethod
@@ -84,6 +89,18 @@ class LambdaSpec(BaseModel):
             raise ValueError(
                 "reduce mode requires 'by' to be a dotted path of non-empty segments"
                 f" (got {self.by!r})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _policy_needs_its_mode(self) -> Self:
+        if self.on_fail is not None and self.mode != "reduce":
+            raise ValueError(
+                f"'on_fail' is only valid in reduce mode (got mode {self.mode!r})"
+            )
+        if self.on_empty is not None and self.mode != "expand":
+            raise ValueError(
+                f"'on_empty' is only valid in expand mode (got mode {self.mode!r})"
             )
         return self
 
@@ -237,6 +254,8 @@ def format_op(template: str, *args: list[str] | Op, **kwargs: list[str] | Op) ->
 class LambdaOp(Op):
     fn: RowLambdaFn | ListLambdaFn | ExpandLambdaFn | ReduceLambdaFn
 
+    ON_EMPTY_DROP: ExpandOnEmpty = "drop"
+
     def __init__(
         self,
         inputs: Sequence[list[str] | Op],
@@ -251,6 +270,9 @@ class LambdaOp(Op):
         cache: bool | None = None,
         sample_value: Any | None = None,
         by: str | None = None,
+        on_fail: ReduceOnFail | None = None,
+        on_empty: ExpandOnEmpty | None = None,
+        clears_markers: bool = False,
     ) -> None:
         input_ops: list[Op] = [
             inp if isinstance(inp, Op) else DataOp(inp) for inp in inputs
@@ -271,6 +293,9 @@ class LambdaOp(Op):
                 "gpu": gpu,
                 "expected_runtime_s": expected_runtime_s,
                 "cache": cache,
+                "on_fail": on_fail,
+                "on_empty": on_empty,
+                CLEARS_KEY: clears_markers or None,
             },
             "LambdaOp",
         )
@@ -309,6 +334,21 @@ class LambdaOp(Op):
         return self.spec.cache
 
     @property
+    def on_fail(self) -> ReduceOnFail:
+        """What a reduce group holding a failed record does."""
+        return self.spec.on_fail or "fail_group"
+
+    @property
+    def on_empty(self) -> ExpandOnEmpty:
+        """What a parent expanding to no children does."""
+        return self.spec.on_empty or self.ON_EMPTY_DROP
+
+    @property
+    def clears_markers(self) -> bool:
+        """Parser-owned: set on generated router branches, never a workflow field."""
+        return bool(self.spec.clears_markers)
+
+    @property
     def takes_whole_columns(self) -> bool:
         """List and aligned Lambdas receive whole columns and return a list."""
         return self.mode in (LambdaMode.LIST, LambdaMode.ALIGNED)
@@ -322,7 +362,7 @@ class LambdaOp(Op):
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
-        spec = build_lambda_spec(data, f"LambdaOp '{data.get('_id', '?')}'")
+        spec = build_lambda_spec(data, f"LambdaOp '{data['_id']}'")
         try:
             fn: Callable[..., Any] = SubmittedFunction(spec.code, spec.fn_name)
         except ValueError as exc:
@@ -342,6 +382,9 @@ class LambdaOp(Op):
             expected_runtime_s=spec.expected_runtime_s,
             cache=spec.cache,
             sample_value=data.get("sample_value"),
+            on_fail=spec.on_fail,
+            on_empty=spec.on_empty,
+            clears_markers=bool(spec.clears_markers),
         )
         return op
 

@@ -13,6 +13,7 @@ from lumilake_server.ops import (
     LLMOp,
     MessageOp,
     Op,
+    ParseOp,
 )
 from lumilake_server.ops.embedding_ops import EmbeddingOp
 from lumilake_server.ops.join_ops import JoinOp
@@ -179,6 +180,8 @@ def op_output(
     elif isinstance(op, JoinOp):
         # A join is enveloped like a list Lambda: one item per row.
         kind = OutputKind.JOIN
+    elif isinstance(op, ParseOp):
+        kind = OutputKind.ROW_LAMBDA
     else:
         kind = OutputKind.DECLARED
     default_path: str | None

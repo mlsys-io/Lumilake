@@ -176,19 +176,28 @@ def test_join_refuses_a_format_op_as_an_attach_target() -> None:
         _join_node(ops)
 
 
-def test_join_refuses_a_duplicate_key_and_a_stray_row_under_require_match(
-    tmp_path: Path,
-) -> None:
-    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
-    dup: dict[int, list[dict[str, Any]]] = {
-        0: [{"output": [_ROWS[1]] * 2}],
-        1: [{"output": []}],
-    }
+def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
+    """A repeated first-input key and a further-input row without its key fail."""
+    node = _join_node(_merge("State, Route.diagnose"))
+    stray = {"text": "no key at all"}
     with pytest.raises(ValueError, match="duplicate key"):
-        _run(tmp_path, node, dup, "duplicate")
-    missing = {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]}
-    with pytest.raises(ValueError, match='key "a" is missing'):
-        _run(tmp_path, node, missing)
+        _run(
+            tmp_path,
+            node,
+            {0: [{"output": [_ROWS[1]] * 2}], 1: [{"output": []}]},
+            name="duplicate",
+        )
+    with pytest.raises(ValueError, match="cannot be placed"):
+        _run(
+            tmp_path,
+            node,
+            {0: [{"output": [_ROWS[1]]}], 1: [{"output": [stray]}]},
+            name="stray",
+        )
+
+
+def test_join_require_match_refuses_a_stray_key(tmp_path: Path) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
     stray = {"case_id": "z", "text": "not in the first input"}
     outsider = {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]}
     with pytest.raises(ValueError, match='key "z" is not in'):
@@ -228,6 +237,12 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
         _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
 
+def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
+    with pytest.raises(ValueError, match=r'key "a" is missing from'):
+        _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
+
+
 def test_join_reads_a_table_in_order_and_keeps_a_value_typed(tmp_path: Path) -> None:
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
@@ -239,6 +254,74 @@ def test_join_reads_a_table_in_order_and_keeps_a_value_typed(tmp_path: Path) -> 
     ]
     with pytest.raises(ValueError, match="table is not a column table"):
         _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
+
+
+_MARK = {"_fail": {"op": "P", "reason": "no JSON object"}}
+_DIAG = _merge("State, Route.diagnose")
+_ATTACH = _REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n")
+# A row Lambda over the diagnose branch, so its values reach only that key.
+_PART = _REPLY.replace("[State]", "[Route.diagnose]") + _merge(
+    "State, Route.diagnose, Reply", "    attach: {part: Reply}\n"
+)
+_A, _B, _C = _ROWS
+_NULL = {"case_id": None, "text": "no key"}
+
+
+def _rows(*values: Any) -> list[dict[str, Any]]:
+    return [{"output": list(values)}]
+
+
+def _cells(*values: Any) -> list[dict[str, Any]]:
+    return [{"output": value, "value": value} for value in values]
+
+
+# A join's staged inputs and its value column, in plan order.
+_LIVE = {0: _rows(_A, _C), 1: _cells("hi", _MARK)}
+_GAPPED = {0: _rows(_A, _MARK, _C), 1: _cells("hi", _MARK, "bye")}
+_PARTED = {0: _rows(_A, _B, _C), 1: _rows(_B), 2: _cells(1), 3: _rows(_B)}
+
+
+@pytest.mark.parametrize(
+    "ops, upstream, expected",
+    [
+        # A marked row keeps its slot: in the first input the row is the marker, in a
+        # further input the key's output is.
+        (_DIAG, {0: _rows(_A, _MARK, _B), 1: _rows(_B)}, [_A, _MARK, _B]),
+        # A marked attach value marks its paired key, whether the value column covers
+        # the live source rows only or every source row. An attach whose values cannot
+        # be paired one per row fails the job, as does a live row whose key field is
+        # null.
+        (_ATTACH, _LIVE, [{**_A, "reply": "hi"}, _MARK]),
+        (_ATTACH, _GAPPED, [{**_A, "reply": "hi"}, _MARK, {**_C, "reply": "bye"}]),
+        (_ATTACH, {0: _rows(_A, _C), 1: _cells("hi")}, "values attached but"),
+        (_DIAG, {0: _rows(_A, _NULL), 1: _rows(_B)}, "row has no key field"),
+        # fail_row marks the rows an attach source lacks a key for.
+        (
+            _PART + "    on_missing: fail_row\n",
+            _PARTED,
+            ["marked", {**_B, "part": 1}, "marked"],
+        ),
+    ],
+)
+def test_a_marked_join_row_keeps_its_key_and_every_other_row(
+    ops: str,
+    upstream: dict[int, list[dict[str, Any]]],
+    expected: Any,
+    tmp_path: Path,
+) -> None:
+    node = _join_node(ops)
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
+            _run(tmp_path, node, upstream)
+        return
+    got = []
+    for item in _run(tmp_path, node, upstream)["items"]:
+        row = item["output"]
+        if row.get("_fail", {}).get("op") == node.node_id:
+            assert "is missing from" in row["_fail"]["reason"]
+            row = "marked"
+        got.append(row)
+    assert got == expected
 
 
 def test_join_output_reads_as_a_rowwise_node_column() -> None:

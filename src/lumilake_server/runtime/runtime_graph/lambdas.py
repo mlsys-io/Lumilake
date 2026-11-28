@@ -13,6 +13,7 @@ from lumilake_server.ops import (
     LambdaMode,
     LambdaOp,
     LLMOp,
+    ParseOp,
 )
 from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
@@ -25,6 +26,7 @@ from lumilake_server.runtime.runtime_graph.lowering import (
     has_lowering,
     register,
 )
+from lumilake_server.runtime.runtime_graph.outputs import item_relative_path
 from lumilake_server.runtime.runtime_ops import RuntimeOp
 
 
@@ -111,6 +113,8 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             ),
             mode=PythonMode(op.mode) if op.mode is not LambdaMode.ROW else None,
             by=op.by,
+            on_fail=op.on_fail if op.mode == "reduce" else None,
+            on_empty=op.on_empty if op.mode == "expand" else None,
             memory_mb=op.memory_mb,
             image=op.image,
             gpu=op.gpu,
@@ -262,6 +266,65 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
             if isinstance(op, JoinOp):
                 refs.update(inp.id for inp in op.inputs)
         return refs
+
+    @register(ParseOp, Phase.ROW_LAMBDA)
+    def _lower_parse(self, op: ParseOp, ctx: LoweringContext) -> LoweringResult | None:
+        """Lower a ParseOp to its own python step."""
+        if op.id in ctx.nodes:
+            return None
+        plan, dependencies = self._parse_plan(op, ctx)
+        row_count = self._python_step_row_count(
+            op.id,
+            [(op.inputs[0].id, self._op_output(op.inputs[0]).row_count)],
+            combines_rows=False,
+        )
+        node = self._create_runtime_op(
+            name=op.id,
+            task_type=PYTHON_TASK_TYPE,
+            data_spec=PythonData(
+                mode=PythonMode.PARSE,
+                parse=op.parse_spec,
+                plan=plan,
+                timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
+                row_count=row_count,
+            ),
+            model_spec={},
+            inference_spec={},
+            backend=python_step.BACKEND,
+            model="",
+            dependencies=dependencies if dependencies else None,
+        )
+        ctx.visited.add(op.inputs[0].id)
+        return LoweringResult(nodes=[node])
+
+    def _parse_plan(
+        self, op: ParseOp, ctx: LoweringContext
+    ) -> tuple[python_step.ColumnPlan, list[str]]:
+        """The single-column plan a ParseOp reads: one value per input row."""
+        source = op.inputs[0]
+        if isinstance(source, InputOp):
+            values = list(ctx.inputs_dict[source.name])
+            return [ColumnPlanEntry(kind="literal", values=values)], []
+        if isinstance(source, DataOp):
+            return [ColumnPlanEntry(kind="literal", values=list(source.data))], []
+        if isinstance(source, LambdaOp) and not source.takes_whole_columns:
+            nodes = self._build_python_step(source, ctx)
+            for node in nodes:
+                ctx.nodes.setdefault(node.node_id, node)
+            ctx.dsl_to_runtime.setdefault(source.id, [node.node_id for node in nodes])
+        runtime_ids = ctx.dsl_to_runtime.get(source.id, [])
+        if len(runtime_ids) != 1:
+            raise ValueError(
+                f"ParseOp '{op.id}' reads '{source.id}', which compiled to"
+                f" {len(runtime_ids)} runtime nodes; a ParseOp reads one column"
+            )
+        entry = ColumnPlanEntry(kind="stage", node=runtime_ids[0])
+        output = self._op_output(source)
+        if output.needs_flatten:
+            entry.flatten = True
+        elif output.path:
+            entry.path = item_relative_path(output.path)
+        return [entry], [runtime_ids[0]]
 
     @after_phase(Phase.ROW_LAMBDA)
     def _check_inlined_lambda_refs(self, ctx: LoweringContext) -> None:

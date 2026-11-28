@@ -746,7 +746,13 @@ def test_wrapper_expand_mode_emits_one_item_per_element_and_drops_empty() -> Non
     code = "def split(row):\n    return [k for k in row[0].split(',') if k]\n"
     plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a,b", "", "c"]}]
     out = _run_wrapper(code, plan, {}, fn_name="split", mode=PythonMode.EXPAND)
-    assert out == {"items": [{"output": "a"}, {"output": "b"}, {"output": "c"}]}
+    assert out == {
+        "items": [
+            {"output": "a", "parent": 0, "child": 0},
+            {"output": "b", "parent": 0, "child": 1},
+            {"output": "c", "parent": 2, "child": 0},
+        ]
+    }
 
 
 def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
@@ -760,7 +766,10 @@ def test_wrapper_reduce_mode_groups_rows_in_first_appearance_order() -> None:
 
 
 _DF = {"id": {"0": "p1", "1": "p2"}, "s": {"0": 5, "1": 9}}
-_DF_ROWS = [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}]
+_DF_ROWS = [
+    {"output": {"id": "p1", "s": 5}, "parent": 0, "child": 0},
+    {"output": {"id": "p2", "s": 9}, "parent": 0, "child": 1},
+]
 
 
 @pytest.mark.parametrize(
@@ -770,7 +779,7 @@ _DF_ROWS = [{"output": {"id": "p1", "s": 5}}, {"output": {"id": "p2", "s": 9}}]
         ({"index": 0, "table": {"df": json.dumps(_DF)}}, _DF_ROWS),
         (
             {"table": "[1, 2]", "note": "x"},
-            [{"output": {"table": "[1, 2]", "note": "x"}}],
+            [{"output": {"table": "[1, 2]", "note": "x"}, "parent": 0, "child": 0}],
         ),
     ],
 )

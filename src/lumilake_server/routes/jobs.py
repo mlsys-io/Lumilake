@@ -10,7 +10,7 @@ import re
 import tarfile
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from dataclasses import asdict
 from typing import Any, Self
 from urllib.parse import quote as urlquote
@@ -102,6 +102,7 @@ from lumilake_server.hooks.security import (
     run_submission_guards,
 )
 from lumilake_server.ops.router_ops import expand_routers
+from lumilake_server.ops.util_ops import CLEARS_KEY
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
 from lumilake_server.records import (
     IO_LOCATION_ADAPTER,
@@ -503,6 +504,7 @@ def _dispatch_workflow_to_graph_specs(
     graph_specs: dict[str, dict[str, Any]],
     idx: int,
     parser_scope: str | None = None,
+    cleared_ids: Collection[str] = (),
 ) -> None:
     """Parse one workflow slice and merge it into ``graph_specs`` in place.
 
@@ -522,6 +524,11 @@ def _dispatch_workflow_to_graph_specs(
     :func:`lumilake_server.parser.common.make_id`. The submit path uses
     this to keep DSL ids stable across slices of the same parent
     workflow, which the multi-batch data-profile path depends on.
+
+    ``cleared_ids`` names the native ops a server-built graph such as a dynamic round's
+    drops markers on, from the ids its own expansion returned. That key is set on
+    exactly those ops; any other graph declaring it is refused, because a router's
+    expansion is its only source.
     """
     if workflow_format == "n8n":
         payload = {
@@ -586,6 +593,18 @@ def _dispatch_workflow_to_graph_specs(
     graph_payload = (
         workflow_payload["graph"] if "graph" in workflow_payload else workflow_payload
     )
+    for op_id, op in graph_payload.items():
+        if not isinstance(op, dict) or CLEARS_KEY not in op:
+            continue
+        if op_id not in cleared_ids:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"native op '{op_id}' of the graph at index {idx} declares"
+                    f" '{CLEARS_KEY}', which a router's expansion sets and is not a"
+                    " workflow field"
+                ),
+            )
     graph_specs[graph_name] = {
         "graph": graph_payload,
         "inputs": batch_inputs,
@@ -1834,11 +1853,13 @@ async def _submit_dynamic_child(
     hardware_requirements: HardwareRequirements | None = None,
     job_timeout: float = 600.0,
     one_slice: bool = False,
+    cleared_ids: Collection[str] = (),
 ) -> str | None:
     """Create and dispatch one dynamic round as a child job, returning its id.
 
     The caller must check the child record's status after this returns,
-    because ``_run_job`` swallows failures.
+    because ``_run_job`` swallows failures. ``cleared_ids`` names the native ops this
+    round's own expansion set the marker-clearing flag on.
     """
     child_job_id = f"req-{unique_id()}"
     graph_name = f"round_{round_index}"
@@ -1883,6 +1904,7 @@ async def _submit_dynamic_child(
             graph_name=slice_name,
             graph_specs=graph_specs,
             idx=0,
+            cleared_ids=cleared_ids,
         )
         slice_start += slice_length
     # An api-driven run checks hardware.gpu == 0 per real round.
@@ -2099,21 +2121,21 @@ def _admit_subgraph(
     max_nodes: int,
     library: dict[str, dict[str, Any]] | None,
     results: dict[str, list[dict[str, Any]]],
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], frozenset[str]]:
     """Validate an emitted subgraph, resolve it, and register its nodes."""
-    plan = SubgraphPlan(ops=expand_routers(plan.ops), export=plan.export)
+    ops, cleared = expand_routers(plan.ops)
     validate_emitted_subgraph(
-        plan.ops,
+        ops,
         node_registry,
         max_nodes,
         library,
         export=plan.export,
         results=results,
     )
-    resolved = resolve_subgraph(plan.ops, library)
+    resolved = resolve_subgraph(ops, library)
     for op in resolved:
         node_registry[op["id"]] = op
-    return resolved
+    return resolved, cleared
 
 
 async def _run_dynamic_job(
@@ -2187,6 +2209,7 @@ async def _run_dynamic_job(
         round_index = 0
         current_subgraph: list[dict[str, Any]] = []
         current_export: list[str] = []
+        current_cleared: frozenset[str] = frozenset()
         api = spec.driver.api
         include_proposer = api is None
         while round_index < max_rounds:
@@ -2218,7 +2241,7 @@ async def _run_dynamic_job(
                     if isinstance(plan, StopPlan):
                         stopped_by = STOP
                         break
-                    current_subgraph = _admit_subgraph(
+                    current_subgraph, current_cleared = _admit_subgraph(
                         plan, node_registry, max_nodes, spec.library, all_results
                     )
                     current_export = plan.export
@@ -2259,6 +2282,7 @@ async def _run_dynamic_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
                     rows=len(symbols),
+                    cleared_ids=current_cleared,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2286,6 +2310,7 @@ async def _run_dynamic_job(
                     optimizer_type=optimizer_type,
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
+                    cleared_ids=round_build.cleared_native_ids,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:
@@ -2413,7 +2438,7 @@ async def _run_dynamic_job(
                 if isinstance(plan, StopPlan):
                     stopped_by = STOP
                     break
-                current_subgraph = _admit_subgraph(
+                current_subgraph, current_cleared = _admit_subgraph(
                     plan, node_registry, max_nodes, spec.library, all_results
                 )
                 current_export = plan.export
@@ -2547,7 +2572,7 @@ async def _run_template_job(
                 if template_round.stopped(all_results):
                     plans.append({"next": STOP, "source": "template"})
                     break
-                current_subgraph = _admit_subgraph(
+                current_subgraph, current_cleared = _admit_subgraph(
                     template_round.plan,
                     node_registry,
                     max_nodes,
@@ -2577,6 +2602,7 @@ async def _run_template_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=False,
                     rows=1,
+                    cleared_ids=current_cleared,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2605,6 +2631,7 @@ async def _run_template_job(
                     hardware_requirements=hardware_requirements,
                     job_timeout=spec.driver.job_timeout,
                     one_slice=True,
+                    cleared_ids=round_build.cleared_native_ids,
                 )
             except TimeoutError as exc:
                 async with jobs_lock:

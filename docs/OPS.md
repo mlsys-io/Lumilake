@@ -278,7 +278,8 @@ outputs:
 | `expand` | once per row | the row's values | a list | one per element, in input order; an empty list drops the row |
 | `reduce` | once per group | the group's row tuples, in input order | one value | one per group, in order of first appearance |
 
-- `reduce` groups rows by the value at its required `by` dotted path, compared as JSON text (`1` and `"1"` are different keys); `by` is accepted only in reduce mode. A row missing its `by` path, or an expand call that returns something other than a list, fails the job naming the op.
+- `reduce` groups rows by the value at its required `by` dotted path into the first input's value, compared as JSON text (`1` and `"1"` are different keys); `by` is accepted only in reduce mode. A row missing its `by` path fails the job naming the op and the row; an expand call that returns something other than a list fails naming the op.
+- Each `expand` item carries its parent's input-row index under `parent` and its own position under `child`, so a downstream op can tell which parent an item came from.
 - `expand` and `reduce` decode each column value once before the call: JSON text is parsed and a serialized table becomes its row dicts.
 - In `row` and `aligned` mode every multi-row input must carry the same number of rows; submit refuses unequal counts. A one-row input broadcasts to every row.
 - An `aligned` function that returns a list of the wrong length fails the task.
@@ -290,6 +291,35 @@ outputs:
 - Only these modes can be a driver template's `stop_when_empty` export, since only their output reads as an empty list.
 - An `LLMCompletionOp` prompt, `EmbeddingOp` content or `ImageGenerationOp` content whose list column binds one directly runs once per element and yields one whole-list value; an `aggregate_table` chat answers once per run as usual. A per-element node two or more hops below is not folded, and its several values fail the slice merge.
 - A list-mode function that reads a local row-wise `LLMChatOp` receives one value per input row.
+
+#### Failed records in expand and reduce
+
+An expand parent whose row carries a [failed record](#failed-records) skips the function and emits one item with that marker at `child: 0`. `on_empty` (expand only) sets what a parent that returns an empty list emits: `drop` (the default) emits nothing, and `fail` emits one item with the marker `{"_fail": {"op": "<op id>", "reason": "empty expansion"}}` at `child: 0`. An expand with `on_empty: fail` is a marker source, which no model op may read.
+
+`on_fail` (reduce only) sets what a group holding a failed record emits: `fail_group` (the default) emits the group's first marker, and `drop_failed` drops the failed rows before the call, so a group that loses every row emits `{"_fail": {"op": "<op id>", "reason": "empty group"}}`. A row's key is read before its other fields, so a marked row whose key reads joins its group; one whose key cannot be read forms its own group.
+
+```yaml
+ops:
+  - id: "SplitKeywords"
+    op: LambdaOp
+    inputs: [Keywords]
+    mode: expand
+    on_empty: fail
+    fn_name: split
+    code: |
+      def split(row):
+          return [k for k in row[0].split(",") if k.strip()]
+  - id: "TopThree"
+    op: LambdaOp
+    inputs: [Scores]
+    mode: reduce
+    by: patient_id
+    on_fail: drop_failed
+    fn_name: top_three
+    code: |
+      def top_three(rows):
+          return sorted(rows, key=lambda r: -r[0]["score"])[:3]
+```
 
 #### Where the function runs
 
@@ -325,22 +355,61 @@ When a job's input slices are coalesced into one workflow, the task runs their r
 
 ### RouterOp
 
-`RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains` or `equals`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows.
+`RouterOp` partitions one source op's rows into named branches, one ordinary node per branch named `<id>.<branch>` that a consumer lists in `inputs:`. The first rule that matches wins; `match` is `contains`, `equals` or `empty`, optional `path` selects the field tested, and `default_branch` keeps unmatched rows. `error_branch: true` adds an `error` branch that receives the [failed records](#failed-records); every other branch skips them. Each branch is a list-mode `LambdaOp`, so a `path` walks its decoded row.
+
+`match: empty` takes no `value` and matches `null`, `""`, `[]` or `{}`.
 
 ```yaml
 ops:
   - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
+     error_branch: true,
      rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
              {branch: test, match: contains, value: "REQUEST TEST"}]}
+  - {id: split, op: RouterOp, inputs: [feedback], path: feedback_question,
+     default_branch: ret, rules: [{branch: no_ret, match: empty}]}
 ```
 
 ### JoinOp
 
-`JoinOp` merges row columns by `by`, a field path. `how: left` (the default) keeps the first input's rows and their order, `how: inner` keeps the keys every input carries, and `how: full` also appends a key only a later input carries, in first-seen order, with the fields that input lacks left out. `how: inner` and `how: full` set the join's own row count, so such a join, or a step below one, cannot be split across input slices; submit refuses an `input_batch_size` that would and names the output. `require_match: true` fails the job unless every input carries the same keys. An `attach` field adds a per-row node's values to each row (a rowwise LLM, embedding, fetch or classification op, a row or aligned `LambdaOp`, another `JoinOp`, or a chain of these), also in `inputs:`, under any `how`. A duplicate key or a misaligned attach fails the job.
+`JoinOp` merges row columns back by a key. A row column is any op with a runtime node, or a workflow input or `DataOp`, whose literal values are the column's rows. `how: left` (the default) keeps the first input's rows and their order, `how: inner` keeps only the keys every input carries, and `how: full` also appends a key only a later input carries, in first-seen order, with the fields it lacks left out. `how: inner` and `how: full` set the join's own row count, so such a join, or a step below one, cannot be split across input slices; submit refuses an `input_batch_size` that would and names the output. `require_match: true` fails the job unless every input carries the same keys. Each `attach` field joins one node's per-row output to the row it was computed from, under any `how`, and the node is resolved at submit, so no user code positions values. An attach target must be 1:1 over rows: a rowwise `LLMChatOp` (including one with a `rowwise_messages` column), a `LLMCompletionOp` or `EmbeddingOp` whose columns read one node, a row-mode or aligned `LambdaOp` over one non-broadcast input, an `HttpFetchOp`, a `ClassificationOp`, another `JoinOp`, or a chain of these that reaches one. A `FormatOp` counts only as a hop on such a chain: it has no runtime node of its own, so a format op named directly as an attach target is refused at submit, naming the op, the attach field and that reason. List every attach target in `inputs:` too, so its producer is built before the join. Router branches are disjoint, so a case lands in one branch and the other branch's fields are left out of the output row.
+
+`by` is one dotted field path, or a list of them for a composite key; a live row whose key path is missing or null fails the job.
+
+A first-input row carrying a failed record makes its output row that marker, and a marked further or attach row turns its key's output row into its marker; a marked further-input row whose key cannot be read fails the job.
+
+`on_missing` governs an attach source only and defaults to `null_fill`: `null_fill` leaves the field out when the source lacks the row's key, and `fail_row` marks that row as failed instead. A duplicate key, an unpaired attach column and a field two inputs disagree on fail the job under either policy.
 
 ```yaml
-- {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, how: inner,
-   require_match: true, attach: {reply: Reply}}
+ops:
+  - {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, how: inner,
+     require_match: true, attach: {reply: Reply}, on_missing: null_fill}
 ```
+
+### ParseOp
+
+`ParseOp` parses one input column, one record per row, read at `value.items.output`.
+
+```yaml
+- {id: Verdict, op: ParseOp, inputs: [Answer], format: json, require: [eligibility], on_fail: marker}
+```
+
+`format: json` strips one fenced block and any prose before the first `{` or `[`, then decodes the JSON, which must end the reply; `require` names top-level keys it must carry. `format: regex` returns the named groups of `pattern`'s first match; `flags` is any of `i`, `s`, `m`. Invalid fields are refused at submit. A row the parse cannot handle becomes a failed record, or keeps its text under `on_fail: raw`, so a downstream op must accept both shapes.
+
+### Failed records
+
+A record that fails becomes a marker instead of an error, so one bad row costs neither its siblings nor the job. A failed record's value is the object `{"_fail": {"op": "<op id>", "reason": "<text>"}}` and nothing else; an ok record has no `_fail` key. A failed record keeps its position, so parallel columns stay aligned.
+
+- `ParseOp` emits the marker for a row it cannot parse; the reason names what went wrong, such as `no JSON object`, `missing key 'eligibility'` or `pattern did not match`.
+- A row `LambdaOp` does not call the function for a row with a marked cell; it emits the first such marker for that row. An aligned `LambdaOp` calls the function on the live columns and merges the marked rows back by position. A list `LambdaOp` receives markers as ordinary values, so a whole-list function sees every row and passes them on.
+- An expand `LambdaOp` emits one tombstone item carrying the marker for a marked parent, and a parent that expands to no children emits its own marker under `on_empty: fail`.
+- A reduce `LambdaOp` reads each row's key first: a marked row whose key reads joins its group, and `on_fail` decides that group. A row whose key cannot be read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
+- A `JoinOp` keeps one output row per first-input row, in order: a marked first-input row is that row's marker, and a marked further input or attach row turns its key's output into the marker. No other row is affected. Its `on_missing: fail_row` marks the rows a further input lacks, and an attach length mismatch fails the job under either policy. See [`JoinOp`](#joinop).
+- Downstream reads of an expand or join output see the marker under each item's `output`, so a row Lambda or a parse step treats such an item as a marked row.
+- A user function that raises fails the task; only a parse or a pass-through produces a marker.
+- `RouterOp` sends failed rows to an `error` branch when the op declares `error_branch: true`; otherwise a failed row goes to no branch. See [`RouterOp`](#routerop).
+- Outputs archive the marker, so a job result shows which records failed and why.
+- A source carries markers when a `ParseOp` or an input whose value is a marker reaches it through any op except a router's rule or default branch, which drop them, or when an expand `LambdaOp` declares `on_empty: fail`. A model op (`LLMChatOp` with `rowwise_template`, `LLMVisionOp`, `LLMCompletionOp`, `EmbeddingOp`, or a rowwise seed or aggregate table) may not read such a source: the job is refused at submit when a rowwise column, aggregate table, rowwise seed or embedding content reads one. Read a router's rule or default branch instead, so failed records never reach the model. An earlier round's output is an input like any other, so a reference that binds a marker follows the same rule.
+
+`_fail` is reserved: a user function that returns an object carrying it fails the task, so a user value is never mistaken for a marker.
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.

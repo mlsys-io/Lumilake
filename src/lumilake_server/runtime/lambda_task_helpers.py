@@ -2,8 +2,111 @@
 
 import json
 import os
+import re
 from collections.abc import Callable
 from typing import Any
+
+FAIL_KEY = "_fail"
+_FENCE = re.compile(r"```[\w-]*\n(.*?)\n?```", re.DOTALL)
+
+
+def fail_marker(op: str, reason: str) -> dict[str, Any]:
+    """The value of a failed record: the op that failed and why."""
+    return {FAIL_KEY: {"op": op, "reason": reason}}
+
+
+def _is_marker(value: Any) -> bool:
+    """Whether a decoded value is a marker, an object whose only key is ``_fail``."""
+    return isinstance(value, dict) and list(value) == [FAIL_KEY]
+
+
+def failure_of(value: Any) -> dict[str, Any] | None:
+    """The marker a value carries, or ``None`` when its record is ok."""
+    if _is_marker(value):
+        return value
+    if isinstance(value, str) and FAIL_KEY in value:
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            return None
+        if _is_marker(decoded):
+            return decoded
+    return None
+
+
+def carried_marker(row: tuple[Any, ...] | list[Any]) -> dict[str, Any] | None:
+    """The first marker a row's cells or object fields carry, or ``None``."""
+    for cell in row:
+        marked = failure_of(cell)
+        if marked is not None:
+            return marked
+        if isinstance(cell, dict):
+            nested = next(
+                (
+                    marker
+                    for marker in map(failure_of, cell.values())
+                    if marker is not None
+                ),
+                None,
+            )
+            if nested is not None:
+                return nested
+    return None
+
+
+def reject_reserved_key(
+    value: Any, op: str, row: int | None = None, originals: tuple[Any, ...] = ()
+) -> None:
+    """Refuse a user value carrying the reserved ``_fail`` key."""
+    if isinstance(value, dict) and FAIL_KEY in value:
+        if any(value is original or value == original for original in originals):
+            return
+        where = f" for row {row}" if row is not None else ""
+        raise ValueError(
+            f"{op!r}{where} returned an object with the reserved {FAIL_KEY!r} key;"
+            " failed records carry that key and user functions must not"
+        )
+
+
+def parse_row(spec: dict[str, Any], text: Any) -> Any:
+    """Parse one record's text by a ParseOp spec, raising ``ValueError`` on failure."""
+    if spec["format"] == "regex":
+        mask = 0
+        for name, flag in (("i", re.IGNORECASE), ("s", re.DOTALL), ("m", re.MULTILINE)):
+            if name in (spec.get("flags") or ""):
+                mask |= flag
+        match = re.compile(spec["pattern"] or "", mask).search(str(text))
+        if match is None:
+            raise ValueError("pattern did not match")
+        return match.groupdict()
+    if not isinstance(text, str):
+        raise ValueError(f"input {text!r} is not text")
+    fenced = _FENCE.search(text)
+    body = fenced.group(1) if fenced else text
+    value = _decode_record(body)
+    require = spec.get("require")
+    if require:
+        if not isinstance(value, dict):
+            raise ValueError("require needs a JSON object, not a list")
+        missing = next((key for key in require if key not in value), None)
+        if missing is not None:
+            raise ValueError(f"missing key '{missing}'")
+    return value
+
+
+def _decode_record(body: str) -> Any:
+    """Decode the JSON record after any prose, which must end the reply."""
+    decoder = json.JSONDecoder(strict=False)
+    start = next((index for index, char in enumerate(body) if char in "{["), None)
+    if start is None:
+        raise ValueError("no JSON object")
+    try:
+        value, end = decoder.raw_decode(body, start)
+    except ValueError:
+        raise ValueError("no JSON object") from None
+    if any(char in "{[" for char in body[end:]):
+        raise ValueError("no JSON object")
+    return value
 
 
 def _text(value: Any) -> str:
@@ -199,7 +302,7 @@ def _column(
                 else:
                     flat.append(text(out))
         return flat
-    return [
-        text(i["output"]) if isinstance(i, dict) and "output" in i else text(i)
-        for i in items
+    output = [
+        i["output"] if isinstance(i, dict) and "output" in i else i for i in items
     ]
+    return [text(v) if failure_of(v) is None else v for v in output]

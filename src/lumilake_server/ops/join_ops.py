@@ -1,7 +1,7 @@
 """``JoinOp``: merge keyed row columns and 1:1 outputs onto the rows they came from."""
 
 import re
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -31,6 +31,7 @@ class JoinSpec(BaseModel):
     how: JoinHow = JoinHow.LEFT
     require_match: StrictBool = False
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
+    on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
     @field_validator("by", mode="before")
     @classmethod
@@ -107,6 +108,10 @@ class JoinOp(Op):
         return self.spec.require_match
 
     @property
+    def on_missing(self) -> Literal["null_fill", "fail_row"]:
+        return self.spec.on_missing
+
+    @property
     def columns(self) -> list[Op]:
         """The row columns, in declaration order."""
         return [self.inputs[index] for index in self.column_indices]
@@ -137,11 +142,12 @@ class JoinOp(Op):
             },
             "how": self.how,
             "require_match": self.require_match,
+            "on_missing": self.on_missing,
         }
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:
-        spec = build_join_spec(data, f"JoinOp '{data.get('_id', '?')}'")
+        spec = build_join_spec(data, f"JoinOp '{data['_id']}'")
         joined = [_built_before(other_ops, name, "input") for name in data["_inputs"]]
         attach = {
             field: _built_before(other_ops, op_id, f"attach field {field!r}")
