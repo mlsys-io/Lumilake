@@ -1,6 +1,10 @@
 """Submitted LambdaOp code is parsed by the server, never executed by it."""
 
+import builtins
+import inspect
 import json
+import math
+import re
 from typing import Any
 
 import pytest
@@ -10,6 +14,7 @@ from lumilake_server.graphs import Graph
 from lumilake_server.ops import LambdaOp, as_output
 from lumilake_server.ops.util_ops import SubmittedFunction
 from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime.lambda_task_helpers import decode
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.utils import lambda_runtime
 
@@ -128,52 +133,19 @@ def test_inline_source_keeps_the_flowmesh_safe_eval_grammar() -> None:
         )
     with pytest.raises(ValueError, match="imports 'os'"):
         lambda_runtime.validate_inline_source("import os\ndef f(a):\n    return a", "f")
-    with pytest.raises(ValueError, match="first name its code binds"):
-        lambda_runtime.validate_inline_source("X = 1\ndef f(a):\n    return a", "f")
-    with pytest.raises(ValueError, match="first name its code binds"):
+    with pytest.raises(ValueError, match="annotates a top-level assignment"):
         lambda_runtime.validate_inline_source(
-            "def g(a):\n    return a\ndef f(a):\n    return a", "f"
+            "PROMPT: str = 'x'\ndef f(a):\n    return a", "f"
         )
+    with pytest.raises(ValueError, match="references 'Message'"):
+        lambda_runtime.validate_inline_source("def f(a: Message):\n    return a", "f")
 
 
-@pytest.mark.parametrize(
-    "code",
-    [
-        "for i in range(1):\n    pass\ndef main(x):\n    return 'a'",
-        "if True:\n    K = 1\ndef main(x):\n    return 'a'",
-        "try:\n    K = 1\nexcept:\n    pass\ndef main(x):\n    return 'a'",
-        "with str() as f:\n    pass\ndef main(x):\n    return 'a'",
-    ],
-)
-def test_inline_source_rejects_a_non_def_first_binding(code: str) -> None:
-    """A name bound first by a top-level ``for``/``if``/``try``/``with`` etc.
-    is what the FlowMesh worker would call, so it must be rejected at submit
-    just like any other non-``def`` first statement."""
-    with pytest.raises(ValueError, match="first name its code binds"):
+@pytest.mark.parametrize("name", sorted(lambda_runtime._inline_names()))
+def test_inline_source_rejects_a_name_the_wrapper_binds(name: str) -> None:
+    code = f"def main(x):\n    return x\n{name} = 1"
+    with pytest.raises(ValueError, match="generated wrapper that already binds"):
         lambda_runtime.validate_inline_source(code, "main")
-
-
-def test_inline_source_refuses_any_statement_after_the_def() -> None:
-    """A trailing statement with no binding is refused by the statement kind."""
-    with pytest.raises(ValueError, match="module-level assert statement"):
-        lambda_runtime.validate_inline_source(
-            "def main(x):\n    return x\n\nassert True", "main"
-        )
-
-
-def test_inline_source_allows_only_a_docstring_before_the_def() -> None:
-    """A module docstring before ``def main`` is fine; any other statement
-    before it is not."""
-    assert (
-        lambda_runtime.validate_inline_source(
-            '"""A docstring."""\ndef main(x):\n    return x', "main"
-        )
-        == "main"
-    )
-    with pytest.raises(ValueError, match="first name its code binds"):
-        lambda_runtime.validate_inline_source(
-            "X = 1\ndef main(x):\n    return x", "main"
-        )
 
 
 @pytest.mark.parametrize(
@@ -561,12 +533,62 @@ def test_yaml_standalone_lambda_with_imports_compiles() -> None:
     assert "import math" in node.data_spec.model_dump(exclude_none=True)["code"]
 
 
-def test_yaml_lambda_feeding_an_llm_rejects_imports_at_submit() -> None:
-    payload = _CHAIN.replace(
-        "      def shout(inputs):\n",
-        "      def shout(inputs):\n          import math\n",
-    )
-    with pytest.raises(
-        ValueError, match="Invalid LambdaOp '[^']*Shout[^']*': it imports 'math'"
-    ):
-        _build(payload)
+def _sdk_imports(inputs: tuple[float, ...]) -> str:
+    import math
+
+    return str(math.sqrt(inputs[0]))
+
+
+def _run_inlined(body: str, row: str) -> str:
+    shout = "      def shout(inputs):\n          (greeting,) = inputs\n"
+    payload = _CHAIN.replace('Name: ["world"]', f"Name: [{json.dumps(row)}]")
+    body = "\n".join("      " + s for s in body.splitlines())
+    payload = payload.replace(shout + "          return greeting.upper()", body)
+    nodes = _build(payload).nodes.values()
+    reply = next(n for n in nodes if n.task_type == "inference")
+    steps = reply.data_spec.model_dump(exclude_none=True)["template"]["options"][
+        "format"
+    ]["steps"]
+    function = next(s["function"] for s in steps if s.get("function"))
+    local: dict[str, Any] = {}
+    safe = {n: getattr(builtins, n) for n in lambda_runtime._SAFE_BUILTIN_BASE_NAMES}
+    exec(function, {"__builtins__": safe, "json": json, "re": re, "math": math}, local)
+    assert list(local) == ["adapt"]
+    assert isinstance(result := local["adapt"]((row,)), str)
+    return result
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ('def shout(a):\n    return f"""Q\n  {a[0][\'name\']}\nA:"""', "Q\n  q\nA:"),
+        ("lambda a: a[0]['name']  # first", "q"),
+        ('def shout(a):\n    return {"k": a[0]}', '{"k": {"name": "q"}}'),
+        ("lambda a: a[0].upper()", "HI"),
+    ],
+)
+def test_yaml_inlined_step_runs_the_op_wrapped(body: str, expected: str) -> None:
+    row = "hi" if expected == "HI" else '{"name": "q"}'
+    assert _run_inlined(body, row) == expected
+
+
+def test_an_sdk_callable_is_validated_before_wrapping() -> None:
+    sdk = lambda inputs: str(inputs[0]).lower()  # noqa: E731
+    assert lambda_runtime.callable_source(sdk, "f(lambda a: a)") == "lambda a: a"
+    code = lambda_runtime.callable_source(_sdk_imports, inspect.getsource(_sdk_imports))
+    with pytest.raises(ValueError, match="imports 'math'"):
+        lambda_runtime.validate_inline_source(code, _sdk_imports.__name__)
+
+
+_TABLE = json.dumps({"name": {"0": "a", "2": "b", "10": "c"}, "tag": "x"})
+_VALUES = ['{"a": 1}', "plain {x", "1", "[1, 2]", {"table": {"df": _TABLE}}]
+_VALUES += [{"table": json.dumps({"df": _TABLE})}, {"df": "not json"}]
+_VALUES += [{"df": "[1]"}, {"df": _TABLE}]
+_VALUES += [{"table": "not json"}, {"df": json.dumps({"n": {"a": 1, "b": 2}})}]
+
+
+@pytest.mark.parametrize("value", _VALUES)
+def test_inline_wrapper_and_shared_decoder_agree(value: Any) -> None:
+    namespace: dict[str, Any] = {"json": json}
+    exec(lambda_runtime.DECODER_SOURCE, namespace)
+    assert namespace["_decode"](value) == decode(value)

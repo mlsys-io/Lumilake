@@ -105,6 +105,9 @@ from lumilake_server.hooks.security import (
 from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.ops.util_ops import CLEARS_KEY
 from lumilake_server.parser import parse_n8n_payload, parse_yaml_payload
+from lumilake_server.parser.common import read_workflow_seed
+from lumilake_server.parser.keyed_seed import rewrite_native_keys
+from lumilake_server.parser.yaml_parser import check_keyed_seed_duplicates
 from lumilake_server.runtime.data_profile_utils import DataProfileSource
 from lumilake_server.runtime.flowmesh_client import flowmesh_for, flowmesh_for_token
 from lumilake_server.runtime.optimizer import (
@@ -408,12 +411,29 @@ def _render_dynamic_round0(
             gpu_memory_utilization=spec.driver.gpu_memory_utilization,
             dtype=spec.driver.dtype,
             extra_engine_kwargs=spec.driver.extra_engine_kwargs,
+            job_seed=spec.seed,
+            symbols=[],
         )
         return round_build.graph, declared_output_location
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid dynamic workflow spec for index: {exc}",
+        ) from exc
+
+
+def _refuse_repeated_seed_keys(
+    workflow_format: str, workflow_payload: Any, inputs: dict[str, list[str]]
+) -> None:
+    """Refuse a repeated seed key before slicing splits the input set."""
+    if workflow_format != "yaml" or not isinstance(workflow_payload, dict):
+        return
+    try:
+        check_keyed_seed_duplicates(workflow_payload, inputs)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
         ) from exc
 
 
@@ -601,9 +621,7 @@ def _dispatch_workflow_to_graph_specs(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"workflow payload at index {idx} must be an object",
         )
-    graph_payload = (
-        workflow_payload["graph"] if "graph" in workflow_payload else workflow_payload
-    )
+    graph_payload = _native_graph_ops(workflow_payload)
     for op_id, op in graph_payload.items():
         if not isinstance(op, dict) or CLEARS_KEY not in op:
             continue
@@ -616,10 +634,53 @@ def _dispatch_workflow_to_graph_specs(
                     " workflow field"
                 ),
             )
+    job_seed = _native_job_seed(workflow_payload)
+    try:
+        graph = rewrite_native_keys(graph_payload, job_seed=job_seed)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     graph_specs[graph_name] = {
-        "graph": graph_payload,
+        "graph": graph,
         "inputs": batch_inputs,
+        "seed": job_seed,
     }
+
+
+def _native_graph_ops(workflow_payload: dict[str, Any]) -> dict[str, Any]:
+    """A native workflow's ops, without a bare graph's workflow-level ``seed``."""
+    if "graph" in workflow_payload:
+        return workflow_payload["graph"]
+    return {op_id: op for op_id, op in workflow_payload.items() if op_id != "seed"}
+
+
+def _native_job_seed(workflow_payload: dict[str, Any]) -> int:
+    """A native payload's job seed."""
+    try:
+        return read_workflow_seed(workflow_payload, "workflow")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+def _submitted_job_seed(
+    graph_specs: dict[str, dict[str, Any]], dynamic_spec: DynamicSpec | None
+) -> int:
+    """The job seed to record: the dynamic spec's, else the workflows'."""
+    if dynamic_spec is not None:
+        return dynamic_spec.seed
+    seeds = {spec["seed"] for spec in graph_specs.values()}
+    if len(seeds) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="one job carries workflows with different seeds; submit each seed as"
+            " its own job",
+        )
+    return seeds.pop() if seeds else 0
 
 
 @dataclass
@@ -631,6 +692,7 @@ class JobRecord:
     output_location: dict[str, IOLocation]
     org_id: str = "default"
     user_id: str = "local"
+    seed: int = 0
     started_at: str | None = None
     finished_at: str | None = None
     optimization_seconds: float | None = None
@@ -2335,7 +2397,9 @@ async def _run_dynamic_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=include_proposer,
                     rows=len(symbols),
+                    job_seed=spec.seed,
                     cleared_ids=current_cleared,
+                    symbols=symbols,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -2657,7 +2721,10 @@ async def _run_template_job(
                     extra_engine_kwargs=spec.driver.extra_engine_kwargs,
                     include_proposer=False,
                     rows=1,
+                    job_seed=spec.seed,
+                    template_ids=template_round.plan.template_ids,
                     cleared_ids=current_cleared,
+                    symbols=symbols,
                 )
             except (DriverProtocolError, ValueError) as exc:
                 async with jobs_lock:
@@ -3335,6 +3402,8 @@ async def preview_job(
         if is_dynamic:
             _validate_dynamic_submission({name: inputs})
 
+        _refuse_repeated_seed_keys(workflow_format, workflow_payload, inputs)
+
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
@@ -3713,6 +3782,8 @@ async def submit_job(
                 detail=str(exc),
             ) from exc
 
+        _refuse_repeated_seed_keys(workflow_format, workflow_payload, inputs)
+
         input_batch_size = entry.input_batch_size
         if input_batch_size is not None and input_batch_size <= 0:
             raise HTTPException(
@@ -3822,6 +3893,7 @@ async def submit_job(
         submitted_at=_now(),
         inputs=resolved_inputs,
         output_location=output_locations,
+        seed=_submitted_job_seed(graph_specs, dynamic_spec),
         org_id=principal.org_id,
         user_id=principal.external_id,
         progress=JobProgress(),

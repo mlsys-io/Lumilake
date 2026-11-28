@@ -4,8 +4,8 @@
 YAML construct, not a runtime op: :func:`expand_routers` rewrites it, before
 any graph is built, into one ordinary list-mode ``LambdaOp`` per branch named
 ``<id>.<branch>``, so a consumer lists ``route.test`` in ``inputs`` like any
-other node and reads exactly that branch's rows; the generated function
-carries its own row decoder and ``path`` walk.
+other node and reads exactly that branch's rows; the generated function reads
+its already-decoded values and walks its ``path``.
 """
 
 import re
@@ -36,26 +36,15 @@ _MARKER = f"""\
         return isinstance(row, dict) and list(row) == ["{FAIL_KEY}"]
 """
 
-_DECODER = """\
-    def rows_of(column):
-        rows = []
-        for item in column:
-            while True:
-                if isinstance(item, list) and len(item) == 1:
-                    item = item[0]
-                elif isinstance(item, str):
-                    item = json.loads(item)
-                elif isinstance(item, dict) and isinstance(item.get("rows"), list):
-                    item = item["rows"]
-                else:
-                    break
-            if isinstance(item, dict):
-                rows.append(item)
-            elif isinstance(item, list) and all(isinstance(row, dict) for row in item):
-                rows.extend(item)
-            else:
-                raise ValueError(LABEL + " expected a row list or object")
-        return rows
+_ROWS = """\
+    rows = []
+    for value in items[0] if items else []:
+        if isinstance(value, dict):
+            rows.append(value)
+        elif isinstance(value, list) and all(isinstance(r, dict) for r in value):
+            rows.extend(value)
+        else:
+            raise ValueError(LABEL + " expected a row list or object")
 """
 
 
@@ -168,10 +157,9 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
             "\n".join(
                 [
                     *header,
-                    _DECODER,
+                    _ROWS,
                     _MARKER,
-                    "    return [row for row in (rows_of(items[0]) if items else []) if"
-                    " marked(row)]",
+                    "    return [row for row in rows if marked(row)]",
                 ]
             )
             + "\n"
@@ -185,10 +173,10 @@ def branch_lambda_code(router: RouterSpec, branch: str) -> str:
         skip, keep = tests[:own], [tests[own]]
     lines = [
         *header,
-        _DECODER,
+        _ROWS,
         _MARKER,
         "    out = []",
-        "    for row in rows_of(items[0]) if items else []:",
+        "    for row in rows:",
         "        if marked(row):",
         "            continue",
     ]

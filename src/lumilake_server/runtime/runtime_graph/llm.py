@@ -40,6 +40,7 @@ from lumilake_server.ops.llm_ops import (
     LLMVisionOp,
 )
 from lumilake_server.ops.util_ops import RowLambdaFn, SubmittedFunction
+from lumilake_server.runtime import lambda_task_helpers
 from lumilake_server.runtime.flowmesh_client import (
     is_api_origin_trusted,
     resolve_api_credential,
@@ -697,7 +698,7 @@ class _LLMBuilder(_EmbeddingBuilder):
             dependencies.append(node_ref)
         data_spec.seeds = NodeRead(
             node=node_ref,
-            path=self._op_output(upstream).read(
+            path=self._op_output(upstream).read_value(
                 path, f"LLMChatOp {llm_op_id} rowwise_seed"
             ),
         )
@@ -1215,10 +1216,13 @@ class _LLMBuilder(_EmbeddingBuilder):
                     literal_args.append(value)
                 if can_evaluate:
                     label = f"lambda_{op.id}"
-                    # List-mode LambdaOps raise above, so this call is row-mode.
+                    # List-mode LambdaOps raise above, so this call is row-mode. A row
+                    # step decodes its values, so these literals are decoded here to
+                    # match.
                     row_fn = cast(RowLambdaFn, op.fn)
+                    row = tuple(lambda_task_helpers.decode(v) for v in literal_args)
                     columns[label] = Column(
-                        data=ListData(items=[str(row_fn(tuple(literal_args)))])
+                        data=ListData(items=[lambda_task_helpers.text(row_fn(row))])
                     )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
                 else:
@@ -1247,19 +1251,30 @@ class _LLMBuilder(_EmbeddingBuilder):
                         fn_arg if len(fn_arg) > 1 else fn_arg[0]["content"]
                         for fn_arg in fn_args
                     ]
-                    if isinstance(op.fn, SubmittedFunction):
-                        # Inlined steps run in the FlowMesh worker's safe_eval
-                        # namespace, stricter than a standalone python task.
-                        try:
-                            lambda_runtime.validate_inline_source(
-                                op.code, op.fn.__name__
-                            )
-                        except ValueError as exc:
-                            raise ValueError(
-                                f"Invalid LambdaOp '{op.id}': {exc}"
-                            ) from exc
+                    code = lambda_runtime.callable_source(op.fn, op.code)
+                    if not code:
+                        raise ValueError(
+                            f"LambdaOp '{op.id}': the source of its function cannot be"
+                            " read, so it cannot be inlined into the LLM that consumes"
+                            " it. Define it with a top-level def and pass its code, or"
+                            " make it a workflow output so it runs as its own python"
+                            " task"
+                        )
+                    # Inlined steps run in the FlowMesh worker's safe_eval namespace,
+                    # which is stricter than a standalone python task.
+                    try:
+                        lambda_runtime.validate_inline_source(
+                            code,
+                            None if op.fn.__name__ == "<lambda>" else op.fn.__name__,
+                        )
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid LambdaOp '{op.id}': {exc}") from exc
                     label = f"lambda_{op.id}"
-                    steps[label] = (op.code, fn_args_serialized, True)
+                    steps[label] = (
+                        lambda_runtime.inline_lambda_source(code, op.fn.__name__),
+                        fn_args_serialized,
+                        True,
+                    )
                     ancestor_buffer[op.id] = [(Roles.USER, label)]
 
             elif isinstance(op, ParseOp):

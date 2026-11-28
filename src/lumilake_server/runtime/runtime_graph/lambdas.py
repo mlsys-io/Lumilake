@@ -91,8 +91,41 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 dependencies.append(dep)
 
         row_count = self._python_step_row_count(op.id, row_counts, combines_rows=True)
-        nodes.append(self._python_step(op, plan, row_count, dependencies))
+        nodes.append(self._python_step(op, plan, row_count, dependencies, ctx))
         return nodes
+
+    def _tag_seed_entry(
+        self,
+        op: LambdaOp,
+        plan: python_step.ColumnPlan,
+        ctx: LoweringContext,
+        dependencies: list[str],
+    ) -> python_step.ColumnPlan:
+        """Tag the plan entry a seeded Lambda reads its key column from."""
+        seed = op.seed
+        if seed is None:
+            return plan
+        seed_node = seed.node
+        if seed_node not in ctx.graph_dict:
+            raise ValueError(
+                f"LambdaOp '{op.id}' seed references unknown node '{seed_node}'"
+            )
+        path = seed.path
+        for index, entry in enumerate(plan):
+            if entry.node != seed_node:
+                continue
+            seeded = entry.model_copy(update={"role": "seed"})
+            if path and path != "items.output":
+                seeded.path = item_relative_path(path)
+            break
+        else:
+            raise ValueError(
+                f"LambdaOp '{op.id}' seed node '{seed_node}' is not one of its inputs;"
+                " add it there so the step reads its column"
+            )
+        if seed_node not in dependencies:
+            dependencies.append(seed_node)
+        return [*plan[:index], seeded, *plan[index + 1 :]]
 
     def _python_step(
         self,
@@ -100,12 +133,13 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         plan: list[ColumnPlanEntry],
         row_count: int | None,
         dependencies: list[str],
+        ctx: LoweringContext,
     ) -> RuntimeOp:
         """Build the python task for one LambdaOp from its resolved plan."""
         data_spec = PythonData(
             code=op.code,
             fn_name=op.fn.__name__,
-            plan=plan,
+            plan=self._tag_seed_entry(op, plan, ctx, dependencies),
             timeout_s=(
                 python_step.DEFAULT_TIMEOUT_SECONDS
                 if op.timeout_s is None

@@ -109,8 +109,23 @@ def _decode_record(body: str) -> Any:
     return value
 
 
-def _text(value: Any) -> str:
+def text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value)
+
+
+def _raw_seed(value: Any, op_id: str, index: int) -> int:
+    """One row's seed: an integer or JSON integer text, refused otherwise."""
+    decoded = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            decoded = value
+    if isinstance(decoded, bool) or not isinstance(decoded, int):
+        raise ValueError(
+            f"{op_id}: seed row {index} is {value!r}; a seed must be an integer"
+        )
+    return decoded
 
 
 def _walk_path(value: Any, parts: list[str], where: str) -> Any:
@@ -231,14 +246,14 @@ def _serialized_table(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _decode(value: Any) -> Any:
-    """Decode one column value: JSON text is parsed, a table becomes its row dicts."""
+def decode(value: Any) -> Any:
+    """Decode a value before the function sees it: JSON parses, tables become rows."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
         except ValueError:
             return value
-        return _decode(decoded) if isinstance(decoded, (dict, list)) else value
+        return decode(decoded) if isinstance(decoded, (dict, list)) else value
     if isinstance(value, dict):
         table = _serialized_table(value)
         if table is None and "table" in value:
@@ -263,15 +278,15 @@ def _rows(
 
 
 def _column(
-    entry: dict[str, Any], inputs: dict[str, str], text: Callable[[Any], str]
-) -> list[str]:
+    entry: dict[str, Any], inputs: dict[str, str], read: Callable[[Any], Any]
+) -> list[Any]:
     if entry["kind"] == "literal":
         if "file" in entry:
             with open(entry["file"], encoding="utf-8") as fh:
                 values = json.load(fh)
         else:
             values = entry["values"]
-        return [text(v) for v in values]
+        return [read(v) for v in values]
     with open(os.path.join(inputs[entry["node"]], "results.json")) as fh:
         envelope = json.load(fh)
     result = envelope.get("result", envelope)
@@ -294,15 +309,15 @@ def _column(
         for i in items:
             if isinstance(i, dict) and "rows" in i:
                 for row in i["rows"]:
-                    flat.append(text(_row_content(row)))
+                    flat.append(read(_row_content(row)))
             else:
                 out = i["output"] if isinstance(i, dict) and "output" in i else i
                 if isinstance(out, list):
-                    flat.extend(text(v) for v in out)
+                    flat.extend(read(v) for v in out)
                 else:
-                    flat.append(text(out))
+                    flat.append(read(out))
         return flat
     output = [
         i["output"] if isinstance(i, dict) and "output" in i else i for i in items
     ]
-    return [text(v) if failure_of(v) is None else v for v in output]
+    return [read(v) if failure_of(v) is None else v for v in output]

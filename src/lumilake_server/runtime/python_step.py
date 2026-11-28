@@ -63,14 +63,15 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
-_decode = _RUNTIME._decode
+decode = _RUNTIME.decode
 _walk_path = _RUNTIME._walk_path
 _rows = _RUNTIME._rows
 failure_of = _RUNTIME.failure_of
 carried_marker = _RUNTIME.carried_marker
 reject_reserved_key = _RUNTIME.reject_reserved_key
+_raw_seed = _RUNTIME._raw_seed
 materialize = _RUNTIME.materialize
 
 _USER_CODE = {code!r}
@@ -87,7 +88,7 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
 failure_of = _RUNTIME.failure_of
 _NODE = {op_id!r}
@@ -99,7 +100,7 @@ _FLATTEN_MAIN = """\
 _TEMPLATE = {template!r}
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     grouped = [c for c, e in zip(columns, _PLAN) if e.get("grouped")]
     row_level = [c for c, e in zip(columns, _PLAN) if not e.get("grouped")]
     n = len(grouped[0])
@@ -139,7 +140,7 @@ def main(inputs):
                 else:
                     values[label] = col[i] if len(col) == n else col[0]
             prompt = _TEMPLATE.format_map(
-                {{k: _text(v) for k, v in values.items()}}
+                {{k: text(v) for k, v in values.items()}}
             )
             items.append({{"output": prompt, "row": i}})
     return {{"items": items}}
@@ -148,7 +149,7 @@ def main(inputs):
 _REGROUP_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     values = columns[0]
     rows = columns[1]
     groups = columns[2]
@@ -178,28 +179,48 @@ def main(inputs):
 _ROW_MAIN = """\
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    columns = [_column(entry, inputs, decode) for entry in data]
     n = max((len(c) for c in columns), default=1)
-    for entry, col in zip(_PLAN, columns):
+    for entry, col in zip(data, columns):
         if len(col) not in (1, n):
             raise ValueError(
                 "input %r has %d rows; expected 1 or %d"
                 % (entry.get("node", "literal"), len(col), n)
             )
     rows = [tuple(c[0] if len(c) == 1 else c[i] for c in columns) for i in range(n)]
+    cells = None
+    seeds = None
+    if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # A marked seed cell marks its row and is never read as a draw.
+        seeds = [
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
+        ]
+        if len(seeds) != n:
+            raise ValueError(
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), n)
+            )
     items = []
-    for row in rows:
+    for i, row in enumerate(rows):
         marked = next(
             (value for value in map(failure_of, row) if value is not None), None
         )
+        if marked is None and seeds is not None and seeds[i] is None:
+            marked = failure_of(cells[i])
         if marked is not None:
             # A marked row keeps its position and passes the marker on.
             items.append({{"output": marked, "value": marked}})
             continue
-        value = fn(row)
+        value = fn(row) if seeds is None else fn(row, seeds[i])
         reject_reserved_key(value, _NODE)
-        items.append({{"output": _text(value), "value": value}})
+        items.append({{"output": text(value), "value": value}})
     return {{"items": items}}
 """
 
@@ -207,7 +228,7 @@ _LIST_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     values = fn(tuple(columns))
     # A received marker may come back decoded, so it counts as received too.
     received = tuple(value for column in columns for value in column)
@@ -225,7 +246,7 @@ _ALIGNED_MAIN = """\
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [_column(entry, inputs, lambda v: v) for entry in _PLAN]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     n = max((len(c) for c in columns), default=0)
     for entry, col in zip(_PLAN, columns):
         if len(col) not in (1, n):
@@ -268,19 +289,37 @@ _EXPAND_MAIN = """\
 _ON_EMPTY = {on_empty!r}
 
 def main(inputs):
-    fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [
-        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
-        for entry in _PLAN
-    ]
+    (seed_entry,) = [e for e in _PLAN if e.get("role") == "seed"] or [None]
+    fn = materialize(_USER_CODE, _FN_NAME, 1 if seed_entry is None else 2)
+    data = [entry for entry in _PLAN if entry.get("role") != "seed"]
+    columns = [_column(entry, inputs, decode) for entry in data]
+    rows = _rows(columns, data, {op_id!r})
+    cells = None
+    seeds = None
+    if seed_entry is not None:
+        cells = _column(seed_entry, inputs, text)
+        # A marked seed cell marks its row and is never read as a draw.
+        seeds = [
+            None
+            if failure_of(cells[i]) is not None
+            else _raw_seed(cells[i], {op_id!r}, i)
+            for i in range(len(cells))
+        ]
+        if len(seeds) != len(rows):
+            raise ValueError(
+                "%s: seed column has %d rows; expected one per row, so %d"
+                % ({op_id!r}, len(seeds), len(rows))
+            )
     items = []
-    for index, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
+    for index, row in enumerate(rows):
         marked = carried_marker(row)
+        if marked is None and seeds is not None and seeds[index] is None:
+            marked = failure_of(cells[index])
         if marked is not None:
-            # A marked row keeps one defined slot, so no child is run or lost.
+            # A marked row keeps its slot and carries the marker onward.
             items.append({{"output": marked, "parent": index, "child": 0}})
             continue
-        values = fn(row)
+        values = fn(row) if seeds is None else fn(row, seeds[index])
         if not isinstance(values, list):
             raise ValueError(
                 "%s: expand lambda %r returned %s; expected a list"
@@ -305,6 +344,7 @@ def main(inputs):
     return {{"items": items}}
 """
 
+
 _REDUCE_MAIN = """\
 
 _BY = {by!r}
@@ -313,10 +353,7 @@ _ON_FAIL = {on_fail!r}
 
 def main(inputs):
     fn = materialize(_USER_CODE, _FN_NAME)
-    columns = [
-        [_decode(v) for v in _column(entry, inputs, lambda v: v)]
-        for entry in _PLAN
-    ]
+    columns = [_column(entry, inputs, decode) for entry in _PLAN]
     entries = []
     by_key = {{}}
     for i, row in enumerate(_rows(columns, _PLAN, {op_id!r})):
@@ -416,9 +453,9 @@ def flatten_source(node_id: str, plan: ColumnPlan, template: str) -> str:
 _FLATTEN_STEP_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     (values,) = columns
-    return {{"items": [_text(value) for value in values]}}
+    return {{"items": [text(value) for value in values]}}
 """
 
 
@@ -560,7 +597,7 @@ import json
 _SPEC = importlib.util.spec_from_file_location({module!r}, {mount!r})
 _RUNTIME = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_RUNTIME)
-_text = _RUNTIME._text
+text = _RUNTIME.text
 _column = _RUNTIME._column
 failure_of = _RUNTIME.failure_of
 parse_row = _RUNTIME.parse_row
@@ -573,7 +610,7 @@ _PARSER = json.loads({parser!r})
 _PARSE_MAIN = """\
 
 def main(inputs):
-    columns = [_column(entry, inputs, _text) for entry in _PLAN]
+    columns = [_column(entry, inputs, text) for entry in _PLAN]
     items = []
     for value in columns[0]:
         marked = failure_of(value)
@@ -600,7 +637,7 @@ def main(inputs):
             failed = {{FAIL_KEY: {{"op": _NODE, "reason": "reserved key '_fail'"}}}}
             items.append({{"output": failed, "value": failed}})
             continue
-        items.append({{"output": _text(parsed), "value": parsed}})
+        items.append({{"output": text(parsed), "value": parsed}})
     return {{"items": items}}
 """
 
@@ -626,7 +663,7 @@ def wrapper_source(
     on_fail: str = "fail_group",
     on_empty: str = LambdaOp.ON_EMPTY_DROP,
 ) -> str:
-    """The python-task code for one standalone LambdaOp."""
+    """The python-task code for one standalone LambdaOp, seeded or not."""
     if mode is PythonMode.LIST:
         main = _LIST_MAIN
     elif mode is PythonMode.ALIGNED:
