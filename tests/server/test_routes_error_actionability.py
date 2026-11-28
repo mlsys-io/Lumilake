@@ -9,7 +9,6 @@ Exercises:
 """
 
 import datetime as dt
-import json
 import logging
 from collections.abc import Iterator
 from typing import Any
@@ -25,7 +24,6 @@ from lumilake.log import trace_id_var
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.parser import YamlParseError, parse_yaml_payload
-from lumilake_server.parser.n8n_nodes.constants import N8N_CHAT_TRIGGER, N8N_CODE_NODE
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.routes.jobs import JobRecord, JobStatus
 from lumilake_server.runtime.protocol import LumilakeResponse
@@ -157,15 +155,6 @@ def app(job_routes: Any) -> FastAPI:
     return app
 
 
-def _n8n_code_workflow() -> dict[str, Any]:
-    """The smallest n8n workflow: a chat trigger feeding a code node."""
-    code = {"parameters": {"pythonCode": "return 'hi'"}, "type": N8N_CODE_NODE}
-    nodes = [{"parameters": {}, "type": N8N_CHAT_TRIGGER}, {**code, "name": "Code"}]
-    nodes[0]["name"] = "Input"
-    edges = {"Input": {"main": [[{"node": "Code", "type": "main", "index": 0}]]}}
-    return {"nodes": nodes, "connections": edges}
-
-
 def _submit_body(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "data": [
@@ -265,63 +254,6 @@ async def test_unsupported_workflow_format_returns_422(app: FastAPI) -> None:
             },
         )
     assert resp.status_code == 422
-
-
-@pytest.mark.anyio
-async def test_submitted_n8n_workflow_records_the_default_seed(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """An n8n submission names no seed, so the job records the default one."""
-    body = _submit_body()
-    body["data"][0]["workflow"] = json.dumps(_n8n_code_workflow())
-    body["data"][0]["inputs"] = {"Input": ["hello"]}
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post(
-            "/jobs",
-            json=body,
-            headers={
-                "Authorization": "Bearer token",
-                "Workflow-Format": "n8n",
-            },
-        )
-    assert resp.status_code == 200, resp.text
-    record = job_routes.jobs[resp.json()["data"]["job_id"]]
-    assert record.seed == 0
-
-
-@pytest.mark.anyio
-async def test_native_key_form_is_refused_with_422_naming_the_op(
-    app: FastAPI,
-) -> None:
-    """A native key form that does not fit its chat op, or a malformed seed, is
-    refused naming the op."""
-    cases = {"_op": "DataOp", "_inputs": [], "_max_iter": None, "data": ["{}"]}
-    chat = {
-        "_op": "LLMChatOp",
-        "_inputs": ["cases"],
-        "_max_iter": None,
-        "config": {"model": "m"},
-        "messages": "msg",
-        "rowwise_seed": {"key": {"node": "cases", "path": "items.output.k"}},
-    }
-    body = _submit_body()
-    body["data"][0]["inputs"] = {"q": ["x"]}
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        for graph, match in [
-            ({"graph": {"chat": chat, "cases": cases}}, "LLMChatOp 'chat'"),
-            (
-                {"graph": {"cases": cases}, "seed": "7"},
-                "seed: Input should be a valid integer",
-            ),
-        ]:
-            body["data"][0]["workflow"] = json.dumps(graph)
-            resp = await client.post(
-                "/jobs", json=body, headers={"Authorization": "Bearer token"}
-            )
-            assert resp.status_code == 422
-            assert match in resp.json()["detail"]
 
 
 @pytest.mark.anyio

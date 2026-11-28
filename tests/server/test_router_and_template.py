@@ -1,13 +1,11 @@
 """Router expansion and template-driven rounds through the production path."""
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from lumilake_server.data_specs import ColumnPlanEntry, PythonMode
 from lumilake_server.dynamic.driver import DriverProtocolError
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.dynamic.template import (
@@ -18,7 +16,7 @@ from lumilake_server.dynamic.template import (
 )
 from lumilake_server.ops.router_ops import expand_routers
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime import python_step
+from lumilake_server.utils.lambda_runtime import materialize
 
 _ROWS = [
     {"case_id": "a", "text": "hello"},
@@ -44,19 +42,11 @@ def _router(**extra: Any) -> dict[str, Any]:
 
 
 def _branch_rows(
-    tmp_path: Path, entry: dict[str, Any], branch_id: str, column: list[Any]
-) -> list[Any]:
-    """Run a branch's list step over ``column`` as JSON text."""
+    entry: dict[str, Any], branch_id: str, column: list[str]
+) -> list[dict[str, Any]]:
+    """Run one expanded branch's generated source over ``column``."""
     op = next(item for item in expand_routers([entry])[0] if item["id"] == branch_id)
-    plan = [ColumnPlanEntry(kind="literal", values=[json.dumps(v) for v in column])]
-    code = python_step.wrapper_source(
-        op["id"], op["fn_name"], op["code"], plan, PythonMode.LIST
-    )
-    mount = tmp_path / "runtime.py"
-    mount.write_bytes(python_step.runtime_blob().body)
-    namespace: dict[str, Any] = {}
-    exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
-    return [i["output"] for i in namespace["main"]({})["items"]]
+    return materialize(op["code"], op["fn_name"])((column,))
 
 
 def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
@@ -73,30 +63,27 @@ def test_expand_routers_emits_one_list_lambda_per_branch() -> None:
     assert [op["id"] in error_cleared for op in error] == [True, True, True, False]
 
 
-def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest(
-    tmp_path: Path,
-) -> None:
+def test_branch_keeps_its_rule_rows_and_the_default_takes_the_rest() -> None:
+    column = [json.dumps(row) for row in _ROWS]
+    # A wrapped whole list is unwrapped by the same decoder; no rows yields none.
+    assert _branch_rows(_router(), "route.patient", [json.dumps(_ROWS)])[0] == _ROWS[0]
+    assert _branch_rows(_router(), "route.patient", []) == []
     for branch_id, expected in (
         ("route.patient", ["a"]),
         ("route.diagnose", ["b"]),
         ("route.test", ["c", "d"]),
     ):
-        got = _branch_rows(tmp_path, _router(), branch_id, list(_ROWS))
+        got = _branch_rows(_router(), branch_id, column)
         assert [row["case_id"] for row in got] == expected
-    # A wrapped whole list is unwrapped by the same decoder.
-    assert _branch_rows(tmp_path, _router(), "route.patient", [_ROWS])[0] == _ROWS[0]
-    assert _branch_rows(tmp_path, _router(), "route.patient", []) == []
 
 
-def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch(
-    tmp_path: Path,
-) -> None:
+def test_a_text_row_mentioning_the_marker_key_keeps_its_own_branch() -> None:
     # Only an object whose sole key is `_fail` is a marker, and `error` is a branch name
     # only when the op declares the branch.
     rows = [{"case_id": "e", "text": 'the field "_fail" is reserved'}]
     field = [{"case_id": "f", "text": "x", "_fail": "a user field"}]
     for row in (*rows, *field):
-        assert _branch_rows(tmp_path, _router(), "route.patient", [row]) == [row]
+        assert _branch_rows(_router(), "route.patient", [json.dumps(row)]) == [row]
     rule = [{"branch": "error", "match": "equals", "value": "1"}]
     expand_routers([_router(rules=rule)])
     with pytest.raises(ValueError, match="error"):
@@ -120,23 +107,19 @@ def test_an_empty_rule_refuses_a_value() -> None:
         expand_routers([_router(rules=[rule])])
 
 
-def test_an_empty_rule_routes_null_blank_and_empty_containers_only(
-    tmp_path: Path,
-) -> None:
+def test_an_empty_rule_routes_null_blank_and_empty_containers_only() -> None:
     router = _router(rules=_EMPTY_RULE, default_branch="ret")
-    column = [{"case_id": n, "text": t} for n, t in _EMPTY_ROWS]
-    got = _branch_rows(tmp_path, router, "route.no_ret", column)
+    column = [json.dumps({"case_id": n, "text": t}) for n, t in _EMPTY_ROWS]
+    got = _branch_rows(router, "route.no_ret", column)
     assert [row["case_id"] for row in got] == ["null", "blank", "list", "map"]
-    rest = _branch_rows(tmp_path, router, "route.ret", column)
+    rest = _branch_rows(router, "route.ret", column)
     assert [row["case_id"] for row in rest] == ["null-text", "full"]
 
 
-def test_a_row_missing_an_empty_rule_path_fails_naming_the_part(
-    tmp_path: Path,
-) -> None:
+def test_a_row_missing_an_empty_rule_path_fails_naming_the_part() -> None:
     router = _router(path="ctx.question", rules=_EMPTY_RULE, default_branch="ret")
     with pytest.raises(ValueError, match=r"route\.no_ret row has no 'question'"):
-        _branch_rows(tmp_path, router, "route.no_ret", [{"ctx": {}}])
+        _branch_rows(router, "route.no_ret", [json.dumps({"ctx": {}})])
 
 
 def test_router_rejects_a_default_rule_a_second_input_and_twin_branches() -> None:

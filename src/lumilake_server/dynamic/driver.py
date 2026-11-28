@@ -30,11 +30,7 @@ from lumilake_server.ops.llm_ops import LLMOp
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
-from lumilake_server.parser.yaml_parser import (
-    SUPPORTED_OPS,
-    check_keyed_seed_duplicates,
-    parse_yaml_payload,
-)
+from lumilake_server.parser.yaml_parser import SUPPORTED_OPS, parse_yaml_payload
 from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
@@ -123,8 +119,6 @@ class SubgraphPlan(BaseModel):
 
     ops: list[dict[str, Any]]
     export: list[str] = []
-    template_ids: dict[str, str] = {}
-    """Rendered op id -> its id as the template body wrote it."""
 
 
 class _RawPlan(BaseModel):
@@ -471,7 +465,8 @@ def forward_refs(
         inputs[input_id] = [_coerce_output_value(v) for v in walked]
 
     def add_materializer(ref: str, path: str, walked: list[Any]) -> str:
-        """Bind a JSON input per row plus a pass-through LambdaOp; return its id."""
+        """Bind a JSON input per row plus a LambdaOp that decodes each row's
+        JSON back to its list; returns the materializer id."""
         input_id = f"{ref} | {path}"
         if input_id not in materialized:
             bind_input(input_id, walked)
@@ -481,7 +476,10 @@ def forward_refs(
                     "op": "LambdaOp",
                     "inputs": [input_id],
                     "fn_name": "decode_rows",
-                    "code": "def decode_rows(columns):\n    return columns[0]\n",
+                    "code": (
+                        "def decode_rows(columns):\n"
+                        "    return [json.loads(v) for v in columns[0]]\n"
+                    ),
                     "mode": PythonMode.ALIGNED,
                 }
             )
@@ -593,14 +591,9 @@ def forward_refs(
                 path = column.get("path")
                 if isinstance(node, str) and isinstance(path, str) and node in results:
                     column["node"], column["path"] = bind_explicit(node, path, consumer)
-        for seed_field in ("rowwise_seed", "seed"):
-            seed = op.get(seed_field)
-            if not isinstance(seed, dict):
-                continue
-            _bind_seed_ref(seed, consumer, results, bind_explicit)
-            key = seed.get("key")
-            if isinstance(key, dict):
-                _bind_seed_ref(key, consumer, results, bind_explicit)
+        rowwise_seed = op.get("rowwise_seed")
+        if isinstance(rowwise_seed, dict):
+            _bind_seed_ref(rowwise_seed, consumer, results, bind_explicit)
         data_spec = op.get("data_spec")
         if isinstance(data_spec, dict):
             params = data_spec.get("params")
@@ -629,7 +622,7 @@ def _bind_seed_ref(
     results: dict[str, list[dict[str, Any]]],
     bind_explicit: Callable[[str, str, str], tuple[str, str]],
 ) -> None:
-    """Forward one ``{node, path}`` a seed reads, in place."""
+    """Forward one ``{node, path}`` a ``rowwise_seed`` reads, in place."""
     node = ref.get("node")
     path = ref.get("path")
     if isinstance(node, str) and isinstance(path, str) and node in results:
@@ -1135,16 +1128,11 @@ def build_round(
     include_proposer: bool = True,
     rows: int = 1,
     cleared_ids: Collection[str] = (),
-    job_seed: int = 0,
-    template_ids: dict[str, str] | None = None,
-    symbols: Sequence[str] = (),
 ) -> RoundBuild:
     """Assemble the native graph for one round.
 
     References to earlier-round ops are forwarded as workflow inputs from
     ``results``, so no earlier op is pulled back into this round's graph.
-    ``cleared_ids`` are the router branches this round's expansion dropped
-    markers on, which its parse keeps the flag for.
     """
     subgraph = resolve_subgraph(subgraph, library)
     forwarded, inputs = forward_refs(
@@ -1154,23 +1142,11 @@ def build_round(
     workflow_inputs.update(inputs)
     workflow = {
         "name": f"round_{round_index}",
-        "seed": job_seed,
         "inputs": workflow_inputs,
         "ops": forwarded,
         "outputs": [],
     }
-    # A round never reaches submit_job's whole-input check.
-    seed_inputs: dict[str, list[str]] = {
-        **workflow_inputs,
-        INPUT_NODE_ID: list(symbols),
-    }
-    check_keyed_seed_duplicates(workflow, seed_inputs)
-    parsed = parse_yaml_payload(
-        workflow,
-        round_number=round_index,
-        template_ids=template_ids,
-        cleared_ids=cleared_ids,
-    )
+    parsed = parse_yaml_payload(workflow, cleared_ids=cleared_ids)
     graph_name = next(iter(parsed))
     native = parsed[graph_name]["graph"]
     leaves = _current_leaves(subgraph)

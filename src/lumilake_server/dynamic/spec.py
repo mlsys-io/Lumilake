@@ -84,7 +84,6 @@ class DynamicSpec(BaseModel):
 
     type: Literal["dynamic"] = "dynamic"
     name: StrictStr | None = None
-    seed: StrictInt = 0
     goal: StrictStr
     driver: DriverSettings
     library: dict[StrictStr, dict[StrictStr, Any]] | None = None
