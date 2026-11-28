@@ -1239,7 +1239,9 @@ def _validate_row_count_slice_span(
                     "lists of one run"
                 )
             elif node_id in join_row_count:
-                produced = "by an inner or full join, whose own keys set its rows"
+                produced = (
+                    "by or below an inner or full join, whose own keys set its rows"
+                )
             elif node_id in own_row_count:
                 produced = "below a list-mode Lambda whose fan-out sets its row count"
             else:
