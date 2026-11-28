@@ -45,6 +45,15 @@ class PythonMode(StrEnum):
     FLATTEN_STEP = "flatten_step"
     EXPAND = "expand"
     REDUCE = "reduce"
+    JOIN = "join"
+
+
+class JoinHow(StrEnum):
+    """Which keys a lowered join keeps."""
+
+    INNER = "inner"
+    LEFT = "left"
+    FULL = "full"
 
 
 class _StrictModel(BaseModel):
@@ -246,6 +255,17 @@ class ColumnPlanEntry(DataSpecModel):
     file: str | None = None
 
 
+class JoinDescription(DataSpecModel):
+    """A lowered join: key path, how, match rule, row columns and attach values."""
+
+    node: str
+    by: list[str]
+    inputs: list[int]
+    attach: list[tuple[str, int, int]]
+    how: JoinHow
+    require_match: bool
+
+
 class PythonData(DataSpecModel):
     """A standalone or reshape python step."""
 
@@ -254,6 +274,7 @@ class PythonData(DataSpecModel):
     plan: list[ColumnPlanEntry] = Field(default_factory=list)
     mode: PythonMode | None = None
     by: str | None = None
+    join: JoinDescription | None = None
     template: str | None = None
     timeout_s: int | float = 600
     memory_mb: int | None = None

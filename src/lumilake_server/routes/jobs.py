@@ -1165,15 +1165,16 @@ def _validate_runtime_graphs(
             ) from exc
 
 
-def _validate_list_lambda_slice_span(
+def _validate_row_count_slice_span(
     runtime_graphs: dict[str, RuntimeGraph],
     workflow_slices: dict[str, list[WorkflowSliceMeta]],
 ) -> None:
-    """Reject at submit a list-derived output that would span several slices."""
+    """Reject at submit a row-count-derived output that would span several slices."""
     for graph_name, graph in runtime_graphs.items():
         list_lambda_dependent = graph.list_lambda_cardinality_nodes()
-        list_lambda_fanout = graph.list_lambda_fanout_nodes()
-        if not list_lambda_dependent and not list_lambda_fanout:
+        own_row_count = graph.own_row_count_nodes()
+        join_row_count = graph.join_row_count_nodes()
+        if not list_lambda_dependent and not own_row_count:
             continue
         slices = workflow_slices.get(graph_name, [])
         if len(slices) <= 1:
@@ -1184,20 +1185,21 @@ def _validate_list_lambda_slice_span(
                     "by a list-mode Lambda, which runs once over the whole input "
                     "lists of one run"
                 )
-            elif node_id in list_lambda_fanout:
+            elif node_id in join_row_count:
                 produced = (
-                    "below a list-mode Lambda, whose fan-out sets its row count to "
-                    "one value per list element"
+                    "by or below an inner or full join, whose own keys set its rows"
                 )
+            elif node_id in own_row_count:
+                produced = "below a list-mode Lambda whose fan-out sets its row count"
             else:
                 continue
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"Workflow '{graph_name}' output '{output_name}' is produced "
-                    f"{produced} and cannot be split across {len(slices)} slice(s). "
-                    "Submit one input value per job, or raise input_batch_size so the "
-                    "whole input set runs in a single slice."
+                    f"Workflow '{slices[0].public_graph_name}' output '{output_name}' "
+                    f"is produced {produced}, so it cannot be split across "
+                    f"{len(slices)} slice(s). Submit one input value per job, or a "
+                    "larger input_batch_size so the whole input set runs in one slice."
                 ),
             )
 
@@ -3712,7 +3714,7 @@ async def submit_job(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=_GPU_ZERO_CONFLICT,
             )
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {
                 name: server._runtime_builder.build(compiled, node_prefix=name)
                 for name, compiled in graphs.items()
@@ -3721,7 +3723,7 @@ async def submit_job(
                 name: [
                     meta
                     for slice_name, meta in workflow_slices.items()
-                    if meta.public_graph_name == name
+                    if meta.public_graph_name == workflow_slices[name].public_graph_name
                 ]
                 for name in graphs
             },

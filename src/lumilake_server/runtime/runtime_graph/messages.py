@@ -6,6 +6,7 @@ from typing import Any
 
 from lumilake_server.data_specs import ListData
 from lumilake_server.ops import DataOp, DataRetrievalOp, InputOp, LambdaOp, Op
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMChatOp, RowwiseMessages
 from lumilake_server.runtime.runtime_graph.derived import _DerivedBuilder
 from lumilake_server.runtime.runtime_graph.lowering import (
@@ -72,15 +73,17 @@ class _MessagesBuilder(_DerivedBuilder):
             )
         if not _producer_kind_supported(upstream):
             raise ValueError(
-                f"{consumer} reads '{node}' ({type(upstream).__name__});"
-                " a messages column reads a list-mode LambdaOp, a data"
-                " retrieval or a literal input"
+                f"{consumer} reads '{node}' ({type(upstream).__name__}); a messages"
+                " column reads a list-mode LambdaOp, a join, a data retrieval or a"
+                " literal input"
             )
         runtime_ids = ctx.dsl_to_runtime.get(node)
+        if isinstance(upstream, JoinOp):
+            # A join's runtime node is its op id; the join phase builds it.
+            runtime_ids = [node]
         if not runtime_ids:
             raise ValueError(
-                f"{consumer} reads '{node}', which compiles to no runtime"
-                " node even though the build order should have materialized it"
+                f"{consumer} reads '{node}', which compiles to no runtime node"
             )
         path = output.read(column.path or _WHOLE, consumer)
         return (
@@ -130,9 +133,8 @@ class _MessagesBuilder(_DerivedBuilder):
 
 
 def _producer_kind_supported(upstream: Op) -> bool:
-    """Whether the op is one the build materializes before the chat op lowers:
-    a list-mode Lambda or a data retrieval."""
-    if isinstance(upstream, DataRetrievalOp):
+    """Whether a chat op reads the op by node id: a whole-list producer or retrieval."""
+    if isinstance(upstream, (DataRetrievalOp, JoinOp)):
         return True
     return isinstance(upstream, LambdaOp) and upstream.takes_whole_columns
 

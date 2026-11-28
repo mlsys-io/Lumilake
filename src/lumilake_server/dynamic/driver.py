@@ -25,6 +25,7 @@ from lumilake_server.dynamic.blocks import (
     fused_round_graph,
 )
 from lumilake_server.ops.data_ops import DataRetrievalOp
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import LLMOp
 from lumilake_server.ops.util_ops import LambdaOp
 from lumilake_server.parser.common import make_id
@@ -94,7 +95,7 @@ if _MISSING_OP_CLASSES:
 _OUTPUT_SOURCE_OPS: frozenset[str] = frozenset(
     name
     for name in SUPPORTED_OPS
-    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp, LambdaOp))
+    if issubclass(_OP_CLASSES[name], (LLMOp, DataRetrievalOp, LambdaOp, JoinOp))
 )
 
 
@@ -702,6 +703,9 @@ def _validate_declared_inputs(
         return resolved
 
     config_refs = collect_config_refs(native_op)
+    if op_type == "JoinOp":
+        # A join consumes every input it declares.
+        config_refs.update(ref for ref in native_op["_inputs"] if isinstance(ref, str))
     if not any(internal in native for internal in config_refs):
         return
     native_deps: set[str] = set()
@@ -834,8 +838,9 @@ def validate_emitted_subgraph(
             continue
         if types[op_id] not in _OUTPUT_SOURCE_OPS:
             raise DriverProtocolError(
-                f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be "
-                "archived; every leaf must be an LLMOp, DataRetrievalOp or LambdaOp"
+                f"subgraph leaf {op_id!r} is a {types[op_id]}, which cannot be"
+                " archived; every leaf must be an LLMOp, DataRetrievalOp, LambdaOp or"
+                " JoinOp"
             )
 
 

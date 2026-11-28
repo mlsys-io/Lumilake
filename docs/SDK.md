@@ -227,7 +227,7 @@ Submission compiles no graph for an api-driven spec: `hardware.gpu: 0` and the e
 
 #### Fixed round templates (`driver.template`)
 
-A workload whose round body is fixed can declare `driver.template` instead of a planner: `first` runs as round 1, `next` as every later round, with `{{round}}` and `{{prev}}` rendered into every string a body carries. All three of `first`, `next` and `stop_when_empty` are required; a template is a loop that stops on data, and a fixed-count loop is a static workflow. The server stops before a round whose list, expand or reduce mode `LambdaOp` export held no rows. Template mode calls no planner and is mutually exclusive with `api`.
+A workload whose round body is fixed can declare `driver.template` instead of a planner: `first` runs as round 1, `next` as every later round, with `{{round}}` and `{{prev}}` rendered into every string a body carries. All three of `first`, `next` and `stop_when_empty` are required; a template is a loop that stops on data, and a fixed-count loop is a static workflow. The server stops before a round whose list, expand or reduce mode `LambdaOp` or `JoinOp` export held no rows. Template mode calls no planner and is mutually exclusive with `api`.
 
 ```yaml
 template:

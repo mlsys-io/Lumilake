@@ -14,6 +14,7 @@ from lumilake_server.ops import (
     LambdaOp,
     LLMOp,
 )
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.base import _RuntimeGraphBuilderBase
 from lumilake_server.runtime.runtime_graph.lowering import (
@@ -42,6 +43,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         for inp in op.inputs:
             if isinstance(inp, LambdaOp):
                 nodes.extend(self._build_python_step(inp, ctx))
+                dep = inp.id
+            elif isinstance(inp, JoinOp):
+                # A join's runtime node is its op id; the join phase builds it.
                 dep = inp.id
             elif isinstance(inp, (LLMOp, DataRetrievalOp)) or has_lowering(inp):
                 runtime_ids = ctx.dsl_to_runtime.get(inp.id, [])
@@ -243,8 +247,7 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
         )
 
     def _referenced_row_lambdas(self, ctx: LoweringContext) -> set[str]:
-        """Row-mode LambdaOps referenced by any built runtime node, either in
-        its data_spec/condition or as a runtime dependency."""
+        """Row-mode LambdaOps referenced by any built runtime node, or by a join."""
         refs: set[str] = set()
         for node in ctx.nodes.values():
             for ref in _RuntimeGraphBuilderBase._iter_runtime_refs(node):
@@ -255,6 +258,9 @@ class _LambdaBuilder(_RuntimeGraphBuilderBase):
                 op = ctx.graph_dict.get(dep)
                 if isinstance(op, LambdaOp) and not op.takes_whole_columns:
                     refs.add(dep)
+        for op in ctx.graph_dict.values():
+            if isinstance(op, JoinOp):
+                refs.update(inp.id for inp in op.inputs)
         return refs
 
     @after_phase(Phase.ROW_LAMBDA)

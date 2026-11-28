@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from lumilake_server.graphs import CompiledGraph
 from lumilake_server.routes.jobs import (
-    _validate_list_lambda_slice_span,
+    _validate_row_count_slice_span,
     _validate_runtime_graphs,
 )
 from lumilake_server.runtime.request import WorkflowSliceMeta
@@ -152,7 +152,7 @@ def test_list_lambda_output_spanning_multiple_slices_is_rejected() -> None:
     that would split it across more than one slice must be rejected at submit
     time with a message naming the op and the fix."""
     with pytest.raises(HTTPException) as exc_info:
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {"g": _list_lambda_graph("out")},
             {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
         )
@@ -162,7 +162,7 @@ def test_list_lambda_output_spanning_multiple_slices_is_rejected() -> None:
 
 
 def test_list_lambda_output_single_slice_is_accepted() -> None:
-    _validate_list_lambda_slice_span(
+    _validate_row_count_slice_span(
         {"g": _list_lambda_graph("out")},
         {"g": [_slice("g", 0, 2)]},
     )
@@ -171,7 +171,7 @@ def test_list_lambda_output_single_slice_is_accepted() -> None:
 def test_row_mode_output_spanning_multiple_slices_is_accepted() -> None:
     """A row-mode op emits one output per input row, so it can be split across
     slices; only list-cardinality outputs are constrained."""
-    _validate_list_lambda_slice_span(
+    _validate_row_count_slice_span(
         {"g": _row_graph("out")},
         {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
     )
@@ -211,7 +211,7 @@ def test_row_step_below_a_list_lambda_spanning_multiple_slices_is_rejected() -> 
         output_node_map={downstream_id: "out"},
     )
     with pytest.raises(HTTPException) as exc_info:
-        _validate_list_lambda_slice_span(
+        _validate_row_count_slice_span(
             {"g": graph},
             {"g": [_slice("g__slice_1", 0, 2), _slice("g__slice_2", 1, 2)]},
         )

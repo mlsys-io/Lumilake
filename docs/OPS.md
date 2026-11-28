@@ -19,6 +19,7 @@ Lumilake workflows are DAGs of operation classes registered under `lumilake_serv
 | `FormatOp` | Template upstream outputs into strings for downstream ops. |
 | `LambdaOp` | Execute a serialized Python function over upstream values. |
 | `RouterOp` | Partition one source op's rows into named branches, one ordinary node per branch. |
+| `JoinOp` | Merge keyed row columns and 1:1 outputs back onto the rows they came from. |
 | `RepeatOp` | Run an op body a fixed number of times; the parser unrolls it into ordinary nodes. |
 
 ## YAML Use
@@ -331,6 +332,15 @@ ops:
   - {id: route, op: RouterOp, inputs: [norm], default_branch: patient,
      rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"},
              {branch: test, match: contains, value: "REQUEST TEST"}]}
+```
+
+### JoinOp
+
+`JoinOp` merges row columns by `by`, a field path. `how: left` (the default) keeps the first input's rows and their order, `how: inner` keeps the keys every input carries, and `how: full` also appends a key only a later input carries, in first-seen order, with the fields that input lacks left out. `how: inner` and `how: full` set the join's own row count, so such a join, or a step below one, cannot be split across input slices; submit refuses an `input_batch_size` that would and names the output. `require_match: true` fails the job unless every input carries the same keys. An `attach` field adds a per-row node's values to each row (a rowwise LLM, embedding, fetch or classification op, a row or aligned `LambdaOp`, another `JoinOp`, or a chain of these), also in `inputs:`, under any `how`. A duplicate key or a misaligned attach fails the job.
+
+```yaml
+- {id: Merge, op: JoinOp, inputs: [Cases, Reply], by: case_id, how: inner,
+   require_match: true, attach: {reply: Reply}}
 ```
 
 For workflow-format details, see `docs/WORKFLOWS.md`. For runnable examples, see `examples/templates/`.

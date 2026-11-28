@@ -17,6 +17,7 @@ from lumilake_server.ops.classification_ops import (
     literal_pairs,
 )
 from lumilake_server.ops.http_fetch_ops import HttpFetchOp
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph.lowering import (
     LoweringContext,
@@ -70,6 +71,9 @@ class _DerivedBuilder(_VisionBuilder):
                 ctx.nodes.setdefault(node.node_id, node)
                 runtime_ids.append(node.node_id)
             ctx.dsl_to_runtime[op_ref.id] = runtime_ids
+        if isinstance(op_ref, JoinOp):
+            # A join's runtime node is its op id; the join phase builds it.
+            runtime_ids = [op_ref.id]
         if not runtime_ids:
             raise ValueError(f"{consumer} input {op_ref.id!r} has no runtime node")
         return replace(self._op_output(op_ref), node=runtime_ids[-1])

@@ -22,6 +22,7 @@ from lumilake_server.ops.embedding_ops import (
     embedding,
 )
 from lumilake_server.ops.http_fetch_ops import HttpFetchConfig, HttpFetchOp, http_fetch
+from lumilake_server.ops.join_ops import JoinOp
 from lumilake_server.ops.llm_ops import (
     ImageGenerationOp,
     LLMChatOp,
@@ -63,6 +64,7 @@ __all__ = [
     "HttpFetchOp",
     "ImageGenerationOp",
     "InputOp",
+    "JoinOp",
     "LLMChatOp",
     "LLMCompletionOp",
     "LLMOp",

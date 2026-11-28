@@ -1,0 +1,261 @@
+"""Keyed joins through the production path: YAML -> graph -> generated step."""
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from lumilake_server.data_specs import ColumnPlanEntry, DataFrame, PythonData
+from lumilake_server.graphs import Graph
+from lumilake_server.parser import parse_yaml_payload
+from lumilake_server.runtime import join_step, python_step
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
+
+_ROWS = [
+    {"case_id": "a", "text": "hello"},
+    {"case_id": "b", "text": "DIAGNOSIS READY: flu"},
+    {"case_id": "c", "text": "REQUEST TEST: cbc"},
+]
+
+_PRELUDE = """
+name: j
+inputs:
+  Rows:
+    - '{"case_id": "a", "text": "hello"}'
+    - '{"case_id": "b", "text": "DIAGNOSIS READY: flu"}'
+    - '{"case_id": "c", "text": "REQUEST TEST: cbc"}'
+ops:
+  - {id: State, op: LambdaOp, mode: list, inputs: [Rows], fn_name: state,
+     code: "def state(c):\\n    return [json.loads(v) for v in c[0]]"}
+  - {id: Route, op: RouterOp, inputs: [State], path: text,
+     default_branch: patient,
+     rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"}]}
+"""
+
+_TURN = """
+  - {id: PatientTurn, op: LLMChatOp, inputs: [State],
+     messages: [{role: user, content: "Answer the patient."}],
+     config: {model: test/model}, rowwise_template: "Reply to {text}",
+     rowwise_columns: [{label: text, node: State, path: items.output.text}]}
+"""
+
+_REPLY = """
+  - {id: Reply, op: LambdaOp, mode: row, inputs: [State], fn_name: reply,
+     code: "def reply(row):\\n    return 1"}
+"""
+
+
+def _parse(ops: str) -> dict[str, Any]:
+    return parse_yaml_payload(_PRELUDE + ops)["j"]
+
+
+def _merge(inputs: str, rest: str = "") -> str:
+    """A join over ``inputs`` keyed by ``case_id``, followed by ``rest``."""
+    return (
+        f"  - id: Merge\n    op: JoinOp\n    inputs: [{inputs}]\n    by:"
+        f" case_id\n{rest}"
+    )
+
+
+def _join_of(runtime: Any) -> Any:
+    """The runtime node that runs the join."""
+    return next(
+        node
+        for node in runtime.nodes.values()
+        if isinstance(node.data_spec, PythonData) and node.data_spec.mode == "join"
+    )
+
+
+def _build(ops: str) -> Any:
+    spec = _parse(ops)
+    return RuntimeGraphBuilder().build(
+        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+    )
+
+
+def _join_node(ops: str) -> Any:
+    return _join_of(_build(ops))
+
+
+_RUNTIME_MOUNT: dict[str, str] = {}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _task_runtime_mount(tmp_path_factory: pytest.TempPathFactory) -> None:
+    path = tmp_path_factory.mktemp("join-runtime") / "lumilake-runtime.py"
+    path.write_bytes(python_step.runtime_blob().body)
+    _RUNTIME_MOUNT["path"] = str(path)
+
+
+def _run(
+    tmp_path: Path,
+    node: Any,
+    upstream: dict[int, list[dict[str, Any]]],
+    name: str = "run",
+) -> dict[str, Any]:
+    """Run the generated step over one staged result list per plan entry."""
+    plan = node.data_spec.plan
+    stages: dict[str, str] = {}
+    for index, items in upstream.items():
+        stage = tmp_path / name / f"{plan[index].node}-{index}"
+        stage.mkdir(parents=True)
+        (stage / "results.json").write_text(
+            json.dumps({"task_id": "t", "result": {"items": items}})
+        )
+        stages[str(plan[index].node)] = str(stage)
+    code = join_step.join_source(
+        node.node_id, node.data_spec.join, plan, python_step.TASK_RUNTIME_MOUNT
+    ).replace(python_step.TASK_RUNTIME_MOUNT, _RUNTIME_MOUNT["path"])
+    namespace: dict[str, Any] = {}
+    exec(code, namespace)
+    return namespace["main"](stages)
+
+
+def test_join_merges_a_disjoint_branch_and_leaves_its_fields_out(
+    tmp_path: Path,
+) -> None:
+    node = _join_node(_merge("State, Route.diagnose"))
+    out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
+    rows = [item["output"] for item in out["items"]]
+    assert [row["case_id"] for row in rows] == ["a", "b", "c"]
+    assert rows[1]["text"] == _ROWS[1]["text"]
+    assert set(rows[0]) == {"case_id", "text"}
+
+
+def test_a_join_attaching_a_chat_feeds_a_list_lambda_and_records_its_output() -> None:
+    runtime = _build(
+        _TURN
+        + _merge(
+            "State, PatientTurn",
+            """
+    attach: {patient_reply: PatientTurn}
+  - {id: Summary, op: LambdaOp, mode: list, inputs: [Merge], fn_name: summary,
+     code: "def summary(c):\\n    return [row['case_id'] for row in c[0]]"}
+outputs:
+  - {name: merged, ref: Merge}
+""",
+        )
+    )
+    merge = _join_of(runtime)
+    summary = next(
+        node for node in runtime.nodes.values() if "Summary_" in node.node_id
+    )
+    (entry,) = summary.data_spec.plan
+    assert entry == ColumnPlanEntry(kind="stage", node=merge.node_id)
+    assert summary.dependencies == (merge.node_id,)
+    assert runtime.output_node_map == {merge.node_id: "merged"}
+    assert runtime.output_paths[merge.node_id] == "items.output"
+
+
+_AMBIGUOUS_TURN = """
+  - {id: PatientTurn, op: LLMChatOp, inputs: [Route.patient],
+     messages: [{role: user, content: "Reply to the patient"}],
+     config: {model: test/model}, rowwise_template: "Reply to {case_id}",
+     rowwise_columns: [
+       {label: case_id, node: Route.patient, path: items.output.case_id},
+       {label: text, node: State, path: items.output.text}]}
+"""
+
+
+def test_join_refuses_an_attach_whose_row_source_is_not_one_node() -> None:
+    ops = _AMBIGUOUS_TURN + _merge(
+        "State, Route.patient, PatientTurn", "    attach: {reply: PatientTurn}\n"
+    )
+    with pytest.raises(ValueError, match="reply.*several nodes"):
+        _join_node(ops)
+
+
+def test_join_refuses_a_format_op_as_an_attach_target() -> None:
+    """A format op is a row source only as a hop on a chain, never a target."""
+    ops = (
+        '  - {id: Prompt, op: FormatOp, inputs: [State], template: "{0}", format_args:'
+        " [State]}\n" + _merge("State, Prompt", "    attach: {prompt: Prompt}\n")
+    )
+    with pytest.raises(ValueError, match="attach field 'prompt' reading .*hop on a"):
+        _join_node(ops)
+
+
+def test_join_refuses_a_duplicate_key_and_a_stray_row_under_require_match(
+    tmp_path: Path,
+) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
+    dup: dict[int, list[dict[str, Any]]] = {
+        0: [{"output": [_ROWS[1]] * 2}],
+        1: [{"output": []}],
+    }
+    with pytest.raises(ValueError, match="duplicate key"):
+        _run(tmp_path, node, dup, "duplicate")
+    missing = {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]}
+    with pytest.raises(ValueError, match='key "a" is missing'):
+        _run(tmp_path, node, missing)
+    stray = {"case_id": "z", "text": "not in the first input"}
+    outsider = {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]}
+    with pytest.raises(ValueError, match='key "z" is not in'):
+        _run(tmp_path, node, outsider, "stray")
+
+
+_PER_ROW = """
+  - {id: PerRow, op: LambdaOp, mode: row, inputs: [Rows], fn_name: per_row,
+     code: "def per_row(row):\\n    return {'case_id': json.loads(row[0])['case_id']}"}
+"""
+
+
+def test_a_join_follows_its_first_input_s_row_count() -> None:
+    """A join's rows are its first input's, so a ``left`` join of a fan-out with
+    a per-row further input sets its own row count; the reverse shape keeps one
+    row per job row and stays out."""
+    for inputs, whole_run in (("State, PerRow", True), ("PerRow, State", False)):
+        runtime = _build(_PER_ROW + _merge(inputs, "    how: left\n"))
+        merged = _join_of(runtime)
+        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
+
+
+def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
+    stray = {"case_id": "z", "text": "not in the first input"}
+    staged = {0: [{"output": [_ROWS[0], _ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]}
+
+    def run(how: str, name: str) -> list[dict[str, Any]]:
+        node = _join_node(_merge("State, Route.diagnose", f"    how: {how}\n"))
+        return [item["output"] for item in _run(tmp_path, node, staged, name)["items"]]
+
+    left = run("left", "left")
+    assert [row["case_id"] for row in left] == ["a", "b"]
+    assert left[0]["text"] == "hello"
+    assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
+    assert run("full", "full") == [_ROWS[0], _ROWS[1], stray]
+    with pytest.raises(ValueError, match="how"):
+        _join_node(_merge("State, Route.diagnose", "    how:\n"))
+
+
+def test_join_reads_a_table_in_order_and_keeps_a_value_typed(tmp_path: Path) -> None:
+    node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
+    table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
+    reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
+    out = _run(tmp_path, node, {0: [{"output": [{"df": json.dumps(table)}]}], 1: reply})
+    assert [item["output"] for item in out["items"]] == [
+        {"case_id": "a", "text": "x", "reply": {"n": 1}},
+        {"case_id": "c", "text": "z", "reply": {"n": 1}},
+    ]
+    with pytest.raises(ValueError, match="table is not a column table"):
+        _run(tmp_path, node, {0: [{"output": [{"df": "[1, 2]"}]}]}, name="bad")
+
+
+def test_join_output_reads_as_a_rowwise_node_column() -> None:
+    runtime = _build(
+        _merge(
+            "State, Route.diagnose",
+            """
+  - {id: Ask, op: LLMChatOp, inputs: [Merge],
+     messages: [{role: user, content: "Go"}], config: {model: test/model},
+     rowwise_template: "{text}",
+     rowwise_columns: [{label: text, node: Merge, path: items.output.text}]}
+""",
+        )
+    )
+    merge = _join_of(runtime)
+    ask = next(n for n in runtime.nodes.values() if isinstance(n.data_spec, DataFrame))
+    (column,) = ask.data_spec.columns
+    assert column.node == merge.node_id
+    # A join's fields sit under the python envelope, not at the declared path.
+    assert column.path == "value.items.output.text"

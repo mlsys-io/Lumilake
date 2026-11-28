@@ -28,6 +28,7 @@ from lumilake_server.ops import (
     as_output,
     input_placeholder,
 )
+from lumilake_server.ops.join_ops import JoinOp, JoinSpec
 from lumilake_server.parser import parse_yaml_payload
 from lumilake_server.parser.n8n import parse_n8n_payload
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -1895,7 +1896,7 @@ def test_prefixed_row_step_below_a_list_lambda_is_a_fanout_node() -> None:
     explode_spec = runtime_graph.nodes[explode_id].data_spec
     assert isinstance(explode_spec, PythonData)
     assert explode_spec.mode is PythonMode.LIST
-    assert shout_id in runtime_graph.list_lambda_fanout_nodes()
+    assert shout_id in runtime_graph.own_row_count_nodes()
 
 
 def test_rowwise_llm_reads_standalone_row_lambda_via_value_path() -> None:
@@ -2016,6 +2017,26 @@ def test_inlined_row_lambda_materialized_as_python_dependency_builds() -> None:
 
     assert inner.id in runtime_graph.nodes
     assert outer.id in runtime_graph.nodes
+
+
+def test_inlined_row_lambda_read_by_a_join_materializes() -> None:
+    """A row Lambda an LLM inlined materializes when a join attaches it."""
+    stock = input_placeholder("Stock")
+    state = LambdaOp([stock], fn=lambda columns: [{"id": "".join(columns[0])}])
+    inner = LambdaOp([state], fn=_row_lambda_fn)
+    llm = LLMChatOp(
+        [OpMessage(role="user", content=inner)],
+        config=GenerationConfig(model="meta-llama/Llama-3.1-8B-Instruct"),
+    )
+    join = JoinOp([state, inner, llm], JoinSpec(by=["id"]), attach={"reply": inner})
+    compiled = Graph.from_ops(
+        [as_output("merged", join), as_output("answers", llm)]
+    ).compile(Stock=["NVDA", "AAPL"])
+
+    runtime_graph = RuntimeGraphBuilder().build(compiled)
+
+    assert inner.id in runtime_graph.nodes
+    assert inner.id in runtime_graph.nodes[join.id].dependencies
 
 
 def test_inlined_row_lambda_referenced_by_condition_materializes() -> None:
