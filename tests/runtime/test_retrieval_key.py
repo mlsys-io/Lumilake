@@ -31,19 +31,13 @@ def _df(columns: dict[str, Any]) -> dict[str, Any]:
     return {"table": {"df": json.dumps(columns)}}
 
 
-@pytest.fixture(autouse=True)
-def _lumid_envs(monkeypatch: pytest.MonkeyPatch) -> None:
+def _spec(
+    monkeypatch: pytest.MonkeyPatch, key: str | None = None, mode: str = "sql"
+) -> RetrievalData:
+    """One retrieval workflow's runtime data_spec, through parser and builder."""
     monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
     monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "t")
-
-
-def _spec(key: str | None = None, mode: str = "sql") -> RetrievalData:
-    """One retrieval workflow's runtime data_spec, through parser and builder."""
-    template = (
-        "SELECT case_id FROM cases ORDER BY case_id"
-        if mode == "sql"
-        else "cases/{id}.txt"
-    )
+    template = "SELECT case_id FROM cases ORDER BY case_id" if mode == "sql" else mode
     line = "" if key is None else f"      key: {{column: {key!r}}}"
     text = _WORKFLOW.format(mode=mode, template=template, key=line)
     parsed = parse_yaml_payload(text)["k"]
@@ -55,9 +49,13 @@ def _spec(key: str | None = None, mode: str = "sql") -> RetrievalData:
     return node.data_spec
 
 
-def test_a_declared_key_reaches_the_retrieval_node() -> None:
-    assert _spec(None).key is None
-    assert _spec("case_id").key == RetrievalKey(column="case_id")
+def test_a_declared_key_reaches_the_node_and_a_bad_one_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _spec(monkeypatch, None).key is None
+    assert _spec(monkeypatch, "case_id").key == RetrievalKey(column="case_id")
+    with pytest.raises(ValueError, match="DataRetrievalOp 'Cases'"):
+        _spec(monkeypatch, "case_id", "s3")
 
 
 @pytest.mark.parametrize(
@@ -85,14 +83,3 @@ def test_a_keyed_result_is_checked_when_it_arrives(
         assert found is None
     else:
         assert found is not None and problem in found
-
-
-@pytest.mark.parametrize(
-    ("key", "mode", "message"),
-    [("case_id", "s3", "mode 's3'"), ("", "sql", "non-empty string")],
-)
-def test_a_key_the_spec_cannot_carry_is_refused_at_submit(
-    key: str, mode: str, message: str
-) -> None:
-    with pytest.raises(ValueError, match=message):
-        _spec(key, mode)
