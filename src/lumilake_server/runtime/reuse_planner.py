@@ -1792,7 +1792,7 @@ def _join_literal_input(
 ) -> _Input:
     """A join's literal rows, each named by its own key as the writer names it:
     one record per row, digests over the single row a key selects."""
-    keys = [row_key(row, ".".join(key_paths)) for row in rows]
+    keys = [row_key(row, key_paths) for row in rows]
     return _Input(
         named=RecordInput(
             keyed=True,
