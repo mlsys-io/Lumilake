@@ -79,6 +79,7 @@ class _FakeRuntimeServer:
     def __init__(self) -> None:
         self.cancel_calls: list[str] = []
         self._runtime_builder = Mock()
+        self.runtime_manager = Mock()
 
     def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return graph_specs
