@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
+from lumilake_server.schemas.progress import BatchNodeStats
 
 
 def _manager() -> FlowmeshRuntimeManager:
@@ -49,19 +50,19 @@ def test_batch_progress_elapsed_and_node_totals(
     ):
         progress = manager._build_batch_progress([(request_id, batch_id)])
 
-    assert progress["overall_progress"]["raw_nodes"] == total_nodes
-    assert progress["overall_progress"]["flowmesh_nodes"] == total_nodes
-    batch_info = progress["batches"][0]
+    assert progress.overall_progress.raw_nodes == total_nodes
+    assert progress.overall_progress.flowmesh_nodes == total_nodes
+    batch_info = progress.batches[0]
     if done:
-        assert progress["completed"] == 1
-        assert progress["running"] == 0
-        assert batch_info["status"] == "COMPLETED"
+        assert progress.completed == 1
+        assert progress.running == 0
+        assert batch_info.status == "COMPLETED"
     else:
-        assert progress["completed"] == 0
-        assert progress["running"] == 1
-        assert batch_info["status"] == "RUNNING"
+        assert progress.completed == 0
+        assert progress.running == 1
+        assert batch_info.status == "RUNNING"
     expected_elapsed = 30.0 if done else 60.0
-    assert batch_info["elapsed_time"] == expected_elapsed
+    assert batch_info.elapsed_time == expected_elapsed
 
 
 def test_batch_progress_counts_flowmesh_task_status_values() -> None:
@@ -79,14 +80,10 @@ def test_batch_progress_counts_flowmesh_task_status_values() -> None:
     }
 
     progress = manager._build_batch_progress([batch_key])
-    nodes = progress["batches"][0]["nodes"]
-    assert nodes == {
-        "total": 4,
-        "succeeded": 1,
-        "failed": 1,
-        "dispatched": 1,
-        "pending": 1,
-    }
+    nodes = progress.batches[0].nodes
+    assert nodes == BatchNodeStats(
+        total=4, succeeded=1, failed=1, dispatched=1, pending=1
+    )
 
 
 def test_batch_progress_counts_multiple_running_batches() -> None:
@@ -112,8 +109,8 @@ def test_batch_progress_counts_multiple_running_batches() -> None:
 
     progress = manager._build_batch_progress([first_key, second_key])
 
-    assert progress["running"] == 2
-    statuses = [item["status"] for item in progress["batches"]]
+    assert progress.running == 2
+    statuses = [item.status for item in progress.batches]
     assert statuses == ["RUNNING", "RUNNING"]
-    batch_ids = [item["batch_id"] for item in progress["batches"]]
+    batch_ids = [item.batch_id for item in progress.batches]
     assert batch_ids == [first_batch, second_batch]

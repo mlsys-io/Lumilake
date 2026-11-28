@@ -107,7 +107,7 @@ def _iter_job_records(
         if not summaries:
             break
         for summary in summaries:
-            record = storage.load(str(summary["job_id"]))
+            record = storage.load(summary.job_id)
             if record is None:
                 continue
             records.append(record)
