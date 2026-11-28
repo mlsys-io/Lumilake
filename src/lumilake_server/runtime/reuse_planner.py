@@ -765,7 +765,9 @@ def _dispatch_record_keys(
             if node in plan.hits and plan.key_paths.get(node) is not None
         ]
         if len(served) == 1:
-            keys[node_id] = RecordKey(node=served[0], path=_declared_path(inherited))
+            keys[node_id] = RecordKey(
+                node=served[0], path=_declared_path(inherited), inherited=True
+            )
     return keys
 
 
