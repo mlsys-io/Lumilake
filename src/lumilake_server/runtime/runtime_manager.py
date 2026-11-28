@@ -513,6 +513,7 @@ def _served_for_level(
             keyed=entries[0].address.record is not None,
             values=[entry.value for entry in entries],
             keys=[entry.address.record for entry in entries],
+            paths=plan.key_paths.get(node_id),
             entries=entries.copy(),
         )
         for entry in entries:
@@ -2352,7 +2353,6 @@ class FlowmeshRuntimeManager:
                 ),
                 content_nodes=() if reuse_plan is None else set(reuse_plan.content),
                 alias=None if reuse_plan is None else _generated_steps(reuse_plan),
-                inherited=reuse_plan.inherited if reuse_plan is not None else (),
             )
         return {
             "flat_outputs": flat_outputs,
@@ -2389,7 +2389,6 @@ class FlowmeshRuntimeManager:
                     plan, self._reuse_content_reads.get(request_info.request_id, {})
                 ),
                 content_nodes=set(plan.content),
-                inherited=plan.inherited,
             )
         self.logger.info(
             "Record reuse answered request %s from the store with no dispatch",
@@ -2851,7 +2850,6 @@ class FlowmeshRuntimeManager:
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
         alias: Mapping[str, str] | None = None,
-        inherited: Collection[str] = frozenset(),
     ) -> dict[str, list[RecordEntry]]:
         """Write this batch's records once; a write error never fails the job.
         Returns the entries written for each producing node, by node id, with an
@@ -2876,7 +2874,6 @@ class FlowmeshRuntimeManager:
                 served=served,
                 content_nodes=content_nodes,
                 alias=alias,
-                inherited=inherited,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
