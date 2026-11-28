@@ -23,30 +23,30 @@ def key_problem(op_id: str, items: Any, column: str) -> str | None:
         if rows is None:
             return (
                 f"DataRetrievalOp '{op_id}' declares key {column!r}, but item"
-                f" {item_index} of this batch has a table that could not be"
-                " read as a column table"
+                f" {item_index} of this batch has a table that could not be read as a"
+                " column table"
             )
         for row_position, row in enumerate(rows):
             where = f"{_position(row_position, item_index)} of this batch"
             if column not in row:
                 return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
-                    f" {where} has no such column"
+                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but {where}"
+                    " has no such column"
                 )
             value = row[column]
             if value is None:
                 return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but"
-                    f" {where} has a null key; a record key is never null"
+                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but {where}"
+                    " has a null key; a record key is never null"
                 )
             key = _key_text(value)
             if key in seen:
                 first_row, first_item = seen[key]
                 return (
-                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but the"
-                    f" key {key!r} is repeated at {_position(first_row, first_item)}"
-                    f" and {_position(row_position, item_index)} of this batch;"
-                    " one retrieval emits one record per key"
+                    f"DataRetrievalOp '{op_id}' declares key {column!r}, but the key"
+                    f" {key!r} is repeated at {_position(first_row, first_item)} and"
+                    f" {_position(row_position, item_index)} of this batch; one"
+                    " retrieval emits one record per key"
                 )
             seen[key] = (row_position, item_index)
     return None
