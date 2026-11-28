@@ -18,17 +18,13 @@ KeyPaths = Annotated[
 
 
 class RecordKey(BaseModel):
-    """A record key: the node that carries the rows' keys, and the path into it,
-    or the several paths whose values in order name a key. A key an op declares
-    names a path in the node's rows; an ``inherited`` key, which the reuse
-    planner gives a re-dispatched op in place of a declaration, is positional
-    and takes the node's own keys."""
+    """A record key an op declares: the node that carries its rows' keys, and
+    the path into it, or the several paths whose values in order name a key."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     node: StrictStr = Field(min_length=1)
     path: StrictStr | KeyPaths = ""
-    inherited: bool = False
 
 
 def record_key(key: Any, op_id: str) -> RecordKey:
