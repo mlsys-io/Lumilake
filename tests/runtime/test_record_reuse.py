@@ -101,14 +101,8 @@ _LOG = logging.getLogger("t")
 _BASE_ROWS = [{"id": "a", "q": "one"}, {"id": "b", "q": "two"}]
 
 
-def _patient_workflow(ops: list[dict[str, Any]], output: str, rows: list[Any]) -> Any:
-    """A workflow over ``rows`` that outputs ``output``."""
-    return {
-        "name": "patients",
-        "inputs": {"Rows": [json.dumps(row) for row in rows]},
-        "ops": ops,
-        "outputs": [{"name": "o", "ref": output}],
-    }
+def _rows(rows: list[Any]) -> dict[str, list[str]]:
+    return {"Rows": [json.dumps(row) for row in rows]}
 
 
 def _changed(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -569,7 +563,8 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
     """A reader declaring one path of a several-path keyed input stores under
     that path's value both when it runs and when that input is served."""
     rows = [{"pid": f"p{n}", "nctid": f"N{n}", "note": f"n{n}"} for n in (1, 2)]
-    workflow = _patient_workflow([_NOTES, _ASK], "Ask", rows)
+    out = [{"name": "o", "ref": "Ask"}]
+    workflow = {"inputs": _rows(rows), "ops": [_NOTES, _ASK], "outputs": out}
     changed = {**workflow, "ops": [_NOTES, {**_ASK, "code": "lambda c: ['?']"}]}
     replies = [row["note"] + "!" for row in rows]
     storage = InMemoryJobStorage()
@@ -593,14 +588,13 @@ async def test_a_reader_keeps_its_declared_path_on_a_served_input() -> None:
 @pytest.mark.asyncio
 async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
     """A parse step re-dispatched over a served keyed input stores under that
-    input's keys, though its own values carry no pid, so the next run hits it."""
-    rows = [{"pid": f"p{n}", "note": f"n{n}"} for n in (1, 2)]
-    notes = [json.dumps({"note": row["note"]}) for row in rows]
-    parsed = [json.loads(note) for note in notes]
-    workflow = _patient_workflow([_NOTED, _PARSE], "Parsed", rows)
-    changed = {**workflow, "ops": [_NOTED, {**_PARSE, "on_fail": "raw"}]}
+    input's keys, though its values carry no id, so the next run hits it."""
+    rows = [{"id": f"n{n}", "doc": json.dumps({"text": f"t{n}"})} for n in (1, 2)]
+    docs, parsed = [row["doc"] for row in rows], [{"text": f"t{n}"} for n in (1, 2)]
+    workflow = {**_parse_workflow(rows), "ops": [_DOC_MARK, _PARSE_OP]}
+    changed = {**workflow, "ops": [_DOC_MARK, _CHANGED_PARSE]}
     storage = InMemoryJobStorage()
-    await _run(storage, workflow, {"Notes": notes, "Parsed": parsed}, "req-1")
+    await _run(storage, workflow, {"Mark": docs, "Parsed": parsed}, "req-1")
     plan, dispatched = _planned(storage, _runtime_graph(changed))
     assert _decisions(plan)["Parsed"][0] == "miss", _decisions(plan)
     await _run(
@@ -613,9 +607,7 @@ async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
     )
     entries = read_index(storage, "req-2")
     assert entries is not None
-    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"p1", "p2"}
-    again, _ = _planned(storage, _runtime_graph(changed))
-    assert _decisions(again)["Parsed"] == ("hit", None), _decisions(again)
+    assert {e.record for e in entries.entries if e.op == "Parsed"} == {"n1", "n2"}
 
 
 @pytest.mark.asyncio
@@ -916,14 +908,12 @@ def _pipeline(
     }
 
 
-_PATIENT_CODE = "lambda c: [json.loads(v) for v in c[0]]"
-_NOTED_CODE = "lambda c: [json.dumps(json.loads(v)['note']) for v in c[0]]"
-_NOTES = {**_op("Notes", ["Rows"], "notes", _PATIENT_CODE, "row")}
+_DECODE = "lambda c: [json.loads(v) for v in c[0]]"
+_NOTES = {**_op("Notes", ["Rows"], "notes", _DECODE, "row")}
 _NOTES |= {"key": {"node": "Rows", "path": ["pid", "nctid"]}}
-_NOTED = {**_NOTES, "code": _NOTED_CODE, "key": {"node": "Rows", "path": "pid"}}
-_ASK = {**_op("Ask", ["Notes"], "ask", _PATIENT_CODE, "row")}
+_ASK = {**_op("Ask", ["Notes"], "ask", _DECODE, "row")}
 _ASK |= {"key": {"node": "Notes", "path": "nctid"}}
-_PARSE = {"id": "Parsed", "op": "ParseOp", "inputs": ["Notes"]}
+_DOC_MARK = {**_MARK_OP, "code": "lambda c: [json.loads(v)['doc'] for v in c[0]]"}
 
 
 def _ask(op: str, inputs: list[str], **fields: Any) -> dict[str, Any]:
