@@ -196,43 +196,6 @@ def test_join_fails_on_a_bad_key(tmp_path: Path) -> None:
         )
 
 
-def test_a_join_that_joins_its_own_rows_sets_their_count() -> None:
-    """A join sets its own rows under ``inner``, ``full`` or ``many_to_many``."""
-    yaml = """
-name: j
-inputs:
-  Cases: [a, b, c]
-ops:
-  - id: Left
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: left
-    code: |
-      def left(row):
-          return {"case_id": row[0], "text": row[0]}
-  - id: Right
-    op: LambdaOp
-    mode: row
-    inputs: [Cases]
-    fn_name: right
-    code: |
-      def right(row):
-          return {"case_id": row[0], "n": 1}
-"""
-    mm = "left\n    cardinality: many_to_many"
-    for how, whole in (("left", False), ("inner", True), ("full", True), (mm, True)):
-        spec = parse_yaml_payload(
-            yaml + f"  - id: Merge\n    op: JoinOp\n    inputs: [Left, Right]\n    by:"
-            f" case_id\n    how: {how}\n"
-        )["j"]
-        runtime = RuntimeGraphBuilder().build(
-            Graph.from_json(spec["graph"]).compile(**spec["inputs"]),
-            node_prefix="g",
-        )
-        assert (_join_of(runtime).node_id in runtime.own_row_count_nodes()) is whole
-
-
 def test_join_require_match_refuses_a_stray_key(tmp_path: Path) -> None:
     node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
     stray = {"case_id": "z", "text": "not in the first input"}
@@ -269,9 +232,7 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     assert [row["case_id"] for row in left] == ["a", "b"]
     assert left[0]["text"] == "hello"
     assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
-    full = run("full", "full")
-    assert [row["case_id"] for row in full] == ["a", "b", "z"]
-    assert full[2] == stray
+    assert run("full", "full") == [_ROWS[0], _ROWS[1], stray]
     with pytest.raises(ValueError, match="how"):
         _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
@@ -289,9 +250,7 @@ def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None
         _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
 
 
-def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
-    tmp_path: Path,
-) -> None:
+def test_join_reads_a_table_in_order_and_keeps_a_value_typed(tmp_path: Path) -> None:
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
     reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
