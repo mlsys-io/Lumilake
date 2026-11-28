@@ -26,43 +26,23 @@ inputs:
     - '{"case_id": "b", "text": "DIAGNOSIS READY: flu"}'
     - '{"case_id": "c", "text": "REQUEST TEST: cbc"}'
 ops:
-  - id: State
-    op: LambdaOp
-    mode: list
-    inputs: [Rows]
-    fn_name: state
-    code: |
-      def state(c):
-          return [json.loads(v) for v in c[0]]
-  - id: Route
-    op: RouterOp
-    inputs: [State]
-    path: text
-    default_branch: patient
-    rules:
-      - {branch: diagnose, match: contains, value: "DIAGNOSIS READY"}
+  - {id: State, op: LambdaOp, mode: list, inputs: [Rows], fn_name: state,
+     code: "def state(c):\\n    return [json.loads(v) for v in c[0]]"}
+  - {id: Route, op: RouterOp, inputs: [State], path: text,
+     default_branch: patient,
+     rules: [{branch: diagnose, match: contains, value: "DIAGNOSIS READY"}]}
 """
 
 _TURN = """
-  - id: PatientTurn
-    op: LLMChatOp
-    inputs: [State]
-    messages:
-      - {role: user, content: "Answer the patient."}
-    config: {model: test/model}
-    rowwise_template: "Reply to {text}"
-    rowwise_columns: [{label: text, node: State, path: items.output.text}]
+  - {id: PatientTurn, op: LLMChatOp, inputs: [State],
+     messages: [{role: user, content: "Answer the patient."}],
+     config: {model: test/model}, rowwise_template: "Reply to {text}",
+     rowwise_columns: [{label: text, node: State, path: items.output.text}]}
 """
 
 _REPLY = """
-  - id: Reply
-    op: LambdaOp
-    mode: row
-    inputs: [State]
-    fn_name: reply
-    code: |
-      def reply(row):
-          return 1
+  - {id: Reply, op: LambdaOp, mode: row, inputs: [State], fn_name: reply,
+     code: "def reply(row):\\n    return 1"}
 """
 
 
@@ -150,14 +130,8 @@ def test_a_join_attaching_a_chat_feeds_a_list_lambda_and_records_its_output() ->
             "State, PatientTurn",
             """
     attach: {patient_reply: PatientTurn}
-  - id: Summary
-    op: LambdaOp
-    mode: list
-    inputs: [Merge]
-    fn_name: summary
-    code: |
-      def summary(c):
-          return [row["case_id"] for row in c[0]]
+  - {id: Summary, op: LambdaOp, mode: list, inputs: [Merge], fn_name: summary,
+     code: "def summary(c):\\n    return [row['case_id'] for row in c[0]]"}
 outputs:
   - {name: merged, ref: Merge}
 """,
@@ -175,16 +149,12 @@ outputs:
 
 
 _AMBIGUOUS_TURN = """
-  - id: PatientTurn
-    op: LLMChatOp
-    inputs: [Route.patient]
-    messages:
-      - {role: user, content: "Reply to the patient"}
-    config: {model: test/model}
-    rowwise_template: "Reply to {case_id}"
-    rowwise_columns:
-      - {label: case_id, node: Route.patient, path: items.output.case_id}
-      - {label: text, node: State, path: items.output.text}
+  - {id: PatientTurn, op: LLMChatOp, inputs: [Route.patient],
+     messages: [{role: user, content: "Reply to the patient"}],
+     config: {model: test/model}, rowwise_template: "Reply to {case_id}",
+     rowwise_columns: [
+       {label: case_id, node: Route.patient, path: items.output.case_id},
+       {label: text, node: State, path: items.output.text}]}
 """
 
 
@@ -263,12 +233,33 @@ ops:
         assert (_join_of(runtime).node_id in runtime.own_row_count_nodes()) is whole
 
 
+def test_join_require_match_refuses_a_stray_key(tmp_path: Path) -> None:
+    node = _join_node(_merge("State, Route.diagnose", "    require_match: true\n"))
+    stray = {"case_id": "z", "text": "not in the first input"}
+    outsider = {0: [{"output": [_ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]}
+    with pytest.raises(ValueError, match='key "z" is not in'):
+        _run(tmp_path, node, outsider, "stray")
+
+
+_PER_ROW = """
+  - {id: PerRow, op: LambdaOp, mode: row, inputs: [Rows], fn_name: per_row,
+     code: "def per_row(row):\\n    return {'case_id': json.loads(row[0])['case_id']}"}
+"""
+
+
+def test_a_join_follows_its_first_input_s_row_count() -> None:
+    """A join's rows are its first input's, so a ``left`` join of a fan-out with
+    a per-row further input sets its own row count; the reverse shape keeps one
+    row per job row and stays out."""
+    for inputs, whole_run in (("State, PerRow", True), ("PerRow, State", False)):
+        runtime = _build(_PER_ROW + _merge(inputs, "    how: left\n"))
+        merged = _join_of(runtime)
+        assert (merged.node_id in runtime.own_row_count_nodes()) is whole_run
+
+
 def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     stray = {"case_id": "z", "text": "not in the first input"}
-    staged = {
-        0: [{"output": [_ROWS[0], _ROWS[1]]}],
-        1: [{"output": [_ROWS[1], stray]}],
-    }
+    staged = {0: [{"output": [_ROWS[0], _ROWS[1]]}], 1: [{"output": [_ROWS[1], stray]}]}
 
     def run(how: str, name: str) -> list[dict[str, Any]]:
         node = _join_node(_merge("State, Route.diagnose", f"    how: {how}\n"))
@@ -304,11 +295,7 @@ def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
     reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
-    out = _run(
-        tmp_path,
-        node,
-        {0: [{"output": [{"df": json.dumps(table)}]}], 1: reply},
-    )
+    out = _run(tmp_path, node, {0: [{"output": [{"df": json.dumps(table)}]}], 1: reply})
     assert [item["output"] for item in out["items"]] == [
         {"case_id": "a", "text": "x", "reply": {"n": 1}},
         {"case_id": "c", "text": "z", "reply": {"n": 1}},
@@ -463,25 +450,18 @@ def test_join_output_reads_as_a_rowwise_node_column() -> None:
         _merge(
             "State, Route.diagnose",
             """
-  - id: Ask
-    op: LLMChatOp
-    inputs: [Merge]
-    messages:
-      - {role: user, content: "Go"}
-    config: {model: test/model}
-    rowwise_template: "{text}"
-    rowwise_columns: [{label: text, node: Merge, path: items.output.text}]
+  - {id: Ask, op: LLMChatOp, inputs: [Merge],
+     messages: [{role: user, content: "Go"}], config: {model: test/model},
+     rowwise_template: "{text}",
+     rowwise_columns: [{label: text, node: Merge, path: items.output.text}]}
 """,
         )
     )
     merge = _join_of(runtime)
-    ask = next(
-        node for node in runtime.nodes.values() if isinstance(node.data_spec, DataFrame)
-    )
+    ask = next(n for n in runtime.nodes.values() if isinstance(n.data_spec, DataFrame))
     (column,) = ask.data_spec.columns
     assert column.node == merge.node_id
-    # A join's per-row fields sit under the python envelope, as a list Lambda's do, not
-    # at the declared path.
+    # A join's fields sit under the python envelope, not at the declared path.
     assert column.path == "value.items.output.text"
 
 
