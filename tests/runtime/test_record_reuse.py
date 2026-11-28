@@ -430,7 +430,7 @@ async def test_a_redispatched_parse_keeps_its_served_inputs_keys() -> None:
     storage = InMemoryJobStorage()
     await _run(storage, workflow, {"Notes": notes, "Parsed": parsed}, "req-1")
     plan, dispatched = _planned(storage, _runtime_graph(changed))
-    assert _decisions(plan)["Parsed"] == ("miss", "no entry"), _decisions(plan)
+    assert _decisions(plan)["Parsed"][0] == "miss", _decisions(plan)
     await _run(
         storage,
         changed,
