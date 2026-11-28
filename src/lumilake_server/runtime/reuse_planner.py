@@ -1744,7 +1744,9 @@ def _dispatch_record_keys(
             if node not in nodes and plan.key_paths.get(node)
         ]
         if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=_declared_path(inherited))
+            keys[node_id] = RecordKey(
+                node=sources[0], path=_declared_path(inherited), inherited=True
+            )
     return keys
 
 
