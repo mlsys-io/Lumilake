@@ -1132,9 +1132,9 @@ def build_round(
     extra_engine_kwargs: dict[str, Any] | None = None,
     include_proposer: bool = True,
     rows: int = 1,
-    cleared_ids: Collection[str] = (),
     job_seed: int = 0,
     template_ids: dict[str, str] | None = None,
+    cleared_ids: Collection[str] = (),
     symbols: Sequence[str] = (),
 ) -> RoundBuild:
     """Assemble the native graph for one round.

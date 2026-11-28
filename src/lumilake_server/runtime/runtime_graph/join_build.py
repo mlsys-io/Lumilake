@@ -1,9 +1,4 @@
-"""Building one join's python step.
-
-An attach target's row source is resolved here, so the step pairs values with keys by
-position. Consumers in an earlier phase read the join by its op id, which is its runtime
-node id, so only the join phase builds the step.
-"""
+"""Building one join's python step, pairing each attach's values with keyed rows."""
 
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
@@ -68,7 +63,9 @@ def row_source_candidates(op: Op, ctx: LoweringContext, consumer: str) -> list[O
 
 
 def _non_literal(op: Op) -> list[Op]:
-    return [inp for inp in op.inputs if not isinstance(inp, (InputOp, DataOp))]
+    """The op's inputs that compile to a runtime node, or every input."""
+    inputs = [inp for inp in op.inputs if not isinstance(inp, (InputOp, DataOp))]
+    return inputs or op.inputs
 
 
 def _drop_broadcasts(inputs: list[Op], ctx: LoweringContext) -> list[Op]:
@@ -114,7 +111,7 @@ def build_join_step(
     columns: list[int] = []
     for column in op.columns:
         columns.append(_planned(builder, op, column, ctx, plan, dependencies))
-    attach: list[tuple[str, int, int]] = []
+    attach: list[tuple[str, int, int, bool]] = []
     for field, target in op.attach_ops.items():
         consumer = f"JoinOp '{op.id}' attach field {field!r} reading '{target.id}'"
         if isinstance(target, FormatOp):
@@ -128,6 +125,7 @@ def build_join_step(
                 field,
                 _planned(builder, op, target, ctx, plan, dependencies),
                 _planned(builder, op, source, ctx, plan, dependencies),
+                source.id == op.columns[0].id,
             )
         )
     node = builder._create_runtime_op(
@@ -139,10 +137,12 @@ def build_join_step(
             join=JoinDescription(
                 node=op.id,
                 by=op.by,
+                row_key=op.row_key,
                 inputs=columns,
                 attach=attach,
                 how=op.how,
                 require_match=op.require_match,
+                cardinality=op.cardinality,
                 on_missing=op.on_missing,
             ),
             timeout_s=python_step.DEFAULT_TIMEOUT_SECONDS,
@@ -166,6 +166,8 @@ def _planned(
 ) -> int:
     """The plan index reading one column's values, one per row."""
     ctx.visited.add(column.id)
+    if isinstance(column, (InputOp, DataOp)):
+        return _literal(join, column, ctx, plan)
     runtime_ids = ctx.dsl_to_runtime.get(column.id)
     if not runtime_ids:
         raise ValueError(
@@ -185,4 +187,23 @@ def _planned(
     plan.append(entry)
     if node not in dependencies:
         dependencies.append(node)
+    return len(plan) - 1
+
+
+def _literal(
+    join: JoinOp,
+    column: InputOp | DataOp,
+    ctx: LoweringContext,
+    plan: list[ColumnPlanEntry],
+) -> int:
+    """The plan index reading a literal column's values, one per row."""
+    if isinstance(column, InputOp):
+        values = ctx.inputs_dict.get(column.name)
+        if values is None:
+            raise ValueError(
+                f"JoinOp '{join.id}' input '{column.id}' has no values supplied."
+            )
+    else:
+        values = column.data.copy()
+    plan.append(ColumnPlanEntry(kind="literal", values=values))
     return len(plan) - 1

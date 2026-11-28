@@ -319,17 +319,6 @@ def test_a_parse_op_that_keeps_the_raw_text_is_not_a_marker_source(
         _build([_parse(format="json"), _model_reading("P")], values)
 
 
-_EXPAND_UNITS: dict[str, Any] = {
-    "id": "E",
-    "op": "LambdaOp",
-    "inputs": ["Answer"],
-    "mode": "expand",
-    "fn_name": "units",
-    "code": (
-        "def units(row):\n    return [u for u in row[0]['units'].split(',') if u]\n"
-    ),
-}
-
 _EXPAND_UNITS = _lower(
     mode="expand",
     id="E",

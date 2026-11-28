@@ -316,13 +316,20 @@ outputs: [{name: merged, ref: Merge}]
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    ("how", "status"), [("inner", 422), ("full", 422), ("left", 200)]
+    ("how", "status"),
+    [
+        ("inner", 422),
+        ("full", 422),
+        ("left", 200),
+        ("left, cardinality: many_to_many", 422),
+    ],
 )
 async def test_a_sliced_join_output_follows_its_own_row_count(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch, how: str, status: int
 ) -> None:
     """An ``inner`` or ``full`` join sets its own row count, so submit refuses a
-    sliced output of it; a ``left`` join keeps one row per first-input row."""
+    sliced output of it, and so does a ``many_to_many`` join; a ``left`` join
+    keeps one row per first-input row."""
     monkeypatch.setattr(
         job_routes_module.LumilakeServer,
         "get_started_instance",
@@ -357,6 +364,6 @@ async def test_a_sliced_join_output_follows_its_own_row_count(
     assert resp.status_code == status
     if status == 422:
         assert "Workflow 'w' output 'merged'" in resp.json()["detail"]
-        assert "inner or full join" in resp.json()["detail"]
+        assert "inner, full or many_to_many join" in resp.json()["detail"]
     for task in list(app.state.background_tasks):
         await task
