@@ -111,6 +111,7 @@ def _record_payload(record: JobRecord) -> dict[str, Any]:
         "submitted_at": record.submitted_at,
         "org_id": record.org_id,
         "user_id": record.user_id,
+        "seed": record.seed,
         "started_at": record.started_at,
         "finished_at": record.finished_at,
         "optimization_seconds": record.optimization_seconds,
