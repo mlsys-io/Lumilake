@@ -10,6 +10,7 @@ from weakref import WeakValueDictionary
 
 from lumilake.log import Logger
 from lumilake_server.data_specs import DataFrame, PythonData
+from lumilake_server.ops import KeyPaths
 from lumilake_server.runtime.record_store import (
     EffectVersions,
     RecordAddress,
@@ -131,7 +132,7 @@ class RecordPlan:
         *,
         op: RuntimeOp,
         op_name: str,
-        key_path: str | Sequence[str] | None,
+        key_path: str | KeyPaths | None,
         logical_names: Mapping[str, str],
     ) -> None:
         self.op = op
@@ -595,7 +596,7 @@ def _logical_names(runtime_graph: RuntimeGraph) -> dict[str, str]:
 
 def _key_path(
     runtime_graph: RuntimeGraph, node_id: str, plans: Mapping[str, RecordPlan]
-) -> str | Sequence[str] | None:
+) -> str | KeyPaths | None:
     """A node's record-key path or paths: the ones its op declares, else the
     path of the single keyed input a 1:1 node reads by position, else ``None``
     (whole-op)."""
@@ -685,7 +686,7 @@ def _collect_node_records(
 def _record_keys(
     runtime_graph: RuntimeGraph,
     plan: RecordPlan,
-    key_path: str | Sequence[str],
+    key_path: str | KeyPaths,
     values: Sequence[Any],
     produced: Mapping[str, Sequence[Any]],
     logger: Logger,
@@ -714,7 +715,7 @@ def _record_keys(
 
 
 def _declared_rows(
-    plan: RecordPlan, path: str | Sequence[str], count: int, logger: Logger
+    plan: RecordPlan, path: str | KeyPaths, count: int, logger: Logger
 ) -> Sequence[Any] | None:
     """The literal list the op carries for a declared input, when exactly one of
     its lists holds ``count`` rows that all carry a key at ``path``."""
