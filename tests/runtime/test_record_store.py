@@ -6,17 +6,14 @@ import json
 import logging
 import time
 from dataclasses import replace
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import yaml
 
-from lumilake import envs
 from lumilake_server.graphs import Graph
 from lumilake_server.ops import RecordKey
 from lumilake_server.parser import parse_yaml_payload
-from lumilake_server.runtime.optimizer.base import Schedule
 from lumilake_server.runtime.optimizer.halo import HaloOptimizer
 from lumilake_server.runtime.record_store import (
     RecordEntry,
@@ -31,12 +28,9 @@ from lumilake_server.runtime.record_writer import (
     read_entry,
     read_index,
 )
-from lumilake_server.runtime.request import RequestInfo
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_manager import FlowmeshRuntimeManager
 from lumilake_server.runtime.sensitive import REDACTED_TOKEN_PLACEHOLDER
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.runtime.runtime_manager.conftest import serve
 
 
 def _code(fn: str, body: str) -> str:
@@ -675,57 +669,13 @@ outputs: [{name: pairs, ref: Pairs}]
 
 
 @pytest.mark.asyncio
-async def test_a_key_of_several_paths_stores_one_record_per_composite(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_key_of_several_paths_stores_one_record_per_composite() -> None:
     """A key naming several paths keys a row by those paths' values in order, so
     two rows sharing the second path but not the first are two records."""
     rows = [{"patient": "p1", "trial": "t1"}, {"patient": "p2", "trial": "t1"}]
-    payload = _COMPOSITE_KEY % [json.dumps(row) for row in rows]
-    graph = next(iter(parse_yaml_payload(payload).values()))
-    compiled = Graph.from_json(graph["graph"]).compile(**graph["inputs"])
-    runtime_graph = RuntimeGraphBuilder().build(compiled, store_records=True)
-    (node,) = runtime_graph.node_order
-    storage = InMemoryJobStorage()
-
-    async def _submit(
-        _self: FlowmeshRuntimeManager, _task_yaml: str, _submit_id: str
-    ) -> tuple[str, list[str]]:
-        return "wf-1", ["task-pairs"]
-
-    async def _retrieve(_task_id: str) -> dict[str, Any]:
-        return {"items": [{"output": row} for row in rows]}
-
-    monkeypatch.setattr(
-        "lumilake_server.runtime.runtime_manager.get_job_storage", lambda: storage
-    )
-    monkeypatch.setattr(envs, "LUMID_DATA_URL", "http://lumid-data")
-    monkeypatch.setattr(envs, "LUMID_DATA_TOKEN", "test-token")
-    monkeypatch.setattr(envs, "LUMILAKE_POLL_INTERVAL_SECONDS", 0.0)
-    monkeypatch.setattr(FlowmeshRuntimeManager, "_submit_workflow", _submit)
-    monkeypatch.setattr(
-        FlowmeshRuntimeManager,
-        "fm",
-        property(
-            lambda _self: SimpleNamespace(results=SimpleNamespace(retrieve=_retrieve))
-        ),
-    )
-    serve(monkeypatch, {"task-pairs": "DONE"}, {"task-pairs": node})
-    request = RequestInfo(
-        request_id="req-composite",
-        runtime_graphs={"g": runtime_graph},
-        data_profile_graphs={},
-        store_records=True,
-    )
-    request.runtime_graph = runtime_graph
-    request.batch_id = "batch-1"
-    request.output_node_map = {node: ("g", "pairs")}
-    await FlowmeshRuntimeManager().process_request(
-        request, Schedule(worker_assignment={"w": [node]}), ["w"]
-    )
-    index = read_index(storage, "req-composite")
-    assert index is not None
-    assert [entry.record for entry in index.entries] == [
+    payload = yaml.safe_load(_COMPOSITE_KEY % [json.dumps(row) for row in rows])
+    storage, _ = await _write(_runtime_graph(payload), {"Pairs": rows})
+    assert [e.address.record for e in _entries(storage)] == [
         canonical_json(["p1", "t1"]),
         canonical_json(["p2", "t1"]),
     ]

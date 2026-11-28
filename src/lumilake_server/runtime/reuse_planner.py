@@ -20,7 +20,7 @@ from lumilake_server.data_specs import (
     PythonData,
     parse_data_spec,
 )
-from lumilake_server.ops import RecordKey
+from lumilake_server.ops import KeyPathList, RecordKey
 from lumilake_server.runtime.lambda_task_helpers import items_column
 from lumilake_server.runtime.record_store import (
     EffectVersions,
@@ -118,7 +118,7 @@ class ReusePlan(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)
     """Node id -> its output name, so a fully answered request rebuilds every
     hit output without the graph it planned from."""
-    key_paths: dict[str, str | list[str]] = Field(default_factory=dict)
+    key_paths: dict[str, str | Sequence[str]] = Field(default_factory=dict)
     """Node id -> the record-key path or paths it plans with, so a dispatched op
     keeps the key it inherited from a served input even after that input left
     the graph."""
@@ -734,6 +734,11 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
     )
 
 
+def _declared_path(path: str | Sequence[str]) -> str | KeyPathList:
+    """A key path as ``RecordKey`` holds it: one string, or the paths in a tuple."""
+    return path if isinstance(path, str) else tuple(path)
+
+
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
@@ -753,7 +758,7 @@ def _dispatch_record_keys(
             if node in plan.hits and plan.key_paths.get(node) is not None
         ]
         if len(served) == 1:
-            keys[node_id] = RecordKey(node=served[0], path=inherited)
+            keys[node_id] = RecordKey(node=served[0], path=_declared_path(inherited))
     return keys
 
 
@@ -818,7 +823,9 @@ def _content_input(records: ContentRecords) -> _Input:
     )
 
 
-def _literal_input(values: Sequence[Any], key_path: str | list[str] | None) -> _Input:
+def _literal_input(
+    values: Sequence[Any], key_path: str | Sequence[str] | None
+) -> _Input:
     """One literal rows list, named per value and keyed by the op's key path."""
     return _Input(
         named=RecordInput(
