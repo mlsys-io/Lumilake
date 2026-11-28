@@ -561,10 +561,7 @@ _SPLIT = {
     "inputs": ["Tag"],
     "mode": "expand",
     "fn_name": "split",
-    "code": (
-        "def split(c):\n"
-        "    return [{'id': c[0]['id'] + str(i), 'n': i} for i in range(2)]\n"
-    ),
+    "code": "lambda c: [{'id': c[0]['id'] + str(i), 'n': i} for i in range(2)]",
 }
 
 
@@ -640,7 +637,7 @@ _OVER_BETWEEN = {
 async def test_two_steps_between_two_chats_land_in_the_first_level(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A row step, an expand and a step over it between two chats join the first level."""
+    """A row step, an expand and a step over it between two chats share a level."""
     tail = {**_AFTER, "id": "Tail", "inputs": ["Ask2"]}
     ops: list[dict[str, Any]] = [
         _TAG,
@@ -701,8 +698,7 @@ async def test_an_op_a_later_reader_refuses_is_left_to_the_main_run(
 async def test_a_failed_sub_run_cancels_its_workflow(
     run: Callable[..., Awaitable[dict[str, Any]]], worker: _Worker
 ) -> None:
-    """A sub-run whose task fails leaves its other tasks running, so the
-    request aborts the workflow it submitted rather than leaving workers held."""
+    """A failed sub-run's request aborts its workflow rather than holding workers."""
     worker.fail_first = True
     with pytest.raises(RuntimeError):
         await run(_workflow([_TAG, _CHAT], _ROWS, "Ask"), "req-fail")
