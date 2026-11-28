@@ -24,8 +24,8 @@ from lumilake.log import trace_id_var
 from lumilake_server import hooks
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.parser import YamlParseError, parse_yaml_payload
+from lumilake_server.records import JobRecord, JobStatus
 from lumilake_server.routes import jobs as job_routes_module
-from lumilake_server.routes.jobs import JobRecord, JobStatus
 from lumilake_server.runtime.protocol import LumilakeResponse
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location

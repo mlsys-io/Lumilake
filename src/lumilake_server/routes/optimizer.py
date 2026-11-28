@@ -39,7 +39,7 @@ async def schedule(
     )
     await run_submission_guards(principal, hook_logger)
     try:
-        graph = RuntimeGraph.deserialize(body.graph.model_dump())
+        graph = RuntimeGraph.from_schema(body.graph)
         optimizer = create_optimizer(optimizer_type=body.optimizer_type)
     except ValueError as exc:
         raise HTTPException(
