@@ -105,13 +105,14 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     assert len(list(compiled.iter_ops(LambdaOp))) == 6
 
 
-def _draws(round_number: int | None) -> list[str]:
+def _draws(round_number: int | None, fn: str = "seed_for_row") -> list[str]:
     rendered = "R" if round_number is None else f"R{round_number - 1}"
     templates = {rendered: "R{{round}}"} if round_number else None
-    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', _KEYED, rendered)}"
+    keyed = _KEYED if fn == "seed_for_row" else _KEYED.replace("m}", "m, n: 2}")
+    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', keyed, rendered)}"
     seeded = parse_yaml_payload(text, round_number=round_number, template_ids=templates)
     seeds = seeded["repeat"]["graph"].values()
-    return [o["_code"] for o in seeds if o.get("fn_name") == "seed_for_row"]
+    return [o["_code"] for o in seeds if o.get("fn_name") == fn]
 
 
 def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
@@ -124,6 +125,9 @@ def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
     assert all("R{{round}}.1.Ask" in code for code in (round_2[0], round_3[0]))
     assert round_2[0] != round_2[1] and round_2[0] != round_3[0]
     assert literal[0] != literal[1] and max(literal) < 2**31
+    fan = _draws(None, "samples_for_row")
+    assert all("_TEMPLATE_ID = 'Ask'" in code for code in fan)
+    assert "_ROUND = 1\n" in fan[0] and "_ROUND = 2\n" in fan[1]
 
 
 def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:
