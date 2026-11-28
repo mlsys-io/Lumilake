@@ -522,16 +522,17 @@ class ReusePlanner:
             if outcome.partial is not None:
                 merge_step = _merge_step(plan.op.task_type, outcome.partial)
                 carries = not merge_step or node_id not in runtime_graph.output_node_map
-                unserved = None
-                if carries and merge_step:
-                    unserved = _unserved_reader_reason(
+                unserved = (
+                    _unserved_reader_reason(
                         runtime_graph, decision, plan.op, outcome.entries or []
                     )
-                if unserved is not None or not merge_step:
-                    # A step rewritten in place emits every live row itself, so its
-                    # readers take a full column and the level can skip it.
+                    if carries
+                    else None
+                )
+                if unserved is not None:
                     decision.refused.add(node_id)
-                if carries and unserved is None:
+                refusal = unserved if merge_step else None
+                if carries and refusal is None:
                     decision.partial[node_id] = outcome.partial
                 decision.decisions.append(
                     RecordDecision(
@@ -539,29 +540,29 @@ class ReusePlanner:
                         node=node_id,
                         decision="miss",
                         reason=(
-                            unserved
+                            refusal
                             or ("partial records" if carries else "value not servable")
                         ),
                         records=(
                             len(outcomes)
-                            if unserved is not None
+                            if refusal is not None
                             else len(outcome.partial.missed)
                         ),
                         outcomes=(
                             outcomes
-                            if unserved is None
+                            if refusal is None
                             else [
                                 RecordOutcome(
                                     record=row.record,
                                     decision="miss",
-                                    reason=unserved,
+                                    reason=refusal,
                                 )
                                 for row in outcomes
                             ]
                         ),
                     )
                 )
-                missing[node_id] = unserved or reason or "no entry"
+                missing[node_id] = refusal or reason or "no entry"
                 continue
             decision.decisions.append(
                 RecordDecision(
