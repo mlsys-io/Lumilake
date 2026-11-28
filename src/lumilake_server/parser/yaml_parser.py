@@ -107,7 +107,7 @@ from ..ops.util_ops import CLEARS_KEY
 from . import keyed_seed
 from .common import make_id as _make_id
 from .common import read_workflow_seed
-from .repeat import unroll_repeats
+from .repeat import CopyIdentity, unroll_repeats
 from .yaml_functions import WorkflowFunctions, parse_functions
 from .yaml_ops.common import EmitContext, OpEntry
 from .yaml_ops.emitters import EMITTERS, op_id_prefix
@@ -342,8 +342,8 @@ def _compile_workflow(
 
     inputs = _validate_inputs(inputs_block)
     functions = parse_functions(spec.get("functions"))
-    ops_block, unroll = unroll_repeats(ops_block, set(inputs))
-    expanded, cleared = expand_routers(ops_block)
+    unrolled = unroll_repeats(ops_block, set(inputs))
+    expanded, cleared = expand_routers(unrolled.ops, unrolled.copied_routers)
     cleared = cleared | frozenset(cleared_ids)
     op_entries = [
         _parse_op_entry(entry, idx, functions) for idx, entry in enumerate(expanded)
@@ -389,7 +389,7 @@ def _compile_workflow(
     while pending:
         progress = False
         for user_id, entry in list(pending.items()):
-            refs = unroll(user_id_to_internal, f"op '{user_id}'", user_id)
+            refs = unrolled.bind(user_id_to_internal, f"op '{user_id}'", user_id)
             missing = [ref for ref in entry.inputs if ref not in refs]
             if missing:
                 raise ValueError(f"op '{user_id}' references unknown id(s): {missing}")
@@ -404,6 +404,7 @@ def _compile_workflow(
                 job_seed,
                 round_number=round_number,
                 template_ids=template_ids,
+                copies=unrolled.copies,
             )
             if user_id in cleared:
                 op_dict[CLEARS_KEY] = True
@@ -419,7 +420,7 @@ def _compile_workflow(
     # 3. OutputOps.
     for out in output_entries:
         where = f"output '{out.name}'"
-        refs = unroll(user_id_to_internal, where, where)
+        refs = unrolled.bind(user_id_to_internal, where, where)
         if out.ref not in refs:
             raise ValueError(f"output '{out.name}' references unknown id '{out.ref}'")
         op_id = _make_id(scope, "output", out.name)
@@ -506,6 +507,7 @@ def _build_op_dict(
     *,
     round_number: int | None = None,
     template_ids: dict[str, str] | None = None,
+    copies: dict[str, CopyIdentity] | None = None,
 ) -> dict[str, Any]:
     internal_id = user_id_to_internal[entry.id]
     input_ids = [user_id_to_internal[ref] for ref in entry.inputs]
@@ -525,6 +527,7 @@ def _build_op_dict(
         job_seed=job_seed,
         round_number=round_number,
         template_ids=template_ids or {},
+        copies=copies or {},
     )
     EMITTERS[entry.op].emit(op_dict, ctx)
     return op_dict

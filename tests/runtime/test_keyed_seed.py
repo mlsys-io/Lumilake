@@ -9,7 +9,7 @@ import pytest
 from lumilake_server.dynamic.driver import build_round
 from lumilake_server.dynamic.template import DriverTemplate, plan_for_round
 from lumilake_server.graphs import Graph
-from lumilake_server.parser import parse_yaml_payload, yaml_parser
+from lumilake_server.parser import keyed_seed, parse_yaml_payload, yaml_parser
 from lumilake_server.parser.common import make_id
 from lumilake_server.parser.keyed_seed import SEED_FN_NAME, rewrite_native_keys, seed_op
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
@@ -103,7 +103,9 @@ def test_the_parsed_step_draws_the_documented_seed_by_key() -> None:
     # Text that is not JSON object or array text is the key as it stands.
     op = seed_op("Answer", "Cases", "items.output", 7, None, "LLMChatOp")
     fn = lambda_runtime.materialize(op["_code"], op["fn_name"])
-    assert fn(("7",)) == documented_seed(["7"])[0] != documented_seed([7])[0]
+    drawn = fn(("7",))
+    assert drawn == documented_seed(["7"])[0] != documented_seed([7])[0]
+    assert drawn == keyed_seed.keyed_seed(7, "Answer", None, "7")
 
 
 def test_a_repeated_key_is_refused_unless_paired() -> None:
