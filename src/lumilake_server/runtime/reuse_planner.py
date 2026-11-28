@@ -216,9 +216,6 @@ class ReusePlan(BaseModel):
     output node the plan serves."""
     partial: dict[str, PartialRecords] = Field(default_factory=dict)
     """Node id -> the records a partially served op keeps and the ones it runs."""
-    inherited: set[str] = Field(default_factory=set)
-    """Node ids whose key the plan gives a dispatched op in place of its own
-    declaration, so the key is positional and takes the served input's keys."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -678,9 +675,7 @@ class ReusePlanner:
         named = [item.named for item in inputs]
         entries: list[RecordEntry] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
-        seeded = _seeded_records(
-            plan, stored, runtime_graph, decision.key_paths
-        )
+        seeded = _seeded_records(plan, stored, runtime_graph, decision.key_paths)
         served = _partially_servable(plan)
         first_reason: str | None = None
         slots: list[Any] = []
@@ -1269,8 +1264,7 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
-    """Each dispatched op's declared key, plus one inherited from a served input,
-    whose op the plan then lists as inherited."""
+    """Each dispatched op's declared key, plus one inherited from a served input."""
     keys = {
         node_id: key
         for node_id, key in runtime_graph.record_keys.items()
@@ -1279,8 +1273,8 @@ def _dispatch_record_keys(
     # Only a served input declares a key: a dispatched producer hands its rows' keys
     # down by position, as a full run does, whatever path its op declares.
     for node_id, op in nodes.items():
-        inherited = plan.key_paths.get(node_id)
-        if node_id in keys or inherited is None:
+        path = plan.key_paths.get(node_id)
+        if node_id in keys or path is None:
             continue
         sources = [
             node
@@ -1288,8 +1282,7 @@ def _dispatch_record_keys(
             if node not in nodes and plan.key_paths.get(node)
         ]
         if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=inherited)
-            plan.inherited.add(node_id)
+            keys[node_id] = RecordKey(node=sources[0], path=path)
     return keys
 
 
