@@ -1960,6 +1960,7 @@ class FlowmeshRuntimeManager:
                     )
                 ),
                 content_nodes=() if reuse_plan is None else set(reuse_plan.content),
+                inherited=reuse_plan.inherited if reuse_plan is not None else (),
             )
         return {
             "flat_outputs": flat_outputs,
@@ -1996,6 +1997,7 @@ class FlowmeshRuntimeManager:
                     plan, self._reuse_content_reads.get(request_info.request_id, {})
                 ),
                 content_nodes=set(plan.content),
+                inherited=plan.inherited,
             )
         self.logger.info(
             "Record reuse answered request %s from the store with no dispatch",
@@ -2160,6 +2162,7 @@ class FlowmeshRuntimeManager:
         results: Mapping[str, Any],
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
+        inherited: Collection[str] = frozenset(),
     ) -> None:
         """Write this batch's records once; an archive or keying error is
         logged and the job continues."""
@@ -2182,6 +2185,7 @@ class FlowmeshRuntimeManager:
                 node_owners=request_info.task_owner_members,
                 served=served,
                 content_nodes=content_nodes,
+                inherited=inherited,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
