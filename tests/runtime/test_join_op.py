@@ -232,9 +232,7 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     assert [row["case_id"] for row in left] == ["a", "b"]
     assert left[0]["text"] == "hello"
     assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
-    full = run("full", "full")
-    assert [row["case_id"] for row in full] == ["a", "b", "z"]
-    assert full[2] == stray
+    assert run("full", "full") == [_ROWS[0], _ROWS[1], stray]
     with pytest.raises(ValueError, match="how"):
         _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
@@ -252,9 +250,7 @@ def test_join_require_match_refuses_a_key_an_input_lacks(tmp_path: Path) -> None
         _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
 
 
-def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
-    tmp_path: Path,
-) -> None:
+def test_join_reads_a_table_in_order_and_keeps_a_value_typed(tmp_path: Path) -> None:
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
     reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
