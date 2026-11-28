@@ -253,6 +253,9 @@ class ReusePlan(BaseModel):
     output node the plan serves."""
     partial: dict[str, PartialRecords] = Field(default_factory=dict)
     """Node id -> the records a partially served op keeps and the ones it runs."""
+    inherited: set[str] = Field(default_factory=set)
+    """Node ids whose key the plan gives a dispatched op in place of its own
+    declaration, so the key is positional and takes the served input's keys."""
 
     def served_nodes(self) -> set[str]:
         return {*self.hits, *self.content_served}
@@ -843,7 +846,9 @@ class ReusePlanner:
         entries: list[RecordEntry] = []
         outcomes: list[RecordOutcome] = []
         source = RecordSource(job=job_id, round=round_number, task_id="")
-        seeded = _seeded_records(plan, stored, runtime_graph)
+        seeded = _seeded_records(
+            plan, stored, runtime_graph, decision.key_paths
+        )
         versions = effect_versions(plan.op)
         served = _partially_servable(plan)
         first_reason: str | None = None
@@ -998,6 +1003,7 @@ def served_records(plan: ReusePlan) -> dict[str, NodeRecords]:
                 [entry.value for entry in entries] if keyed else entries[0].value.copy()
             ),
             keys=[entry.address.record for entry in entries],
+            paths=plan.key_paths.get(node_id),
             entries=entries.copy(),
         )
         for entry in entries:
@@ -1442,6 +1448,7 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
         if node_id in plan.served_nodes():
             continue
         nodes[node_id] = _rewritten(runtime_graph.nodes[node_id], plan, runtime_graph)
+    record_keys = _dispatch_record_keys(runtime_graph, plan, nodes)
     return RuntimeGraph(
         nodes=nodes,
         node_order=[
@@ -1458,7 +1465,7 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
             if node_id in nodes
         },
         dsl_to_runtime=runtime_graph.dsl_to_runtime.copy(),
-        record_keys=_dispatch_record_keys(runtime_graph, plan, nodes),
+        record_keys=record_keys,
         op_names=runtime_graph.op_names.copy(),
     )
 
@@ -1466,7 +1473,8 @@ def _without_hits(runtime_graph: RuntimeGraph, plan: ReusePlan) -> RuntimeGraph:
 def _dispatch_record_keys(
     runtime_graph: RuntimeGraph, plan: ReusePlan, nodes: Mapping[str, RuntimeOp]
 ) -> dict[str, RecordKey]:
-    """Each dispatched op's declared key, plus one inherited from a served input."""
+    """Each dispatched op's declared key, plus one inherited from a served input,
+    whose op the plan then lists as inherited."""
     keys = {
         node_id: key
         for node_id, key in runtime_graph.record_keys.items()
@@ -1484,7 +1492,8 @@ def _dispatch_record_keys(
             if node not in nodes and plan.key_paths.get(node)
         ]
         if len(sources) == 1:
-            keys[node_id] = RecordKey(node=sources[0], path=inherited, inherited=True)
+            keys[node_id] = RecordKey(node=sources[0], path=inherited)
+            plan.inherited.add(node_id)
     return keys
 
 
@@ -1823,6 +1832,7 @@ def _seeded_records(
     plan: RecordPlan,
     stored: Mapping[str, list[RecordEntry]],
     runtime_graph: RuntimeGraph,
+    key_paths: Mapping[str, str | Sequence[str]],
 ) -> dict[str, NodeRecords]:
     """The planned records a node-bound seed column reads, in the seed node's items."""
     spec = plan.op.data_spec
@@ -1850,6 +1860,7 @@ def _seeded_records(
             keyed=True,
             values=[entry.value for entry in entries],
             keys=[entry.address.record for entry in entries],
+            paths=key_paths.get(node),
             items=[_seed_item(entry.value, wrapping) for entry in entries],
         )
     }
