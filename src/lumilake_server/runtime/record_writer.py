@@ -194,13 +194,11 @@ class RecordWriter:
         node_owners: Mapping[str, set[str]] | None = None,
         served: Mapping[str, NodeRecords] | None = None,
         content_nodes: Collection[str] = (),
-        inherited: Collection[str] = frozenset(),
     ) -> int:
         """Write every produced node's records under the round of its owners.
 
         ``served`` holds the records a reuse plan answered without a task; they
-        enter each storing member's index too. ``inherited`` holds the node ids
-        whose key the plan inherited from a served input."""
+        enter each storing member's index too."""
         if not self._enabled:
             return 0
         order = runtime_graph.topological_order()
@@ -212,7 +210,6 @@ class RecordWriter:
             node_task_map,
             results,
             served,
-            inherited,
             self.logger,
         )
         store = {} if member_store is None else member_store
@@ -760,7 +757,6 @@ def _collect_node_records(
     node_task_map: Mapping[str, str],
     results: Mapping[str, Any],
     served: Mapping[str, NodeRecords] | None,
-    inherited: Collection[str],
     logger: Logger,
 ) -> dict[str, NodeRecords]:
     """Read every finished node's records in the order it produced them, and the
@@ -792,7 +788,6 @@ def _collect_node_records(
                 values,
                 produced,
                 records,
-                inherited,
                 logger,
             )
         )
@@ -814,7 +809,6 @@ def _record_keys(
     values: Sequence[Any],
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
-    inherited: Collection[str],
     logger: Logger,
 ) -> list[str | None]:
     """One key per row of one keyed node, in row order; a one-to-one op reads a
@@ -825,15 +819,7 @@ def _record_keys(
         return own
     if not _one_to_one(plan.op):
         return own
-    source = _declared_keys(
-        plan,
-        declared,
-        plan.op.node_id in inherited,
-        len(values),
-        produced,
-        records,
-        logger,
-    )
+    source = _declared_keys(plan, declared, len(values), produced, records, logger)
     if source is None:
         return own
     return [
@@ -845,7 +831,6 @@ def _record_keys(
 def _declared_keys(
     plan: RecordPlan,
     declared: RecordKey,
-    inherited: bool,
     count: int,
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
@@ -855,8 +840,7 @@ def _declared_keys(
     value at the declared path in the rows it produced, in the values a reuse
     plan served for it, or in its literal rows. A served node answers with its
     own key where the declared path is that key's path, and with one component
-    of each key where it names one of a several-path key's paths; an inherited
-    key is positional and takes those keys whole, whatever path it names."""
+    of each key where it names one of a several-path key's paths."""
     rows = produced.get(declared.node)
     if rows is not None:
         return [row_key(row, declared.path) for row in rows]
@@ -864,7 +848,8 @@ def _declared_keys(
     if served is not None:
         paths = served.paths
         parts = (paths,) if isinstance(paths, str) else (paths or ())
-        if inherited or not declared.path or parts[:1] == (declared.path,):
+        wanted = (declared.path,) if isinstance(declared.path, str) else declared.path
+        if not declared.path or tuple(wanted) == tuple(parts):
             return served.keys
         if declared.path in parts:
             part = parts.index(declared.path)
