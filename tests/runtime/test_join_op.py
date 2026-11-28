@@ -119,7 +119,8 @@ def test_join_merges_a_disjoint_branch_and_leaves_its_fields_out(
     out = _run(tmp_path, node, {0: [{"output": _ROWS}], 1: [{"output": [_ROWS[1]]}]})
     rows = [item["output"] for item in out["items"]]
     assert [row["case_id"] for row in rows] == ["a", "b", "c"]
-    assert rows[1]["text"] == _ROWS[1]["text"] and set(rows[0]) == {"case_id", "text"}
+    assert rows[1]["text"] == _ROWS[1]["text"]
+    assert set(rows[0]) == {"case_id", "text"}
 
 
 def test_a_join_attaching_a_chat_feeds_a_list_lambda_and_records_its_output() -> None:
@@ -223,12 +224,15 @@ def test_join_how_keeps_the_keys_its_choice_names(tmp_path: Path) -> None:
     assert left[0]["text"] == "hello"
     assert [row["case_id"] for row in run("inner", "inner")] == ["b"]
     full = run("full", "full")
-    assert [row["case_id"] for row in full] == ["a", "b", "z"] and full[2] == stray
+    assert [row["case_id"] for row in full] == ["a", "b", "z"]
+    assert full[2] == stray
     with pytest.raises(ValueError, match="how"):
         _join_node(_merge("State, Route.diagnose", "    how:\n"))
 
 
-def test_join_reads_a_table_in_index_order(tmp_path: Path) -> None:
+def test_join_reads_a_table_in_index_order_and_keeps_a_row_value_typed(
+    tmp_path: Path,
+) -> None:
     node = _join_node(_REPLY + _merge("State, Reply", "    attach: {reply: Reply}\n"))
     table = {"case_id": {"0": "a", "2": "c"}, "text": {"0": "x", "2": "z"}}
     reply = [{"output": '{"n": 1}', "value": '{"n": 1}'}] * 2
