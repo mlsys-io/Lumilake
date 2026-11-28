@@ -246,14 +246,14 @@ def test_unknown_optimizer_type_returns_422(
 def test_malformed_graph_returns_422(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``RuntimeGraph.deserialize`` can raise ``ValueError`` on semantically
+    """``RuntimeGraph.from_schema`` can raise ``ValueError`` on semantically
     invalid graphs (e.g. ``node_order`` referencing a missing node). The
     endpoint must surface that as 422, not 500."""
 
     def _raise(*_: Any, **__: Any) -> Any:
         raise ValueError("node_order references missing node 'phantom'")
 
-    monkeypatch.setattr(optimizer_routes.RuntimeGraph, "deserialize", _raise)
+    monkeypatch.setattr(optimizer_routes.RuntimeGraph, "from_schema", _raise)
 
     client = TestClient(app, raise_server_exceptions=True)
     resp = client.post(

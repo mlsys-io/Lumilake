@@ -10,7 +10,7 @@ import queue
 import time
 import traceback
 from collections import defaultdict
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -101,7 +101,15 @@ from lumilake_server.runtime.worker_capability import (
     session_memory_bytes,
 )
 from lumilake_server.schemas.dispatch import WorkflowDispatch
-from lumilake_server.schemas.progress import JobProgress
+from lumilake_server.schemas.progress import (
+    BatchProgress,
+    BatchProgressEntry,
+    JobProgress,
+    OverallProgress,
+    ProgressDetails,
+    ProgressStep,
+    RuntimeStatus,
+)
 from lumilake_server.utils.job_storage import get_job_storage
 from lumilake_server.utils.lumid_data_client import data_token_var
 from lumilake_server.utils.utils import (
@@ -563,31 +571,29 @@ class LumilakeServer:
     async def get_request_status(
         self,
         request_id: str,
-    ) -> dict[str, Any]:
-        """Get the current status of a request by its ID."""
+    ) -> RuntimeStatus | None:
+        """Get the current status of a request by its ID, ``None`` when unknown."""
         if request_id not in self._progress:
-            return {"error": "Request ID not found"}
-        progress = self._progress[request_id].model_copy(deep=True)
+            return None
         execution_ids = sorted(
             self._request_execution_ids.get(request_id, set())
             | self._request_execution_history_ids.get(request_id, set())
         )
-        runtime_statuses: list[dict[str, Any]] = []
+        runtime_statuses: list[RuntimeStatus] = []
         if execution_ids:
             for execution_id in execution_ids:
                 status = await self.runtime_manager.get_request_status(execution_id)
-                if "error" not in status:
+                if status is not None:
                     runtime_statuses.append(status)
         else:
             status = await self.runtime_manager.get_request_status(request_id)
-            if "error" not in status:
+            if status is not None:
                 runtime_statuses.append(status)
+        status = self._merge_runtime_statuses(runtime_statuses)
         state = self._requests.get(request_id)
-        if runtime_statuses:
-            merged_status = self._merge_runtime_statuses(runtime_statuses)
-            progress.apply_status(merged_status)
         if state is not None:
-            overall = progress.batch_progress.overall_progress
+            batch_progress = status.batch_progress or BatchProgress()
+            overall = batch_progress.overall_progress
             overall.total_nodes_runtime = (
                 state.processing_runtime_nodes_optimized
                 + state.processed_runtime_nodes_optimized
@@ -615,112 +621,91 @@ class LumilakeServer:
                 else 0.0
             )
             overall.percentage = min(100.0, max(0.0, percentage))
-        return progress.model_dump(by_alias=True)
+            status.batch_progress = batch_progress
+        return status
 
     @staticmethod
-    def _merge_step_details(
-        statuses: list[dict[str, Any]], key: str
-    ) -> dict[str, Any] | None:
-        merged_details = {
-            "succeeded": 0,
-            "failed": 0,
-            "pending": 0,
-            "dispatched": 0,
-        }
-        found = False
-        completed = True
+    def _merge_step(steps: Sequence[ProgressStep | None]) -> ProgressStep | None:
+        """Fold one step's copies into one, or ``None`` when no status has it."""
+        present = [step for step in steps if step is not None]
+        if not present:
+            return None
+        merged = ProgressDetails()
         has_details = False
-        for status in statuses:
-            step = status.get(key)
-            if not isinstance(step, dict):
-                continue
-            found = True
-            completed = completed and bool(step.get("completed", False))
-            details = step.get("details")
-            if not isinstance(details, dict):
+        for step in present:
+            if step.details is None:
                 continue
             has_details = True
-            for detail_key in merged_details:
-                raw_value = details.get(detail_key, 0)
-                if isinstance(raw_value, (int, float)):
-                    merged_details[detail_key] += int(raw_value)
-        if not found:
-            return None
-        payload: dict[str, Any] = {"completed": completed}
-        if has_details:
-            payload["details"] = merged_details
-        return payload
+            merged.succeeded += step.details.succeeded
+            merged.failed += step.details.failed
+            merged.pending += step.details.pending
+            merged.dispatched += step.details.dispatched
+        return ProgressStep(
+            completed=all(step.completed for step in present),
+            details=merged if has_details else None,
+        )
 
     @classmethod
-    def _merge_runtime_statuses(cls, statuses: list[dict[str, Any]]) -> dict[str, Any]:
-        merged: dict[str, Any] = {}
-        for key in ("data probing", "execution", "outputs"):
-            payload = cls._merge_step_details(statuses, key)
-            if payload is not None:
-                merged[key] = payload
-
-        batch_totals = {
-            "total": 0,
-            "completed": 0,
-            "running": 0,
-            "pending": 0,
-            "failed": 0,
-        }
-        batch_entries: list[dict[str, Any]] = []
-        overall_totals = {
-            "total_nodes": 0,
-            "completed_nodes": 0,
-            "raw_nodes": 0,
-            "flowmesh_nodes": 0,
-        }
+    def _merge_runtime_statuses(
+        cls, statuses: Sequence[RuntimeStatus]
+    ) -> RuntimeStatus:
+        """Fold the statuses of one request's executions into one status."""
+        batch_entries: list[BatchProgressEntry] = []
+        batch_total = 0
+        batch_completed = 0
+        batch_running = 0
+        batch_pending = 0
+        batch_failed = 0
+        total_nodes = 0
+        completed_nodes = 0
+        raw_nodes = 0
+        flowmesh_nodes = 0
         eta_values: list[float] = []
         for status in statuses:
-            batch_progress = status.get("batch_progress")
-            if not isinstance(batch_progress, dict):
+            if status.batch_progress is None:
                 continue
-            for key in batch_totals:
-                value = batch_progress.get(key, 0)
-                if isinstance(value, (int, float)):
-                    batch_totals[key] += int(value)
-            batches = batch_progress.get("batches")
-            if isinstance(batches, list):
-                for item in batches:
-                    if isinstance(item, dict):
-                        batch_entries.append(item)
-            overall = batch_progress.get("overall_progress")
-            if isinstance(overall, dict):
-                for key in overall_totals:
-                    value = overall.get(key, 0)
-                    if isinstance(value, (int, float)):
-                        overall_totals[key] += int(value)
-            eta = batch_progress.get("eta_seconds")
-            if isinstance(eta, (int, float)):
-                eta_values.append(float(eta))
+            batch_total += status.batch_progress.total
+            batch_completed += status.batch_progress.completed
+            batch_running += status.batch_progress.running
+            batch_pending += status.batch_progress.pending
+            batch_failed += status.batch_progress.failed
+            batch_entries.extend(status.batch_progress.batches)
+            total_nodes += status.batch_progress.overall_progress.total_nodes
+            completed_nodes += status.batch_progress.overall_progress.completed_nodes
+            raw_nodes += status.batch_progress.overall_progress.raw_nodes
+            flowmesh_nodes += status.batch_progress.overall_progress.flowmesh_nodes
+            if status.batch_progress.eta_seconds is not None:
+                eta_values.append(status.batch_progress.eta_seconds)
 
-        if any(batch_totals.values()) or batch_entries:
-            percentage = 0.0
-            if overall_totals["total_nodes"] > 0:
-                percentage = round(
-                    overall_totals["completed_nodes"]
-                    / overall_totals["total_nodes"]
-                    * 100,
-                    1,
-                )
-            merged["batch_progress"] = {
-                **batch_totals,
-                "batches": sorted(
-                    batch_entries, key=lambda item: str(item.get("batch_id", ""))
+        batch_progress = None
+        if batch_entries:
+            batch_progress = BatchProgress(
+                total=batch_total,
+                completed=batch_completed,
+                running=batch_running,
+                pending=batch_pending,
+                failed=batch_failed,
+                batches=sorted(batch_entries, key=lambda entry: entry.batch_id),
+                overall_progress=OverallProgress(
+                    total_nodes=total_nodes,
+                    completed_nodes=completed_nodes,
+                    percentage=(
+                        round(completed_nodes / total_nodes * 100, 1)
+                        if total_nodes > 0
+                        else 0.0
+                    ),
+                    raw_nodes=raw_nodes,
+                    flowmesh_nodes=flowmesh_nodes,
                 ),
-                "overall_progress": {
-                    "total_nodes": overall_totals["total_nodes"],
-                    "completed_nodes": overall_totals["completed_nodes"],
-                    "percentage": percentage,
-                    "raw_nodes": overall_totals["raw_nodes"],
-                    "flowmesh_nodes": overall_totals["flowmesh_nodes"],
-                },
-                "eta_seconds": max(eta_values) if eta_values else None,
-            }
-        return merged
+                eta_seconds=max(eta_values) if eta_values else None,
+            )
+
+        return RuntimeStatus(
+            data_probing=cls._merge_step([status.data_probing for status in statuses]),
+            execution=cls._merge_step([status.execution for status in statuses]),
+            outputs=cls._merge_step([status.outputs for status in statuses]),
+            batch_progress=batch_progress,
+        )
 
     def trace_ids_for_request(self, request_id: str) -> list[str]:
         """FlowMesh workflow ids submitted under this lumilake request.

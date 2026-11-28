@@ -13,12 +13,12 @@ import datetime as dt
 import json
 import sqlite3
 import threading
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
 import lumilake_server.utils.job_storage as job_storage_module
+from lumilake_server.records import JobRecord
 from lumilake_server.utils.job_storage import (
     JobStorage,
     PersistentJobStorage,
@@ -40,21 +40,19 @@ class _MemBlobStore:
         return self.store[key]
 
 
-@dataclass
-class _Rec:
-    job_id: str
-    org_id: str = "test-org"
-    user_id: str = "test-user"
-    status: str = "pending"
-    submitted_at: str = "2026-01-01T00:00:00+00:00"
-    started_at: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-    parent_job_id: str | None = None
-    inputs: dict[str, Any] = field(default_factory=dict)
-    output_location: dict[str, Any] = field(default_factory=dict)
-    progress: dict[str, Any] = field(default_factory=dict)
-    result: dict[str, Any] | None = None
+def _rec(job_id: str, **changes: Any) -> JobRecord:
+    return JobRecord(
+        job_id=job_id,
+        status=changes.pop("status", "pending"),
+        submitted_at=changes.pop("submitted_at", "2026-01-01T00:00:00+00:00"),
+        inputs={},
+        output_location=changes.pop(
+            "output_location", {"g": {"type": "s3", "prefix": "out/"}}
+        ),
+        org_id=changes.pop("org_id", "test-org"),
+        user_id=changes.pop("user_id", "test-user"),
+        **changes,
+    )
 
 
 def _wire_blobs(prefix: str, monkeypatch: pytest.MonkeyPatch) -> _MemBlobStore:
@@ -88,7 +86,7 @@ def _blob(prefix: str, monkeypatch: pytest.MonkeyPatch) -> PersistentJobStorage:
 def test_record_blobs_still_written(tmp_path, monkeypatch) -> None:
     """Records/artifacts must keep their blob keys -- only indexes moved."""
     storage, backend = _sqlite(tmp_path, monkeypatch, "myarchive/2026")
-    storage.save(_Rec(job_id="job-abc"))
+    storage.save(_rec(job_id="job-abc"))
     assert "myarchive/2026/job-abc/record.json" in backend.store
     assert "myarchive/2026/job-abc/inputs.json" in backend.store
     assert "myarchive/2026/job-abc/progress.json" in backend.store
@@ -98,15 +96,15 @@ def test_record_blobs_still_written(tmp_path, monkeypatch) -> None:
 
 def test_save_and_load_round_trip(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="job-xyz", status="running"))
+    storage.save(_rec(job_id="job-xyz", status="running"))
     loaded = storage.load("job-xyz")
     assert loaded is not None and loaded["status"] == "running"
 
 
 def test_save_is_idempotent_upsert(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="j1", status="pending"))
-    storage.save(_Rec(job_id="j1", status="completed"))
+    storage.save(_rec(job_id="j1", status="pending"))
+    storage.save(_rec(job_id="j1", status="completed"))
     rows, total = storage.list_summaries(
         org_id="test-org",
         user_id=None,
@@ -116,7 +114,7 @@ def test_save_is_idempotent_upsert(tmp_path, monkeypatch) -> None:
         page_size=10,
     )
     assert total == 1
-    assert rows[0]["status"] == "completed"
+    assert rows[0].status == "completed"
 
 
 @pytest.mark.parametrize(
@@ -133,19 +131,19 @@ def test_save_is_idempotent_upsert(tmp_path, monkeypatch) -> None:
 def test_list_summaries_matches_blob_backend(tmp_path, monkeypatch, kwargs) -> None:
     """Filtering AND ordering must agree with the backend being replaced."""
     recs = [
-        _Rec(
+        _rec(
             job_id="j1",
             user_id="u1",
             status="pending",
             submitted_at="2026-01-03T00:00:00+00:00",
         ),
-        _Rec(
+        _rec(
             job_id="j2",
             user_id="u2",
             status="completed",
             submitted_at="2026-01-01T00:00:00+00:00",
         ),
-        _Rec(
+        _rec(
             job_id="j3",
             user_id="u1",
             status="completed",
@@ -166,7 +164,7 @@ def test_list_summaries_matches_blob_backend(tmp_path, monkeypatch, kwargs) -> N
 
 def test_pagination_matches_blob_backend(tmp_path, monkeypatch) -> None:
     recs = [
-        _Rec(job_id=f"j{i}", submitted_at=f"2026-01-{i:02d}T00:00:00+00:00")
+        _rec(job_id=f"j{i}", submitted_at=f"2026-01-{i:02d}T00:00:00+00:00")
         for i in range(1, 8)
     ]
     sq, _ = _sqlite(tmp_path, monkeypatch)
@@ -194,15 +192,15 @@ def test_pagination_matches_blob_backend(tmp_path, monkeypatch) -> None:
 
 def test_iter_summaries_status_filter(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="a", status="running"))
-    storage.save(_Rec(job_id="b", status="completed"))
+    storage.save(_rec(job_id="a", status="running"))
+    storage.save(_rec(job_id="b", status="completed"))
     assert {s.job_id for s in storage.iter_summaries()} == {"a", "b"}
     assert {s.job_id for s in storage.iter_summaries({"running"})} == {"a"}
 
 
 def test_output_location_reserve_conflicts(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="owner", status="running"))
+    storage.save(_rec(job_id="owner", status="running"))
     storage.reserve_output_location("s3://bucket/out", "owner")
     with pytest.raises(ValueError):
         storage.reserve_output_location("s3://bucket/out", "intruder")
@@ -210,14 +208,14 @@ def test_output_location_reserve_conflicts(tmp_path, monkeypatch) -> None:
 
 def test_output_location_reassigned_when_owner_completed(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="owner", status="completed"))
+    storage.save(_rec(job_id="owner", status="completed"))
     storage.reserve_output_location("s3://bucket/out", "owner")
     storage.reserve_output_location("s3://bucket/out", "next")  # must not raise
 
 
 def test_output_location_release_is_owner_scoped(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="owner", status="running"))
+    storage.save(_rec(job_id="owner", status="running"))
     storage.reserve_output_location("k", "owner")
     storage.release_output_location("k", "someone-else")  # no-op
     with pytest.raises(ValueError):
@@ -258,7 +256,7 @@ def test_backfill_imports_legacy_indexes(tmp_path, monkeypatch) -> None:
         page=1,
         page_size=10,
     )
-    assert total == 1 and rows[0]["job_id"] == "old-1"  # invalid entry skipped
+    assert total == 1 and rows[0].job_id == "old-1"  # invalid entry skipped
     with pytest.raises(ValueError):  # output reservation came across too
         storage.reserve_output_location("loc-a", "someone-else")
 
@@ -269,13 +267,13 @@ def test_retention_prunes_only_terminal_jobs(tmp_path, monkeypatch) -> None:
         job_storage_module.envs, "LUMILAKE_JOB_INDEX_RETENTION_DAYS", 30
     )
     old = (dt.datetime.now(dt.UTC) - dt.timedelta(days=90)).isoformat()
-    storage.save(_Rec(job_id="old-done", status="completed", submitted_at=old))
-    storage.save(_Rec(job_id="old-running", status="running", submitted_at=old))
+    storage.save(_rec(job_id="old-done", status="completed", submitted_at=old))
+    storage.save(_rec(job_id="old-running", status="running", submitted_at=old))
     # _Rec's default submitted_at is a fixed 2026-01-01, which is itself outside
     # a 30-day window -- "fresh" has to be genuinely recent or this asserts the
     # wrong thing.
     now = dt.datetime.now(dt.UTC).isoformat()
-    storage.save(_Rec(job_id="fresh", status="completed", submitted_at=now))
+    storage.save(_rec(job_id="fresh", status="completed", submitted_at=now))
     storage._last_prune = None  # force: None means never pruned
     storage._maybe_prune()
     remaining = {s.job_id for s in storage.iter_summaries()}
@@ -298,7 +296,7 @@ def test_first_prune_runs_on_a_fresh_process(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr(job_storage_module.time, "monotonic", lambda: 12.0)
     old = (dt.datetime.now(dt.UTC) - dt.timedelta(days=90)).isoformat()
-    storage.save(_Rec(job_id="old-done", status="completed", submitted_at=old))
+    storage.save(_rec(job_id="old-done", status="completed", submitted_at=old))
     storage._maybe_prune()
     assert {s.job_id for s in storage.iter_summaries()} == set()
 
@@ -306,7 +304,7 @@ def test_first_prune_runs_on_a_fresh_process(tmp_path, monkeypatch) -> None:
 def test_retention_disabled_keeps_everything(tmp_path, monkeypatch) -> None:
     storage, _ = _sqlite(tmp_path, monkeypatch)
     old = (dt.datetime.now(dt.UTC) - dt.timedelta(days=900)).isoformat()
-    storage.save(_Rec(job_id="ancient", status="completed", submitted_at=old))
+    storage.save(_rec(job_id="ancient", status="completed", submitted_at=old))
     storage._last_prune = None  # force: None means never pruned
     storage._maybe_prune()
     assert {s.job_id for s in storage.iter_summaries()} == {"ancient"}
@@ -317,7 +315,7 @@ def test_survives_reopen(tmp_path, monkeypatch) -> None:
     _wire_blobs("arc", monkeypatch)
     monkeypatch.setattr(job_storage_module.envs, "LUMILAKE_JOB_INDEX_RETENTION_DAYS", 0)
     s1 = SqliteJobStorage(db_path=db)
-    s1.save(_Rec(job_id="persisted"))
+    s1.save(_rec(job_id="persisted"))
     s2 = SqliteJobStorage(db_path=db)
     assert {s.job_id for s in s2.iter_summaries()} == {"persisted"}
 
@@ -326,8 +324,8 @@ def test_dynamic_children_hidden_from_listing_parity(tmp_path, monkeypatch) -> N
     """A dynamic child must be hidden from the user-facing listing exactly as
     the blob backend hides it -- same ids AND same total."""
     recs = [
-        _Rec(job_id="parent", status="running"),
-        _Rec(job_id="child", status="running", parent_job_id="parent"),
+        _rec(job_id="parent", status="running"),
+        _rec(job_id="child", status="running", parent_job_id="parent"),
     ]
     sq, _ = _sqlite(tmp_path, monkeypatch)
     for r in recs:
@@ -356,13 +354,13 @@ def test_dynamic_children_hidden_from_listing_parity(tmp_path, monkeypatch) -> N
     # The total must agree too; a post-fetch filter would hide the child from
     # the page but leave the total wrong.
     assert got[1] == want[1] == 1
-    assert {row["job_id"] for row in got[0]} == {"parent"}
+    assert {row.job_id for row in got[0]} == {"parent"}
 
 
 def test_child_summary_round_trips(tmp_path, monkeypatch) -> None:
     """parent_job_id must survive a write/read round trip through SQLite."""
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="child", status="running", parent_job_id="parent"))
+    storage.save(_rec(job_id="child", status="running", parent_job_id="parent"))
     # iter_summaries does not hide children, so it can read the child back.
     child = next(s for s in storage.iter_summaries() if s.job_id == "child")
     assert child.parent_job_id == "parent"
@@ -372,8 +370,8 @@ def test_iter_summaries_still_sees_children(tmp_path, monkeypatch) -> None:
     """iter_summaries must NOT hide children: shutdown recovery depends on
     seeing in-flight child jobs to mark them failed."""
     storage, _ = _sqlite(tmp_path, monkeypatch)
-    storage.save(_Rec(job_id="parent", status="running"))
-    storage.save(_Rec(job_id="child", status="running", parent_job_id="parent"))
+    storage.save(_rec(job_id="parent", status="running"))
+    storage.save(_rec(job_id="child", status="running", parent_job_id="parent"))
     ids = {s.job_id for s in storage.iter_summaries()}
     assert "child" in ids, (
         "iter_summaries must still return children; shutdown recovery needs "
@@ -424,4 +422,4 @@ def test_parent_job_id_column_migration_is_idempotent(tmp_path, monkeypatch) -> 
         page=1,
         page_size=10,
     )
-    assert {row["job_id"] for row in rows} == {"legacy"}
+    assert {row.job_id for row in rows} == {"legacy"}

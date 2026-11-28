@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -128,6 +128,27 @@ class WorkflowUsage(BaseModel):
     wall_sec: float = Field(description="Wall-clock seconds.")
 
 
+class RuntimeStatus(BaseModel):
+    """The progress a request has reached in the runtime.
+
+    A step is absent when the runtime has not reported it, so a reader applies
+    only the steps that exist and keeps its own value for the rest.
+    """
+
+    data_probing: ProgressStep | None = Field(
+        default=None, description="Data profiling step, when the request profiles."
+    )
+    execution: ProgressStep | None = Field(
+        default=None, description="Execution step, when the request has batches."
+    )
+    outputs: ProgressStep | None = Field(
+        default=None, description="Output step, when the request has batches."
+    )
+    batch_progress: BatchProgress | None = Field(
+        default=None, description="Batch progress aggregated over the request."
+    )
+
+
 class JobProgress(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -145,12 +166,12 @@ class JobProgress(BaseModel):
         default=None, description="Token usage summed over the job's task results."
     )
 
-    def apply_status(self, status: dict[str, Any]) -> None:
-        if "data probing" in status:
-            self.data_probing = ProgressStep.model_validate(status["data probing"])
-        if "execution" in status:
-            self.execution = ProgressStep.model_validate(status["execution"])
-        if "outputs" in status:
-            self.outputs = ProgressStep.model_validate(status["outputs"])
-        if "batch_progress" in status:
-            self.batch_progress = BatchProgress.model_validate(status["batch_progress"])
+    def apply_status(self, status: RuntimeStatus) -> None:
+        if status.data_probing is not None:
+            self.data_probing = status.data_probing
+        if status.execution is not None:
+            self.execution = status.execution
+        if status.outputs is not None:
+            self.outputs = status.outputs
+        if status.batch_progress is not None:
+            self.batch_progress = status.batch_progress

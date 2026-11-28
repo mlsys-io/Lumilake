@@ -29,6 +29,7 @@ from lumilake_server.routes.jobs import (
 from lumilake_server.runtime.protocol import LumilakeResponse
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import DBLocation, S3Location
+from lumilake_server.schemas.progress import RuntimeStatus
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 _DEMO_PRINCIPAL = PrincipalContext(
@@ -109,8 +110,8 @@ class _FakeRuntimeServer:
     def clustering_seconds_for_request(self, job_id: str) -> float:
         return 0.0
 
-    async def get_request_status(self, job_id: str) -> dict[str, Any]:
-        return {}
+    async def get_request_status(self, job_id: str) -> RuntimeStatus | None:
+        return None
 
     async def preview_schedule(self, **kwargs: Any) -> Any:
         raise NotImplementedError

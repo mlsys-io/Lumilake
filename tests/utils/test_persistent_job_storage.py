@@ -5,12 +5,12 @@ Verifies exact blob key shapes and ArchiveNotFound semantics.
 """
 
 import threading
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
 import lumilake_server.utils.job_storage as job_storage_module
+from lumilake_server.records import JobRecord
 from lumilake_server.utils.job_storage import (
     ArchiveNotFound,
     JobStorage,
@@ -34,20 +34,19 @@ class _MemBlobStore:
         return self.store[key]
 
 
-@dataclass
-class _Rec:
-    job_id: str
-    org_id: str = "test-org"
-    user_id: str = "test-user"
-    status: str = "pending"
-    submitted_at: str = "2026-01-01T00:00:00+00:00"
-    started_at: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-    inputs: dict[str, Any] = field(default_factory=dict)
-    output_location: dict[str, Any] = field(default_factory=dict)
-    progress: dict[str, Any] = field(default_factory=dict)
-    result: dict[str, Any] | None = None
+def _rec(job_id: str, **changes: Any) -> JobRecord:
+    return JobRecord(
+        job_id=job_id,
+        status=changes.pop("status", "pending"),
+        submitted_at=changes.pop("submitted_at", "2026-01-01T00:00:00+00:00"),
+        inputs={},
+        output_location=changes.pop(
+            "output_location", {"g": {"type": "s3", "prefix": "out/"}}
+        ),
+        org_id=changes.pop("org_id", "test-org"),
+        user_id=changes.pop("user_id", "test-user"),
+        **changes,
+    )
 
 
 def _make_storage(
@@ -72,7 +71,7 @@ def _make_storage(
 
 def test_save_uses_correct_blob_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     storage, backend = _make_storage("myarchive/2026", monkeypatch)
-    rec = _Rec(
+    rec = _rec(
         job_id="job-abc",
         output_location={"g": {"type": "s3", "prefix": "out/"}},
     )
@@ -86,7 +85,7 @@ def test_save_uses_correct_blob_keys(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_save_and_load_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     storage, _ = _make_storage("arc", monkeypatch)
-    rec = _Rec(
+    rec = _rec(
         job_id="job-xyz",
         status="running",
         output_location={"g": {"type": "s3", "prefix": "out/"}},
@@ -151,7 +150,7 @@ def test_reserve_output_location_raises_on_conflict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage, _ = _make_storage("arc", monkeypatch)
-    rec = _Rec(
+    rec = _rec(
         job_id="job-a",
         status="running",
         output_location={"g": {"type": "s3", "prefix": "out/"}},
@@ -165,7 +164,7 @@ def test_reserve_output_location_raises_on_conflict(
 def test_prefix_empty_uses_bare_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     storage, backend = _make_storage("", monkeypatch)
     storage.save(
-        _Rec(
+        _rec(
             job_id="j0",
             output_location={"g": {"type": "s3", "prefix": "o/"}},
         )
@@ -191,7 +190,7 @@ def test_concurrent_saves_preserve_all_jobs_in_index(
     storage, backend = _make_storage("arc", monkeypatch)
 
     def _save(job_id: str) -> None:
-        storage.save(_Rec(job_id=job_id))
+        storage.save(_rec(job_id=job_id))
 
     threads = [threading.Thread(target=_save, args=(f"j{i}",)) for i in range(8)]
     for t in threads:
