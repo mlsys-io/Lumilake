@@ -1694,14 +1694,18 @@ def _declared_keys(
     produced: Mapping[str, Sequence[Any]],
     records: Mapping[str, NodeRecords],
 ) -> Sequence[str | None] | None:
-    """The key each row of a declared input carries: its produced rows' keys, the
-    keys a reuse plan served for it, or its literal rows' keys."""
+    """The key each row of a declared input carries at the path the op declares,
+    read from its rows: the ones it produced, the values a reuse plan served for
+    it, or its literal rows. A served node answers with its own keys only when
+    the op declares no path, so a node keyed by several paths keeps its keys."""
     rows = produced.get(declared.node)
     if rows is not None:
         return [composite_key(row, declared.path) for row in rows]
     served = records.get(declared.node)
-    if served is not None and served.keys is not None:
-        return served.keys
+    if served is not None:
+        if not declared.path:
+            return served.keys
+        return [composite_key(value, declared.path) for value in served.values]
     literal = _declared_rows(plan, declared.path, count)
     return (
         None
