@@ -6,7 +6,57 @@ from support.runtime_server import FakeHandler, RecordingRuntimeManager
 from lumilake_server.runtime.protocol import LumilakeRequestConfig
 from lumilake_server.runtime.request import RequestHandler
 from lumilake_server.runtime.server import RequestState
-from lumilake_server.schemas.progress import JobProgress
+from lumilake_server.schemas.progress import (
+    BatchNodeStats,
+    BatchProgress,
+    BatchProgressEntry,
+    BatchStatus,
+    JobProgress,
+    OverallProgress,
+    ProgressDetails,
+    ProgressStep,
+    RuntimeStatus,
+)
+
+
+def _status(
+    *,
+    succeeded: int = 0,
+    pending: int = 0,
+    completed: bool = False,
+    batches: list[BatchProgressEntry] | None = None,
+    batch_completed: int = 0,
+    batch_running: int = 0,
+    eta_seconds: float | None = None,
+) -> RuntimeStatus:
+    entries = batches or []
+    return RuntimeStatus(
+        execution=ProgressStep(
+            completed=completed,
+            details=ProgressDetails(succeeded=succeeded, pending=pending),
+        ),
+        batch_progress=BatchProgress(
+            total=len(entries),
+            completed=batch_completed,
+            running=batch_running,
+            batches=entries,
+            overall_progress=OverallProgress(
+                total_nodes=sum(batch.nodes.total for batch in entries),
+                completed_nodes=sum(batch.nodes.succeeded for batch in entries),
+            ),
+            eta_seconds=eta_seconds,
+        ),
+    )
+
+
+def _batch(
+    batch_id: str, status: BatchStatus, succeeded: int, pending: int, total: int
+) -> BatchProgressEntry:
+    return BatchProgressEntry(
+        batch_id=batch_id,
+        status=status,
+        nodes=BatchNodeStats(succeeded=succeeded, pending=pending, total=total),
+    )
 
 
 @pytest.mark.asyncio
@@ -16,43 +66,13 @@ async def test_get_request_status_mirrors_shared_execution_progress(
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(
         status_by_request={
-            "exec-1": {
-                "execution": {
-                    "completed": False,
-                    "details": {
-                        "succeeded": 1,
-                        "failed": 0,
-                        "pending": 2,
-                        "dispatched": 0,
-                    },
-                },
-                "batch_progress": {
-                    "total": 1,
-                    "completed": 0,
-                    "running": 1,
-                    "pending": 0,
-                    "failed": 0,
-                    "batches": [
-                        {
-                            "batch_id": "batch-1",
-                            "status": "RUNNING",
-                            "nodes": {
-                                "succeeded": 1,
-                                "failed": 0,
-                                "pending": 2,
-                                "dispatched": 0,
-                                "total": 3,
-                            },
-                        }
-                    ],
-                    "overall_progress": {
-                        "total_nodes": 3,
-                        "completed_nodes": 1,
-                        "percentage": 33.3,
-                    },
-                    "eta_seconds": 10.0,
-                },
-            }
+            "exec-1": _status(
+                succeeded=1,
+                pending=2,
+                batches=[_batch("batch-1", "RUNNING", 1, 2, 3)],
+                batch_running=1,
+                eta_seconds=10.0,
+            )
         }
     )
     server.runtime_manager = cast(Any, runtime_manager)
@@ -65,12 +85,14 @@ async def test_get_request_status_mirrors_shared_execution_progress(
     status_a = await server.get_request_status("req-a")
     status_b = await server.get_request_status("req-b")
 
-    assert "error" not in status_a
-    assert "error" not in status_b
-    assert status_a["execution"]["details"]["succeeded"] == 1
-    assert status_b["execution"]["details"]["pending"] == 2
-    assert status_a["batch_progress"]["running"] == 1
-    assert status_b["batch_progress"]["overall_progress"]["total_nodes"] == 3
+    assert status_a is not None
+    assert status_b is not None
+    assert status_a.execution is not None
+    assert status_b.execution is not None
+    assert status_a.execution.details.succeeded == 1
+    assert status_b.execution.details.pending == 2
+    assert status_a.batch_progress.running == 1
+    assert status_b.batch_progress.overall_progress.total_nodes == 3
 
 
 @pytest.mark.asyncio
@@ -78,43 +100,11 @@ async def test_get_request_status_runtime_percentage_is_capped(server_factory) -
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(
         status_by_request={
-            "exec-1": {
-                "execution": {
-                    "completed": False,
-                    "details": {
-                        "succeeded": 3,
-                        "failed": 0,
-                        "pending": 0,
-                        "dispatched": 0,
-                    },
-                },
-                "batch_progress": {
-                    "total": 1,
-                    "completed": 0,
-                    "running": 1,
-                    "pending": 0,
-                    "failed": 0,
-                    "batches": [
-                        {
-                            "batch_id": "batch-1",
-                            "status": "RUNNING",
-                            "nodes": {
-                                "succeeded": 3,
-                                "failed": 0,
-                                "pending": 0,
-                                "dispatched": 0,
-                                "total": 3,
-                            },
-                        }
-                    ],
-                    "overall_progress": {
-                        "total_nodes": 3,
-                        "completed_nodes": 3,
-                        "percentage": 100.0,
-                    },
-                    "eta_seconds": None,
-                },
-            }
+            "exec-1": _status(
+                succeeded=3,
+                batches=[_batch("batch-1", "RUNNING", 3, 0, 3)],
+                batch_running=1,
+            )
         }
     )
     server.runtime_manager = cast(Any, runtime_manager)
@@ -133,10 +123,11 @@ async def test_get_request_status_runtime_percentage_is_capped(server_factory) -
 
     status = await server.get_request_status("req-a")
 
-    assert "error" not in status
-    assert status["batch_progress"]["overall_progress"]["total_nodes_runtime"] == 2
-    assert status["batch_progress"]["overall_progress"]["completed_nodes"] == 3
-    assert status["batch_progress"]["overall_progress"]["percentage"] == 100.0
+    assert status is not None
+    overall = status.batch_progress.overall_progress
+    assert overall.total_nodes_runtime == 2
+    assert overall.completed_nodes == 3
+    assert overall.percentage == 100.0
 
 
 @pytest.mark.asyncio
@@ -144,34 +135,12 @@ async def test_get_request_status_projects_input_completion(server_factory) -> N
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(
         status_by_request={
-            "exec-1": {
-                "batch_progress": {
-                    "total": 2,
-                    "completed": 1,
-                    "running": 1,
-                    "pending": 0,
-                    "failed": 0,
-                    "batches": [
-                        {
-                            "batch_id": "batch-1",
-                            "status": "COMPLETED",
-                            "nodes": {
-                                "succeeded": 2,
-                                "failed": 0,
-                                "pending": 0,
-                                "dispatched": 0,
-                                "total": 2,
-                            },
-                        }
-                    ],
-                    "overall_progress": {
-                        "total_nodes": 2,
-                        "completed_nodes": 2,
-                        "percentage": 100.0,
-                    },
-                    "eta_seconds": 10.0,
-                }
-            }
+            "exec-1": _status(
+                batches=[_batch("batch-1", "COMPLETED", 2, 0, 2)],
+                batch_completed=1,
+                batch_running=1,
+                eta_seconds=10.0,
+            )
         }
     )
     server.runtime_manager = cast(Any, runtime_manager)
@@ -190,10 +159,10 @@ async def test_get_request_status_projects_input_completion(server_factory) -> N
 
     status = await server.get_request_status("req-a")
 
-    assert "error" not in status
-    overall = status["batch_progress"]["overall_progress"]
-    assert overall["total_inputs"] == 10
-    assert overall["completed_inputs"] == 4
+    assert status is not None
+    overall = status.batch_progress.overall_progress
+    assert overall.total_inputs == 10
+    assert overall.completed_inputs == 4
 
 
 @pytest.mark.asyncio
@@ -203,80 +172,19 @@ async def test_get_request_status_keeps_completed_batches_with_running_batch(
     server = server_factory()
     runtime_manager = RecordingRuntimeManager(
         status_by_request={
-            "exec-old": {
-                "execution": {
-                    "completed": True,
-                    "details": {
-                        "succeeded": 2,
-                        "failed": 0,
-                        "pending": 0,
-                        "dispatched": 0,
-                    },
-                },
-                "batch_progress": {
-                    "total": 1,
-                    "completed": 1,
-                    "running": 0,
-                    "pending": 0,
-                    "failed": 0,
-                    "batches": [
-                        {
-                            "batch_id": "batch-old",
-                            "status": "COMPLETED",
-                            "nodes": {
-                                "succeeded": 2,
-                                "failed": 0,
-                                "pending": 0,
-                                "dispatched": 0,
-                                "total": 2,
-                            },
-                        }
-                    ],
-                    "overall_progress": {
-                        "total_nodes": 2,
-                        "completed_nodes": 2,
-                        "percentage": 100.0,
-                    },
-                    "eta_seconds": None,
-                },
-            },
-            "exec-new": {
-                "execution": {
-                    "completed": False,
-                    "details": {
-                        "succeeded": 1,
-                        "failed": 0,
-                        "pending": 1,
-                        "dispatched": 0,
-                    },
-                },
-                "batch_progress": {
-                    "total": 1,
-                    "completed": 0,
-                    "running": 1,
-                    "pending": 0,
-                    "failed": 0,
-                    "batches": [
-                        {
-                            "batch_id": "batch-new",
-                            "status": "RUNNING",
-                            "nodes": {
-                                "succeeded": 1,
-                                "failed": 0,
-                                "pending": 1,
-                                "dispatched": 0,
-                                "total": 2,
-                            },
-                        }
-                    ],
-                    "overall_progress": {
-                        "total_nodes": 2,
-                        "completed_nodes": 1,
-                        "percentage": 50.0,
-                    },
-                    "eta_seconds": 12.0,
-                },
-            },
+            "exec-old": _status(
+                succeeded=2,
+                completed=True,
+                batches=[_batch("batch-old", "COMPLETED", 2, 0, 2)],
+                batch_completed=1,
+            ),
+            "exec-new": _status(
+                succeeded=1,
+                pending=1,
+                batches=[_batch("batch-new", "RUNNING", 1, 1, 2)],
+                batch_running=1,
+                eta_seconds=12.0,
+            ),
         }
     )
     server.runtime_manager = cast(Any, runtime_manager)
@@ -286,8 +194,26 @@ async def test_get_request_status_keeps_completed_batches_with_running_batch(
 
     status = await server.get_request_status("req-a")
 
-    assert "error" not in status
-    assert status["batch_progress"]["completed"] == 1
-    assert status["batch_progress"]["running"] == 1
-    batch_ids = [batch["batch_id"] for batch in status["batch_progress"]["batches"]]
+    assert status is not None
+    assert status.batch_progress.completed == 1
+    assert status.batch_progress.running == 1
+    batch_ids = [batch.batch_id for batch in status.batch_progress.batches]
     assert batch_ids == ["batch-new", "batch-old"]
+
+
+def test_apply_status_keeps_a_step_the_status_omits() -> None:
+    progress = JobProgress.model_validate(
+        {
+            "data probing": {"completed": True},
+            "execution": {"completed": True},
+            "outputs": {"completed": True},
+            "batch_progress": {"total": 1, "completed": 1},
+        }
+    )
+
+    progress.apply_status(RuntimeStatus(execution=ProgressStep(completed=False)))
+
+    assert progress.data_probing.completed is True
+    assert progress.execution.completed is False
+    assert progress.outputs.completed is True
+    assert progress.batch_progress.total == 1

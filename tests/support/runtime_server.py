@@ -18,7 +18,7 @@ from lumilake_server.runtime.server import (
     LumilakeServerConfig,
     RequestState,
 )
-from lumilake_server.schemas.progress import JobProgress
+from lumilake_server.schemas.progress import JobProgress, RuntimeStatus
 from lumilake_server.utils.job_storage import get_job_storage
 
 
@@ -43,7 +43,7 @@ class RecordingRuntimeManager:
         self,
         *,
         cancelled: set[str] | None = None,
-        status_by_request: dict[str, dict[str, Any]] | None = None,
+        status_by_request: dict[str, RuntimeStatus] | None = None,
     ) -> None:
         self.cancelled = set() if cancelled is None else set(cancelled)
         self.status_by_request = {} if status_by_request is None else status_by_request
@@ -110,8 +110,8 @@ class RecordingRuntimeManager:
     ) -> dict[str, Any]:
         return {"flat_outputs": {}, "chat_histories": {}, "task_node_map": {}}
 
-    async def get_request_status(self, request_id: str) -> dict[str, Any]:
-        return self.status_by_request.get(request_id, {"error": "Request ID not found"})
+    async def get_request_status(self, request_id: str) -> RuntimeStatus | None:
+        return self.status_by_request.get(request_id)
 
     async def cancel_request(self, request_id: str) -> None:
         self.cancel_calls.append(request_id)

@@ -1,35 +1,22 @@
-from dataclasses import dataclass, field
+from dataclasses import fields
+from typing import Any
 
 import pytest
-from pydantic import ValidationError
 
-from lumilake_server.utils.job_storage import InMemoryJobStorage
-
-
-@dataclass
-class _Record:
-    job_id: str
-    org_id: str
-    user_id: str
-    status: str
-    submitted_at: str
-    started_at: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-    inputs: dict[str, object] = field(default_factory=dict)
-    output_location: dict[str, object] = field(default_factory=dict)
-    progress: dict[str, object] = field(default_factory=dict)
-    result: dict[str, object] | None = None
+from lumilake_server.records import JobRecord, JobStatus
+from lumilake_server.schemas.io import S3Location
+from lumilake_server.utils.job_storage import InMemoryJobStorage, _record_payload
 
 
-def _record(job_id: str, status: str, submitted_at: str) -> _Record:
-    return _Record(
+def _record(job_id: str, status: JobStatus, submitted_at: str) -> JobRecord:
+    return JobRecord(
         job_id=job_id,
         org_id="test-org",
         user_id="test-user",
         status=status,
         submitted_at=submitted_at,
-        output_location={"graph": {"type": "s3", "prefix": "out.txt"}},
+        inputs={},
+        output_location={"graph": S3Location(type="s3", prefix="out.txt")},
     )
 
 
@@ -49,7 +36,7 @@ def test_list_summaries_filters_by_status() -> None:
     )
 
     assert total == 2
-    assert [item["job_id"] for item in items] == ["job-2", "job-1"]
+    assert [item.job_id for item in items] == ["job-2", "job-1"]
 
 
 def test_list_summaries_paginates_descending_by_submission_time() -> None:
@@ -76,14 +63,26 @@ def test_list_summaries_paginates_descending_by_submission_time() -> None:
     )
 
     assert total == 3
-    assert [item["job_id"] for item in page_1] == ["job-3", "job-2"]
-    assert [item["job_id"] for item in page_2] == ["job-1"]
+    assert [item.job_id for item in page_1] == ["job-3", "job-2"]
+    assert [item.job_id for item in page_2] == ["job-1"]
 
 
-def test_summary_validation_rejects_invalid_status() -> None:
-    storage = InMemoryJobStorage()
-    with pytest.raises(ValidationError):
-        storage.save(_record("job-bad", "queued", "2026-02-20T00:00:00+00:00"))
+def test_record_payload_stores_every_record_field() -> None:
+    record = _record("job-1", "pending", "2026-02-20T00:00:00+00:00")
+
+    assert set(_record_payload(record)) == {f.name for f in fields(JobRecord)}
+
+
+def test_record_rejects_invalid_status() -> None:
+    payload: dict[str, Any] = {
+        "job_id": "job-bad",
+        "status": "queued",
+        "submitted_at": "2026-02-20T00:00:00+00:00",
+        "inputs": {},
+        "output_location": {"graph": S3Location(type="s3", prefix="out.txt")},
+    }
+    with pytest.raises(ValueError, match="unknown job status"):
+        JobRecord(**payload)
 
 
 def test_list_summaries_filters_by_job_ids_before_pagination() -> None:
@@ -110,8 +109,8 @@ def test_list_summaries_filters_by_job_ids_before_pagination() -> None:
     )
 
     assert total == 2
-    assert [item["job_id"] for item in page_1] == ["job-3"]
-    assert [item["job_id"] for item in page_2] == ["job-1"]
+    assert [item.job_id for item in page_1] == ["job-3"]
+    assert [item.job_id for item in page_2] == ["job-1"]
 
 
 def test_iter_summaries_filters_by_status() -> None:

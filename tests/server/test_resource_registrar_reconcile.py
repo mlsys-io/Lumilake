@@ -10,8 +10,9 @@ from lumid_hooks import PrincipalContext, ResourceRef
 
 import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
+from lumilake_server.records import JobSummary
 from lumilake_server.startup import reconcile_registrars
-from lumilake_server.utils.job_storage import InMemoryJobStorage, JobSummary
+from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 
 def _make_storage_with_jobs(job_ids: list[str]) -> InMemoryJobStorage:
