@@ -2,16 +2,9 @@ import copy
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from enum import Enum
-from typing import Any, Self, TypeVar
+from typing import Annotated, Any, Self, TypeVar
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictStr,
-    ValidationError,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 from lumilake_server.common import Message
 from lumilake_server.utils.utils import unique_id
@@ -19,6 +12,9 @@ from lumilake_server.utils.utils import unique_id
 T = TypeVar("T")
 SingleDtype = str | list[Message]
 type AnyOp = Op
+KeyPathList = Annotated[
+    tuple[Annotated[StrictStr, Field(min_length=1)], ...], Field(min_length=1)
+]
 
 
 class RecordKey(BaseModel):
@@ -28,17 +24,7 @@ class RecordKey(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     node: StrictStr = Field(min_length=1)
-    path: StrictStr | list[StrictStr] = ""
-
-    @field_validator("path")
-    @classmethod
-    def _every_path_names_one(cls, path: str | list[str]) -> str | list[str]:
-        """Refuse an empty path list and an empty path in one."""
-        if isinstance(path, str):
-            return path
-        if not path or not all(part for part in path):
-            raise ValueError("path must name at least one non-empty path")
-        return path
+    path: StrictStr | KeyPathList = ""
 
 
 def record_key(key: Any, op_id: str) -> RecordKey:
