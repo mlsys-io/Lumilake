@@ -17,9 +17,11 @@ from lumid_hooks import PrincipalContext, ResourceRef
 
 import lumilake_server.utils.job_storage as job_storage_module
 from lumilake_server import hooks
+from lumilake_server.graphs import Graph
 from lumilake_server.middleware import TraceIdMiddleware
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse
+from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.utils.job_storage import InMemoryJobStorage
 
@@ -121,6 +123,19 @@ class _FakeRuntimeServer:
 
     async def preview_schedule(self, **kwargs: Any) -> Any:
         return _PreviewResult()
+
+
+class _GraphServer(_FakeRuntimeServer):
+    """The submit stubs, with the production graph compiler and builder."""
+
+    def __init__(self) -> None:
+        self._runtime_builder: Any = RuntimeGraphBuilder()
+
+    def parse_query(self, graph_specs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        return {
+            name: Graph.from_json(spec["graph"]).compile(**spec["inputs"])
+            for name, spec in graph_specs.items()
+        }
 
 
 @pytest.fixture(autouse=True)
@@ -283,5 +298,64 @@ async def test_submit_gpu_zero_against_cpu_only_workflow_is_accepted(
 
     # Drain background tasks the submit handler may have scheduled so the
     # test doesn't leak a Task that races with pytest teardown.
+    for task in list(app.state.background_tasks):
+        await task
+
+
+_JOIN_WORKFLOW = """
+name: w
+inputs: {Cases: [a, b, c]}
+ops:
+  - {id: A, op: LambdaOp, mode: row, inputs: [Cases], fn_name: f,
+     code: "def f(row):\\n    return {'case_id': row}"}
+  - {id: Merge, op: JoinOp, inputs: [A, A], by: case_id, how: HOW}
+outputs: [{name: merged, ref: Merge}]
+"""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("how", "status"), [("inner", 422), ("full", 422), ("left", 200)]
+)
+async def test_a_sliced_join_output_follows_its_own_row_count(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, how: str, status: int
+) -> None:
+    """An ``inner`` or ``full`` join sets its own row count, so submit refuses a
+    sliced output of it; a ``left`` join keeps one row per first-input row."""
+    monkeypatch.setattr(
+        job_routes_module.LumilakeServer,
+        "get_started_instance",
+        classmethod(lambda cls: _GraphServer()),
+    )
+    monkeypatch.setattr(
+        job_routes_module, "_any_graph_requires_gpu", lambda server, graphs: False
+    )
+
+    async def _fake_run_job(*_a: Any, **_kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(job_routes_module, "_run_job", _fake_run_job)
+    body = {
+        "data": [
+            {
+                "name": "w",
+                "workflow": _JOIN_WORKFLOW.replace("HOW", how),
+                "inputs": {"Cases": ["a", "b", "c"]},
+                "input_batch_size": 1,
+                "output_location": {"type": "s3", "prefix": "out/"},
+            }
+        ]
+    }
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/jobs",
+            json=body,
+            headers={"Authorization": "Bearer token", "Workflow-Format": "yaml"},
+        )
+    assert resp.status_code == status
+    if status == 422:
+        assert "Workflow 'w' output 'merged'" in resp.json()["detail"]
+        assert "inner, full or many_to_many join" in resp.json()["detail"]
     for task in list(app.state.background_tasks):
         await task
