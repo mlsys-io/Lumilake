@@ -8,17 +8,9 @@ from lumilake_server.data_specs import (
     NodeColumn,
     build_column_table,
 )
-from lumilake_server.ops.seed_spec import KeySeed
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.keyed_seed import read_seed_spec
 
-from .common import (
-    EmitContext,
-    OpEntry,
-    build_generation_config,
-    emit_keyed_seed,
-    seed_input_id,
-)
+from .common import EmitContext, OpEntry, build_generation_config
 from .data import emit_message_op
 
 
@@ -320,19 +312,34 @@ def _resolve_table_nodes(
 
 def _emit_rowwise_seed(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     """Fill in the ``rowwise_seed`` column and add its node to the op's
-    inputs, as a rowwise column node is added. The ``key`` form becomes a
-    generated row function, named like every other implicit op, that reads the
-    row's key."""
+    inputs, as a rowwise column node is added."""
     entry = ctx.entry
-    field = entry.fields.get("rowwise_seed")
-    if field is None:
+    user_id_to_internal = ctx.user_id_to_internal
+    seed = entry.fields.get("rowwise_seed")
+    if seed is None:
         return
-    spec = read_seed_spec(entry.id, "LLMChatOp", "rowwise_seed", field)
-    if isinstance(spec, KeySeed):
-        emit_keyed_seed(op_dict, ctx, spec, "rowwise_seed", "LLMChatOp")
-        return
-    node_id = seed_input_id(entry.id, spec.node, ctx, "LLMChatOp")
-    op_dict["rowwise_seed"] = {"node": node_id, "path": spec.path}
+    if not isinstance(seed, dict):
+        raise ValueError(f"LLMChatOp '{entry.id}' rowwise_seed must be a mapping")
+    node_ref = seed.get("node")
+    path = seed.get("path", "")
+    if not isinstance(node_ref, str) or not isinstance(path, str):
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed must name a node and path"
+        )
+    if node_ref not in user_id_to_internal:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed references unknown id '{node_ref}'"
+        )
+    node_id = user_id_to_internal[node_ref]
+    producer = ctx.graph_ops.get(node_id)
+    is_workflow_input = producer is not None and producer.get("_op") == "InputOp"
+    if node_ref not in entry.inputs and not is_workflow_input:
+        raise ValueError(
+            f"LLMChatOp '{entry.id}' rowwise_seed reads '{node_ref}', which is"
+            " not listed in the op's inputs; add it there so the seed's"
+            " producer is built before the chat op"
+        )
+    op_dict["rowwise_seed"] = {"node": node_id, "path": path}
     if node_id not in op_dict["_inputs"]:
         op_dict["_inputs"].append(node_id)
 

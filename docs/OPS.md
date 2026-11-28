@@ -220,15 +220,6 @@ An optional `rowwise_seed` binds a per-row sampling seed. It takes the same `{no
   rowwise_seed: {node: Seeds, path: items.output.seed}
 ```
 
-`rowwise_seed` also takes a key form, `{key: {node, path}}`, which derives each row's seed from its key: the first 8 bytes of SHA-256 over `[seed, op id, round, key]` as canonical JSON, reduced mod 2^31. The path names dict fields only and a key read under it keeps its JSON type, so `"123"` and `123` differ and a null key fails the job. A key that is the whole cell is read as its text, so an object or array cell is parsed back and a null one is the text `null`, which draws like any other string. The job's top-level `seed` (default 0), the op id as written and the dynamic round number are the other inputs, so two rows with the same key draw the same seed, and the parser generates a row-mode `LambdaOp` whose id a user op cannot hold. The key form needs `rowwise_template`, takes no other `rowwise_seed` field beside `key` and the optional `pairing`, and fails the job naming the op and row on a missing key.
-
-Two rows of one op that carry the same key draw the same seed, so the key form refuses a repeat, naming the op and both row indices; add `pairing: shared` to the key form to allow it. At submit the check covers a key column the submission can see in full, over the whole input set before the job is split into slices, and a dynamic round checks its own key columns the same way when it is built, over the run input and the values it forwards. The generated seed step repeats the check over the rows one task sees, so a column an upstream op produces still fails when that task holds the repeating rows. The round is the round a subgraph runs in, counted from one; the proposer's opening round and the API planner's opening pass run no user op, so no keyed draw takes their number. Renumbering rounds changes every draw, so a rerun or any later coalescing must keep a job's round numbers. A retry of a failed task draws the same seed, and changing the job seed, the op id, the round or the key is a deliberate unpairing. An op that draws `n > 1` samples in its one seeded request draws all n from that request, so the set is reproducible while the individual samples are not separately addressable.
-
-```yaml
-- {id: Answer, op: LLMChatOp, inputs: [Cases], rowwise_template: "{question}",
-   rowwise_seed: {key: {node: Cases, path: items.output.case_id}}}
-```
-
 When every upstream column a per-row chat reads is empty, FlowMesh completes the task with an empty result without dispatching a worker.
 
 A `rowwise_messages` column replaces the rendered prompt with each row's whole conversation: `node` names the op whose output holds one message list per row, and `path` drills into that output (the whole output when omitted). Only `LLMChatOp` accepts it, it takes no `messages`, `system_messages`, `return_history`, `rowwise_template`, `rowwise_columns`, `aggregate_table` or `condition`, and its node must be listed in `inputs:`. The node is a list-mode `LambdaOp`, a data retrieval, or a literal input whose values are JSON message lists and which takes no `path`. Use it when the number of turns varies between rows.
@@ -281,7 +272,7 @@ outputs:
 
 | `mode` | Calls | The function receives | It returns | Output rows |
 |---|---|---|---|---|
-| `row` (default) | once per row | the row's values | a value (a non-string is archived as its JSON text) | one per input row |
+| `row` (default) | once per row | the row's values | a string | one per input row |
 | `aligned` | once per run | each input as its whole list | a list with one value per input row | one per input row |
 | `list` | once per run | each input as its whole list | a list of JSON values | one per element |
 | `expand` | once per row | the row's values | a list | one per element, in input order; an empty list drops the row |
@@ -289,7 +280,7 @@ outputs:
 
 - `reduce` groups rows by the value at its required `by` dotted path into the first input's value, compared as JSON text (`1` and `"1"` are different keys); `by` is accepted only in reduce mode. A row missing its `by` path fails the job naming the op and the row; an expand call that returns something other than a list fails naming the op.
 - Each `expand` item carries its parent's input-row index under `parent` and its own position under `child`, so a downstream op can tell which parent an item came from.
-- Every mode decodes each column value before the call: JSON object or array text becomes that object or list, and a serialized table (`{"df": "<json>"}`, or a retrieval item's `table`) becomes its row dicts.
+- `expand` and `reduce` decode each column value once before the call: JSON text is parsed and a serialized table becomes its row dicts.
 - In `row` and `aligned` mode every multi-row input must carry the same number of rows; submit refuses unequal counts. A one-row input broadcasts to every row.
 - An `aligned` function that returns a list of the wrong length fails the task.
 
@@ -330,27 +321,10 @@ ops:
           return sorted(rows, key=lambda r: -r[0]["score"])[:3]
 ```
 
-#### Keyed seed
-
-A `row` or `expand` `LambdaOp` takes an optional keyed `seed`, shaped and checked like a chat op's `rowwise_seed` key form. The seed reaches the function as a second argument, so it can draw from `random.Random(seed)`; a function without `seed` keeps its one-argument signature, and a seeded one must accept exactly two. The key's node must be listed in `inputs:`. `list`, `aligned` and `reduce` modes take no `seed`.
-
-```yaml
-ops:
-  - id: "Sample"
-    op: LambdaOp
-    inputs: [Cases]
-    fn_name: sample
-    code: |
-      def sample(row, seed):
-          rng = random.Random(seed)
-          return rng.choice(["positive", "negative"])
-    seed: {key: {node: Cases, path: items.output.case_id}}
-```
-
 #### Where the function runs
 
 - **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image` or `gpu`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type (a Docker-backed worker on a FlowMesh version that supports it), or, when the op sets `gpu`, on a GPU worker that advertises it. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import`, so the code imports nothing; Lumilake wraps each row so it arrives decoded, and submit refuses code that binds a wrapper name, annotates a top-level assignment or uses a `Message`/`ops` type. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
+- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import` and gives a module-level name no scope, so the `def` named by `fn_name` must be the last statement of its source, with only a module docstring before or after it; submit refuses an import or any statement after it, a shared `uses:` block and a trailing helper included. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
 - **API-mode `LLMChatOp`**: cannot read a `LambdaOp`, since the request body carries no function step; the build fails naming the step. Make the Lambda a workflow output, or use a non-API chat.
 
 The Lumilake server never runs submitted code: it only parses the source, and a Lambda whose inputs are all literal is not folded into a constant. A function passed as a Python callable through the SDK (`LambdaOp(fn=...)`) is the caller's own code and may run in process; its source is serialized with `dill.source.getsource`, with captured closure values written in.
@@ -426,7 +400,7 @@ ops:
 A record that fails becomes a marker instead of an error, so one bad row costs neither its siblings nor the job. A failed record's value is the object `{"_fail": {"op": "<op id>", "reason": "<text>"}}` and nothing else; an ok record has no `_fail` key. A failed record keeps its position, so parallel columns stay aligned.
 
 - `ParseOp` emits the marker for a row it cannot parse; the reason names what went wrong, such as `no JSON object`, `missing key 'eligibility'` or `pattern did not match`.
-- A row `LambdaOp` does not call the function for a row with a marked cell; it emits the first such marker for that row. An aligned `LambdaOp` calls the function on the live columns and merges the marked rows back by position. A list `LambdaOp` receives markers as ordinary values, so a whole-list function sees every row and passes them on. A seeded row or expand `LambdaOp` draws no seed for a marked row, so a seed step that passes the marker on in that row's seed cell leaves the row marked instead of failing the task.
+- A row `LambdaOp` does not call the function for a row with a marked cell; it emits the first such marker for that row. An aligned `LambdaOp` calls the function on the live columns and merges the marked rows back by position. A list `LambdaOp` receives markers as ordinary values, so a whole-list function sees every row and passes them on.
 - An expand `LambdaOp` emits one tombstone item carrying the marker for a marked parent, and a parent that expands to no children emits its own marker under `on_empty: fail`.
 - A reduce `LambdaOp` reads each row's key first: a marked row whose key reads joins its group, and `on_fail` decides that group. A row whose key cannot be read is its own group and emits its marker. See [`LambdaOp`](#lambdaop).
 - A `JoinOp` keeps one output row per first-input row, in order: a marked first-input row is that row's marker, and a marked further input or attach row turns its key's output into the marker. No other row is affected. Its `on_missing: fail_row` marks the rows a further input lacks, and an attach length mismatch fails the job under either policy. See [`JoinOp`](#joinop).

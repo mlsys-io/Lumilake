@@ -10,11 +10,10 @@ Pass the format with the CLI `--format` option or the `Workflow-Format` HTTP hea
 
 ## YAML Structure
 
-A YAML workflow is a top-level mapping with optional `name`, optional `seed`, optional `inputs`, optional `functions`, required `ops`, and optional `outputs`.
+A YAML workflow is a top-level mapping with optional `name`, optional `inputs`, optional `functions`, required `ops`, and optional `outputs`.
 
 ```yaml
 name: example
-seed: 7
 inputs:
   Stock: []
 
@@ -38,8 +37,6 @@ outputs:
 `inputs` declares workflow-level input names. `ops` declares user-facing operation IDs, operation types, dependencies, and op-specific fields. `outputs` exposes selected op values as named workflow outputs.
 
 A workflow with an unquoted `on`, `yes` or bare-number key is refused with a 400, because YAML reads such a key as a boolean or number and workflow keys must be strings.
-
-`seed` is the job seed, an integer that defaults to 0 and is recorded with the job; a keyed `rowwise_seed` derives each row's seed from it. A native graph payload takes the same top-level field, and workflows submitted together must share one seed. A bare native payload reserves the key `seed` for it, so an op there cannot carry that id.
 
 Supported YAML op types are `DataOp`, `DataRetrievalOp`, `MessageOp`, `LLMChatOp`, `LLMCompletionOp`, `LLMVisionOp`, `ImageGenerationOp`, `EmbeddingOp`, `ClassificationOp`, `HttpFetchOp`, `FormatOp`, `LambdaOp`, `ParseOp`, `RouterOp`, `JoinOp`, and `RepeatOp`. `InputOp` and `OutputOp` are generated from the `inputs` and `outputs` blocks. A `LambdaOp` in expand mode takes `on_empty: drop | fail`, as `docs/OPS.md` describes.
 
@@ -76,7 +73,7 @@ ops:
 
 A block is appended after the op's `code`, or becomes its whole code when `code` is absent, and the op behaves as if that source were written in it. `uses` needs a top-level `def`, so it cannot pair with a lambda-expression `code`.
 
-A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where the code may import nothing, so a shared block that imports is refused there. Submission is refused, naming the op and the function, when `uses` names an undefined function, names one twice, sits on a non-`LambdaOp`, a `functions:` entry does not parse, or two blocks or a block and the op's own code define one name. `functions:` and `uses:` are YAML-only and apply to static workflows.
+A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where only a module docstring may follow the `def`, so a shared block is refused there. Submission is refused, naming the op and the function, when `uses` names an undefined function, names one twice, sits on a non-`LambdaOp`, a `functions:` entry does not parse, or two blocks or a block and the op's own code define one name. `functions:` and `uses:` are YAML-only and apply to static workflows.
 
 ## n8n code-node notes
 

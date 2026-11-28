@@ -2,13 +2,11 @@
 
 import copy
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
 
-from lumilake_server.data_specs import PythonData, PythonMode
 from lumilake_server.dynamic.driver import (
     DriverProtocolError,
     SubgraphPlan,
@@ -20,23 +18,13 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.graphs import Graph
 from lumilake_server.parser.common import make_id
-from lumilake_server.parser.keyed_seed import SEED_FN_NAME
 from lumilake_server.parser.yaml_ops.emitters import op_id_prefix
 from lumilake_server.parser.yaml_parser import parse_yaml_payload
 from lumilake_server.routes.jobs import (
     _admit_subgraph,
     _dispatch_workflow_to_graph_specs,
 )
-from lumilake_server.runtime import python_step
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
-from lumilake_server.runtime.runtime_ops import RuntimeOp
-from lumilake_server.utils import lambda_runtime
-from tests.support.seeds import documented_seed
-
-
-def _wire(node: RuntimeOp) -> dict[str, Any]:
-    """The data spec as the dict a worker receives."""
-    return node.data_spec.model_dump(exclude_none=True)
 
 
 def _internal_id(scope: str, op_type: str, user_id: str) -> str:
@@ -351,7 +339,7 @@ def test_a_rounds_own_native_graph_is_not_refused_for_its_branch_flag():
         )
         return graph_specs
 
-    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}, "seed": 0}}
+    assert specs(cleared_ids={"L"}) == {"g": {"graph": native, "inputs": {}}}
     with pytest.raises(HTTPException, match="clears_markers"):
         specs()
 
@@ -566,20 +554,26 @@ def test_forward_grouped_list_aggregate_column_materializes():
     row = ops[0]["aggregate_table"][0]
     assert row["node"] == materializer_id
     assert row["path"] == "items.output"
-    # The materializer is a row-aligned LambdaOp passing rows through.
+    # The materializer is a row-aligned LambdaOp decoding each row's JSON.
     materializer = ops[1]
     assert materializer["id"] == materializer_id
     assert materializer["op"] == "LambdaOp"
     assert materializer["inputs"] == [input_id]
-    assert materializer["mode"] == PythonMode.ALIGNED
-    assert "return columns[0]" in materializer["code"]
+    assert materializer["mode"] == "aligned"
+    assert "json.loads" in materializer["code"]
 
 
-def test_forward_grouped_list_materializer_parses_through_yaml_parser(
-    tmp_path: Path,
-) -> None:
+def test_forward_grouped_list_materializer_parses_through_yaml_parser():
+    # The rewritten op plus the appended materializer must parse as a valid
+    # workflow, with the materializer's input resolvable from the inputs block.
     sql_id = "s1"
-    results = {sql_id: [{"output": ["a", "b"]}, {"output": ["c", "d"]}]}
+    results = {
+        sql_id: [
+            {"output": ["a", "b"]},
+            {"output": ["c", "d"]},
+        ]
+    }
+    configs = {sql_id: _sql_config(sql_id)}
     subgraph = [
         {
             "id": "q4",
@@ -593,22 +587,15 @@ def test_forward_grouped_list_materializer_parses_through_yaml_parser(
             ],
         }
     ]
-    ops, inputs = forward_refs(subgraph, results, {sql_id: _sql_config(sql_id)}, rows=2)
-    spec = parse_yaml_payload({"name": "r1", "inputs": inputs, "ops": ops})["r1"]
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    (node,) = [n for n in graph.nodes.values() if n.task_type == "python"]
-    d = node.data_spec
-    assert isinstance(d, PythonData)
-    assert d.fn_name is not None and d.code is not None and d.mode is not None
-    mount = tmp_path / "runtime.py"
-    mount.write_bytes(python_step.runtime_blob().body)
-    code = python_step.wrapper_source(node.node_id, d.fn_name, d.code, d.plan, d.mode)
-    namespace: dict[str, Any] = {}
-    exec(code.replace(python_step.TASK_RUNTIME_MOUNT, str(mount)), namespace)
-    items = namespace["main"]({})["items"]
-    assert [i["output"] for i in items] == [["a", "b"], ["c", "d"]]
+    ops, inputs = forward_refs(subgraph, results, configs, rows=2)
+    workflow = {
+        "name": "round_1",
+        "inputs": inputs,
+        "ops": ops,
+        "outputs": [],
+    }
+    parsed = parse_yaml_payload(workflow)
+    assert parsed
 
 
 def test_forward_scalar_per_row_keeps_today_path():
@@ -832,7 +819,7 @@ def test_forward_serialized_dataframe_columns_materialize():
         assert column["path"] == "items.output"
         materializer = next(o for o in ops if o["id"] == materializer_id)
         assert materializer["op"] == "LambdaOp"
-        assert materializer["mode"] == PythonMode.ALIGNED
+        assert materializer["mode"] == "aligned"
         assert materializer["inputs"] == [input_id]
 
 
@@ -863,32 +850,6 @@ def test_forward_seed_reference_lowers_to_literal_seeds():
     )
     node = next(n for n in graph.nodes.values() if "q7" in n.node_id)
     assert node.data_spec.model_dump(exclude_none=True)["seeds"] == [7, 9]
-
-    # A Lambda's keyed seed binds the same way: the earlier round's key column becomes a
-    # flat input, and the generated row function reads it per row.
-    draw = {"id": "d1", "op": "LambdaOp", "inputs": [seed_id]}
-    draw["fn_name"] = "draw"
-    draw["code"] = "def draw(row, seed):\n    return '%d' % seed\n"
-    draw["seed"] = {"key": {"node": seed_id, "path": "items.output"}}
-    configs["d1"] = {key: draw[key] for key in ("id", "op", "inputs")}
-    ops, inputs = forward_refs([draw], results, configs, rows=2)
-    assert ops[0]["seed"]["key"] == {"node": f"{seed_id} | items.output", "path": ""}
-    payload = {"inputs": inputs, "ops": ops, "outputs": [{"name": "o", "ref": "d1"}]}
-    spec = next(iter(parse_yaml_payload(payload).values()))
-    graph = RuntimeGraphBuilder().build(
-        Graph.from_json(spec["graph"]).compile(**spec["inputs"])
-    )
-    seed_fn = next(
-        n for n in graph.nodes.values() if _wire(n).get("fn_name") == SEED_FN_NAME
-    )
-    fn = lambda_runtime.materialize(_wire(seed_fn)["code"], SEED_FN_NAME)
-    keys = inputs[f"{seed_id} | items.output"]
-    assert [fn((v,)) for v in keys] == documented_seed(["7", "9"], seed=0, op_id="d1")
-    draw_node = next(
-        n for n in graph.nodes.values() if _wire(n).get("fn_name") == "draw"
-    )
-    seeded = [e["node"] for e in _wire(draw_node)["plan"] if e.get("role") == "seed"]
-    assert seeded == [seed_fn.node_id]
 
 
 def test_forward_aligned_materializers_are_row_cardinality():

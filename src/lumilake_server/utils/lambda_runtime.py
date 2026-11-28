@@ -1,14 +1,11 @@
 """The LambdaOp function contract: source validation and the function namespace.
 
-A LambdaOp function takes one argument, its row as a tuple of decoded values,
-and returns a string; a non-string return is archived as its JSON text. JSON
-object or array text arrives as the object or list it holds, and a serialized
-table as its rows. The function is written as a lambda, or as module source
-that defines a one-parameter ``def`` named by ``fn_name``, optionally after
-imports, constants and helpers. It sees a fixed namespace: a small set of
-builtins plus ``json``, ``re``, ``math``, ``np`` and ``pd``
-(``np``/``pd`` imported only when the code names them), and it may ``import``
-any module the container image provides.
+A LambdaOp function is ``fn(row: tuple[str, ...]) -> str``, written as a lambda
+or as module source that defines a one-parameter ``def`` named by ``fn_name``.
+The source may put imports, constants and helper functions before that ``def``.
+It sees a fixed namespace: a small set of builtins plus ``json``, ``re``,
+``math``, ``np`` and ``pd`` (``np``/``pd`` imported only when the code names
+them), and it may ``import`` any module the container image provides.
 
 The namespace fixes what names resolve; it is not a security boundary, because
 the object graph reaches every class without a single builtin. Caller-supplied
@@ -20,7 +17,7 @@ imports safe.
 
 A LambdaOp that feeds an LLM is different: it is inlined into the LLM's FlowMesh
 task as a ``graph_template`` function and evaluated by the FlowMesh worker's own
-``safe_eval`` namespace, which has no ``__import__`` and calls the first name the
+``safe_eval`` namespace, which has no ``__import__`` and binds the first name the
 code defines. ``validate_inline_source`` holds such code to that stricter
 grammar so it fails at submit with a clear message rather than at run time.
 
@@ -91,117 +88,12 @@ SAFE_BUILTIN_NAMES = _SAFE_BUILTIN_BASE_NAMES + EXCEPTION_BUILTIN_NAMES
 # code that references them is rejected at submit.
 INLINE_UNAVAILABLE_BUILTIN_NAMES = EXCEPTION_BUILTIN_NAMES
 
-# The standalone namespace binds ``Message`` and ``ops`` so an SDK callable's
-# annotations resolve there; the inline namespace lacks both.
-INLINE_UNAVAILABLE_ANNOTATION_NAMES = ("Message", "ops")
-
 # Names the standalone LambdaOp namespace provides beyond the safe builtins.
 # ``np``/``pd`` are provided only when the code names them, so they are checked
 # separately; the rest are always present.
 NAMESPACE_GLOBAL_NAMES = frozenset(("json", "re", "math", "Message", "ops"))
 
 _SOURCE_NAME = "<lambda_op>"
-
-# The same decode as ``lambda_task_helpers``, in the form FlowMesh's inline namespace
-# can evaluate; a test pins the two decoders to agree.
-DECODER_SOURCE = """\
-def _serialized_table(value):
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except:
-            return None
-    if (
-        isinstance(value, dict)
-        and list(value) == ["df"]
-        and isinstance(value["df"], str)
-    ):
-        try:
-            table = json.loads(value["df"])
-        except:
-            return None
-        if isinstance(table, dict):
-            return table
-    return None
-
-
-def _table_rows(table):
-    rows = {}
-    for name, column in table.items():
-        if isinstance(column, dict):
-            for index, value in column.items():
-                rows.setdefault(index, {})[name] = value
-    try:
-        indexes = sorted(rows, key=int)
-    except:
-        indexes = list(rows)
-    return [rows[index] for index in indexes]
-
-
-def _decode(value):
-    if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-        except:
-            return value
-        if isinstance(decoded, (dict, list)):
-            return _decode(decoded)
-        return value
-    if isinstance(value, dict):
-        table = _serialized_table(value)
-        if table is None and "table" in value:
-            table = _serialized_table(value["table"])
-        if table is not None:
-            return _table_rows(table)
-    return value
-"""
-
-
-def _top_level_bindings(code: str) -> set[str]:
-    """Every name the code's own top-level scope binds."""
-    table = symtable.symtable(code.strip(), _SOURCE_NAME, "exec")
-    return {
-        symbol.get_name()
-        for symbol in table.get_symbols()
-        if symbol.is_assigned() or symbol.is_imported()
-    }
-
-
-def inline_lambda_source(code: str, fn_name: str) -> str:
-    """The function step source a row-mode LambdaOp inlines into an LLM."""
-    src = code.strip()
-    tree = _parse(src)
-    if isinstance(tree, ast.Expression):
-        src = f"_op = (\n{src}\n)"
-        globals_ = {"_op"}
-        call = "_op(row)"
-    else:
-        globals_ = _top_level_bindings(src)
-        call = f"{fn_name}(row)"
-    globals_ |= {"_decode", "_serialized_table", "_table_rows"}
-    return (
-        "global " + ", ".join(sorted(globals_)) + "\n"
-        "def adapt(args):\n"
-        "    row = tuple(_decode(v) for v in args)\n"
-        f"    value = {call}\n"
-        "    return value if isinstance(value, str) else json.dumps(value)\n"
-        "\n\n" + DECODER_SOURCE + "\n\n" + src + "\n"
-    )
-
-
-def callable_source(fn: Callable[..., Any], code: str) -> str:
-    """The function source behind an SDK callable, or ``""`` when unreadable."""
-    stripped = code.strip()
-    if fn.__name__ != "<lambda>":
-        return stripped
-    try:
-        tree = ast.parse(stripped, mode="exec")
-    except SyntaxError:
-        return ""
-    lambdas = [node for node in ast.walk(tree) if isinstance(node, ast.Lambda)]
-    if len(lambdas) != 1:
-        return ""
-    return ast.get_source_segment(stripped, lambdas[0]) or ""
 
 
 def _lambda_import(
@@ -271,6 +163,15 @@ def _param_count(args: ast.arguments) -> int:
     return count + (1 if args.vararg else 0) + (1 if args.kwarg else 0)
 
 
+def _is_docstring(stmt: ast.stmt) -> bool:
+    """Whether ``stmt`` is a module-level string literal (a docstring)."""
+    return (
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Constant)
+        and isinstance(stmt.value.value, str)
+    )
+
+
 def _parse(code: str) -> ast.Expression | ast.Module:
     src = code.strip()
     try:
@@ -281,30 +182,21 @@ def _parse(code: str) -> ast.Expression | ast.Module:
         raise ValueError(f"LambdaOp code does not parse: {exc}") from exc
 
 
-def _check_params(args: ast.arguments, params: int) -> None:
-    count = _param_count(args)
-    if count == params:
-        return
-    if params == 1:
-        raise ValueError(
-            f"Function must accept exactly 1 parameter (a tuple), but has {count}"
-            " parameters. Expected signature: fn(args: tuple[str, ...]) -> str"
-        )
-    raise ValueError(
-        f"Function must accept exactly {params} parameters, but has {count}. Expected"
-        " signature: fn(args: tuple[str, ...], seed: int)"
-    )
-
-
-def _check_lambda(tree: ast.Expression, params: int = 1) -> str:
+def _check_lambda(tree: ast.Expression) -> str:
     if not isinstance(tree.body, ast.Lambda):
         raise ValueError("LambdaOp code is not a lambda expression")
-    _check_params(tree.body.args, params)
+    if _param_count(tree.body.args) != 1:
+        raise ValueError("Function must accept exactly 1 parameter (a tuple)")
     return "<lambda>"
 
 
-def _check_def(stmt: ast.FunctionDef, params: int = 1) -> str:
-    _check_params(stmt.args, params)
+def _check_def(stmt: ast.FunctionDef) -> str:
+    if _param_count(stmt.args) != 1:
+        raise ValueError(
+            "Function must accept exactly 1 parameter (a tuple), but has"
+            f" {_param_count(stmt.args)} parameters. Expected signature:"
+            " fn(args: tuple[str, ...]) -> str"
+        )
     return stmt.name
 
 
@@ -331,7 +223,7 @@ def _check_free_names(code: str) -> None:
         )
 
 
-def validate_source(code: str, fn_name: str | None = None, params: int = 1) -> str:
+def validate_source(code: str, fn_name: str | None = None) -> str:
     """Check LambdaOp source without running any of it; return the function name.
 
     Parsing only: a ``def`` runs its decorators, defaults and annotations when
@@ -339,16 +231,16 @@ def validate_source(code: str, fn_name: str | None = None, params: int = 1) -> s
     never executes the code.
 
     ``fn_name`` is the name the LambdaOp declares: the code must define a
-    top-level function of that name taking ``params`` parameters. Imports,
-    constants and helper functions may come before it. Without ``fn_name`` the
-    first top-level function is used. A lambda has no name, so ``fn_name``
-    labels it only. Imports are not restricted here: a standalone task runs in
-    its own container, so the image is the only import boundary.
+    top-level one-parameter function of that name. Imports, constants and
+    helper functions may come before it. Without ``fn_name`` the first
+    top-level function is used. A lambda has no name, so ``fn_name`` labels it
+    only. Imports are not restricted here: a standalone task runs in its own
+    container, so the image is the only import boundary.
     """
     tree = _parse(code)
     if isinstance(tree, ast.Expression):
         _check_free_names(code)
-        return _check_lambda(tree, params)
+        return _check_lambda(tree)
     for name, level in _imported_names(tree):
         if level != 0:
             raise ValueError("LambdaOp code must not use relative imports")
@@ -372,7 +264,39 @@ def validate_source(code: str, fn_name: str | None = None, params: int = 1) -> s
         )
     if isinstance(target, ast.AsyncFunctionDef):
         raise ValueError("LambdaOp function must not be async")
-    return _check_def(target, params)
+    return _check_def(target)
+
+
+def _inline_statement_binding(stmt: ast.stmt) -> str | None:
+    """The name ``stmt`` first binds at module level, if any."""
+    table = symtable.symtable(ast.unparse(stmt), _SOURCE_NAME, "exec")
+    bound = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    }
+    bound_names: list[tuple[int, int, str]] = []
+    for node in ast.walk(stmt):
+        if isinstance(node, ast.Name):
+            name = node.id
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        else:
+            continue
+        if name in bound:
+            bound_names.append((node.lineno, node.col_offset, name))
+    return min(bound_names)[2] if bound_names else None
+
+
+def _inline_statement_kind(stmt: ast.stmt) -> str:
+    """A short name for the kind of statement ``stmt`` is."""
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return "function definition"
+    if isinstance(stmt, ast.ClassDef):
+        return "class definition"
+    if isinstance(stmt, ast.Expr):
+        return "expression"
+    return type(stmt).__name__.lower()
 
 
 def validate_inline_source(code: str, fn_name: str | None = None) -> str:
@@ -403,61 +327,40 @@ def validate_inline_source(code: str, fn_name: str | None = None) -> str:
             " output or feeding only other LambdaOps) to raise or catch"
             " exceptions"
         )
-    unbound = set(_unbound_global_names(code))
-    annotated = next(
-        (n for n in INLINE_UNAVAILABLE_ANNOTATION_NAMES if n in unbound), None
+    for index, stmt in enumerate(tree.body):
+        if _is_docstring(stmt):
+            continue
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == name:
+            for extra in tree.body[index + 1 :]:
+                if _is_docstring(extra):
+                    continue
+                binding = _inline_statement_binding(extra)
+                said = (
+                    f"binds {binding!r} at module level"
+                    if binding is not None
+                    else f"has a module-level {_inline_statement_kind(extra)} statement"
+                )
+                raise ValueError(
+                    f"it {said}, but the inline function must be the last statement of"
+                    " its source; move it inside the function"
+                )
+            return name
+        break
+    raise ValueError(
+        f"a LambdaOp that feeds an LLM must define {name!r} as the first name"
+        " its code binds (the FlowMesh worker calls the first definition), so"
+        " move constants and helper functions inside it"
     )
-    if annotated is not None:
-        raise ValueError(
-            f"it references {annotated!r}, which a LambdaOp that feeds an LLM cannot"
-            " use inline: the FlowMesh worker's namespace has no Message or ops, and a"
-            " def evaluates its annotations there. Annotate with builtin types, or move"
-            " this logic to a LambdaOp that runs as its own python task"
-        )
-    if any(isinstance(stmt, ast.AnnAssign) for stmt in tree.body):
-        raise ValueError(
-            "it annotates a top-level assignment, which a LambdaOp that feeds an LLM"
-            " cannot use inline: the generated wrapper runs the code as a module, whose"
-            " annotations land in the namespace before its function does. Assign"
-            " without an annotation, or move this logic to a LambdaOp that runs as its"
-            " own python task"
-        )
-    top_level = _top_level_bindings(code)
-    collisions = sorted(top_level & _INLINE_WRAPPER_NAMES)
-    if collisions:
-        raise ValueError(
-            f"it binds {collisions[0]!r}, which a LambdaOp that feeds an LLM cannot use"
-            " inline: its function step embeds a generated wrapper that already binds"
-            " that name. Rename the binding or move this logic to a LambdaOp that runs"
-            " as its own python task"
-        )
-    return name
-
-
-def _inline_names() -> frozenset[str]:
-    """The names the inline wrapper binds around the op's code."""
-    tree = ast.parse(DECODER_SOURCE)
-    return frozenset(
-        (
-            "adapt",
-            "_op",
-            *(f.name for f in tree.body if isinstance(f, ast.FunctionDef)),
-        )
-    )
-
-
-_INLINE_WRAPPER_NAMES = _inline_names()
 
 
 def materialize(
-    code: str, fn_name: str | None = None, params: int = 1
-) -> Callable[..., Any]:
+    code: str, fn_name: str | None = None
+) -> Callable[[tuple[Any, ...]], Any]:
     """Build the function from validated source in the LambdaOp namespace.
 
-    ``fn_name`` and ``params`` are checked against the source as in
-    ``validate_source``; a seeded LambdaOp declares two.
+    ``fn_name`` is checked against the source as in ``validate_source``.
     """
-    defined_name = validate_source(code, fn_name, params)
+    defined_name = validate_source(code, fn_name)
     src = code.strip()
     used = {node.id for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Name)}
     namespace: dict[str, Any] = {

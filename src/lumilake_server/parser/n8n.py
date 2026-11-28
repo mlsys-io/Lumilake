@@ -61,9 +61,6 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         ...
       ]
     }
-
-    Every graph carries a job seed like a YAML document does; an n8n export
-    names none, so every graph records 0.
     """
     graphs = payload.get("graphs")
     if not isinstance(graphs, list):
@@ -86,7 +83,6 @@ def parse_n8n_payload(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
         graph_specs[graph_name] = {
             "graph": compiled.graph,
             "inputs": compiled.inputs,
-            "seed": 0,
         }
 
     return graph_specs

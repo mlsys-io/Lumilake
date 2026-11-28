@@ -5,18 +5,13 @@ from typing import Any
 from pydantic import ValidationError
 
 from lumilake_server.data_specs import GpuRequest
-from lumilake_server.ops.util_ops import LambdaMode, build_lambda_spec, check_seed_mode
-from lumilake_server.parser.keyed_seed import read_key_seed
+from lumilake_server.ops.util_ops import LambdaMode, build_lambda_spec
 
-from .common import EmitContext, emit_keyed_seed
+from .common import EmitContext
 
 
 def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     entry = ctx.entry
-    seed = entry.fields.get("seed")
-    key_seed = (
-        None if seed is None else read_key_seed(entry.id, "LambdaOp", "seed", seed)
-    )
     gpu = entry.fields.get("gpu")
     if gpu is not None:
         try:
@@ -40,8 +35,4 @@ def emit_lambda_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
         },
         f"LambdaOp '{entry.id}'",
     )
-    if seed is not None:
-        check_seed_mode(spec.mode, f"LambdaOp '{entry.id}'")
     op_dict.update(spec.model_dump(by_alias=True, exclude_none=True))
-    if key_seed is not None:
-        emit_keyed_seed(op_dict, ctx, key_seed, "seed", "LambdaOp")

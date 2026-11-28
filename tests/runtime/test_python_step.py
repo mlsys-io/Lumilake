@@ -417,11 +417,9 @@ def _run_wrapper(
     fn_name: str | None = None,
     mode: PythonMode = PythonMode.ROW,
     by: str | None = None,
-    seeded: bool = False,
 ):
     """Run the generated wrapper; ``fn_name`` defaults to the name the code defines."""
-    params = 2 if seeded else 1
-    declared = fn_name or lambda_runtime.validate_source(code, params=params)
+    declared = fn_name or lambda_runtime.validate_source(code)
     namespace: dict[str, Any] = {}
     runtime_mount = _materialize_task_runtime()
     exec(
@@ -494,59 +492,6 @@ def test_wrapper_applies_fn_per_row_and_broadcasts(tmp_path: Path) -> None:
         [{"kind": "literal", "file": str(mounted)}],
         {},
     ) == {"items": [{"output": "mounted", "value": "mounted"}]}
-
-
-def test_wrapper_passes_the_derived_seed_second(tmp_path: Path) -> None:
-    """A seeded wrapper calls the function with each row's seed second."""
-    llm_dir = _stage(tmp_path, "llm", {"items": [{"output": "a"}, {"output": "b"}]})
-    seed = {"kind": "literal", "values": ["11", "22"], "role": "seed"}
-    out = _run_wrapper(
-        "def seeded(inputs, seed):\n    return '%s-%d' % (inputs[0], seed)\n",
-        [{"kind": "stage", "node": "llm"}, seed],
-        {"llm": llm_dir},
-        seeded=True,
-    )
-    assert [item["output"] for item in out["items"]] == ["a-11", "b-22"]
-
-
-@pytest.mark.parametrize(
-    ("mode", "values", "message"),
-    [
-        (PythonMode.ROW, ["7"], "op-1: seed column has 1 rows; expected one per row"),
-        (
-            PythonMode.EXPAND,
-            ["1.5"],
-            "op-1: seed row 0 is '1.5'; a seed must be an int",
-        ),
-    ],
-)
-def test_wrapper_refuses_a_seed_it_cannot_use(
-    mode: PythonMode, values: list[str], message: str
-) -> None:
-    """One seed for several rows, or a seed that is not an integer, fails."""
-    code = "def draw(i, seed):\n    return ['%d' % seed]\n"
-    if mode is PythonMode.ROW:
-        code = "def draw(i, seed):\n    return '%d' % seed\n"
-    plan: list[dict[str, Any]] = [{"kind": "literal", "values": ["a", "b"]}]
-    plan.append({"kind": "literal", "values": values, "role": "seed"})
-    with pytest.raises(ValueError, match=message):
-        _run_wrapper(code, plan, {}, mode=mode, seeded=True)
-
-
-@pytest.mark.parametrize("mode", [PythonMode.ROW, PythonMode.EXPAND])
-def test_wrapper_passes_a_marked_row_through_unseeded(mode: PythonMode) -> None:
-    """A marked row keeps its slot unseeded instead of failing the task."""
-    marker = {"_fail": {"op": "Parse"}}
-    code = "def draw(i, seed):\n    return '%s: %d' % (i, seed)\n"
-    if mode is PythonMode.EXPAND:
-        code = "def draw(i, seed):\n    return ['%s: %d' % (i, seed)]\n"
-    plan: list[dict[str, Any]] = [
-        {"kind": "literal", "values": ["a", json.dumps(marker)]},
-        {"kind": "literal", "values": ["5", json.dumps(marker)], "role": "seed"},
-    ]
-    out = _run_wrapper(code, plan, {}, mode=mode, seeded=True)
-    # A row arrives as its tuple of decoded cells; the drawing is one element.
-    assert [item["output"] for item in out["items"]] == ["('a',): 5", marker]
 
 
 def test_wrapper_reads_python_and_api_upstreams(tmp_path: Path) -> None:
@@ -698,6 +643,8 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
 
 
 def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
+    # A list-mode Lambda reading a DataRetrievalOp gets one column element per
+    # retrieval item, matching the standalone path.
     ret_dir = _stage(
         tmp_path,
         "ret",
@@ -709,7 +656,8 @@ def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
         },
     )
     out = _run_wrapper(
-        "lambda inputs: [v[0]['title'] for v in inputs[0]]",
+        "def titles(inputs):\n"
+        "    return [json.loads(v['table']['df'])['title']['0'] for v in inputs[0]]\n",
         [{"kind": "stage", "node": "ret"}],
         {"ret": ret_dir},
         mode=PythonMode.LIST,
@@ -740,24 +688,31 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
         _run_wrapper(code, plan, {}, fn_name="b")
 
 
-def test_wrapper_whole_column_modes_decode_each_element() -> None:
-    item = {"table": {"df": '{"k": {"0": 1}}'}}
-    plan: list[dict[str, Any]] = [{"kind": "literal", "values": [json.dumps(item)]}]
-    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
-        out = _run_wrapper("lambda c: c[0][0]", plan, {}, mode=mode)
-        assert out == {"items": [{"output": {"k": 1}}]}
-
-
-def test_wrapper_whole_column_modes_pass_each_row_decoded() -> None:
-    # A whole-column function receives its JSON rows already decoded, so one
-    # group per row comes back as a list of lists under either mode.
-    code = "def rows(columns):\n    return columns[0]\n"
+def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
+    # The grouped-list materializer's decode_rows receives tuple(columns) (a
+    # 1-tuple for its single JSON input) and must decode each row's JSON back
+    # to its list, one group per row.
+    code = (
+        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
+    )
     plan: list[dict[str, Any]] = [
         {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
     ]
-    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
-        out = _run_wrapper(code, plan, {}, fn_name="rows", mode=mode)
-        assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode=PythonMode.LIST)
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+
+
+def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
+    # An aligned lambda gets whole columns and returns a list, but must return
+    # exactly one value per input row; the wrapper emits one item per row.
+    code = (
+        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
+    )
+    plan: list[dict[str, Any]] = [
+        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
+    ]
+    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode=PythonMode.ALIGNED)
+    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
 
 
 def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:

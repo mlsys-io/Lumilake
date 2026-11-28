@@ -490,14 +490,15 @@ def test_image_generation_op_downstream_of_api_node_uses_text_path() -> None:
 
 
 def test_api_lambda_op_message_input_renders_literal() -> None:
-    """A LambdaOp message input renders in API mode over decoded literals."""
+    """A LambdaOp message input must render in API mode: the server evaluates
+    the function at build time when its inputs are literal."""
     stock = input_placeholder("Stock")
-    greeting = FormatOp('{{"name": "{name}"}}', name=stock)
+    greeting = FormatOp("Hello, {name}!", name=stock)
 
-    def _shout(inputs: tuple[str | list[Message], ...]) -> Any:
-        (greeting,) = inputs
-        assert isinstance(greeting, dict)
-        return {"name": greeting["name"].upper()}
+    def _shout(inputs: tuple[str | list[Message], ...]) -> str:
+        (greeting_text,) = inputs
+        assert isinstance(greeting_text, str)
+        return greeting_text.upper()
 
     shout = LambdaOp([greeting], fn=_shout)
     llm = LLMChatOp(
@@ -515,7 +516,7 @@ def test_api_lambda_op_message_input_renders_literal() -> None:
     assert node.api_spec["json"]["messages"] == "{{prompt}}"
     columns = node.data_spec.model_dump(exclude_none=True)["template"]["columns"]
     lambda_cols = [col for col in columns if col.get("label", "").startswith("lambda_")]
-    assert lambda_cols and lambda_cols[0]["data"]["items"] == ['{"name": "NVDA"}']
+    assert lambda_cols and lambda_cols[0]["data"]["items"] == ["HELLO, NVDA!"]
 
 
 def test_api_lambda_over_runtime_output_fails_closed() -> None:

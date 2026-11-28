@@ -9,8 +9,6 @@ from lumilake_server.data_specs import (
 )
 from lumilake_server.ops.data_ops import DataOp, MessageOp, OpMessage
 from lumilake_server.ops.ops import Op, RowShape
-from lumilake_server.ops.seed_spec import ColumnSeed
-from lumilake_server.ops.spec_validation import validate_fields
 
 
 @dataclass(frozen=True)
@@ -203,7 +201,7 @@ class LLMChatOp(LLMOp):
         self.rowwise_seed = rowwise_seed
         self.system_messages = system_messages
         self.condition = condition
-        check_rowwise_seed(rowwise_seed, rowwise_template, self.config, self.id)
+        _validate_rowwise_seed(rowwise_seed, rowwise_template, self.config)
 
     @property
     def messages(self) -> Op:
@@ -277,10 +275,7 @@ class LLMChatOp(LLMOp):
         seed: RowwiseSeed | None = None
         seed_op: Op | None = None
         if seed_data is not None:
-            column_seed = validate_fields(
-                ColumnSeed, seed_data, f"LLMChatOp '{data['_id']}' rowwise_seed"
-            )
-            seed = RowwiseSeed(column_seed.node, column_seed.path)
+            seed = RowwiseSeed(seed_data["node"], seed_data.get("path", ""))
             seed_op = other_ops.get(seed.node)
             if seed_op is None:
                 raise ValueError(
@@ -322,30 +317,29 @@ class LLMChatOp(LLMOp):
                     self.inputs.append(producer)
 
 
-def check_rowwise_seed(
+def _validate_rowwise_seed(
     rowwise_seed: RowwiseSeed | None,
     rowwise_template: str | None,
     config: GenerationConfig,
-    op_id: str,
 ) -> None:
-    """Refuse a per-row seed column ref that does not fit this chat op."""
+    """A per-row seed column ref only fits a rowwise chat op on a backend that
+    accepts one seed per prompt."""
     if rowwise_seed is None:
         return
-    named = f"LLMChatOp '{op_id}' "
     if rowwise_template is None:
         raise ValueError(
-            f"{named}rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
+            "rowwise_seed needs a rowwise_template; only a rowwise LLMChatOp"
             " seeds each row separately"
         )
     num_beams = config.num_beams
     if num_beams is not None and num_beams > 1:
         raise ValueError(
-            f"{named}rowwise_seed is not supported with num_beams > 1: the beam path"
+            "rowwise_seed is not supported with num_beams > 1: the beam path"
             " takes no per-row seed"
         )
     if config.api is not None:
         raise ValueError(
-            f"{named}rowwise_seed is available only for local vLLM generation, not API"
+            "rowwise_seed is available only for local vLLM generation, not API"
             " mode, which takes no per-row seed"
         )
 

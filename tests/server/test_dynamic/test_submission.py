@@ -24,16 +24,14 @@ from lumilake_server.dynamic.driver import (
 )
 from lumilake_server.dynamic.spec import DynamicSpec
 from lumilake_server.middleware import TraceIdMiddleware
-from lumilake_server.ops import LambdaOp, OutputOp
+from lumilake_server.ops import OutputOp
 from lumilake_server.routes import jobs as job_routes_module
 from lumilake_server.runtime.protocol import LumilakeResponse, Priority
 from lumilake_server.runtime.runtime_graph import RuntimeGraphBuilder
 from lumilake_server.runtime.runtime_manager import DataCredential
 from lumilake_server.schemas.dispatch import WorkflowDispatch
 from lumilake_server.schemas.io import S3Location
-from lumilake_server.utils import lambda_runtime
 from lumilake_server.utils.job_storage import InMemoryJobStorage
-from tests.support.seeds import documented_seed
 
 _DEMO_PRINCIPAL = PrincipalContext(
     principal_id="alice",
@@ -1171,36 +1169,6 @@ async def test_dynamic_api_planner_drives_two_rounds(
     assert second["messages"][1]["role"] == "user"
     assert second["messages"][1]["content"].startswith(f"{user}\n\n")
     assert "market_cap" in second["messages"][1]["content"]
-
-
-@pytest.mark.anyio
-async def test_dynamic_proposer_first_emitted_subgraph_is_round_one(
-    app: FastAPI, job_routes: Any
-) -> None:
-    """The proposer's first emitted subgraph runs as round 1."""
-    sample = {
-        "id": "Sample",
-        "op": "LambdaOp",
-        "inputs": ["Symbols"],
-        "fn_name": "sample",
-        "code": "def sample(row, seed):\n    return '%d' % seed\n",
-        "seed": {"key": {"node": "Symbols", "path": "items.output"}},
-    }
-    job_routes._fake_runtime_server.plans = [
-        {"next": "subgraph", "ops": [sample]},
-        {"next": "STOP"},
-    ]
-    record = await _submit_and_run(app, job_routes, _VALID_DYNAMIC_YAML)
-
-    assert record.status == "completed", record.error
-    (dispatched,) = job_routes._fake_runtime_server.executed_graphs[1].values()
-    generated = next(
-        op
-        for op in dispatched.iter_ops(LambdaOp)
-        if op.code.startswith("import hashlib")
-    )
-    draws = documented_seed(["NVDA"], seed=0, op_id="Sample", round_number=1)
-    assert lambda_runtime.materialize(generated.code)(("NVDA",)) == draws[0]
 
 
 @pytest.mark.anyio
