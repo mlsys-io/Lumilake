@@ -272,7 +272,7 @@ outputs:
 
 | `mode` | Calls | The function receives | It returns | Output rows |
 |---|---|---|---|---|
-| `row` (default) | once per row | the row's values | a string | one per input row |
+| `row` (default) | once per row | the row's values | a value (a non-string is archived as its JSON text) | one per input row |
 | `aligned` | once per run | each input as its whole list | a list with one value per input row | one per input row |
 | `list` | once per run | each input as its whole list | a list of JSON values | one per element |
 | `expand` | once per row | the row's values | a list | one per element, in input order; an empty list drops the row |
@@ -280,7 +280,7 @@ outputs:
 
 - `reduce` groups rows by the value at its required `by` dotted path into the first input's value, compared as JSON text (`1` and `"1"` are different keys); `by` is accepted only in reduce mode. A row missing its `by` path fails the job naming the op and the row; an expand call that returns something other than a list fails naming the op.
 - Each `expand` item carries its parent's input-row index under `parent` and its own position under `child`, so a downstream op can tell which parent an item came from.
-- `expand` and `reduce` decode each column value once before the call: JSON text is parsed and a serialized table becomes its row dicts.
+- Every mode decodes each column value before the call: JSON object or array text becomes that object or list, and a serialized table (`{"df": "<json>"}`, or a retrieval item's `table`) becomes its row dicts.
 - In `row` and `aligned` mode every multi-row input must carry the same number of rows; submit refuses unequal counts. A one-row input broadcasts to every row.
 - An `aligned` function that returns a list of the wrong length fails the task.
 
@@ -324,7 +324,7 @@ ops:
 #### Where the function runs
 
 - **Standalone `python` task**: every Lambda except the inlined case below, and always a Lambda with an `image` or `gpu`. The code runs in its own container, without network access, as an unprivileged user, on a CPU worker that advertises the `python` task type (a Docker-backed worker on a FlowMesh version that supports it), or, when the op sets `gpu`, on a GPU worker that advertises it. While every such worker is busy the batch waits; with none in the cluster the schedule fails before dispatch. The code may import any module the image provides (the default image has the standard library, numpy and pandas); relative imports are refused at submit. A raised exception fails the job naming the step, for example `Output task <id> failed (node <op>): python task failed: ValueError: ...`.
-- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import` and gives a module-level name no scope, so the `def` named by `fn_name` must be the last statement of its source, with only a module docstring before or after it; submit refuses an import or any statement after it, a shared `uses:` block and a trailing helper included. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
+- **Inlined into an LLM task**: a row-mode Lambda that an LLM op reads as message content runs as a template step of that LLM's FlowMesh task, on the worker that runs it. This is not an isolation boundary. The worker's namespace has no `import`, so the code imports nothing; Lumilake wraps each row so it arrives decoded, and submit refuses code that binds a wrapper name, annotates a top-level assignment or uses a `Message`/`ops` type. If a non-LLM node also reads the Lambda, it also runs as a standalone task, so the function runs once per reader.
 - **API-mode `LLMChatOp`**: cannot read a `LambdaOp`, since the request body carries no function step; the build fails naming the step. Make the Lambda a workflow output, or use a non-API chat.
 
 The Lumilake server never runs submitted code: it only parses the source, and a Lambda whose inputs are all literal is not folded into a constant. A function passed as a Python callable through the SDK (`LambdaOp(fn=...)`) is the caller's own code and may run in process; its source is serialized with `dill.source.getsource`, with captured closure values written in.

@@ -73,7 +73,7 @@ ops:
 
 A block is appended after the op's `code`, or becomes its whole code when `code` is absent, and the op behaves as if that source were written in it. `uses` needs a top-level `def`, so it cannot pair with a lambda-expression `code`.
 
-A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where only a module docstring may follow the `def`, so a shared block is refused there. Submission is refused, naming the op and the function, when `uses` names an undefined function, names one twice, sits on a non-`LambdaOp`, a `functions:` entry does not parse, or two blocks or a block and the op's own code define one name. `functions:` and `uses:` are YAML-only and apply to static workflows.
+A `LambdaOp` that an `LLMChatOp` reads is evaluated inline, where the code may import nothing, so a shared block that imports is refused there. Submission is refused, naming the op and the function, when `uses` names an undefined function, names one twice, sits on a non-`LambdaOp`, a `functions:` entry does not parse, or two blocks or a block and the op's own code define one name. `functions:` and `uses:` are YAML-only and apply to static workflows.
 
 ## n8n code-node notes
 

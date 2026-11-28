@@ -643,8 +643,6 @@ def test_wrapper_flatten_multiple_grouped_items(tmp_path: Path) -> None:
 
 
 def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
-    # A list-mode Lambda reading a DataRetrievalOp gets one column element per
-    # retrieval item, matching the standalone path.
     ret_dir = _stage(
         tmp_path,
         "ret",
@@ -656,8 +654,7 @@ def test_wrapper_list_mode_reads_retrieval_stage(tmp_path: Path) -> None:
         },
     )
     out = _run_wrapper(
-        "def titles(inputs):\n"
-        "    return [json.loads(v['table']['df'])['title']['0'] for v in inputs[0]]\n",
+        "lambda inputs: [v[0]['title'] for v in inputs[0]]",
         [{"kind": "stage", "node": "ret"}],
         {"ret": ret_dir},
         mode=PythonMode.LIST,
@@ -688,31 +685,24 @@ def test_wrapper_calls_the_declared_function_or_rejects_the_mismatch() -> None:
         _run_wrapper(code, plan, {}, fn_name="b")
 
 
-def test_wrapper_list_mode_decode_rows_decodes_each_row() -> None:
-    # The grouped-list materializer's decode_rows receives tuple(columns) (a
-    # 1-tuple for its single JSON input) and must decode each row's JSON back
-    # to its list, one group per row.
-    code = (
-        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
-    )
+def test_wrapper_whole_column_modes_decode_each_element() -> None:
+    item = {"table": {"df": '{"k": {"0": 1}}'}}
+    plan: list[dict[str, Any]] = [{"kind": "literal", "values": [json.dumps(item)]}]
+    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
+        out = _run_wrapper("lambda c: c[0][0]", plan, {}, mode=mode)
+        assert out == {"items": [{"output": {"k": 1}}]}
+
+
+def test_wrapper_whole_column_modes_pass_each_row_decoded() -> None:
+    # A whole-column function receives its JSON rows already decoded, so one
+    # group per row comes back as a list of lists under either mode.
+    code = "def rows(columns):\n    return columns[0]\n"
     plan: list[dict[str, Any]] = [
         {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
     ]
-    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode=PythonMode.LIST)
-    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
-
-
-def test_wrapper_aligned_mode_returns_one_value_per_row(tmp_path: Path) -> None:
-    # An aligned lambda gets whole columns and returns a list, but must return
-    # exactly one value per input row; the wrapper emits one item per row.
-    code = (
-        "def decode_rows(columns):\n" "    return [json.loads(v) for v in columns[0]]\n"
-    )
-    plan: list[dict[str, Any]] = [
-        {"kind": "literal", "values": [json.dumps(["a", "b"]), json.dumps(["c"])]}
-    ]
-    out = _run_wrapper(code, plan, {}, fn_name="decode_rows", mode=PythonMode.ALIGNED)
-    assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
+    for mode in (PythonMode.LIST, PythonMode.ALIGNED):
+        out = _run_wrapper(code, plan, {}, fn_name="rows", mode=mode)
+        assert out == {"items": [{"output": ["a", "b"]}, {"output": ["c"]}]}
 
 
 def test_wrapper_aligned_mode_rejects_wrong_length(tmp_path: Path) -> None:
