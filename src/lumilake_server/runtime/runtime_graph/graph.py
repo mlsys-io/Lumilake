@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from lumilake_server.data_specs import (
     PYTHON_TASK_TYPE,
     DataFrame,
+    JoinCardinality,
     JoinHow,
     ListData,
     PythonData,
@@ -200,7 +201,8 @@ class RuntimeGraph:
 
     def own_row_count_nodes(self) -> set[str]:
         """Node ids whose rows their own data sets, not the job's input rows: a
-        list-mode Lambda, its fan-out, and an ``inner`` or ``full`` join."""
+        list-mode Lambda, its fan-out, and an ``inner``, ``full`` or ``many_to_many``
+        join, whose own keys set its rows."""
         return self._own_row_count_below(
             node_id
             for node_id, node in self.nodes.items()
@@ -208,7 +210,8 @@ class RuntimeGraph:
         )
 
     def join_row_count_nodes(self) -> set[str]:
-        """Node ids whose rows an ``inner`` or ``full`` join sets, at or below it."""
+        """Node ids whose rows a join sets from its own keys, at or below it: an
+        ``inner``, ``full`` or ``many_to_many`` join."""
         return self._own_row_count_below(
             node_id for node_id, node in self.nodes.items() if self._join_seed(node)
         )
@@ -227,7 +230,10 @@ class RuntimeGraph:
             node.task_type == PYTHON_TASK_TYPE
             and isinstance(node.data_spec, PythonData)
             and node.data_spec.join is not None
-            and node.data_spec.join.how is not JoinHow.LEFT
+            and (
+                node.data_spec.join.how is not JoinHow.LEFT
+                or node.data_spec.join.cardinality is JoinCardinality.MANY_TO_MANY
+            )
         )
 
     def _own_row_count_below(self, seeds: Iterable[str]) -> set[str]:

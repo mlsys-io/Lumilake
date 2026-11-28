@@ -3391,9 +3391,9 @@ class LumilakeServer:
                     raise ValueError(
                         f"Whole-run output cannot be split across slices: {output_name}"
                         f" covers {len(group_slices)} slice(s) in group {group_key}. A"
-                        " list-mode Lambda, an inner or full join, and a step below"
-                        " either each produce one value per run and cannot be"
-                        " partitioned per slice."
+                        " list-mode Lambda, an inner, full or many_to_many join, and"
+                        " a step below either each produce one value per run and"
+                        " cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_outputs.setdefault(single_workflow.workflow_id, {})[
@@ -3431,9 +3431,9 @@ class LumilakeServer:
                     raise ValueError(
                         f"Whole-run history cannot be split across slices:"
                         f" {output_name} covers {len(group_slices)} slice(s) in group"
-                        f" {group_key}. A list-mode Lambda, an inner or full join, and"
-                        " a step below either each produce one value per run and"
-                        " cannot be partitioned per slice."
+                        f" {group_key}. A list-mode Lambda, an inner, full or"
+                        " many_to_many join, and a step below either each produce one"
+                        " value per run and cannot be partitioned per slice."
                     )
                 (single_workflow,) = group_slices
                 direct_histories[single_workflow.workflow_id][output_name] = history

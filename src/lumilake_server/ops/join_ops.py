@@ -10,9 +10,10 @@ from pydantic import (
     StrictBool,
     StrictStr,
     field_validator,
+    model_validator,
 )
 
-from lumilake_server.data_specs import JoinHow
+from lumilake_server.data_specs import JoinCardinality, JoinHow
 from lumilake_server.ops.ops import Op
 from lumilake_server.ops.spec_validation import validate_fields
 
@@ -28,19 +29,36 @@ class JoinSpec(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     by: list[StrictStr]
+    row_key: list[StrictStr] | None = None
     how: JoinHow = JoinHow.LEFT
     require_match: StrictBool = False
+    cardinality: JoinCardinality = JoinCardinality.ONE_TO_ONE
     attach: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     on_missing: Literal["null_fill", "fail_row"] = "null_fill"
 
-    @field_validator("by", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _dotted_path(cls, value: Any) -> Any:
-        """Take the key path as parts, from one dotted name or a list of them."""
-        parts = value.split(".") if isinstance(value, str) else value
-        if not isinstance(parts, list) or not _PATH_RE.match(".".join(parts)):
-            raise ValueError("must be a dotted field name")
-        return parts
+    def _dotted_paths(cls, data: Any) -> Any:
+        """Take each key as its paths: one dotted field name, or several."""
+        if not isinstance(data, dict):
+            return data
+        paths_by_field = data.copy()
+        for field in ("by", "row_key"):
+            value = data.get(field)
+            if value is None and field == "row_key":
+                continue
+            paths = [value] if isinstance(value, str) else value
+            if not isinstance(paths, list) or not paths:
+                raise ValueError(
+                    f"requires '{field}', a dotted field name or a list of them"
+                )
+            for path in paths:
+                if not isinstance(path, str) or not _PATH_RE.match(path):
+                    raise ValueError(
+                        f"{field} must be dotted field names, got {path!r}"
+                    )
+            paths_by_field[field] = paths
+        return paths_by_field
 
     @field_validator("attach")
     @classmethod
@@ -50,6 +68,41 @@ class JoinSpec(BaseModel):
                 raise ValueError(f"key {field!r} must be a field name")
         return value
 
+    @model_validator(mode="after")
+    def _row_key_names_every_by_path(self) -> Self:
+        """The first-input record key, refused unless it names every ``by``."""
+        if self.row_key is not None:
+            missing = [path for path in self.by if path not in self.row_key]
+            if missing:
+                raise ValueError(
+                    f"row_key must name every by path, got {self.row_key!r} without"
+                    f" {missing!r}"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _every_row_of_a_key_is_declared(self) -> Self:
+        """A join reads one row per key unless its cardinality names the repeats."""
+        if (
+            self.row_key is not None
+            and self.cardinality is not JoinCardinality.ONE_TO_MANY
+        ):
+            raise ValueError(
+                "row_key needs cardinality one_to_many, the declaration that a first"
+                " input holds several rows of one by key"
+            )
+        if self.cardinality is JoinCardinality.ONE_TO_MANY and self.row_key is None:
+            raise ValueError(
+                "cardinality one_to_many also needs row_key, the path that tells a"
+                " first input's two rows of one by key apart"
+            )
+        if self.cardinality is JoinCardinality.MANY_TO_MANY and self.attach:
+            raise ValueError(
+                "cardinality many_to_many reads no attach, since a key's product rows"
+                " have no one row for an attach value to belong to"
+            )
+        return self
+
 
 def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
     """Validate one `JoinOp` entry, naming the op and field in the error."""
@@ -58,7 +111,7 @@ def build_join_spec(fields: dict[str, Any], where: str) -> JoinSpec:
 
 @Op.registry.register(JOIN_OP)
 class JoinOp(Op):
-    """A keyed join: first-input rows, others merged by ``by``, attaches joined back."""
+    """A keyed join by ``by``, attaches joined back, an optional ``row_key`` per row."""
 
     column_indices: list[int]
     attach_indices: dict[str, int]
@@ -77,6 +130,7 @@ class JoinOp(Op):
         for op in inputs:
             if op not in joined:
                 joined.append(op)
+        super().__init__(joined)
         self.attach_indices = {}
         target_indices = set()
         for field, target in attach.items():
@@ -93,11 +147,15 @@ class JoinOp(Op):
         ]
         if not self.column_indices:
             raise ValueError("JoinOp needs a row column besides its attach targets")
-        super().__init__(joined)
 
     @property
     def by(self) -> list[str]:
         return self.spec.by
+
+    @property
+    def row_key(self) -> list[str] | None:
+        """The record key of the first input's rows, when several share a key."""
+        return self.spec.row_key
 
     @property
     def how(self) -> JoinHow:
@@ -106,6 +164,10 @@ class JoinOp(Op):
     @property
     def require_match(self) -> bool:
         return self.spec.require_match
+
+    @property
+    def cardinality(self) -> JoinCardinality:
+        return self.spec.cardinality
 
     @property
     def on_missing(self) -> Literal["null_fill", "fail_row"]:
@@ -134,7 +196,7 @@ class JoinOp(Op):
         return self.columns[0]
 
     def _serialize(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "by": self.by,
             "attach": {
                 field: self.inputs[index].id
@@ -142,8 +204,12 @@ class JoinOp(Op):
             },
             "how": self.how,
             "require_match": self.require_match,
+            "cardinality": self.cardinality,
             "on_missing": self.on_missing,
         }
+        if self.row_key is not None:
+            data["row_key"] = self.row_key
+        return data
 
     @classmethod
     def _from_json(cls, data: dict[str, Any], other_ops: dict[str, Op]) -> Self:

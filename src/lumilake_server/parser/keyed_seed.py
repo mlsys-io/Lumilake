@@ -1,5 +1,6 @@
 """Deriving a per-row seed from a row key, through a generated row LambdaOp."""
 
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,19 @@ SAMPLE_FN_NAME = "samples_for_row"
 SAMPLE_SEED_LABEL = "__seed"
 _OUTPUT = "output"
 SEED_MODULUS = 2**31
+
+
+def keyed_seed(
+    job_seed: int, template_id: str, round_number: int | None, key: Any
+) -> int:
+    """The seed the generated row function draws for one ``(op, round, key)``."""
+    payload = json.dumps(
+        [job_seed, template_id, round_number, key],
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big") % SEED_MODULUS
 
 
 def read_key_seed(op_id: str, op_kind: str, field: str, entry: Any) -> KeySeed:

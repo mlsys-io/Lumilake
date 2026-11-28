@@ -51,12 +51,16 @@ ops:
     op: RepeatOp
     times: 3
     input: Draft          # what the first iteration reads
-    output: Rectify       # body id the next iteration reads
+    output: Gated         # body id the next iteration reads
     body:
-      - {id: Rectify, op: LLMChatOp, inputs: [$in], messages: [...], config: {...}}
+      - {id: Status, op: RouterOp, inputs: [$in], path: label, default_branch: ok, rules: [{branch: fail, match: equals, value: fail}]}
+      - {id: Answer, op: LLMChatOp, inputs: [Status.fail], messages: [...], config: {...}}
+      - {id: Gated, op: JoinOp, inputs: [$in, Status.fail, Answer], by: row_id}
 ```
 
-Iteration `i` copies each body entry to `Retry.i.<bodyId>`; `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or `RouterOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
+A router inside a body gives the round a gate: `Status` routes `$in` into `ok` and `fail`, `Answer` reads only the `fail` rows, and `Gated` joins the round's `$in`, the `fail` branch and `Answer` so every row of the round carries forward.
+
+Iteration `i` copies each body entry to `Retry.i.<bodyId>`; a body entry's router branches are copied beside it as `Retry.i.<bodyId>.<branch>`, and an op inside the body names one as `<bodyId>.<branch>`. `$in` reads `input` on the first iteration and `Retry.<i-1>.<output>` afterwards, elsewhere `Retry` reads the last iteration, and `input` may name another repeat or a router branch outside every repeat. A body entry's literal `config.seed` is redrawn per iteration from that seed, the body id and the iteration, so two iterations never share a draw; a keyed (row-derived) seed is likewise drawn per iteration: a static submission draws it from the body id and the iteration, and a repeat inside a dynamic round draws it from the unrolled copy's own id and the dynamic round, so iterations and rounds both draw apart. Submit refuses an invalid `times`, an unknown field or colliding id, an `input` that names nothing, an `output` that is not a body id or names a body `RouterOp`, a `config.seed` that is not an integer, a body entry that is not a mapping or whose id contains `.`, a body holding a `RepeatOp` or reading its own repeat id, a body id read from outside, `$in` outside a body, a cycle, or more than 1,000 unrolled entries in total.
 
 `LLMChatOp` supports output validation and local beam search; see [`docs/OPS.md`](OPS.md#llmchatop-output-enforcement-and-beam-search).
 

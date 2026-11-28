@@ -12,9 +12,27 @@ _STEP = (
     "{{id: {id}, op: LambdaOp, inputs: {inputs}, fn_name: f, "
     "code: 'def f(x): return x'}}"
 )
-_ROUTER = (
-    "      - {id: First, op: RouterOp, inputs: [$in], path: text, "
-    "default_branch: b, rules: [{branch: b, match: contains, value: x}]}\n"
+_JOIN = "      - {id: G, op: JoinOp, inputs: [$in, Status.fail, Answer], by: u}\n"
+
+
+def _router(source: str, at: str = "      ", router_id: str = "Status") -> str:
+    return (
+        f"{at}- {{id: {router_id}, op: RouterOp, inputs: [{source}], path: text, "
+        "default_branch: ok, rules: [{branch: fail, match: contains, value: x}]}\n"
+    )
+
+
+def _chat(chat_id: str, source: str, indent: str = "      ") -> str:
+    return (
+        f"{indent}- {{id: {chat_id}, op: LLMChatOp, inputs: [{source}], config:"
+        f" {{model: m}}, messages: [{{role: user, content: x}}], rowwise_template: x,"
+        f" rowwise_columns: [{{label: p, node: {source}}}]}}\n"
+    )
+
+
+_KEYED = _chat("Ask", "$in").replace(
+    " rowwise_columns:",
+    " rowwise_seed: {key: {node: $in, path: items.output.value}}, rowwise_columns:",
 )
 
 
@@ -87,6 +105,47 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
     assert len(list(compiled.iter_ops(LambdaOp))) == 6
 
 
+def _draws(round_number: int | None) -> list[str]:
+    rendered = "R" if round_number is None else f"R{round_number - 1}"
+    templates = {rendered: "R{{round}}"} if round_number else None
+    text = f"{_HEADER}ops:\n{_repeat('2', 'Start', 'Ask', _KEYED, rendered)}"
+    seeded = parse_yaml_payload(text, round_number=round_number, template_ids=templates)
+    seeds = seeded["repeat"]["graph"].values()
+    return [o["_code"] for o in seeds if o.get("fn_name") == "seed_for_row"]
+
+
+def test_a_body_keyed_seed_draws_apart_per_iteration_and_round() -> None:
+    static, round_2, round_3 = _draws(None), _draws(2), _draws(3)
+    step = _chat("Ask", "$in").replace("model: m}", "model: m, seed: 7}")
+    graph = _graph(_repeat("2", "Start", "Ask", step))
+    literal = [o["config"]["seed"] for o in graph.values() if o["_op"] == "LLMChatOp"]
+    assert all("_TEMPLATE_ID = 'Ask'" in code for code in static)
+    assert "_ROUND = 1\n" in static[0] and "_ROUND = 2\n" in static[1]
+    assert all("R{{round}}.1.Ask" in code for code in (round_2[0], round_3[0]))
+    assert round_2[0] != round_2[1] and round_2[0] != round_3[0]
+    assert literal[0] != literal[1] and max(literal) < 2**31
+
+
+def test_a_repeat_reads_a_router_branch_outside_it_beside_its_own_branch() -> None:
+    body = _router("$in") + _chat("Answer", "Status.fail") + _JOIN
+    gate = _router("Start", "  ", "Gate")
+    graph = _graph(gate + _repeat("3", "Gate.fail", "G", body), _OUTPUT)
+    ops = list(graph.values())
+    fails = [op for op in ops if op.get("fn_name") == "route_fail"][1:]
+    chats = [op for op in ops if op["_op"] == "LLMChatOp"]
+    joins = [op for op in ops if op["_op"] == "JoinOp"]
+    assert (len(fails), len(chats), len(joins)) == (3, 3, 3)
+    nodes = [column["node"] for op in chats for column in op["rowwise_columns"]]
+    assert nodes == [fail["_id"] for fail in fails]
+    source = [next(op["_id"] for op in ops if op.get("fn_name") == "route_fail")]
+    source += [join["_id"] for join in joins[:-1]]
+    expect = [
+        [head, fail["_id"], chat["_id"]]
+        for head, fail, chat in zip(source, fails, chats)
+    ]
+    assert [join["_inputs"] for join in joins] == expect
+
+
 @pytest.mark.parametrize(
     ("ops", "message"),
     [
@@ -100,11 +159,24 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
             _repeat().replace("  - id: R\n", "  - op: RepeatOp\n"), "missing 'id'"
         ),
         pytest.param(_repeat(body=""), "requires a non-empty 'body' list"),
-        pytest.param(_repeat(body=_ROUTER), "may not hold a 'RouterOp'"),
+        pytest.param(
+            _repeat(body="      - {id: Inner, op: RepeatOp}\n"),
+            "may not hold a 'RepeatOp'",
+        ),
         pytest.param(
             _repeat(body=_op("A.B", "[$in]", "      ")), "may not contain '.'"
         ),
         pytest.param(_repeat(output="Missing"), "is not one of its body ids"),
+        pytest.param(_repeat(output="Status", body=_router("$in")), "is a body router"),
+        pytest.param(_router("Start", router_id="a.b"), "underscores"),
+        pytest.param(
+            _repeat(
+                output="Ask",
+                body="      - {id: Ask, op: LLMChatOp, inputs: [$in], config: {model:"
+                " m, seed: '7'}, messages: [{role: user, content: x}]}\n",
+            ),
+            "config.seed: Input should be a valid integer",
+        ),
         pytest.param(_repeat(source="Nowhere"), "is unknown"),
         pytest.param(_repeat(source=""), "requires a non-empty 'input'"),
         pytest.param(_repeat(source="$in"), r"\$in"),
@@ -114,6 +186,11 @@ def test_a_two_op_body_runs_three_times_with_each_iteration_feeding_the_next() -
         ),
         pytest.param(_op("After", "[$in]") + _repeat(), r"may not read '\$in'"),
         pytest.param(_repeat() + _op("After", "[Second]"), r"a body id of 'R'"),
+        pytest.param(
+            _repeat(output="B", body=_router("$in") + _op("B", "[$in]", "      "))
+            + _op("After", "[Status.fail]"),
+            "a body id of 'R'",
+        ),
         pytest.param(
             _repeat(
                 body=_op("First", "[R]", "      ") + _op("Second", "[First]", "      ")

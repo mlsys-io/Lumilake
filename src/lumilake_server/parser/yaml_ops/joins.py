@@ -8,7 +8,7 @@ from .common import EmitContext
 
 
 def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
-    """Fill in a join's key path, how, match rule, attach targets and per-row policy."""
+    """Fill in a join's keys, how, match rule, attach targets and per-row policy."""
     entry = ctx.entry
     user_id_to_internal = ctx.user_id_to_internal
     if not entry.inputs:
@@ -31,5 +31,8 @@ def emit_join_op(op_dict: dict[str, Any], ctx: EmitContext) -> None:
     op_dict["by"] = spec.by
     op_dict["how"] = spec.how
     op_dict["require_match"] = spec.require_match
+    op_dict["cardinality"] = spec.cardinality
+    if spec.row_key is not None:
+        op_dict["row_key"] = spec.row_key
     op_dict["attach"] = resolved
     op_dict["on_missing"] = spec.on_missing

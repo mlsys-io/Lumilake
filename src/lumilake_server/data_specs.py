@@ -57,6 +57,14 @@ class JoinHow(StrEnum):
     FULL = "full"
 
 
+class JoinCardinality(StrEnum):
+    """How many rows of one key each input may carry."""
+
+    ONE_TO_ONE = "one_to_one"
+    ONE_TO_MANY = "one_to_many"
+    MANY_TO_MANY = "many_to_many"
+
+
 ReduceOnFail = Literal["drop_failed", "fail_group"]
 ExpandOnEmpty = Literal["drop", "fail"]
 
@@ -267,10 +275,12 @@ class JoinDescription(DataSpecModel):
 
     node: str
     by: list[str]
+    row_key: list[str] | None = None
     inputs: list[int]
-    attach: list[tuple[str, int, int]]
+    attach: list[tuple[str, int, int, bool]]
     how: JoinHow
     require_match: bool
+    cardinality: JoinCardinality = JoinCardinality.ONE_TO_ONE
     on_missing: Literal["null_fill", "fail_row"]
 
 
