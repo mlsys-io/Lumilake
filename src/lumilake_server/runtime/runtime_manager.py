@@ -15,7 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1857,6 +1857,7 @@ class FlowmeshRuntimeManager:
                 node_task_map=node_task_map,
                 results=stored_responses,
                 served=None if reuse_plan is None else served_records(reuse_plan),
+                inherited=reuse_plan.inherited if reuse_plan is not None else (),
             )
         return {
             "flat_outputs": flat_outputs,
@@ -1880,6 +1881,7 @@ class FlowmeshRuntimeManager:
                 node_task_map={},
                 results={},
                 served=served_records(plan),
+                inherited=plan.inherited,
             )
         self.logger.info(
             "Record reuse answered request %s from the store with no dispatch",
@@ -1930,6 +1932,7 @@ class FlowmeshRuntimeManager:
         node_task_map: Mapping[str, str],
         results: Mapping[str, Any],
         served: Mapping[str, NodeRecords] | None = None,
+        inherited: Collection[str] = frozenset(),
     ) -> None:
         """Write this batch's records once; an archive or keying error is
         logged and the job continues."""
@@ -1951,6 +1954,7 @@ class FlowmeshRuntimeManager:
                 member_rounds=request_info.member_rounds,
                 node_owners=request_info.task_owner_members,
                 served=served,
+                inherited=inherited,
             )
         except (ArchiveError, ValueError, IndexError) as exc:
             self.logger.warning(
