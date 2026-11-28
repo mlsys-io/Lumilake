@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from lumilake import envs
+from lumilake_server.records import JobRecord
 from lumilake_server.routes import jobs as jobs_routes
 from lumilake_server.runtime.server import LumilakeServerConfig
 from lumilake_server.schemas.io import S3Location
@@ -15,7 +16,7 @@ from lumilake_server.utils.job_storage import InMemoryJobStorage
 
 def _seed(storage: InMemoryJobStorage, job_id: str, status: str) -> None:
     storage.save(
-        jobs_routes.JobRecord(
+        JobRecord(
             job_id=job_id,
             status=status,  # type: ignore[arg-type]
             submitted_at="2026-05-25T00:00:00+00:00",
@@ -64,7 +65,7 @@ async def test_recover_in_flight_jobs_skips_in_memory_active_records(
 
     monkeypatch.setattr(jobs_routes, "_job_storage", storage)
     monkeypatch.setattr(job_storage_module, "_job_storage", storage)
-    in_memory = jobs_routes.JobRecord(
+    in_memory = JobRecord(
         job_id="still-running",
         status="running",
         submitted_at="2026-05-25T00:00:00+00:00",

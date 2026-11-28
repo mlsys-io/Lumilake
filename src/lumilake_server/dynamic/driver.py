@@ -35,6 +35,7 @@ from lumilake_server.runtime.runtime_manager import (
     _coerce_output_value,
     _walk_output_path,
 )
+from lumilake_server.schemas.io import IOLocation, S3Location
 from lumilake_server.utils.retrieval_spec import RetrievalSpec
 
 _OBSERVATION_TEMPLATE_FILE = Path(__file__).with_name("observation_template.py")
@@ -149,22 +150,19 @@ class RoundBuild(BaseModel):
 
 
 def round_output_location(
-    base: dict[str, Any], run_namespace: str, round_index: int
-) -> dict[str, Any]:
+    base: IOLocation, run_namespace: str, round_index: int
+) -> S3Location:
     """Derive a distinct output location for one round within a run.
 
     Folder outputs use fixed item names, so reusing one prefix would overwrite
     the previous round's export.
     """
-    location_type = base["type"]
-    if location_type == "s3":
-        prefix = base["prefix"]
-        sep = "" if prefix.endswith("/") else "/"
-        return {
-            "type": "s3",
-            "prefix": f"{prefix}{sep}{run_namespace}/round-{round_index}/",
-        }
-    raise DriverProtocolError(f"unsupported output location type {location_type!r}")
+    if not isinstance(base, S3Location):
+        raise DriverProtocolError(f"unsupported output location type {base.type!r}")
+    sep = "" if base.prefix.endswith("/") else "/"
+    return base.model_copy(
+        update={"prefix": f"{base.prefix}{sep}{run_namespace}/round-{round_index}/"}
+    )
 
 
 def validate_library(library: dict[str, dict[str, Any]] | None) -> None:
